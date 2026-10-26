@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
+. "$(dirname -- "${BASH_SOURCE:-$0}")/../scripts/bash_only.sh" || exit 2
 # Everything this deployment needs brought into existence, as plain annotated
 # `aws` CLI and one generator (ADR deploy-1: an IaC framework is a toolchain tax
 # at one box per environment; the runbook must be performable by a stranger with
 # aws-cli and ssh).
 #
 #   deploy/provision.sh env-file <path> <env>          generate every value; NO AWS
+#   deploy/provision.sh surfaces <file>                derive SURFACE_HOSTS from SURFACE_ADDRESSES
 #   deploy/provision.sh secrets-put <prefix> <file>    push them into Secrets Manager
 #   deploy/provision.sh secrets-fetch <prefix> <file>  pull them back onto a box
+#   deploy/provision.sh preflight <env> [<env file>]   every deploy precondition, READ-ONLY
+#   deploy/provision.sh preflight <env> --on-box       the one check the box's credential answers
 #   deploy/provision.sh infra <env>                    EC2 + RDS + S3 + security groups
 #   deploy/provision.sh project-name                   the name THIS stack carries
 #   deploy/provision.sh derived-project-name           the name this CHECKOUT derives
 #   deploy/provision.sh image-tag                      the tag its images carry
+#   deploy/provision.sh image-services                 the services that have an image, the one list
 #   deploy/provision.sh image-repo <web|worker>        the registry repository it lives in
 #   deploy/provision.sh image-ref <web|worker> [tag]   repository:tag, the one composed name
 #   deploy/provision.sh image-digest <web|worker> [tag]  what the REGISTRY says that tag is
@@ -39,16 +44,19 @@ set -euo pipefail
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 set +x  # never; see deploy/entrypoint.sh for the same line and the same reason
 
-die() { echo "!! provision: $*" >&2; exit 2; }
-say() { echo "provision: $*"; }
+# `die`, `say` and `usage` (the whole header block: it IS the subcommand table)
+# are deploy/lib.sh's.
+DEPLOY_NAME=provision
+# shellcheck source=deploy/lib.sh
+. "$HERE/lib.sh" || exit 2
 
 # --- THE DEPLOYMENT NAMESPACE ------------------------------------------------
 # ONE SLUG, AND EVERY AWS COORDINATE THIS FILE COMPOSES IS COMPOSED FROM IT: the
 # Secrets Manager prefix (`<ns>/<env>/env`), the two buckets
-# (`<ns>-<env>-backups|media`), the two IAM roles (`<ns>-<env>-box`,
+# (`<ns>-<env>-<account>-backups|media`, deploy/lib.sh's `bucket_name`), the two IAM roles (`<ns>-<env>-box`,
 # `-backup-retention`), the EC2 Name/Project tags and the RDS identifier.
 #
-# IT IS CONFIGURATION AND IT HAS NO DEFAULT — `deploy/dns.sh:33-34`'s grammar,
+# IT IS CONFIGURATION AND IT HAS NO DEFAULT — the grammar of `deploy/dns.sh`'s `DJB_ZONE_ID` refusal,
 # for its reason one level down: a wrong zone id is a write into somebody else's
 # DNS, and a wrong namespace is a write into somebody else's resources. Both
 # succeed. So unset is a REFUSAL, never a fallback, and there is deliberately no
@@ -64,6 +72,7 @@ say() { echo "provision: $*"; }
 NAMESPACE=""
 require_namespace() {
     NAMESPACE="${DJB_DEPLOY_NAMESPACE:-}"
+    [ -n "$NAMESPACE" ] || [ -z "${DJB_DEPLOY_NAMESPACE+set}" ] || die "DJB_DEPLOY_NAMESPACE is set but EMPTY — an env file sourced with 'set -a' that assigns it empty (DJB_DEPLOY_NAMESPACE=) erases the export. Export the namespace again AFTER sourcing, and take the empty line out of that file: deploy/env.staging.example ships it commented."
     [ -n "$NAMESPACE" ] || die "DJB_DEPLOY_NAMESPACE is required — this deployment's namespace, the slug every secret prefix, bucket, role and tag is composed from. There is no default: a guessed namespace is a write into somebody else's resources. It is a slot in this environment's env file (deploy/env.staging.example); on a box 'set -a; . deploy/.env; set +a' after 'provision.sh secrets-fetch' exports it."
 }
 
@@ -86,20 +95,18 @@ DJB_EXPORT_RETENTION_DAYS=30
 DJB_ARCHIVE_GRACE_DAYS=7
 DJB_ARCHIVE_TOTAL_EXPOSURE_DAYS=$((DJB_EXPORT_RETENTION_DAYS + DJB_ARCHIVE_GRACE_DAYS))
 
-usage() {
-    # Up to the blank line that ends the header block, not a hard-coded line
-    # number: this header grows a line every time a subcommand is added, and a
-    # `2,30p` that once matched it printed `set -euo pipefail` as usage the
-    # first time it did.
-    sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed -n '/^#/p' | sed 's/^# \{0,1\}//'
-    exit 2
-}
 
 PYTHON_BIN="${PYTHON_BIN:-}"
 if [ -z "$PYTHON_BIN" ]; then
     command -v python3 >/dev/null 2>&1 && PYTHON_BIN=python3 || PYTHON_BIN=python
 fi
 command -v "$PYTHON_BIN" >/dev/null 2>&1 || die "no python on PATH"
+
+# deploy/.env, read and written through the one module that owns its grammar
+# (deploy/envfile.py: `read_env_file` and `set_key`). A missing file reads as
+# nothing; a value the writer refuses is the writer's refusal, exit 2.
+env_file_get() { [ -f "$HERE/.env" ] || return 0; "$PYTHON_BIN" "$HERE/envfile.py" get "$HERE/.env" "$1"; }
+env_file_set() { "$PYTHON_BIN" "$HERE/envfile.py" set "$HERE/.env" "$1" "$2" || exit 2; }
 
 # =============================================================================
 # WHOSE STACK IS THIS — the project name, derived from the CHECKOUT
@@ -133,20 +140,21 @@ command -v "$PYTHON_BIN" >/dev/null 2>&1 || die "no python on PATH"
 # exactly the shared name this removes, and why `compose.yaml` no longer carries
 # a `name:` at all.
 
-# First 8 hex of SHA-256, with the same fallback ladder db.sh uses, because this
-# must not need a tool a fresh laptop might not have.
+# First 8 hex of SHA-256 — `scripts/db.sh`'s `db_path_hash`, the one digest a
+# checkout's names are derived with, never a copy of its fallback ladder.
+# SOURCED IN A SUBSHELL, and that is load-bearing: sourcing db.sh exports
+# DATABASE_NAME (and POSTGRES_USER), and an exported DATABASE_NAME outranks
+# deploy/.env's in every `docker compose` this script runs — so the source
+# never reaches this shell, and the name is pinned inside it so db.sh derives
+# nothing it is not asked for.
 path_hash() {
-    local input="$1" digest=""
-    if command -v shasum >/dev/null 2>&1; then
-        digest="$(printf '%s' "$input" | shasum -a 256 | awk '{print $1}')"
-    elif command -v sha256sum >/dev/null 2>&1; then
-        digest="$(printf '%s' "$input" | sha256sum | awk '{print $1}')"
-    elif command -v openssl >/dev/null 2>&1; then
-        digest="$(printf '%s' "$input" | openssl dgst -sha256 | awk '{print $NF}')"
-    else
-        digest="$(printf '%08x' "$(printf '%s' "$input" | cksum | awk '{print $1}')")"
-    fi
-    printf '%.8s' "$digest"
+    (
+        DATABASE_NAME=provision-path-hash
+        DB_PIN_NOTE_OFF=1
+        # shellcheck source=scripts/db.sh
+        . "$(dirname "$HERE")/scripts/db.sh" >/dev/null || exit 2
+        db_path_hash "$1" 8
+    )
 }
 
 # The checkout's own top level. A linked worktree reports ITSELF, not the
@@ -193,6 +201,18 @@ resolved_project_name() {
     fi
     derived_project_name
 }
+
+# The stack network's subnet, the one peer range uvicorn believes X-Forwarded-For
+# from; per env file so a second stack gets its own, outside Docker's pools.
+edge_subnet() {
+    local h
+    h="$(path_hash "$1")" || exit 2
+    printf '10.213.%d.0/24' "$((16#${h:0:2}))"
+}
+
+# The database class, its default written once: infra creates it, env-file budgets it.
+rds_class() { printf '%s' "${DJB_RDS_CLASS:-db.t4g.micro}"; }
+pool_workers() { "$PYTHON_BIN" "$HERE/pool_budget.py" workers "$1" || exit 2; }
 
 # What the images are tagged. Not `latest`: compose tags a `build:` service
 # `<project>-web:latest` when no `image:` is given, which made `compose.yaml`'s
@@ -301,11 +321,7 @@ IMAGE_REGISTRY=""
 require_image_registry() {
     IMAGE_REGISTRY="${DJB_IMAGE_REGISTRY:-}"
     if [ -z "$IMAGE_REGISTRY" ] && [ -f "$HERE/.env" ]; then
-        # `sed -n '1p'`, never `head -n1`: an early-exit reader closes the pipe
-        # and orphans the producer under this file's `set -o pipefail` once the
-        # producer's output passes the kernel's 64 KiB pipe buffer — the value
-        # is right and the status is 141. An EOF reader closes nothing.
-        IMAGE_REGISTRY="$(sed -n "s/^DJB_IMAGE_REGISTRY='\{0,1\}\([^']*\)'\{0,1\}$/\1/p" "$HERE/.env" | sed -n '1p')"
+        IMAGE_REGISTRY="$(env_file_get DJB_IMAGE_REGISTRY)"
     fi
     [ -n "$IMAGE_REGISTRY" ] || die "DJB_IMAGE_REGISTRY is empty.
    It is the repository prefix every image name is composed from — for ECR
@@ -314,9 +330,10 @@ require_image_registry() {
    and succeeds. Export it, or fill the slot deploy/.env carries."
 }
 
-# The two services that have an image, named once. A third one added below
-# without a name here would compose a repository nothing pushes to.
-IMAGE_SERVICES="web worker"
+# The services that have an image, named once: CI's build and push loops,
+# `release.sh` and `stage.sh` read this list (`image-services`) and type none.
+# One added without a name here would compose a repository nothing pushes to.
+IMAGE_SERVICES="web worker frontend"
 
 require_image_service() {
     local want="${1:-}"
@@ -373,7 +390,14 @@ image_digest() {
     ref="$(image_ref "$service" "$tag")" || exit 2
     command -v docker >/dev/null 2>&1 || die "no 'docker' on PATH; the registry cannot be asked what $ref is"
     out="$(docker buildx imagetools inspect --format '{{json .Manifest.Digest}}' "$ref" 2>&1)" || {
-        echo "!! provision: the registry has no $ref (or could not be reached)." >&2
+        case "$out" in
+        *"401 Unauthorized"*|*Unauthorized*|*unauthorized*)
+            local host="${ref%%/*}" region="${AWS_REGION:-<region>}"
+            case "$host" in *.dkr.ecr.*.amazonaws.com) region="${host#*.dkr.ecr.}"; region="${region%%.*}" ;; esac
+            echo "!! provision: the daemon is not logged in to $host: aws ecr get-login-password --region $region | docker login --username AWS --password-stdin $host" >&2
+            ;;
+        *) echo "!! provision: the registry has no $ref (or could not be reached)." >&2 ;;
+        esac
         printf '   %s\n' "$out" >&2
         exit 2
     }
@@ -439,6 +463,126 @@ deferred_sentinel() {
 }
 
 # =============================================================================
+# surfaces — the host map, derived from the address list, ONCE
+# =============================================================================
+# `SURFACE_ADDRESSES` is the operator's one list of every name this deployment
+# answers at, comma-separated, each entry `host` or `key=host`. Two readers need
+# it and neither can read it as typed: Caddy wants bare names for its one site
+# block, and the app wants `SURFACE_HOSTS`, the `key=host` map
+# `config/settings/base.py` parses (that parse is the only one — nothing here
+# checks a key's or a host's shape a second way). Compose interpolation cannot
+# split a list, so the split happens here, and the two derived lines are written
+# into the env file beside the list:
+#
+#   SURFACE_HOSTS           staff=<SITE_ADDRESS>,<key>=<host>…   sourced by the
+#                           app's entrypoint with every other app setting
+#   SURFACE_SITE_ADDRESSES  <SITE_ADDRESS>, <host>…               the site block's names
+#
+# THE KEYS. `SITE_ADDRESS` is `staff` and joins the list whether or not the list
+# repeats it. A keyed entry names its own surface — a product whose second face
+# is `portal` writes `portal=portal.example.com`. ONE unkeyed entry beside the
+# staff name is `customer`, the surface the template's worked example declares.
+# An empty list writes both lines empty, and `deploy/compose.yaml` renders the
+# one-name deployment it always was.
+#
+# REFUSED, exit 2 and the file untouched: a second unkeyed entry (which surface
+# would it be?), `staff=` naming a host that is not `SITE_ADDRESS`, one key or
+# one host named twice, and a `{tenant}` host — a name per tenant needs a
+# wildcard certificate, and this edge issues one certificate per listed name.
+UNKEYED_SURFACE="customer"
+derive_surfaces() {
+    local file="${1:-}"
+    [ -n "$file" ] || usage
+    [ -f "$file" ] || die "surfaces: no such env file: $file"
+    DJB_UNKEYED_SURFACE="$UNKEYED_SURFACE" "$PYTHON_BIN" - "$HERE" "$file" <<'PYTHON'
+# A box's system python may predate `str | None` at runtime; the generator
+# below carries the same line for the same reason.
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from envfile import Refused, line, read_env_file  # noqa: E402 — deploy/envfile.py, by path
+
+path = Path(sys.argv[2])
+unkeyed_surface = os.environ["DJB_UNKEYED_SURFACE"]
+lines = path.read_text(encoding="utf-8").splitlines()
+values = read_env_file(path)
+
+
+def refuse(why: str) -> None:
+    print(f"!! provision: surfaces: {why} Nothing was written to {path}.", file=sys.stderr)
+    raise SystemExit(2)
+
+
+addresses = values.get("SURFACE_ADDRESSES")
+if addresses is None:
+    refuse(
+        "the file has no SURFACE_ADDRESSES line. The staging manifest ships it; "
+        "regenerate with env-file, or add `SURFACE_ADDRESSES=` for one name."
+    )
+site = values.get("SITE_ADDRESS") or ""
+bound: dict[str, str] = {}
+unkeyed: list[str] = []
+for entry in (part.strip() for part in addresses.split(",")):
+    if not entry:
+        continue
+    key, keyed, host = entry.partition("=")
+    key, host = (key.strip(), host.strip()) if keyed else ("", entry)
+    if "{tenant}" in host:
+        refuse(
+            f"{host!r} names a host per tenant, which needs a wildcard certificate; "
+            "this edge issues one certificate per listed name."
+        )
+    if not key and host == site:
+        key = "staff"
+    if not key:
+        unkeyed.append(host)
+        continue
+    if key in bound:
+        refuse(f"SURFACE_ADDRESSES names the surface {key!r} twice.")
+    bound[key] = host
+if not site and (bound or unkeyed):
+    refuse("SURFACE_ADDRESSES is set and SITE_ADDRESS, the staff surface's name, is not.")
+if bound.get("staff", site) != site:
+    refuse(
+        f"staff={bound['staff']} is not SITE_ADDRESS ({site}); the staff surface IS "
+        "SITE_ADDRESS, so name it once, there."
+    )
+if len(unkeyed) > 1:
+    refuse(
+        f"{', '.join(unkeyed)} carry no key and only one unkeyed name is "
+        f"{unkeyed_surface!r}; write the others `key=host`."
+    )
+for host in unkeyed:
+    if unkeyed_surface in bound:
+        refuse(f"SURFACE_ADDRESSES names the surface {unkeyed_surface!r} twice.")
+    bound[unkeyed_surface] = host
+if bound or unkeyed:
+    bound = {"staff": site, **{key: host for key, host in bound.items() if key != "staff"}}
+hosts = list(bound.values())
+if len(set(hosts)) != len(hosts):
+    refuse(f"SURFACE_ADDRESSES binds one host to two surfaces ({', '.join(hosts)}).")
+
+derived = {
+    "SURFACE_HOSTS": ",".join(f"{key}={host}" for key, host in bound.items()),
+    "SURFACE_SITE_ADDRESSES": ", ".join(hosts),
+}
+kept = [raw for raw in lines if raw.partition("=")[0] not in derived]
+at = next(i for i, raw in enumerate(kept) if raw.startswith("SURFACE_ADDRESSES=")) + 1
+try:
+    kept[at:at] = [line(name, text) for name, text in derived.items()]
+except Refused as error:
+    refuse(str(error))
+path.write_text("\n".join(kept) + "\n", encoding="utf-8")
+for name, text in derived.items():
+    print(f"provision: surfaces: {name}='{text}'")
+PYTHON
+}
+
+# =============================================================================
 # env-file — the generator
 # =============================================================================
 # Takes `env.<env>.example` as the manifest of NAMES (plus, for prod, its delta
@@ -461,7 +605,7 @@ cmd_env_file() {
     # operator generates to a clean path and the refusal never fires.
     #
     # `--adopt <file>` is that path: point it at the environment's CURRENT env
-    # (the one `secrets-fetch` just wrote from the vault) and the four ADOPTED
+    # (the one `secrets-fetch` just wrote from the vault) and the ADOPTED
     # names are carried across instead of re-minted. Everything else is
     # regenerated exactly as before, and the run prints what it kept.
     local force="" adopt=""
@@ -480,30 +624,57 @@ cmd_env_file() {
     if [ -e "$out" ] && [ "$force" != "--force" ]; then
         die "$out already exists. Overwriting an environment's secrets is how a running deployment loses its Fernet key and every credential it protected.
    For an environment that is ALREADY UP, do not regenerate: 'provision.sh secrets-fetch \"\$DJB_DEPLOY_NAMESPACE/<env>/\" $out' fetches what it is running on.
-   If you must regenerate for an adopted environment, pass --adopt <its current env file> so the RDS master password and the three other
+   If you must regenerate for an adopted environment, pass --adopt <its current env file> so the RDS master password and the other
    already-known values are carried rather than re-minted, and --force if you also mean to overwrite this path."
     fi
+
+    # The class the pool is budgeted against (the `db` service on a laptop).
+    local db_class workers subnet
+    if [ "$environment" = "laptop" ]; then db_class=compose; else db_class="$(rds_class)"; fi
+    workers="$(pool_workers "$db_class")" || exit 2
+    subnet="$(edge_subnet "$(cd "$(dirname "$out")" 2>/dev/null && pwd)/$(basename "$out")")" || exit 2
 
     # umask first, so the file is never briefly world-readable between creat()
     # and chmod. A race nobody would ever see and everybody would inherit.
     ( umask 077
+      DJB_DERIVED_DB_CLASS="$db_class" \
+      DJB_DERIVED_WORKERS="$workers" \
+      DJB_DERIVED_SUBNET="$subnet" \
       CADDY_IMAGE="$(caddy_image)" \
       DJB_PROJECT_NAME="$(derived_project_name)" \
       DJB_IMAGE_TAG="$(image_tag)" \
       DJB_IMAGE_REGISTRY_SLOT="$( [ "$environment" = "laptop" ] && printf 'local' || printf '%s' "${DJB_IMAGE_REGISTRY:-}" )" \
+      DJB_NAMESPACE_SLOT="$( [ "$environment" = "laptop" ] && printf 'laptop' || printf '%s' "${DJB_DEPLOY_NAMESPACE:-}" )" \
       DJB_DEFERRED_SENTINEL="$(deferred_sentinel)" \
       DJB_ADOPT_FROM="$adopt" \
+      DJB_DOMAIN_SLOT="${DJB_DOMAIN:-}" \
       "$PYTHON_BIN" - "$HERE" "$out" "$environment" <<'PYTHON'
 from __future__ import annotations
 
 import base64
 import os
+import re
 import secrets
 import subprocess
 import sys
 from pathlib import Path
 
 here, out, environment = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+sys.path.insert(0, str(here))
+from envfile import Refused, entries, read_env_file  # noqa: E402 — deploy/envfile.py, by path
+from envfile import line as emit  # noqa: E402
+
+
+def _refused(kind, error, trace):  # type: ignore[no-untyped-def]
+    """A value deploy/envfile.py's `line` refuses stops the generator, naming the
+    variable and nothing else — never a traceback, never the value."""
+    if issubclass(kind, Refused):
+        print(f"!! provision: {error}", file=sys.stderr)
+    else:
+        sys.__excepthook__(kind, error, trace)
+
+
+sys.excepthook = _refused
 
 # Derived by the shell above, where git lives. Required, not defaulted: a
 # generated env file with no project name is one that silently shares a stack.
@@ -515,6 +686,9 @@ image_tag = os.environ["DJB_IMAGE_TAG"]
 # exported nothing, which is a deliberate refusal at `up` rather than a guess
 # here. `deploy/compose.yaml`'s `${DJB_IMAGE_REGISTRY:?…}` is where it lands.
 image_registry = os.environ["DJB_IMAGE_REGISTRY_SLOT"]
+# The laptop's namespace is honest (`laptop`: no account to be wrong about);
+# elsewhere it is the operator's export, written when known and never guessed.
+namespace = os.environ["DJB_NAMESPACE_SLOT"]
 # Read out of deploy/entrypoint.sh by the shell above. See DEFERRED_SENTINEL.
 deferred_sentinel = os.environ["DJB_DEFERRED_SENTINEL"]
 
@@ -578,16 +752,6 @@ LAPTOP = {
     # this slot is empty. See deploy/observability/alerts/prober.sh's header.
     "PROBE_INSECURE": "1",
     "PROBE_CONNECT_TO": "localhost:443:caddy:443",
-    # --- the laptop's namespace ---------------------------------------------
-    # THE ONE ENVIRONMENT WHERE A VALUE IS HONEST RATHER THAN A GUESS. A laptop
-    # has no AWS account, no bucket, no role and no secret prefix; the only
-    # consumer that reaches it here is `apply.py`, which names the alert bundle
-    # in the laptop's own ClickStack. Filling it is therefore not a fallback to
-    # anybody's real namespace — it is the laptop's own, and it is `laptop` so
-    # that a bundle created under it says out loud which environment made it.
-    # `staging` and `prod` inherit the EMPTY staging slot and refuse, which is
-    # the whole point.
-    "DJB_DEPLOY_NAMESPACE": "laptop",
 }
 
 # --- the generated population ------------------------------------------------
@@ -657,7 +821,7 @@ GENERATED = {
 # environment has no such file, so nothing changes for a first provision — the
 # preservation cannot fire where there is nothing to preserve.
 #
-# WHY THESE FOUR AND NOT ALL SEVEN. The test is not "is it a secret", it is
+# WHY THESE AND NOT ALL SEVEN SECRETS. The test is not "is it a secret", it is
 # "does something OUTSIDE this file already know it":
 #
 #   POSTGRES_PASSWORD           RDS holds it. Nothing re-applies it.
@@ -674,12 +838,24 @@ GENERATED = {
 #
 # `env-file` MAKES NO AWS CALLS and this does not change that: the truth is
 # read from the file on disk, never from the vault.
+#   FORWARDED_ALLOW_IPS         the compose network was created on it; a new
+#                               subnet is a network compose must recreate.
 ADOPTED = (
     "POSTGRES_PASSWORD",
     "CONNECTIONS_ENCRYPTION_KEY",
     "ZITADEL_MASTERKEY",
     "ZITADEL_ADMIN_PASSWORD",
+    "FORWARDED_ALLOW_IPS",
 )
+
+# --- DERIVED: facts the shell computed from this environment ------------------
+# The pool budget's class and the worker count it holds (deploy/pool_budget.py),
+# and the compose network's subnet uvicorn trusts the forwarded header from.
+DERIVED = {
+    "DJB_RDS_CLASS": os.environ["DJB_DERIVED_DB_CLASS"],
+    "DJB_WORKER_PROCESSES": os.environ["DJB_DERIVED_WORKERS"],
+    "FORWARDED_ALLOW_IPS": os.environ["DJB_DERIVED_SUBNET"],
+}
 
 # Where the already-true values are read from: `--adopt <file>` when the
 # operator named one, otherwise the output path itself when it already exists
@@ -687,12 +863,7 @@ ADOPTED = (
 # adopted and a first provision is untouched.
 adopt_from = os.environ.get("DJB_ADOPT_FROM", "")
 source = Path(adopt_from) if adopt_from else out
-existing: dict[str, str] = {}
-if source.exists():
-    for line in source.read_text(encoding="utf-8").splitlines():
-        if "=" in line and not line.lstrip().startswith("#"):
-            key, _, raw = line.partition("=")
-            existing[key.strip()] = raw.strip().strip("'")
+existing: dict[str, str] = read_env_file(source) if source.exists() else {}
 
 # --- the one slot that ships UNFILLED, on purpose ----------------------------
 # A GENERATED value here is not a secret, it is a WRONG ANSWER. ClickStack's
@@ -717,16 +888,8 @@ DEFERRED_SENTINEL = {
 # them, each with the thing that fills it. Anything empty and not named here
 # stops the generator.
 DEFERRED = {
-    # THE ACCOUNT-LEVEL NAMESPACE. Not generated and not defaultable: it is a
-    # fact about an AWS account, and the ONE value this generator could produce
-    # (a guess) is the one value that must never reach a script — every
-    # coordinate composed from it addresses real resources, and a wrong one
-    # succeeds. So the slot ships EMPTY, this environment's vault blob carries
-    # it, and every consumer refuses rather than falls back
-    # (`require_namespace` above, `deploy/ship.sh`, `deploy/teardown.sh`,
-    # `deploy/observability/alerts/apply.py`). The laptop overrides it below,
-    # where there is no account to be wrong about.
-    "DJB_DEPLOY_NAMESPACE": "the operator, out of this environment's vault blob — there is no default (deploy/env.staging.example says why)",
+    "ZITADEL_ORG_NAME": "nothing: empty is the answer — settings and compose derive it from PRODUCT_NAME",
+    "ZITADEL_PROJECT_NAME": "nothing: empty is the answer — settings and compose derive it from PRODUCT_NAME",
     "ZITADEL_PAT": "the runbook's identity step, out of the zitadel_bootstrap volume",
     "ZITADEL_CLIENT_ID": "manage.py zitadel_seed, printed once",
     # detect-secrets reads `<secret-shaped name>: <string>` as an assignment. On the six
@@ -785,40 +948,57 @@ DEFERRED = {
     # the full release wall and the right default for a product. Empty is the
     # ANSWER rather than a slot waiting for one, so it is DEFERRED with "nothing"
     # as its owner — AWS_S3_ENDPOINT_URL's shape exactly.
+    "SURFACE_ADDRESSES": "nothing: empty is the one staff surface at SITE_ADDRESS — `provision.sh surfaces` derives the host map from it",
     "DJB_ACCEPTED_FAKES": "nothing: empty is the whole wall — a key here is a fake this deployment knowingly stands on, printed on every release",
 }
 
 
-def parse(path: Path) -> list[tuple[str, str] | str]:
-    """Lines, keeping comments and blanks so the generated file reads like the
-    manifest it came from. A file of bare KEY=VALUE with every reason stripped
-    out is the file nobody can safely edit at 3am."""
-    parsed: list[tuple[str, str] | str] = []
-    for raw in path.read_text(encoding="utf-8").splitlines():
-        line = raw.rstrip("\n")
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            parsed.append(line)
-            continue
-        name, sep, value = line.partition("=")
-        if sep:
-            parsed.append((name.strip(), value.strip()))
-        else:
-            parsed.append(line)
-    return parsed
-
-
-manifest = parse(here / "env.staging.example")
+# The manifest's lines in order, comments and blanks kept, so the generated
+# file reads like the manifest it came from. A file of bare KEY=VALUE with every
+# reason stripped out is the file nobody can safely edit at 3am.
+manifest = entries(here / "env.staging.example")
 
 overrides: dict[str, str] = {}
 if environment == "prod":
-    for item in parse(here / "env.prod.example"):
+    for item in entries(here / "env.prod.example"):
         if isinstance(item, tuple):
             overrides[item[0]] = item[1]
 elif environment == "laptop":
     overrides = dict(LAPTOP)
 elif environment != "staging":
     raise SystemExit(f"!! provision: unknown environment {environment!r}: laptop, staging or prod")
+
+# --- the names this environment answers on ----------------------------------
+# deploy/dns.sh's grammar, from its variable: `<env>.$DJB_DOMAIN`, `auth.` and
+# `o11y.` before it. The manifests spell that host with the reserved `.invalid`
+# TLD as its printed shape; every occurrence becomes the real host here. Unset is
+# a refusal, not dns.sh's unresolvable default: no zone-id guard stands behind an
+# env file, and a `.invalid` host in one is a box that never gets a certificate.
+placeholders: tuple[str, ...] = ()
+real_host = ""
+if environment != "laptop":
+    domain = os.environ["DJB_DOMAIN_SLOT"]
+    labels = domain.split(".")
+    if (
+        len(labels) < 2
+        or labels[-1] == "invalid"
+        or not all(re.fullmatch(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?", x) for x in labels)
+    ):
+        raise SystemExit(
+            f"!! provision: DJB_DOMAIN is {domain!r}; {environment} needs the real domain "
+            "deploy/dns.sh names its records under (unset there it is the unresolvable "
+            "example.invalid). Export DJB_DOMAIN=<your domain>: this environment answers "
+            f"on {environment}.<domain>, auth.{environment}.<domain>, o11y.{environment}.<domain>."
+        )
+    real_host = f"{environment}.{domain}"
+    placeholders = ("staging.example.invalid", f"{environment}.example.invalid")
+
+
+def named(text: str) -> str:
+    for placeholder in placeholders:
+        text = text.replace(placeholder, real_host)
+    return text
+
 
 # --- the o11y wall's bcrypt hash --------------------------------------------
 # Generated here so the plaintext exists in exactly one place for exactly as
@@ -841,30 +1021,9 @@ except Exception as error:
     ) from error
 overrides["O11Y_PASSWORD_HASH"] = hashed
 
-def emit(name: str, value: str) -> str:
-    """`NAME='value'` — SINGLE-quoted, and that is load-bearing twice over.
-
-    `docker compose` runs its own `${...}` interpolation over an env file's
-    values, and a bcrypt hash is `$2a$14$...`: unquoted, compose reads `$14` as
-    a variable, warns about it, and hands Caddy a truncated hash that rejects
-    every password forever. Single quotes make compose take the value
-    literally, and they make `set -a; . file` in deploy/entrypoint.sh take it
-    literally too — one encoding both readers agree on. Verified against
-    Compose v2.33 rather than assumed.
-
-    A value containing a single quote is refused rather than escaped: no dotenv
-    parser agrees on how `'\\''` should behave, and a credential that survives
-    one reader and not the other is worse than one that stops the generator.
-    """
-    if "'" in value:
-        raise SystemExit(
-            f"!! provision: {name} contains a single quote. deploy/.env is read by "
-            "docker compose's dotenv parser and by a shell, and they do not agree "
-            "on how to escape one. Generate or choose a value without it."
-        )
-    if "\n" in value:
-        raise SystemExit(f"!! provision: {name} contains a newline; an env file cannot carry one")
-    return f"{name}='{value}'"
+def unwritten(name: str) -> str:
+    """The comment that stands where an unknown value would be — an empty line would erase the export."""
+    return f"# {name} is not written: it was not exported at generation, and empty here erases it."
 
 
 lines: list[str] = [
@@ -873,7 +1032,7 @@ lines: list[str] = [
     "# no human typed one, and no value in it has ever been in a report.",
     "#",
     "# Every value is single-quoted so that docker compose's interpolation and a",
-    "# shell's `.` read the same bytes — see `emit` in deploy/provision.sh.",
+    "# shell's `.` read the same bytes — see `line` in deploy/envfile.py.",
     "#",
     "# Mode 600, and it belongs on exactly one box. deploy/teardown.sh removes it.",
     "",
@@ -901,15 +1060,30 @@ lines: list[str] = [
     "# else's image and succeeds. `provision.sh up` refuses on an empty slot and",
     "# so does compose's own `${DJB_IMAGE_REGISTRY:?…}`.",
     "#     ./deploy/provision.sh image-ref web",
-    emit("DJB_IMAGE_REGISTRY", image_registry),
+    emit("DJB_IMAGE_REGISTRY", image_registry)
+    if image_registry
+    else unwritten("DJB_IMAGE_REGISTRY"),
+    "",
+    "# --- WHOSE AWS COORDINATES THESE ARE -----------------------------------",
+    "# Every bucket, role, secret prefix and tag is composed from it; there is no",
+    "# default (deploy/env.staging.example says why).",
+    emit("DJB_DEPLOY_NAMESPACE", namespace) if namespace else unwritten("DJB_DEPLOY_NAMESPACE"),
     "",
 ]
+
+# THE PRODUCT'S NAME, written once — in the root `.env.example` (ADR
+# platform-1) — and copied from there when the manifest's slot is empty, which is
+# how it ships. Not DEFERRED: with neither set the generator refuses, exactly as
+# `deploy/compose.yaml`'s `${PRODUCT_NAME:?…}` does, so no deployment is named
+# after the template by default.
+root_example = here.parent / ".env.example"
+product_name = read_env_file(root_example).get("PRODUCT_NAME", "") if root_example.exists() else ""
 
 missing: list[str] = []
 adopted_kept: list[str] = []
 for item in manifest:
     if isinstance(item, str):
-        lines.append(item)
+        lines.append(named(item))
         continue
     name, value = item
     if name in overrides:
@@ -918,10 +1092,15 @@ for item in manifest:
         # Already true out there. Kept, and said out loud below.
         value = existing[name]
         adopted_kept.append(name)
+    elif name in DERIVED:
+        value = DERIVED[name]
     elif name in GENERATED:
         value = GENERATED[name]()
     elif name in DEFERRED_SENTINEL:
         value = deferred_sentinel
+    elif name == "PRODUCT_NAME" and not value:
+        value = product_name
+    value = named(value)
     if (
         value == ""
         and name not in DEFERRED
@@ -966,6 +1145,10 @@ print("")
 PYTHON
     )
 
+    # The host map, derived from the address list the manifest carried — the
+    # one derivation, the same function `provision.sh surfaces` runs.
+    derive_surfaces "$out"
+
     # The belt, over what was just generated. Two things at once: it proves the
     # generator produced nothing published, and it proves
     # the belt is wired before anybody depends on it at boot.
@@ -995,52 +1178,43 @@ cmd_secrets_put() {
     # table and into this shell's history file.
     local id="${prefix}env"
     local payload
-    payload="$("$PYTHON_BIN" - "$file" <<'PYTHON'
+    # THE VAULT HOLDS THE VALUE, NOT THE FILE'S ENCODING. Every file this reads
+    # was written single-quoted (deploy/envfile.py's `line`), and stored with
+    # the quotes still on, `secrets-fetch` would read back a value carrying a
+    # literal quote and refuse it — so the one reader strips its one pair here.
+    payload="$("$PYTHON_BIN" - "$HERE" "$file" <<'PYTHON'
 import json, sys
-from pathlib import Path
 
-values = {}
-for raw in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
-    line = raw.strip()
-    if not line or line.startswith("#"):
-        continue
-    if line.startswith("export "):
-        line = line[len("export "):].strip()
-    name, sep, value = line.partition("=")
-    if not sep:
-        continue
-    value = value.strip()
-    # THE VAULT HOLDS THE VALUE, NOT THE FILE'S ENCODING. Every file this
-    # reads was written by `env-file`'s `emit` or by `secrets-fetch`, and both
-    # SINGLE-QUOTE every value so that docker compose's interpolation and a
-    # shell's `.` read the same bytes. Stored with those quotes still on, the
-    # round trip breaks in a way neither end can see alone: `secrets-fetch`
-    # reads back a value containing a literal quote and refuses to write "an
-    # env file whose two readers would disagree about it" — which is exactly
-    # right, and which stops the runbook at its secrets step on a box —
-    # `secrets-put` and `secrets-fetch` have to have met for the pair to work.
-    #
-    # Exactly ONE matching pair, and only a pair `emit` could have added:
-    # stripping greedily would quietly change a value that genuinely begins
-    # and ends with a quote character.
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-        value = value[1:-1]
-    values[name.strip()] = value
+sys.path.insert(0, sys.argv[1])
+from envfile import read_env_file  # noqa: E402 — deploy/envfile.py, by path
+
+values = read_env_file(sys.argv[2])
 print(json.dumps(values, separators=(",", ":"), sort_keys=True))
 PYTHON
 )"
 
-    if aws secretsmanager describe-secret --secret-id "$id" >/dev/null 2>&1; then
-        say "updating $id"
-        aws secretsmanager put-secret-value \
+    # PUT FIRST, CREATE ONLY ON ResourceNotFoundException. The box role holds
+    # GetSecretValue + PutSecretValue on this one ARN and nothing else
+    # (deploy/iam/product-box-policy.json), so a `describe-secret` probe is
+    # denied there and must never decide the branch; any other put failure dies
+    # with its own text rather than falling through to a create.
+    local err
+    say "updating $id"
+    if err="$(aws secretsmanager put-secret-value \
             --secret-id "$id" \
-            --secret-string file:///dev/stdin <<<"$payload" >/dev/null
+            --secret-string file:///dev/stdin <<<"$payload" 2>&1 >/dev/null)"; then
+        :
     else
-        say "creating $id"
-        aws secretsmanager create-secret \
-            --name "$id" \
-            --description "Pilecap deployment environment (deploy/provision.sh)" \
-            --secret-string file:///dev/stdin <<<"$payload" >/dev/null
+        case "$err" in
+        *ResourceNotFoundException*)
+            say "creating $id"
+            aws secretsmanager create-secret \
+                --name "$id" \
+                --description "deployment environment (deploy/provision.sh)" \
+                --secret-string file:///dev/stdin <<<"$payload" >/dev/null
+            ;;
+        *) die "put-secret-value $id failed: $err" ;;
+        esac
     fi
     say "stored: $id"
 }
@@ -1073,20 +1247,20 @@ cmd_secrets_fetch() {
 import json
 import sys
 
+sys.path.insert(0, sys.argv[1])
+from envfile import Refused, line  # noqa: E402 — deploy/envfile.py, by path
+
 values = json.load(sys.stdin)
 print("# FETCHED by deploy/provision.sh secrets-fetch. Do not edit by hand.")
 print("# Single-quoted for the same reason the generator quotes: compose")
 print("# interpolates an env file, and a bcrypt hash is full of dollar signs.")
 for key in sorted(values):
-    value = str(values[key])
-    if "'" in value or "\n" in value:
-        raise SystemExit(
-            f"!! provision: {key} carries a quote or a newline; refusing to write "
-            "an env file whose two readers would disagree about it"
-        )
-    print(f"{key}='{value}'")
+    try:
+        print(line(key, str(values[key])))
+    except Refused as error:
+        raise SystemExit(f"!! provision: {error}") from error
 PYTHON
-) > "$out" )
+) "$HERE" > "$out" )
     chmod 600 "$out"
     say "wrote $out (mode 600)"
 
@@ -1199,16 +1373,14 @@ PYTHON
 # The name written into deploy/.env, if there is one. teardown.sh reads the same
 # line the same way.
 project_in_env_file() {
-    [ -f "$HERE/.env" ] || return 0
-    sed -n "s/^COMPOSE_PROJECT_NAME='\{0,1\}\([^']*\)'\{0,1\}$/\1/p" "$HERE/.env" | sed -n '1p'
+    env_file_get COMPOSE_PROJECT_NAME
 }
 
 # The image tag the env file pins, read the same way. `deploy/compose.yaml`
 # interpolates `djb-web:${DJB_IMAGE_TAG}` out of THIS FILE, so this line — not
 # the tag you exported to build with — decides which image actually runs.
 image_tag_in_env_file() {
-    [ -f "$HERE/.env" ] || return 0
-    sed -n "s/^DJB_IMAGE_TAG='\{0,1\}\([^']*\)'\{0,1\}$/\1/p" "$HERE/.env" | sed -n '1p'
+    env_file_get DJB_IMAGE_TAG
 }
 
 # --- THE TAG THE TREE SAYS, AND THE TAG THE FILE PINS -------------------------
@@ -1275,22 +1447,7 @@ reconcile_image_tag() {
     fi
 
     say "adopting this tree's image tag $tree_tag (env file pinned ${file_tag:-<none>})"
-    if [ -n "$file_tag" ]; then
-        "$PYTHON_BIN" - "$HERE/.env" "$tree_tag" <<'PYTHON'
-import sys
-from pathlib import Path
-
-path, tag = Path(sys.argv[1]), sys.argv[2]
-lines = path.read_text(encoding="utf-8").splitlines()
-out = [
-    f"DJB_IMAGE_TAG='{tag}'" if line.startswith("DJB_IMAGE_TAG=") else line
-    for line in lines
-]
-path.write_text("\n".join(out) + "\n", encoding="utf-8")
-PYTHON
-    else
-        printf "DJB_IMAGE_TAG='%s'\n" "$tree_tag" >> "$HERE/.env"
-    fi
+    env_file_set DJB_IMAGE_TAG "$tree_tag"
     say "wrote DJB_IMAGE_TAG=$tree_tag into $HERE/.env"
 }
 
@@ -1348,22 +1505,7 @@ cmd_up() {
             # file is what every later bare `docker compose` reads, so the name
             # goes in there rather than into one operator's shell.
             say "adopting the running project $live (env file said ${in_file:-<none>}, derivation says $derived)"
-            if [ -n "$in_file" ]; then
-                "$PYTHON_BIN" - "$HERE/.env" "$live" <<'PYTHON'
-import sys
-from pathlib import Path
-
-path, name = Path(sys.argv[1]), sys.argv[2]
-lines = path.read_text(encoding="utf-8").splitlines()
-out = [
-    f"COMPOSE_PROJECT_NAME='{name}'" if line.startswith("COMPOSE_PROJECT_NAME=") else line
-    for line in lines
-]
-path.write_text("\n".join(out) + "\n", encoding="utf-8")
-PYTHON
-            else
-                printf "COMPOSE_PROJECT_NAME='%s'\n" "$live" >> "$HERE/.env"
-            fi
+            env_file_set COMPOSE_PROJECT_NAME "$live"
             say "wrote COMPOSE_PROJECT_NAME=$live into $HERE/.env"
         else
             say "project $live (already running, and the env file agrees)"
@@ -1403,23 +1545,63 @@ PYTHON
     local -a compose_cmd
     compose_cmd=(docker compose --env-file "$HERE/.env" -f "$HERE/compose.yaml" "$@")
 
-    local services others
+    local services others rendered doors
     services="$("${compose_cmd[@]}" config --services)" \
         || die "could not read the service list out of $HERE/compose.yaml. Nothing was started."
     [ -n "$services" ] || die "$HERE/compose.yaml declares no services for these flags. Nothing was started."
-    others="$(printf '%s\n' "$services" | grep -vx -e web -e worker || true)"
+    # The doors (`compose run` only) are read from the rendered file by the one reader.
+    # shellcheck source=scripts/ci_stack.sh
+    . "$DEPLOY_ROOT/scripts/ci_stack.sh" || die "could not source scripts/ci_stack.sh. Nothing was started."
+    rendered="$("${compose_cmd[@]}" config)" \
+        || die "could not render $HERE/compose.yaml. Nothing was started."
+    doors="$(compose_once_members <<<"$rendered" | awk -F '\t' '$1 == "door" { print $2 }')"
+    local -a app_flags=()
+    local app
+    for app in $IMAGE_SERVICES $doors; do app_flags+=(-e "$app"); done
+    others="$(printf '%s\n' "$services" | grep -vx "${app_flags[@]}" || true)"
+    [ -z "$doors" ] || say "not upped — compose run doors: ${doors//$'\n'/, }"
 
     if [ -n "$others" ]; then
         # shellcheck disable=SC2086  # the service list is newline-separated and must split
         "${compose_cmd[@]}" up -d $others
     fi
-    "${compose_cmd[@]}" up -d --no-recreate web worker
-    say "web and worker were NOT recreated here — release.sh act 6 does that, after the migrate"
+    # shellcheck disable=SC2086  # the image services are a space-separated list
+    "${compose_cmd[@]}" up -d --no-recreate $IMAGE_SERVICES
+    say "${IMAGE_SERVICES// /, } were NOT recreated here — release.sh act 6 does that, after the migrate"
 }
 
 # =============================================================================
 # infra — the only subcommand that spends money
 # =============================================================================
+
+# The group's id, or `None` when no group of that name is in the VPC.
+find_security_group() {
+    aws ec2 describe-security-groups --region "$1" \
+        --filters "Name=vpc-id,Values=$2" "Name=group-name,Values=$3" \
+        --query 'SecurityGroups[0].GroupId' --output text
+}
+
+# The one line that sets the ssh rule's address; `infra` and `preflight` both print it.
+OWNER_IP_LINE="export DJB_OWNER_IP=\"\$(curl -s https://checkip.amazonaws.com | tr -d '\\n')\""
+
+# Found when ours, created when free; a name another account holds is refused, never retried.
+ensure_bucket() {
+    local region="$1" bucket="$2" account="$3" err
+    if aws s3api head-bucket --bucket "$bucket" --expected-bucket-owner "$account" >/dev/null 2>&1; then
+        say "found   bucket s3://$bucket"
+        return 0
+    fi
+    if err="$(aws s3api create-bucket --region "$region" --bucket "$bucket" 2>&1 >/dev/null)"; then
+        say "created bucket s3://$bucket"
+        return 0
+    fi
+    case "$err" in
+        *BucketAlreadyOwnedByYou*) say "found   bucket s3://$bucket" ;;
+        *BucketAlreadyExists* | *403* | *Forbidden*)
+            die "s3://$bucket is held by another AWS account. S3 bucket names are global across every customer, which is why the shape is <namespace>-<env>-<account>-media|backups; this one still collides. Choose another DJB_DEPLOY_NAMESPACE. Resources found or created above are left as they are; a re-run finds them." ;;
+        *) die "create-bucket s3://$bucket failed: ${err%%$'\n'*}" ;;
+    esac
+}
 
 cmd_infra() {
     local environment="${1:-}" confirm="${2:-}"
@@ -1436,16 +1618,32 @@ cmd_infra() {
     local region="${AWS_REGION:-us-east-1}"
     local instance_type="${DJB_INSTANCE_TYPE:-t4g.large}"
     local volume_gb="${DJB_VOLUME_GB:-50}"
-    local rds_class="${DJB_RDS_CLASS:-db.t4g.micro}"
+    # The class the env file's worker count was derived from, and no other.
+    local rds_class recorded
+    rds_class="$(rds_class)"
+    recorded="$(env_file_get DJB_RDS_CLASS)"
+    if [ -n "$recorded" ] && [ "$recorded" != "$rds_class" ]; then
+        [ -z "${DJB_RDS_CLASS:-}" ] \
+            || die "DJB_RDS_CLASS=$DJB_RDS_CLASS but $HERE/.env records $recorded, whose worker count it carries. Regenerate the env file under the class you mean (provision.sh env-file), or unset the export."
+        rds_class="$recorded"
+    fi
+    [ "$rds_class" != compose ] || die "$HERE/.env is a laptop env file (DJB_RDS_CLASS=compose, the db service); infra creates RDS. Generate this environment's env file first (provision.sh env-file deploy/.env $environment)."
+    pool_workers "$rds_class" >/dev/null
     local rds_gb="${DJB_RDS_GB:-20}"
     local name="${NAMESPACE}-$environment"
+    local account media backups
+    account="$(aws sts get-caller-identity --query Account --output text)" \
+        || die "cannot read the AWS account id — is the session live? Nothing was created."
+    media="$(bucket_name media "$environment" "$account")"
+    backups="$(bucket_name backups "$environment" "$account")"
 
     cat <<SUMMARY
-provision: about to CREATE billable resources in $region
+provision: about to CREATE billable resources in $region (account $account)
+Each is looked up first and left alone when found.
 
     EC2       1 x $instance_type, gp3 ${volume_gb}GB, Amazon Linux 2023 (arm64)
     RDS       $rds_class, single-AZ, ${rds_gb}GB, automated snapshots ON
-    S3        s3://$name-media  and  s3://$name-backups
+    S3        s3://$media  and  s3://$backups
     SG        80/443 world, 22 owner IP only, everything else closed
     Secrets   ${NAMESPACE}/$environment/env
 
@@ -1455,8 +1653,12 @@ SUMMARY
 
     [ "$confirm" = "--confirm" ] || die "refusing without --confirm. Reading this file must never be one arrow key away from spending money."
 
-    [ -n "${DJB_OWNER_IP:-}" ] || die "DJB_OWNER_IP is unset. The ssh rule needs one address; 0.0.0.0/0 on port 22 is not a fallback."
+    [ -n "${DJB_OWNER_IP:-}" ] || die "DJB_OWNER_IP is unset. The ssh rule needs one address; 0.0.0.0/0 on port 22 is not a fallback. Set it to this machine's address: $OWNER_IP_LINE"
     [ -n "${DJB_KEY_NAME:-}" ] || die "DJB_KEY_NAME is unset — the EC2 key pair to attach. A box nobody can ssh to is a box nobody can deploy."
+    aws ec2 describe-key-pairs --region "$region" --key-names "$DJB_KEY_NAME" \
+        --query 'KeyPairs[0].KeyName' --output text >/dev/null 2>&1 \
+        || die "no EC2 key pair named $DJB_KEY_NAME in $region. Import or create it first; nothing was created."
+    say "found   key pair $DJB_KEY_NAME"
 
     # --- security groups -----------------------------------------------------
     # Two, not one: the box's and the database's, so the RDS rule can name the
@@ -1467,13 +1669,25 @@ SUMMARY
             --query 'Vpcs[0].VpcId' --output text)"
     [ "$vpc" != "None" ] || die "no default VPC in $region; name one with DJB_VPC_ID and re-run (this script does not create a VPC — that is a network design, not a provisioning step)"
 
-    local web_sg db_sg
-    web_sg="$(aws ec2 create-security-group --region "$region" --vpc-id "$vpc" \
-        --group-name "$name-web" --description "$name web box" \
-        --query 'GroupId' --output text)"
-    db_sg="$(aws ec2 create-security-group --region "$region" --vpc-id "$vpc" \
-        --group-name "$name-db" --description "$name database" \
-        --query 'GroupId' --output text)"
+    local web_sg db_sg made_sgs=""
+    web_sg="$(find_security_group "$region" "$vpc" "$name-web")"
+    db_sg="$(find_security_group "$region" "$vpc" "$name-db")"
+    if [ "$web_sg" != "None" ] && [ "$db_sg" != "None" ]; then
+        say "found   security group $name-web ($web_sg)"
+        say "found   security group $name-db ($db_sg)"
+    elif [ "$web_sg" = "None" ] && [ "$db_sg" = "None" ]; then
+        web_sg="$(aws ec2 create-security-group --region "$region" --vpc-id "$vpc" \
+            --group-name "$name-web" --description "$name web box" \
+            --query 'GroupId' --output text)"
+        db_sg="$(aws ec2 create-security-group --region "$region" --vpc-id "$vpc" \
+            --group-name "$name-db" --description "$name database" \
+            --query 'GroupId' --output text)"
+        made_sgs=1
+        say "created security group $name-web ($web_sg)"
+        say "created security group $name-db ($db_sg)"
+    else
+        die "only one of $name-web ($web_sg) and $name-db ($db_sg) exists in $vpc. The pair is made together, with the rules between them; delete the one found (deploy/teardown.sh) and re-run."
+    fi
 
     # 443 to the world, and 80 as well — but not for the reason this comment
     # used to give. It said the HTTP-01 challenge arrives on 80; a real box
@@ -1482,20 +1696,20 @@ SUMMARY
     # picks the challenge, not this file: an issuance method that changes under
     # a renewal should not also need a firewall change nobody remembers. An
     # open port with nothing listening accepts nothing.
-    aws ec2 authorize-security-group-ingress --region "$region" --group-id "$web_sg" \
-        --protocol tcp --port 443 --cidr 0.0.0.0/0 >/dev/null
-    aws ec2 authorize-security-group-ingress --region "$region" --group-id "$web_sg" \
-        --protocol tcp --port 80 --cidr 0.0.0.0/0 >/dev/null
-    aws ec2 authorize-security-group-ingress --region "$region" --group-id "$web_sg" \
-        --protocol tcp --port 22 --cidr "${DJB_OWNER_IP}/32" >/dev/null
+    if [ -n "$made_sgs" ]; then
+        aws ec2 authorize-security-group-ingress --region "$region" --group-id "$web_sg" \
+            --protocol tcp --port 443 --cidr 0.0.0.0/0 >/dev/null
+        aws ec2 authorize-security-group-ingress --region "$region" --group-id "$web_sg" \
+            --protocol tcp --port 80 --cidr 0.0.0.0/0 >/dev/null
+        aws ec2 authorize-security-group-ingress --region "$region" --group-id "$web_sg" \
+            --protocol tcp --port 22 --cidr "${DJB_OWNER_IP}/32" >/dev/null
 
-    # Postgres, from the box's group and from nowhere else. Not from the
-    # owner's IP: a psql session from a laptop is an ssh tunnel through the box,
-    # which is one credential to hold instead of two and one path to audit.
-    aws ec2 authorize-security-group-ingress --region "$region" --group-id "$db_sg" \
-        --protocol tcp --port 5432 --source-group "$web_sg" >/dev/null
-
-    say "security groups: web=$web_sg db=$db_sg"
+        # Postgres, from the box's group and from nowhere else. Not from the
+        # owner's IP: a psql session from a laptop is an ssh tunnel through the box,
+        # which is one credential to hold instead of two and one path to audit.
+        aws ec2 authorize-security-group-ingress --region "$region" --group-id "$db_sg" \
+            --protocol tcp --port 5432 --source-group "$web_sg" >/dev/null
+    fi
 
     # --- RDS -----------------------------------------------------------------
     # Automated backups ON with a 7-day window, because that half IS the backup
@@ -1531,33 +1745,46 @@ SUMMARY
     # (RDS's default, declared here rather than assumed) keeps it tracking them.
     # Hard-coding `18.6` here would be stale the day AWS ships 18.7 — the same
     # staleness class the missing pin was, one level up.
-    say "creating RDS $name-db ($rds_class, ${rds_gb}GB) — this takes several minutes"
-    aws rds create-db-instance --region "$region" \
-        --db-instance-identifier "$name-db" \
-        --db-instance-class "$rds_class" \
-        --engine postgres \
-        --engine-version "${DJB_RDS_ENGINE_VERSION:-18}" \
-        --auto-minor-version-upgrade \
-        --allocated-storage "$rds_gb" \
-        --storage-type gp3 \
-        --no-multi-az \
-        --backup-retention-period 7 \
-        --no-publicly-accessible \
-        --vpc-security-group-ids "$db_sg" \
-        --master-username "${POSTGRES_USER:?POSTGRES_USER must be exported from the env file}" \
-        --master-user-password "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be exported from the env file}" \
-        --db-name "${DATABASE_NAME:?DATABASE_NAME must be exported from the env file: it is the database the application itself uses, and RDS is the only thing that creates it}" \
-        --tags "Key=Environment,Value=$environment" "Key=Project,Value=$NAMESPACE" \
-        >/dev/null
+    local rds_state
+    rds_state="$(aws rds describe-db-instances --region "$region" --db-instance-identifier "$name-db" \
+        --query 'DBInstances[0].DBInstanceStatus' --output text 2>/dev/null)" || rds_state=""
+    case "$rds_state" in
+        "") ;;
+        deleting | failed | incompatible-*) die "RDS $name-db exists and is $rds_state; it cannot be resumed. Nothing more was created." ;;
+        *) say "found   RDS $name-db ($rds_state)" ;;
+    esac
+    if [ -z "$rds_state" ]; then
+        say "creating RDS $name-db ($rds_class, ${rds_gb}GB) — this takes several minutes"
+        aws rds create-db-instance --region "$region" \
+            --db-instance-identifier "$name-db" \
+            --db-instance-class "$rds_class" \
+            --engine postgres \
+            --engine-version "${DJB_RDS_ENGINE_VERSION:-18}" \
+            --auto-minor-version-upgrade \
+            --allocated-storage "$rds_gb" \
+            --storage-type gp3 \
+            --no-multi-az \
+            --backup-retention-period 7 \
+            --no-publicly-accessible \
+            --vpc-security-group-ids "$db_sg" \
+            --master-username "${POSTGRES_USER:?POSTGRES_USER must be exported from the env file}" \
+            --master-user-password "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be exported from the env file}" \
+            --db-name "${DATABASE_NAME:?DATABASE_NAME must be exported from the env file: it is the database the application itself uses, and RDS is the only thing that creates it}" \
+            --tags "Key=Environment,Value=$environment" "Key=Project,Value=$NAMESPACE" \
+            >/dev/null
+        say "created RDS $name-db"
+    fi
 
     # --- S3 ------------------------------------------------------------------
     # Two buckets, both private, both versioned. Public-read on a media bucket
     # makes every key a URL anyone who guesses it can fetch, which is the same
     # as having no tenancy on files at all (.env.example says so; here it is
     # enforced).
+    # Configuration below is re-applied to a found bucket: every put is idempotent,
+    # and a run killed between create and configure resumes into the posture.
     local bucket
-    for bucket in "$name-media" "$name-backups"; do
-        aws s3api create-bucket --region "$region" --bucket "$bucket" >/dev/null
+    for bucket in "$media" "$backups"; do
+        ensure_bucket "$region" "$bucket" "$account"
         aws s3api put-public-access-block --bucket "$bucket" \
             --public-access-block-configuration \
             BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true \
@@ -1567,7 +1794,7 @@ SUMMARY
         aws s3api put-bucket-encryption --bucket "$bucket" \
             --server-side-encryption-configuration \
             '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}' >/dev/null
-        say "bucket: s3://$bucket (private, versioned, encrypted)"
+        say "        s3://$bucket is private, versioned, encrypted"
     done
 
     # --- the archive bucket's retention posture -------------------------------
@@ -1612,7 +1839,6 @@ SUMMARY
     #
     # AbortIncompleteMultipartUpload rides along: a failed export upload leaves
     # parts that are billed and are invisible in every listing.
-    local media="$name-media"
     say "archive retention: noncurrent versions expire ${DJB_ARCHIVE_GRACE_DAYS} day(s) after the platform's purge"
     say "  the platform purges an archive at ${DJB_EXPORT_RETENTION_DAYS} days (apps/exports, house rule 31)"
     say "  total exposure: ${DJB_ARCHIVE_TOTAL_EXPOSURE_DAYS} days"
@@ -1644,19 +1870,420 @@ LIFECYCLE
         --names /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64 \
         --query 'Parameters[0].Value' --output text)"
 
-    say "launching $instance_type from $ami"
-    aws ec2 run-instances --region "$region" \
-        --image-id "$ami" \
-        --instance-type "$instance_type" \
-        --key-name "$DJB_KEY_NAME" \
-        --security-group-ids "$web_sg" \
-        --block-device-mappings "DeviceName=/dev/xvda,Ebs={VolumeSize=$volume_gb,VolumeType=gp3,Encrypted=true}" \
-        --metadata-options "HttpTokens=required,HttpEndpoint=enabled" \
-        --iam-instance-profile "Name=${DJB_INSTANCE_PROFILE:?DJB_INSTANCE_PROFILE is unset — the role that reads Secrets Manager and writes the backup bucket. A box with long-lived keys in a file instead is the posture this design exists to avoid.}" \
-        --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$name},{Key=Environment,Value=$environment},{Key=Project,Value=$NAMESPACE}]" \
-        >/dev/null
+    local instance
+    instance="$(aws ec2 describe-instances --region "$region" \
+        --filters "Name=tag:Name,Values=$name" "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+        --query 'Reservations[].Instances[].InstanceId' --output text)"
+    if [ -n "$instance" ] && [ "$instance" != "None" ]; then
+        say "found   instance $name ($instance)"
+    else
+        say "launching $instance_type from $ami"
+        aws ec2 run-instances --region "$region" \
+            --image-id "$ami" \
+            --instance-type "$instance_type" \
+            --key-name "$DJB_KEY_NAME" \
+            --security-group-ids "$web_sg" \
+            --block-device-mappings "DeviceName=/dev/xvda,Ebs={VolumeSize=$volume_gb,VolumeType=gp3,Encrypted=true}" \
+            --metadata-options "HttpTokens=required,HttpEndpoint=enabled" \
+            --iam-instance-profile "Name=${DJB_INSTANCE_PROFILE:?DJB_INSTANCE_PROFILE is unset — the role that reads Secrets Manager and writes the backup bucket. A box with long-lived keys in a file instead is the posture this design exists to avoid.}" \
+            --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$name},{Key=Environment,Value=$environment},{Key=Project,Value=$NAMESPACE}]" \
+            >/dev/null
+        say "created instance $name"
+    fi
 
-    say "created. Record the actuals against the approved cost table before the next step."
+    say "waiting for RDS $name-db to be available"
+    aws rds wait db-instance-available --region "$region" --db-instance-identifier "$name-db"
+    local endpoint
+    endpoint="$(aws rds describe-db-instances --region "$region" --db-instance-identifier "$name-db" \
+        --query 'DBInstances[0].Endpoint.Address' --output text)"
+    say "done. The env file's two slots this run fills:"
+    say "  DATABASE_HOST=$endpoint"
+    say "  AWS_STORAGE_BUCKET_NAME=$media"
+    say "Record the actuals against the approved cost table before the next step."
+}
+
+# =============================================================================
+# preflight — every precondition of the deploy walk, read at minute zero
+# =============================================================================
+# READ-ONLY: describe, get, head and list, nothing else. Run from the laptop as the
+# operator before Part 1, and again after every take. Each check prints one line,
+# `ok <step> <what>`, `REFUSED <step> <what> — <the fix>` or `ERROR <step> <what> — <aws's
+# stderr>`; exit 0 all ok · 1 a REFUSED · 2 an ERROR (outranks 1). `--on-box`, run on the box,
+# is the registry login the laptop cannot see: the daemon's credential is the box's.
+
+PREFLIGHT_RC=0
+PF_OUT=""
+PF_ERR=""
+
+pf_ok() { echo "ok $1 $2"; }
+pf_refused() {
+    echo "REFUSED $1 $2 — $3"
+    [ "$PREFLIGHT_RC" = 2 ] || PREFLIGHT_RC=1
+}
+pf_error() {
+    local err="${3//$'\n'/ }"
+    echo "ERROR $1 $2 — ${4:-aws} could not answer: ${err:-no stderr}"
+    PREFLIGHT_RC=2
+}
+
+# Runs `aws "$@"`: stdout into PF_OUT, stderr into PF_ERR; the call's own status.
+pf_aws() {
+    local errf
+    errf="$(mktemp)"
+    if PF_OUT="$(aws "$@" 2>"$errf")"; then
+        PF_ERR=""
+        rm -f "$errf"
+        return 0
+    fi
+    PF_ERR="$(cat "$errf")"
+    rm -f "$errf"
+    return 1
+}
+
+# The exported value, else the env file's.
+pf_slot() {
+    local name="$1" file="$2" value="${!1:-}"
+    [ -n "$value" ] || [ ! -f "$file" ] || value="$("$PYTHON_BIN" "$HERE/envfile.py" get "$file" "$name")"
+    printf '%s' "$value"
+}
+
+# The namespace missing is a REFUSED (step 16 fixes it); the account unreadable is an ERROR.
+pf_cannot() {
+    if [ -n "$4" ]; then pf_error "$1" "$2" "$3"; else pf_refused "$1" "$2" "$3"; fi
+}
+
+# The box's daemon asked for this tree's web image: a 401 is the login, a not-found is a login
+# that worked; anything else could not look.
+pf_box_login() {
+    local file="$1" registry host region ref out
+    registry="$(pf_slot DJB_IMAGE_REGISTRY "$file")"
+    host="${registry%%/*}"
+    region="${host#*.dkr.ecr.}"
+    region="${region%%.*}"
+    local login="aws ecr get-login-password --region $region | docker login --username AWS --password-stdin $host"
+    case "$registry" in
+    *.dkr.ecr.*.amazonaws.com/*) ;;
+    *)
+        pf_refused 33 "provision.sh image-digest (on the box): DJB_IMAGE_REGISTRY is '$registry', not an ECR prefix" "the box's env file comes from step 17's secret; re-run step 16's env-file and secrets-put"
+        return
+        ;;
+    esac
+    if ! command -v docker >/dev/null 2>&1; then
+        pf_refused 33 "provision.sh image-digest (on the box): no 'docker' on PATH" "Part 3 installs docker on the box"
+        return
+    fi
+    DJB_IMAGE_REGISTRY="$registry"
+    ref="$(image_ref web)" || exit 2
+    if out="$(docker buildx imagetools inspect --format '{{json .Manifest.Digest}}' "$ref" 2>&1)"; then
+        pf_ok 33 "provision.sh image-digest (on the box): the daemon is logged in to $host; $ref is ${out//\"/}"
+        return
+    fi
+    case "$out" in
+    *"401 Unauthorized"* | *nauthorized* | *"403 Forbidden"*)
+        pf_refused 33 "provision.sh image-digest (on the box): the daemon is not logged in to $host" "$login" ;;
+    *"not found"* | *"manifest unknown"*)
+        pf_ok 33 "provision.sh image-digest (on the box): the daemon is logged in to $host; it has no $ref yet (the laptop's check 33 names why)" ;;
+    *) pf_error 33 "provision.sh image-digest (on the box): docker buildx imagetools inspect $ref" "$out" docker ;;
+    esac
+}
+
+cmd_preflight() {
+    local environment="" file="" on_box="" arg
+    for arg in "$@"; do
+        case "$arg" in
+        --on-box) on_box=1 ;;
+        -*) usage ;;
+        *) if [ -z "$environment" ]; then environment="$arg"; else file="$arg"; fi ;;
+        esac
+    done
+    file="${file:-$HERE/.env}"
+    [ -n "$environment" ] || usage
+    if [ -n "$on_box" ]; then
+        pf_box_login "$file"
+        say "preflight $environment --on-box: exit $PREFLIGHT_RC (0 every check ok · 1 a REFUSED · 2 a check could not be made)"
+        exit "$PREFLIGHT_RC"
+    fi
+    command -v aws >/dev/null 2>&1 || die "no 'aws' on PATH"
+    local region="${AWS_REGION:-us-east-1}"
+
+    # 1 · the env file and the four slots infra and dns.sh compose from.
+    local ns registry domain zone slot empty=""
+    ns="$(pf_slot DJB_DEPLOY_NAMESPACE "$file")"
+    registry="$(pf_slot DJB_IMAGE_REGISTRY "$file")"
+    domain="$(pf_slot DJB_DOMAIN "$file")"
+    zone="$(pf_slot DJB_ZONE_ID "$file")"
+    for slot in DJB_DEPLOY_NAMESPACE DJB_IMAGE_REGISTRY DJB_DOMAIN DJB_ZONE_ID; do
+        [ -n "$(pf_slot "$slot" "$file")" ] || empty="$empty $slot"
+    done
+    local bootstrap="DJB_DEPLOY_NAMESPACE=${ns:-<ns>} AWS_REGION=$region DJB_ENV=$environment DJB_GITHUB_REPO=<owner>/<repo> ./deploy/iam/product_bootstrap.sh --confirm"
+    local envline="export DJB_DEPLOY_NAMESPACE=<ns> DJB_IMAGE_REGISTRY=<registry> DJB_DOMAIN=<domain> DJB_ZONE_ID=<zone id> && ./deploy/provision.sh env-file deploy/.env $environment"
+    if [ -z "${DJB_DEPLOY_NAMESPACE:-}" ] && [ "$ns" = "laptop" ]; then
+        pf_refused 16 "provision.sh env-file: $file is the laptop file (namespace laptop, Part 1 step 5)" "export the $environment coordinates (DJB_DEPLOY_NAMESPACE=<ns> DJB_IMAGE_REGISTRY=<registry> DJB_DOMAIN=<domain> DJB_ZONE_ID=<zone id>) or generate the $environment env: ./deploy/provision.sh env-file deploy/.env $environment"
+        say "preflight $environment: exit $PREFLIGHT_RC — stopped before the AWS checks: every name below would be the laptop's"
+        exit "$PREFLIGHT_RC"
+    elif [ -n "$empty" ] && [ ! -f "$file" ]; then
+        pf_refused 16 "provision.sh env-file: $file does not exist and the shell has no:$empty" "$envline"
+    elif [ -n "$empty" ]; then
+        pf_refused 16 "provision.sh env-file: empty in $file and the shell:$empty" "$envline"
+    elif [ ! -f "$file" ]; then
+        pf_ok 16 "provision.sh env-file: $file not generated yet — step 16 makes it; the four slots are exported"
+    else
+        pf_ok 16 "provision.sh env-file: $file, DJB_DEPLOY_NAMESPACE=$ns, DJB_IMAGE_REGISTRY=$registry, DJB_DOMAIN=$domain, DJB_ZONE_ID=$zone"
+    fi
+
+    # 2 · the ssh rule's one address.
+    if [[ "${DJB_OWNER_IP:-}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+        pf_ok 20 "provision.sh infra: DJB_OWNER_IP=$DJB_OWNER_IP"
+    else
+        pf_refused 20 "provision.sh infra: DJB_OWNER_IP is '${DJB_OWNER_IP:-}', not one address" "$OWNER_IP_LINE"
+    fi
+
+    # 3 · the key pair.
+    local keyline="aws ec2 create-key-pair --key-name ${ns:-<ns>}-$environment --query KeyMaterial --output text > ~/.ssh/${ns:-<ns>}-$environment.pem && chmod 600 ~/.ssh/${ns:-<ns>}-$environment.pem && export DJB_KEY_NAME=${ns:-<ns>}-$environment"
+    if [ -z "${DJB_KEY_NAME:-}" ]; then
+        pf_refused 18 "aws ec2 create-key-pair: DJB_KEY_NAME is unset" "$keyline"
+    elif pf_aws ec2 describe-key-pairs --region "$region" --key-names "$DJB_KEY_NAME" --query 'KeyPairs[0].KeyName' --output text; then
+        pf_ok 18 "aws ec2 create-key-pair: key pair $DJB_KEY_NAME exists in $region"
+    else
+        case "$PF_ERR" in
+        *InvalidKeyPair.NotFound*) pf_refused 18 "aws ec2 create-key-pair: no key pair $DJB_KEY_NAME in $region" "$keyline" ;;
+        *) pf_error 18 "aws ec2 describe-key-pairs $DJB_KEY_NAME" "$PF_ERR" ;;
+        esac
+    fi
+
+    # Checks 4–7 and 9's coordinates are composed from the namespace and the account.
+    local account="" media="" backups=""
+    if pf_aws sts get-caller-identity --query Account --output text; then
+        account="$PF_OUT"
+    fi
+    local cannot=""
+    if [ -z "$ns" ]; then
+        cannot="not checked: DJB_DEPLOY_NAMESPACE is empty (step 16's line above)"
+    elif ! [[ "$account" =~ ^[0-9]{12}$ ]]; then
+        cannot="${PF_ERR:-aws sts get-caller-identity answered [$account]}"
+    fi
+    NAMESPACE="$ns"
+
+    # 4 · the two buckets: free or ours.
+    if [ -n "$cannot" ]; then
+        pf_cannot 22 "provision.sh infra: the two buckets" "$cannot" "$ns"
+    else
+        local bucket held="" odd="" found=""
+        media="$(bucket_name media "$environment" "$account")"
+        backups="$(bucket_name backups "$environment" "$account")"
+        for bucket in "$media" "$backups"; do
+            if pf_aws s3api head-bucket --bucket "$bucket" --expected-bucket-owner "$account"; then
+                found="$found s3://$bucket ours;"
+                continue
+            fi
+            case "$PF_ERR" in
+            *"(404)"* | *NotFound* | *NoSuchBucket*) found="$found s3://$bucket free;" ;;
+            *"(403)"* | *Forbidden*) held="$held s3://$bucket" ;;
+            *) odd="$PF_ERR" ;;
+            esac
+        done
+        if [ -n "$odd" ]; then
+            pf_error 22 "provision.sh infra: aws s3api head-bucket" "$odd"
+        elif [ -n "$held" ]; then
+            pf_refused 22 "provision.sh infra:$held held by another AWS account (S3 names are global; the shape is <namespace>-<env>-<account>-media|backups)" "choose another DJB_DEPLOY_NAMESPACE, then re-run step 16's env-file and this preflight"
+        else
+            pf_ok 22 "provision.sh infra:${found%;}"
+        fi
+    fi
+
+    # 5 · the box role, its instance profile, and its inline djb-box naming exactly
+    # these two buckets and this environment's one secret.
+    local role="${ns}-${environment}-box"
+    if [ -n "$cannot" ]; then
+        pf_cannot 19 "product_bootstrap.sh: the box role" "$cannot" "$ns"
+    elif ! pf_aws iam get-role --role-name "$role" --query Role.RoleName --output text; then
+        case "$PF_ERR" in
+        *NoSuchEntity*) pf_refused 19 "product_bootstrap.sh: no role $role" "$bootstrap" ;;
+        *) pf_error 19 "aws iam get-role $role" "$PF_ERR" ;;
+        esac
+    elif ! pf_aws iam get-instance-profile --instance-profile-name "$role" --query InstanceProfile.InstanceProfileName --output text; then
+        case "$PF_ERR" in
+        *NoSuchEntity*) pf_refused 19 "product_bootstrap.sh: no instance profile $role" "$bootstrap" ;;
+        *) pf_error 19 "aws iam get-instance-profile $role" "$PF_ERR" ;;
+        esac
+    elif ! pf_aws iam get-role-policy --role-name "$role" --policy-name djb-box --query PolicyDocument --output json; then
+        case "$PF_ERR" in
+        *NoSuchEntity*) pf_refused 19 "product_bootstrap.sh: role $role has no inline djb-box" "$bootstrap" ;;
+        *) pf_error 19 "aws iam get-role-policy $role djb-box" "$PF_ERR" ;;
+        esac
+    else
+        local drift
+        drift="$(PF_DOC="$PF_OUT" PF_BUCKETS="$media $backups" \
+            PF_ARN="arn:aws:secretsmanager:$region:$account:secret:$ns/$environment/env" \
+            PF_TEMPLATE="$HERE/iam/product-box-policy.json" \
+            PF_SLOTS="ACCOUNT_ID=$account REGION=$region MEDIA_BUCKET=$media BACKUPS_BUCKET=$backups NAMESPACE=$ns ENV=$environment" \
+            "$PYTHON_BIN" - 2>&1 <<'POLICY'
+import json, os, re
+def listed(value):
+    return [value] if isinstance(value, (str, dict)) else list(value or [])
+doc = json.loads(os.environ["PF_DOC"])
+statements = listed(doc.get("Statement"))
+# The document product_bootstrap.sh renders, from the same tracked template.
+text = open(os.environ["PF_TEMPLATE"]).read()
+for pair in os.environ["PF_SLOTS"].split():
+    slot, value = pair.split("=", 1)
+    text = text.replace("${" + slot + "}", value)
+want = listed(json.loads(text)["Statement"])
+by_sid = {s.get("Sid"): s for s in statements if s.get("Sid")}
+actions = []
+for i, wanted in enumerate(want):
+    live = by_sid.get(wanted.get("Sid"))
+    if live is None and i < len(statements) and not statements[i].get("Sid"):
+        live = statements[i]
+    have = set(listed(live.get("Action")) if live else [])
+    need = set(listed(wanted.get("Action")))
+    moved = [f"-{a}" for a in sorted(need - have)] + [f"+{a}" for a in sorted(have - need)]
+    if moved:
+        actions.append(" ".join(moved) + f" in {wanted.get('Sid') or f'statement {i + 1}'}")
+resources = []
+for statement in statements:
+    named = statement.get("Resource", [])
+    resources += [named] if isinstance(named, str) else list(named)
+s3 = sorted({r[13:].split("/", 1)[0] for r in resources if r.startswith("arn:aws:s3:::")})
+secrets = [r for r in resources if r.startswith("arn:aws:secretsmanager:")]
+one = re.compile(re.escape(os.environ["PF_ARN"]) + r"-(\?{6}|[A-Za-z0-9]{6})$")
+drift = []
+if s3 != sorted(os.environ["PF_BUCKETS"].split()):
+    drift.append("buckets " + (", ".join(s3) or "none"))
+if len(secrets) != 1 or not one.match(secrets[0]):
+    drift.append("secrets " + (", ".join(secrets) or "none"))
+if actions:
+    drift.append("actions differ: " + "; ".join(actions))
+print("; ".join(drift))
+POLICY
+)" || drift="the policy document did not parse: $drift"
+        if [ -n "$drift" ]; then
+            pf_refused 19 "product_bootstrap.sh: $role's djb-box differs from deploy/iam/product-box-policy.json — $drift; it should name s3://$media, s3://$backups and $ns/$environment/env" "$bootstrap"
+        else
+            pf_ok 19 "product_bootstrap.sh: role and instance profile $role, djb-box names exactly s3://$media, s3://$backups and $ns/$environment/env with the template's actions"
+        fi
+    fi
+
+    # 6 · the three repositories, and this tree's tag in web and worker.
+    local tag repo names="" service
+    tag="$(image_tag)"
+    case "$registry" in
+    *.dkr.ecr.*.amazonaws.com/*) ;;
+    *) registry="" ;;
+    esac
+    if [ -z "$registry" ]; then
+        pf_refused 19a "product_bootstrap.sh: DJB_IMAGE_REGISTRY is not an ECR prefix <account>.dkr.ecr.<region>.amazonaws.com/<ns>" "$bootstrap (it prints the prefix to record)"
+    else
+        DJB_IMAGE_REGISTRY="$registry"
+        for service in $IMAGE_SERVICES; do
+            repo="$(image_repo "$service")" || exit 2
+            names="$names ${repo#*/}"
+        done
+        # shellcheck disable=SC2086  # one argument per repository name
+        if ! pf_aws ecr describe-repositories --region "$region" --repository-names $names --query 'repositories[].repositoryName' --output text; then
+            case "$PF_ERR" in
+            *RepositoryNotFoundException*) pf_refused 19a "product_bootstrap.sh: an image repository of$names is missing" "$bootstrap" ;;
+            *) pf_error 19a "aws ecr describe-repositories" "$PF_ERR" ;;
+            esac
+        else
+            local absent="" failed="" dirty=""
+            case "$tag" in
+            tree-*-dirty | untracked) dirty=1 ;;
+            esac
+            for service in web worker; do
+                [ -z "$dirty" ] || break
+                repo="$(image_repo "$service")" || exit 2
+                pf_aws ecr describe-images --region "$region" --repository-name "${repo#*/}" --image-ids "imageTag=$tag" --query 'imageDetails[0].imageDigest' --output text && continue
+                case "$PF_ERR" in
+                *ImageNotFoundException*) absent="$absent ${repo#*/}:$tag" ;;
+                *) failed="$PF_ERR" ;;
+                esac
+            done
+            if [ -n "$dirty" ]; then
+                pf_refused 33 "provision.sh image-digest: this tree is uncommitted ($tag), so no registry has it" "commit and push the tree, then: gh run list --workflow ci.yml --limit 5"
+            elif [ -n "$failed" ]; then
+                pf_error 33 "provision.sh image-digest: aws ecr describe-images" "$failed"
+            elif [ -n "$absent" ]; then
+                pf_refused 33 "provision.sh image-digest: CI has not pushed $tag yet (absent:$absent)" "wait for CI's images job to push it: gh run list --workflow ci.yml --limit 5"
+            else
+                pf_ok 33 "provision.sh image-digest: repositories$names exist; $tag is in djb-web and djb-worker"
+            fi
+        fi
+    fi
+
+    local written
+    written="$(pf_slot DJB_IMAGE_REGISTRY "$file")"
+    [ -z "$registry" ] || written="${registry%%/*}"
+    echo "not checked here: the box's docker login to ${written:-<DJB_IMAGE_REGISTRY unset>} — run ssh <user>@<box> 'cd ${ns:-<ns>} && ./deploy/provision.sh preflight $environment --on-box' on the box"
+
+    # 7 · this environment's secret: readable, or not stored yet.
+    local secret_id="$ns/$environment/env"
+    if [ -n "$cannot" ]; then
+        pf_cannot 17 "provision.sh secrets-put: the secret" "$cannot" "$ns"
+    elif pf_aws secretsmanager get-secret-value --region "$region" --secret-id "$secret_id" --query ARN --output text; then
+        pf_ok 17 "provision.sh secrets-put: $secret_id is stored and readable"
+    else
+        case "$PF_ERR" in
+        *ResourceNotFoundException*) pf_ok 17 "provision.sh secrets-put: $secret_id is not stored yet — fine before step 17" ;;
+        *) pf_error 17 "provision.sh secrets-put: aws secretsmanager get-secret-value $secret_id" "$PF_ERR" ;;
+        esac
+    fi
+
+    # 8 · the release's operator account: empty is a known first-release state.
+    if [ -n "$(pf_slot CLICKSTACK_ADMIN_EMAIL "$file")" ] && [ -n "$(pf_slot CLICKSTACK_ADMIN_PASSWORD "$file")" ]; then
+        pf_ok 37 "release.sh: CLICKSTACK_ADMIN_EMAIL and _PASSWORD are set; the release reconciles alerts"
+    else
+        pf_ok 37 "release.sh: CLICKSTACK_ADMIN_EMAIL/_PASSWORD are empty — the first release runs ./deploy/release.sh --without-alerts until Part 9 step 53"
+    fi
+
+    # 9 · the zone, and whether the site's record exists yet.
+    local site="$environment.$domain"
+    if [ -z "$zone" ] || [ -z "$domain" ]; then
+        pf_refused 26 "dns.sh upsert: the zone" "not checked: DJB_ZONE_ID or DJB_DOMAIN is empty (step 16's line above)"
+    elif ! pf_aws route53 get-hosted-zone --id "$zone" --query HostedZone.Name --output text; then
+        case "$PF_ERR" in
+        *NoSuchHostedZone*) pf_refused 26 "dns.sh upsert: no hosted zone $zone" "aws route53 list-hosted-zones --query 'HostedZones[].[Id,Name]' --output text, then export DJB_ZONE_ID=<the id>" ;;
+        *) pf_error 26 "dns.sh upsert: aws route53 get-hosted-zone $zone" "$PF_ERR" ;;
+        esac
+    else
+        local zone_name="$PF_OUT"
+        case "$site." in
+        *".$zone_name" | "$zone_name")
+            if pf_aws route53 list-resource-record-sets --hosted-zone-id "$zone" --start-record-name "$site." --start-record-type A --max-items 1 --query "ResourceRecordSets[?Name=='$site.'].Name" --output text; then
+                case "$PF_OUT" in
+                "$site.") pf_ok 26 "dns.sh upsert: zone $zone_name readable; $site present" ;;
+                *) pf_ok 26 "dns.sh upsert: zone $zone_name readable; $site absent (step 26 makes it)" ;;
+                esac
+            else
+                pf_error 26 "dns.sh upsert: aws route53 list-resource-record-sets $zone" "$PF_ERR"
+            fi
+            ;;
+        *) pf_refused 26 "dns.sh upsert: $site is not inside zone $zone_name" "export DJB_ZONE_ID=<the zone that holds $domain> (aws route53 list-hosted-zones names yours)" ;;
+        esac
+    fi
+
+    # 10 · the mail provider: empty is the generated state, and staging sends no mail. Every
+    # `ANYMAIL_*_KEY|_TOKEN` slot the manifest, the file or the shell names, by prefix.
+    local mail="" mail_slots mail_page="deploy.md § Email mechanism"
+    mail_slots="$( { grep -hoE '^ANYMAIL_[A-Z0-9_]+_(KEY|TOKEN)=' "$HERE/env.staging.example" "$file" 2>/dev/null | tr -d =; compgen -e; } | grep -E '^ANYMAIL_[A-Z0-9_]+_(KEY|TOKEN)$' | sort -u)" || true
+    for slot in $mail_slots; do
+        if [ -n "$(pf_slot "$slot" "$file")" ]; then mail="$slot"; break; fi
+    done
+    local backend
+    backend="$(pf_slot EMAIL_BACKEND "$file")"
+    if [ -n "$mail" ]; then
+        local provider="${mail#ANYMAIL_}"
+        provider="${provider%%_*}"
+        pf_ok 24 "comms: $mail is set; comms sends through anymail:$(tr '[:upper:]' '[:lower:]' <<<"$provider") ($mail_page)"
+    elif [[ "$backend" == anymail.backends.amazon_ses.* ]]; then
+        pf_ok 24 "comms: EMAIL_BACKEND is Amazon SES, which takes no key ($mail_page)"
+        echo "not checked here: SES's credential is the box's instance role — aws iam simulate-principal-policy --policy-source-arn arn:aws:iam::${account:-<account>}:role/$role --action-names ses:SendRawEmail"
+    else
+        pf_ok 24 "comms: no mail provider key set — staging sends no mail — $mail_page; comms.message.failed is the expected outcome until a key is set (envfile.py set deploy/.env ${mail_slots%%$'\n'*} <key>, then secrets-put, as step 24 sets a value)"
+    fi
+
+    say "preflight $environment: exit $PREFLIGHT_RC (0 every check ok · 1 a REFUSED · 2 a check could not be made)"
+    exit "$PREFLIGHT_RC"
 }
 
 # =============================================================================
@@ -1707,8 +2334,6 @@ cmd_backup_policy() {
     command -v aws >/dev/null 2>&1 || die "no 'aws' on PATH"
     require_namespace
 
-    local bucket="${NAMESPACE}-${environment}-backups"
-    local media="${NAMESPACE}-${environment}-media"
     local role="${NAMESPACE}-${environment}-box"
     local retention_role="${NAMESPACE}-${environment}-backup-retention"
     local account
@@ -1716,6 +2341,9 @@ cmd_backup_policy() {
         || die "cannot read the AWS account id — is the session live? ('aws login'). Nothing was changed."
     [ -n "$account" ] && [ "$account" != "None" ] \
         || die "cannot read the AWS account id. Nothing was changed."
+    local bucket media
+    bucket="$(bucket_name backups "$environment" "$account")"
+    media="$(bucket_name media "$environment" "$account")"
 
     # --- WHICH INLINE POLICY IS THE BOX ROLE'S: ASKED, NOT ASSUMED ----------
     # The first cut hard-coded `djb-box`, the name runbook step 19 types. The
@@ -1851,6 +2479,7 @@ case "${1:-}" in
     project-name)  resolved_project_name; echo ;;
     derived-project-name) derived_project_name; echo ;;
     image-tag)     image_tag; echo ;;
+    image-services) echo "$IMAGE_SERVICES" ;;
     image-repo)    shift; image_repo "${1:-}"; echo ;;
     image-ref)     shift; image_ref "${1:-}" "${2:-}"; echo ;;
     image-digest)  shift; image_digest "${1:-}" "${2:-}"; echo ;;
@@ -1858,9 +2487,11 @@ case "${1:-}" in
     pin-digest)    shift; pin_digest "${1:-}" "${2:-}" ;;
     up)            shift; cmd_up "$@" ;;
     env-file)      shift; cmd_env_file "$@" ;;
+    surfaces)      shift; derive_surfaces "$@" ;;
     secrets-put)   shift; cmd_secrets_put "$@" ;;
     secrets-fetch) shift; cmd_secrets_fetch "$@" ;;
     infra)         shift; cmd_infra "$@" ;;
+    preflight)     shift; cmd_preflight "$@" ;;
     backup-policy) shift; cmd_backup_policy "$@" ;;
     *)             usage ;;
 esac

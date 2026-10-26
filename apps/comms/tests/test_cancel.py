@@ -39,6 +39,7 @@ from apps.comms.services import CANCELLABLE
 from apps.core.actor import Actor
 from apps.core.exceptions import Conflict, NotFound
 from apps.core.models import Tenant
+from apps.core.services import root_organization
 from apps.events.models import Event
 
 pytestmark = pytest.mark.django_db
@@ -234,7 +235,9 @@ def test_the_delivery_edge_refuses_a_cancelled_row(
     assert reread.status not in services.SENDABLE
 
     # And the edge wall itself returns it untouched rather than sending.
-    unchanged = services.mark_message_sending(tenant=tenant, actor=owner_actor, message=reread)
+    unchanged = services.mark_message_sending(
+        tenant=tenant, actor=owner_actor, message=reread
+    ).message
     assert unchanged.status == Message.Status.CANCELLED
 
 
@@ -292,11 +295,14 @@ def test_the_machine_door_cancels_the_same_way(
     recorded_workflow_starts: None,
 ) -> None:
     """Rule 17 for the new capability, over the same service."""
-    from apps.comms.tests.test_mcp import context_for, tool
+    from apps.comms.tests.test_mcp import tool
+    from apps.core.tests.mcp_context import context_for
 
     message = _scheduled(tenant=tenant, actor=owner_actor, recipient=recipient)
 
-    out = tool("cancel_message")(context_for(owner, tenant), message_id=message.pk)
+    out = tool("cancel_message")(
+        context_for(owner, tenant, root_organization(tenant=tenant)), message_id=message.pk
+    )
 
     assert out.status == "cancelled"
     assert out.id == message.pk

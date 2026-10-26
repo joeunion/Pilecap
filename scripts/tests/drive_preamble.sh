@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# road: drive_harness — the one harness every drive sources: scratch, strip, exit path, and `ok` `bad` `holds` `exits` `says` `says_not` `says_before` `drive_skip` `drive_summary` `drive_list_cases` `drive_run_case` `drive_scratch_repo` `drive_checkout_mirror` `drive_cannot_look` `drive_cannot_reach` `drive_finished` · example: scripts/tests/test_drive_preamble.sh::case_the_harness_lists_runs_and_summarises_a_drive_once
 # THE DRIVE PREAMBLE — sourced first by every drive under `scripts/tests/`,
 # immediately after its `cd` to the checkout root and BEFORE its first git
 # command. It is not a drive, it is not executable, and it asserts nothing of
@@ -14,8 +15,8 @@
 #     runs the cleanups it registered. Both are their own stories, and section 6
 #     is the one that carries a measurement rather than an incident.
 #
-# THE INCIDENT IT IS MADE OF. `scripts/tests/test_pm_merge.sh` builds throwaway
-# git repositories under `mktemp -d` and does everything to them with
+# THE INCIDENT IT IS MADE OF. The merge drive (since swept) built throwaway
+# git repositories under `mktemp -d` and did everything to them with
 # `git -C "$REPO" ...`. Run from a terminal that is exactly what it looks like.
 # Run from the pre-push hook it escaped DETERMINISTICALLY: three separate push
 # attempts on 2026-08-24 created `stale`, `safe` and `clash` in the REAL
@@ -68,7 +69,7 @@
 #
 #   * THE WORKING TREE. The fingerprint is refs, HEAD and `core.bare` — the
 #     three things the incident actually moved and the three no honest drive
-#     touches. `scripts/tests/test_secrets_scan.sh` deliberately plants a file
+#     touches. `quality/tests/test_secrets.py` deliberately plants a file
 #     in this checkout and restores it, and must go on being able to.
 #   * A PEER MOVING ANY REF, `main` INCLUDED. Refs are shared across every
 #     worktree of one repository and this one carries eighty-odd of them, so the
@@ -84,6 +85,30 @@
 #     sweep drive's own refusals, not this file's.
 #   * A DRIVE THAT DOES NOT SOURCE IT, or that clobbers the EXIT trap with a
 #     bare `trap ... EXIT` of its own afterwards. Use `drive_at_exit`.
+#
+# AND A FOURTH JOB, THE HARNESS — section 10 at the foot: the assertions, the
+# summary, the case list, the one-case seam and the scratch repository, so a
+# drive's prologue is one line and its body is its cases.
+
+# --- the shell, refused here once ---------------------------------------------
+#
+# Written in POSIX `sh` on purpose, and FIRST: a drive run as `sh drive` or
+# `zsh drive` reads this file with that shell, and these lines must be the ones
+# it can parse before anything bash-only below is reached. A sourced file is
+# read command by command, so a shell that is not bash stops here with one
+# sentence instead of failing somewhere nobody would read as the cause. Every
+# drive used to carry its own copy of this block.
+if [ -z "${BASH_VERSION:-}" ]; then
+    echo "${0##*/}: must run under bash — not sh, not zsh. Try \`bash ${0}\`." >&2
+    exit 2
+fi
+case ":${SHELLOPTS:-}:" in
+*:posix:*)
+    echo "${0##*/}: bash is in POSIX mode — which is what \`sh ${0}\` does on a" >&2
+    echo "  machine whose /bin/sh is bash. Try \`bash ${0}\`." >&2
+    exit 2
+    ;;
+esac
 
 # --- 0 · who is speaking ------------------------------------------------------
 # Derived, never typed: a drive that is renamed goes on naming itself correctly.
@@ -94,6 +119,12 @@ drive_cannot_look() {
     echo "   Nothing was asserted. A driver that could not run its cases has not" >&2
     echo "   cleared them." >&2
     exit 2
+}
+
+# drive_cannot_reach <why> — could-not-look because this machine lacks the world
+# the drive needs (a database, a service); a census reads its `environment:` sentence as a skip.
+drive_cannot_reach() {
+    drive_cannot_look "environment: $*"
 }
 
 # --- 1 · ROOT CAUSE: neutralise the inherited location environment ------------
@@ -375,8 +406,8 @@ drive_tripwire_check() {
 # reason they do: the alternative is six copies that drift.
 #
 # WHAT HAPPENED. A CI run once died at 14m34s, the deepest a run had reached.
-# `scripts/check.sh:63`, `scripts/pm_merge.sh:91`
-# and `deploy/release.sh:85` each refuse a piped stdout, and each EXEMPTS CI —
+# `scripts/gate_refuse.sh::refuse_if_piped` (the gate's), `quality/djb/rituals/merge.py::refuse_if_piped`
+# and `deploy/release.sh:110` each refuse a piped stdout, and each EXEMPTS CI —
 # GitHub Actions captures every step's stdout through a pipe, so without the
 # exemption the guard would refuse every CI run. The exemption is correct and
 # check.sh argues for it in full at its own guard.
@@ -417,7 +448,7 @@ drive_tripwire_check() {
 #
 # WHAT IT DOES NOT COVER, declared rather than discovered:
 #
-#   * `deploy/tests/test_release.sh` — the sixth drive, carrying the identical
+#   * `quality/tests/deploy/test_release.py` — the sixth drive, carrying the identical
 #     defect at its own `case_a_piped_stdout_is_refused` against the third copy
 #     of the guard (`deploy/release.sh:85`). It does not source this file and is
 #     not yet wired into the gate's selftest leg, so CI does not run it
@@ -516,7 +547,11 @@ DRIVE_CI_VARS="CI GITHUB_ACTIONS"
 # PLANTED members' walls to the row's real file, and the fold's harvest refuses
 # a row for a member the population does not have. A case that drives the
 # append names its own file at its own call site.
-DRIVE_GATE_VARS="DJB_GATE_SANCTION DJB_GATE_CALLER DJB_GATE_PYTEST_SEED DJB_LOOP_HERE DJB_LOCAL_LEGS_DIR DJB_LOCAL_LEGS_KNOWN_NAMES DJB_LOCAL_LEGS_TEMPLATE_UNITS DJB_LOCAL_LEGS_CHANGED_FILES DJB_LOCAL_DRIVES_DIR DJB_LOCAL_ENV_KEYS DJB_MEMBER_WALLS_OUT"
+# `STACK_REGISTRY`, `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`: the registry step's inputs; no drive reads them, and a drive never holds a credential it did not ask for.
+# `DJB_GATE_LEGS_DRY` (every leg announced, no body run), `DJB_GATE_BOX_MARKER(S)` (a child that believes it is a verifier box), `DJB_LOOP_NO_IMPACT` and `DJB_GATE_MEMBER_DURATIONS` (a selection and a pricing the child never chose): each changes what a child gate concludes; a case that wants one types it at its own call site.
+# THE LIST IS `quality/djb/env.py::STEERS` SPELLED IN SHELL, held equal by `test_fixtures.py::test_the_preambles_hand_list_is_env_steers`.
+# `DJB_LAYER_HOOK_JUDGED`: the pre-commit hook's word to its own `--fast` that rule 95 judged the staged set; a child gate that inherited it would skip rule 95 on a set nobody judged.
+DRIVE_GATE_VARS="SELFTEST_PLAN DJB_SELFTEST_PLAN DJB_GATE_SANCTION DJB_GATE_CALLER DJB_GATE_PYTEST_SEED DJB_LOOP_HERE DJB_LAYER_HOOK_JUDGED DJB_GATE_LEGS_DRY DJB_GATE_BOX_MARKER DJB_GATE_BOX_MARKERS DJB_GATE_MEMBER_DURATIONS DJB_LOOP_NO_IMPACT DJB_LOCAL_LEGS_DIR DJB_LOCAL_LEGS_KNOWN_NAMES DJB_LOCAL_LEGS_TEMPLATE_UNITS DJB_LOCAL_LEGS_CHANGED_FILES DJB_LOCAL_DRIVES_DIR DJB_LOCAL_ENV_KEYS DJB_MEMBER_WALLS_OUT STACK_REGISTRY DOCKERHUB_USERNAME DOCKERHUB_TOKEN"
 
 # --- 4b · WHAT CI SETS THAT A DRIVE IS MEANT TO INHERIT -----------------------
 #
@@ -545,9 +580,10 @@ DRIVE_GATE_VARS="DJB_GATE_SANCTION DJB_GATE_CALLER DJB_GATE_PYTEST_SEED DJB_LOOP
 # `DRIVE_GATE_VARS` this list is a DECLARATION rather than an instruction, so
 # there is nothing here to act on it.
 # shellcheck disable=SC2034
-# `PASSES` and `PR_HEAD_REF` join `UNIT`, `SHARD` and `PR_BASE`: the row's own
+# `PASSES` and `LANE` join `UNIT`, `SHARD` and `PR_BASE`: the row's own
 # coordinates, read by the workflow's gate step and by no script under test.
-DRIVE_INHERITED_VARS="DATABASE_NAME DATABASE_HOST DATABASE_PORT DATABASE_USER DATABASE_PASSWORD REDIS_URL CACHE_URL AWS_S3_ENDPOINT_URL AWS_S3_REGION_NAME AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN PYTHON_VERSION PYTEST_SHARDS UNIT SHARD PR_BASE PASSES PR_HEAD_REF"
+# `DJB_STACK_REGISTRY` is the compose registry prefix: a drive's compose call resolves the same refs as the stack.
+DRIVE_INHERITED_VARS="UNITS DJB_STACK_REGISTRY DATABASE_NAME DATABASE_HOST DATABASE_PORT DATABASE_USER DATABASE_PASSWORD REDIS_URL CACHE_URL AWS_S3_ENDPOINT_URL AWS_S3_REGION_NAME AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN PYTHON_VERSION PYTEST_SHARDS UNIT SHARD PR_BASE PASSES LANE ZITADEL_ISSUER ZITADEL_PAT BRAND_ACCENT EMAIL_HOST EMAIL_PORT SERVER_EMAIL"
 
 # --- 4c · WHAT THE PRODUCT DECLARES ITS OWN DRIVES NEED -----------------------
 #
@@ -693,32 +729,35 @@ drive_at_exit() {
 
 # --- 5 · A DRIVE THAT DIED IS NOT A DRIVE THAT PASSED ------------------------
 #
-# MEASURED, on the bash this repository actually runs (GNU bash 3.2.57, macOS):
-# when `set -u` kills the shell on an unbound variable, THE EXIT TRAP SEES
-# `$? = 0`. So `drive_epilogue`'s `exit "$rc"` exits **0**, `check.sh` reads the
-# drive as green, and a driver that never reached its own summary line reports
-# success. Minimal repro, and it is three lines:
+# MEASURED, and it depends on the bash. On GNU bash 3.2.57 (macOS — the laptop,
+# where the pre-commit hook runs) a `set -u` death on an unbound variable hands
+# THE EXIT TRAP `$? = 0`: `drive_epilogue`'s `exit "$rc"` exits **0**,
+# `check.sh` reads the drive as green, and a driver that never reached its own
+# summary line reports success. On GNU bash 5.2.15 (the verifier boxes, CI) the
+# same death hands the trap `$? = 1`, so there it is already red. Minimal repro,
+# and it is three lines:
 #
 #     set -euo pipefail
 #     trap 'rc=$?; echo "trap saw rc=$rc"; exit "$rc"' EXIT
-#     echo "$NOPE"          # -> "unbound variable", "trap saw rc=0", exit 0
+#     echo "$NOPE"          # -> "unbound variable", "trap saw rc=0" on 3.2 (1 on 5.2)
 #
-# `set -E` with `trap ... ERR` does NOT catch it either — tested on the same
-# bash. There is no way for this file to notice on its own, so a drive has to
-# say it finished.
+# `set -E` with `trap ... ERR` does NOT catch it either — tested on 3.2. And the
+# class is wider than one bash's symptom: a drive that `exit 0`s from inside a
+# case never reaches its summary on ANY bash. There is no way for this file to
+# notice either on its own, so a drive has to say it finished.
 #
-# IT IS OPT-IN, DELIBERATELY. A drive that never calls `drive_finished` behaves
-# exactly as it did before this was written — no drive is silently given a new
-# way to fail, and this file stays a preamble rather than becoming a contract
-# every drive must be edited to satisfy in the same commit. `test_loop_tier.sh`
-# opts in; the other five owe the same one line and that is booked, not
-# smuggled in here.
+# IT IS ON BY DEFAULT. It began opt-in, so the first commit would not hand every
+# drive a new way to fail at once; every drive then took the one line, and a
+# drive that says nothing is now one whose silence cannot be read as a pass.
+# `test_drive_preamble.sh` censuses every registered drive for the call, and
+# proves the default with a planted drive that leaves from inside a case.
 DRIVE_FINISHED=0
 
-# A drive opts in by setting this to 1 near the top, which is what arms the
-# check below. Two variables rather than one so that "never opted in" and
-# "opted in and died" are different states rather than one ambiguous zero.
-DRIVE_OPTED_IN_TO_FINISH=0
+# ON unless a drive opts OUT by setting this to 0 after sourcing this file, with
+# a comment saying why (none does). Two variables rather than one so that
+# "never armed" and "armed and died" are different states rather than one
+# ambiguous zero.
+DRIVE_OPTED_IN_TO_FINISH=1
 
 # --- 5a · LIST MODE IS NOT A RUN ---------------------------------------------
 #
@@ -777,19 +816,50 @@ drive_finished() {
 
 drive_epilogue() {
     local rc=$?
-    local cleanup
-    # Section 9: every template-only skip, under the drive's own summary line.
-    # Guarded: a drive that died inside this file before section 9 was read
-    # has no such function, and a missing command here must not replace rc.
-    if declare -F drive__skip_report >/dev/null; then drive__skip_report || true; fi
+    local cleanup tripwire=0 summarise=0
+    # Cleanups, then the tripwire, then the report: every line the tripwire
+    # prints (an excuse included) lands above the summary, which stays last.
     while IFS= read -r cleanup; do
         [ -n "$cleanup" ] || continue
         eval "$cleanup" || true
     done <<<"$DRIVE_CLEANUPS"
-    if ! drive_tripwire_check; then
+    drive_tripwire_check || tripwire=1
+    # Section 10: a drive on the harness prints no summary of its own, and a
+    # red it counted is its status — only for a drive that FINISHED.
+    # Guarded: a drive that died inside this file before section 10 was read has no such function.
+    if [ "$DRIVE_FINISHED" = "1" ] && [ "${DRIVE_LIST_MODE:-0}" != "1" ] &&
+        declare -F drive__on_the_harness >/dev/null && drive__on_the_harness; then
+        summarise=1
+    fi
+    # Section 9: every skip, grouped by kind, above the summary.
+    if declare -F drive__skip_report >/dev/null; then drive__skip_report || true; fi
+    if [ "$summarise" = "1" ]; then
+        drive_summary
+        if [ "$rc" = "0" ] && [ "${FAILED:-0}" != "0" ]; then
+            rc=1
+        fi
+        # The whole-run floor: a tracked drive that recorded nothing cleared nothing; a parent's planted child is untracked.
+        if [ "$rc" = "0" ] && [ -z "${DRIVE_ONLY_CASE:-}" ] && [ "${DRIVE__NESTED:-0}" = 0 ] &&
+            [ $((${PASSED:-0} + ${FAILED:-0} + ${DRIVE_SKIPPED:-0})) = 0 ] &&
+            git -C "${DRIVE__ROOT:-.}" ls-files --error-unmatch -- "$DRIVE__SOURCE" >/dev/null 2>&1; then
+            echo "!! ${DRIVE_NAME}: the run asserted nothing — no case recorded an ok, bad or skip, so nothing was cleared." >&2
+            rc=2
+        fi
+    fi
+    if [ "$tripwire" = "1" ]; then
         # 2 outranks everything, including a pass and including a case that
         # failed for its own reasons: this run measured nothing it can vouch for.
         exit 2
+    fi
+    # Section 10: a run asked for cases it never reached cleared nothing.
+    local unrun=""
+    if [ "$rc" = "0" ] && [ -n "${DRIVE_ONLY_CASE:-}" ] && [ "$DRIVE_FINISHED" = "1" ]; then
+        unrun="$(drive__cases_unrun | tr '\n' ' ')"
+    fi
+    if [ -n "$unrun" ]; then
+        echo "!! ${DRIVE_NAME}: --case ${unrun% } was asked for and the drive never ran it" >&2
+        echo "   through drive_run_case. Nothing was asserted for it, so nothing was cleared." >&2
+        rc=2
     fi
     # Section 5. A drive that opted in and did NOT reach its own end, while the
     # masked status says 0, is could-not-look — never a pass. Section 5a: list
@@ -847,7 +917,7 @@ trap drive_epilogue EXIT
 # Bash scopes locals dynamically, so a cleanup this epilogue `eval`s runs inside
 # this frame and can see `rc` — which is the ONLY place a signal status is
 # visible at cleanup time, since the epilogue is the frame that captured `$?`.
-# `scripts/tests/test_gate_explain.sh::census_status_floor` does exactly that
+# The swept gate_explain drive's `census_status_floor` did exactly that
 # (reading it defensively: unset or non-numeric and it is not consulted) so a
 # TERM-killed drive's 143 is never lowered to its census's 1. The name `rc` is
 # therefore part of this section's contract and not an internal detail: renaming
@@ -1072,8 +1142,8 @@ drive__base_ref_refused() {
 # consumer carried thirty-three such named skips across six drives, each one a
 # hand edit to a template-owned file that the next fold fast-forwards away.
 #
-# THE REMEDY IS THE ONE `apps/core/tests/test_fold_map.py` ALREADY SHIPS
-# (`_skip_unless_template_tree`), made available to a shell drive. ONE form:
+# THE REMEDY IS THE PYTHON SUITE'S OWN (`@pytest.mark.template_only`, honoured
+# in `apps/conftest.py`), made available to a shell drive. ONE form:
 #
 #     case_x() {
 #         template_only "<why this property is the template's own>" || return 0
@@ -1100,7 +1170,8 @@ drive__base_ref_refused() {
 # THE COUNT, AND WHERE IT IS PRINTED. `DRIVE_SKIPPED` is the number; a drive
 # that carries a template-only case prints it on its own summary line
 # (`N passed · M failed · K skipped`), and the epilogue prints every skipped
-# case and its reason UNDER that line, on every exit path. A drive with no
+# case and its reason ABOVE that line, grouped by kind (`drive_skip`'s three:
+# template-only, environment, could-not-pose), on every exit path. A drive with no
 # template-only case prints nothing new at all: on the template, every other
 # driver's output is byte-identical to what it was.
 #
@@ -1151,18 +1222,492 @@ template_only() {
     [ -n "$why" ] || drive_cannot_look "template_only called from ${case_name} with no reason — a skip that cannot say why is a skip nobody can audit"
     drive__read_namespace
     [ -n "$DRIVE__NAMESPACE" ] || return 0
+    # The sentence is apps/conftest.py's, byte for byte (apps/test_template_only.py reads this line).
     line="${case_name} — template-only: this tree declares rule_id_namespace ${DRIVE__NAMESPACE}; ${why}"
+    drive__skip_line "$line"
+    return 1
+}
+
+# The three kinds a skip may carry, each with the heading the report files it under.
+DRIVE_SKIP_KINDS="template-only environment could-not-pose"
+drive__skip_heading() {
+    case "$1" in
+    template-only) echo "the template's own properties, which this tree cannot pose" ;;
+    environment) echo "what this machine's environment cannot reach" ;;
+    could-not-pose) echo "a world the case could not build" ;;
+    *) echo "counted by the drive without a kind the preamble knows" ;;
+    esac
+}
+
+# drive_skip <kind> <why> — print and count a skip of one of DRIVE_SKIP_KINDS
+# for the calling case, and return 1 so `drive_skip … || return 0` leaves it.
+# A skip is not a status: it moves no exit code. template_only is its template-only form.
+drive_skip() {
+    local kind="${1:-}" why="${2:-}" case_name
+    drive__label
+    case_name="$DRIVE__LABEL"
+    case " ${DRIVE_SKIP_KINDS} " in
+    *" ${kind} "*) ;;
+    *) drive_cannot_look "drive_skip: '${kind}' is not a kind — a skip is one of: ${DRIVE_SKIP_KINDS}" ;;
+    esac
+    [ -n "$why" ] || drive_cannot_look "drive_skip ${kind} called from ${case_name} with no reason — a skip that cannot say why is a skip nobody can audit"
+    drive__skip_line "${case_name} — ${kind}: ${why}"
+    return 1
+}
+
+drive__skip_line() {
+    local line="$1"
     echo "  skipped  ${line}"
     DRIVE_SKIPPED=$((DRIVE_SKIPPED + 1))
     DRIVE_SKIP_REASONS="${DRIVE_SKIP_REASONS}    ${line}
 "
+}
+
+# Printed by the epilogue above the summary, grouped by kind; nothing at all
+# when nothing was skipped. A reason line is `    <case> — <kind>: <why>`.
+drive__skip_report() {
+    [ "${DRIVE_SKIPPED:-0}" != 0 ] || return 0
+    echo "${DRIVE_NAME}: ${DRIVE_SKIPPED} skipped, by kind:"
+    printf '%s' "$DRIVE_SKIP_REASONS" | awk -v kinds="$DRIVE_SKIP_KINDS" '
+        BEGIN { n = split(kinds, order, " "); for (i = 1; i <= n; i++) known[order[i]] = 1 }
+        NF {
+            k = $0
+            if (index(k, " — ") == 0) { k = "" } else { k = substr(k, index(k, " — ") + length(" — ")); sub(/:.*/, "", k) }
+            if (!(k in known)) k = "unkinded"
+            body[k] = body[k] $0 "\n"
+        }
+        END {
+            order[n + 1] = "unkinded"
+            for (i = 1; i <= n + 1; i++) if (order[i] in body) printf "%s\t%s", order[i], body[order[i]]
+        }
+    ' | while IFS= read -r line; do
+        case "$line" in
+        *$'\t'*)
+            echo "  ${line%%$'\t'*} — $(drive__skip_heading "${line%%$'\t'*}"):"
+            echo "${line#*$'\t'}"
+            ;;
+        *) echo "$line" ;;
+        esac
+    done
+}
+
+# --- 10 · THE HARNESS A DRIVE CARRIES, ONCE ------------------------------------
+#
+# THE DEFECT, and it is this file's own argument one level up. Sections 1-9
+# exist because "the guard has to be here rather than in six copies that
+# drift". The harness every drive then wrote around them — a refusal, an `ok`,
+# a `bad`, a summary line, a `--list`, a `--case`, a scratch repository — was
+# written once per drive, in as many shapes as there were authors: summary
+# lines in half a dozen grammars, `--list` printing every case twice in a
+# score of drives, a `--case` arm re-typed per drive for one reader, the
+# scratch repository's four git lines re-explained in each. The derived count
+# of the copies still standing is `test_drive_preamble.sh`'s harness census.
+#
+# SO A DRIVE'S PROLOGUE IS ONE LINE AND ITS BODY IS ITS CASES:
+#
+#     . scripts/tests/drive_preamble.sh || exit 2
+#     case_x() { ...; ok "what held"; ...; bad "what did not" "$OUT"; }
+#     drive_run_case case_x
+#     drive_finished
+#
+# AND A RUN IS READ BY FIVE, each counting through `ok`/`bad`:
+#
+#     holds <what> <want> <got>   the two are equal
+#     exits <rc>                  the last run's status, `$RC`, is <rc>
+#     says <needle>               the last capture, `$DRIVE_OUT`, carries the fixed string
+#     says_not <needle>           … and does not
+#     says_before <first> <then>  … carries <first> on an earlier line than <then>
+#
+# A drive that sets `$RUN` has it on every line `exits`/`says`/`says_not` print.
+# A capture `says`/`says_not` cannot read is could-not-look (section 7), never a pass.
+#
+# and the rest is here: `--list` and `--case <name>` are answered before the
+# drive's first line runs (so before any pipe guard a drive carries), `ok` and
+# `bad` count, the summary is printed by the epilogue in the one grammar
+# `<drive>: N passed · M failed · K skipped`, and a counted red is the exit
+# status. The worked example is `test_drive_preamble.sh` itself, and
+# `test_pipefail_readers.sh` beside it.
+#
+# A DRIVE NOT YET ON IT IS UNTOUCHED. A drive that still defines its own `ok`
+# keeps its own (its definition is read after this one and wins), and prints
+# its own summary — the epilogue's is printed only while `ok` is still the one
+# defined here. A drive that still carries its own `--list)` arm still parses
+# its own arguments: this section reads the arm and stands back, so nothing a
+# drive does today changes until the drive is migrated, one file at a time.
+#
+# WHAT IT DOES NOT COVER, declared rather than discovered:
+#
+#   * A HELPER UNDER ANOTHER NAME. The harness census in `test_drive_preamble.sh`
+#     reads definitions by the names this section ships; a drive's `is`, `same`
+#     or `differs` is `holds` under a name it does not know.
+#   * A HEREDOC THE READER CANNOT SEE OPEN. The case list skips heredoc bodies
+#     so a planted drive's cases are not this drive's; a `<<WORD` written
+#     inside a quoted string reads as an opening it is not, and hides the lines
+#     after it until a line equal to WORD.
+#   * AN ARGUMENT A MIGRATED DRIVE TAKES OF ITS OWN. Anything but `--list` and
+#     `--case <name>` (repeatable: the set runs) is refused unless the drive's text carries a `case` arm
+#     for that exact token — the drive's parser is then the reader of it.
+
+PASSED=0
+# A second sourcing inside a running drive's own shell or subshell (never a new process): the whole-run floor is the outer drive's.
+DRIVE__NESTED=0
+[ -z "${DRIVE__LOADED:-}" ] || DRIVE__NESTED=1
+DRIVE__LOADED=1
+FAILED=0
+DRIVE_ONLY_CASE=""
+DRIVE_ONLY_CASE_RAN=0
+DRIVE__SUMMARY_PRINTED=0
+DRIVE__LABEL=""
+# The drive's own file: the caller of this one, the same derivation as
+# DRIVE_NAME at the top. A drive `cd`s to the checkout root before it sources
+# this file, so a RELATIVE path it was started by is relative to where it was
+# started — which the `cd` left in OLDPWD.
+DRIVE__SOURCE="${BASH_SOURCE[1]:-$0}"
+case "$DRIVE__SOURCE" in
+/*) ;;
+*) [ -r "$DRIVE__SOURCE" ] || [ -z "${OLDPWD:-}" ] || DRIVE__SOURCE="${OLDPWD}/${DRIVE__SOURCE}" ;;
+esac
+
+# drive__code_lines <file> — every line of the file that is CODE, as
+# `<line>\t<text>`: a heredoc's body is the planted file's text, not this
+# drive's, so it is dropped (the opening line itself is code and stays).
+drive__code_lines() {
+    awk '
+        doc != "" {
+            line = $0
+            if (dash) sub(/^\t+/, "", line)
+            if (line == doc) doc = ""
+            next
+        }
+        {
+            print FNR "\t" $0
+            if ($0 ~ /^[[:space:]]*#/) next
+            rest = $0
+            while (match(rest, /<<-?[[:space:]]*["\047]?[A-Za-z_][A-Za-z0-9_]*["\047]?/)) {
+                lead = (RSTART > 1) ? substr(rest, RSTART - 1, 1) : ""
+                tok = substr(rest, RSTART, RLENGTH)
+                rest = substr(rest, RSTART + RLENGTH)
+                if (lead == "<") continue
+                dash = (tok ~ /^<<-/)
+                sub(/^<<-?[[:space:]]*/, "", tok)
+                gsub(/["\047]/, "", tok)
+                doc = tok
+                break
+            }
+        }
+    ' "$1"
+}
+
+# drive_list_cases [<file>] — the drive's cases, one name per line, in the
+# order they are defined: a `case_<name>() {` definition at column zero
+# outside any heredoc. The definition, never the call, so each case is named
+# once; never a heredoc's, so a drive that plants a drive is not its plant.
+drive_list_cases() {
+    local src="${1:-$DRIVE__SOURCE}"
+    [ -r "$src" ] || drive_cannot_look "drive_list_cases: '${src}' is not a readable file — the cases are read from the drive's own text"
+    drive__code_lines "$src" | awk -F'\t' '$2 ~ /^case_[A-Za-z0-9_]*\(\) \{/ { sub(/\(\).*/, "", $2); print $2 }'
+}
+
+# drive_run_case <name> [args…] — run one case, unless `--case` named a set without it.
+# The one seam `--case <name>` needs: a drive calls every case through it, and
+# the epilogue refuses a `--case` run that never reached every case it named.
+# A case on the harness that returns having recorded no ok, bad or skip is FAILED `nothing asserted`.
+# does-not-cover: an assertion made only inside a subshell counts nowhere — the case reds `nothing asserted` (a false red the hint names), never a false green.
+# does-not-cover: a case called without drive_run_case, and a drive off the harness (its own `--list` arm or `ok`), are not floored.
+DRIVE__CASES_RAN=""
+drive_run_case() {
+    local name="${1:-}" before rc
+    declare -F "$name" >/dev/null ||
+        drive_cannot_look "drive_run_case: '${name}' is not a function this drive defines — a case that cannot be called asserts nothing"
+    if [ -n "$DRIVE_ONLY_CASE" ]; then
+        case $'\n'"${DRIVE_ONLY_CASE}"$'\n' in
+        *$'\n'"${name}"$'\n'*) ;;
+        *) return 0 ;;
+        esac
+        DRIVE_ONLY_CASE_RAN=1
+        DRIVE__CASES_RAN="${DRIVE__CASES_RAN}${name}"$'\n'
+    fi
+    before=$((${PASSED:-0} + ${FAILED:-0} + ${DRIVE_SKIPPED:-0}))
+    "$@"
+    rc=$?
+    if [ $((${PASSED:-0} + ${FAILED:-0} + ${DRIVE_SKIPPED:-0})) = "$before" ] && drive__on_the_harness; then
+        drive__nothing_asserted "$name"
+    fi
+    return "$rc"
+}
+
+# drive__nothing_asserted <label> — count the FAILED line a run that asserted nothing owes.
+drive__nothing_asserted() {
+    local CURRENT="$1"
+    bad "nothing asserted — it recorded no ok, bad or skip in this shell (an undefined helper — a 'command not found' above — or an assertion made only inside a subshell, whose count dies with it)" ""
+}
+
+# The named cases a `--case` run never reached, one per line.
+drive__cases_unrun() {
+    local name
+    while IFS= read -r name; do
+        [ -n "$name" ] || continue
+        case $'\n'"${DRIVE__CASES_RAN}" in
+        *$'\n'"${name}"$'\n'*) ;;
+        *) printf '%s\n' "$name" ;;
+        esac
+    done <<<"$DRIVE_ONLY_CASE"
+}
+
+# The case an assertion belongs to, DERIVED: the innermost `case_*` on the
+# call stack, so a helper a case calls reports the case; `$CURRENT` only when
+# no case is on the stack, then the drive. Set in THIS shell, never through a
+# command substitution, so `ok` costs no fork.
+drive__label() {
+    local i=1
+    DRIVE__LABEL=""
+    while [ "$i" -lt "${#FUNCNAME[@]}" ]; do
+        case "${FUNCNAME[$i]}" in
+        case_*)
+            DRIVE__LABEL="${FUNCNAME[$i]}"
+            return 0
+            ;;
+        esac
+        i=$((i + 1))
+    done
+    DRIVE__LABEL="${CURRENT:-$DRIVE_NAME}"
+}
+
+# ok <what held> — count a pass and say what held.
+ok() {
+    drive__label
+    echo "  ok       ${DRIVE__LABEL} — $1"
+    PASSED=$((PASSED + 1))
+}
+
+# bad <what did not hold> [<capture>] [<lines>] — count a fail, say what did
+# not hold, and show the last <lines> (25 unless given) of the capture that
+# shows why. The capture is `$DRIVE_OUT` unless one is given (an explicit ""
+# shows none). A capture that is empty or absent is said to be, never
+# skipped: a red with nothing under it is the shape a reader cannot act on.
+bad() {
+    local what="${1:-}" capture="${2-${DRIVE_OUT:-}}" lines="${3:-25}"
+    case "$lines" in
+    '' | *[!0-9]*) drive_cannot_look "bad: the capture tail '${lines}' is not a count of lines" ;;
+    esac
+    drive__label
+    echo "  FAILED   ${DRIVE__LABEL} — ${what}"
+    if [ -n "$capture" ]; then
+        if [ -s "$capture" ]; then
+            echo "             | (the last ${lines} lines of ${capture})"
+            tail -n "$lines" "$capture" | sed 's/^/             | /'
+        else
+            echo "             | (the capture ${capture} is empty or absent — nothing shows why)"
+        fi
+    fi
+    FAILED=$((FAILED + 1))
+}
+
+# holds <what> <want> <got> — ok when <got> equals <want>; bad naming both when not.
+holds() {
+    if [ "${2-}" = "${3-}" ]; then
+        ok "${1:-} — ${3-}"
+    else
+        bad "${1:-} — wanted '${2-}', got '${3-}'"
+    fi
+}
+
+# exits <rc> — the last run's status, `$RC`, is <rc>.
+exits() {
+    [ -n "${RC:-}" ] || drive_cannot_look "exits ${1:-}: no run status in \$RC — a status nobody recorded cannot be asserted"
+    if [ "$RC" = "${1:-}" ]; then
+        ok "${RUN:+${RUN}: }exit ${RC}"
+    else
+        bad "${RUN:+${RUN}: }wanted exit ${1:-}, got ${RC}"
+    fi
+}
+
+# The capture `says`/`says_not` read, proven readable first.
+drive__readable_capture() {
+    local refusal
+    if refusal="$(drive_capture_refusal "${RUN:-$1}" "${DRIVE_OUT:-}" "${RC:-<none>}")"; then
+        drive_cannot_look "$refusal"
+    fi
+}
+
+# says <needle> — the last capture, `$DRIVE_OUT`, carries the fixed string.
+says() {
+    drive__readable_capture says
+    if grep -qF -- "${1:-}" "$DRIVE_OUT"; then
+        ok "${RUN:+${RUN}: }says \"${1:-}\""
+    else
+        bad "${RUN:+${RUN}: }does not say \"${1:-}\""
+    fi
+}
+
+# says_not <needle> — the last capture, `$DRIVE_OUT`, does not carry the fixed string.
+says_not() {
+    drive__readable_capture says_not
+    if grep -qF -- "${1:-}" "$DRIVE_OUT"; then
+        bad "${RUN:+${RUN}: }says \"${1:-}\" and must not"
+    else
+        ok "${RUN:+${RUN}: }does not say \"${1:-}\""
+    fi
+}
+
+# says_before <first> <then> — the last capture, `$DRIVE_OUT`, carries <first> on an earlier line than <then>.
+# Read by awk over the file, never `grep | …`: an absent needle under pipefail is a bad, not a dead drive.
+says_before() {
+    local a b
+    drive__readable_capture says_before
+    a="$(awk -v n="${1:-}" 'index($0, n) { print NR; exit }' "$DRIVE_OUT")"
+    b="$(awk -v n="${2:-}" 'index($0, n) { print NR; exit }' "$DRIVE_OUT")"
+    if [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]; then
+        ok "${RUN:+${RUN}: }\"${1:-}\" (line ${a}) before \"${2:-}\" (line ${b})"
+    else
+        bad "${RUN:+${RUN}: }\"${1:-}\" (line ${a:-absent}) is not before \"${2:-}\" (line ${b:-absent})"
+    fi
+}
+
+# drive_summary — the one summary line, once. The epilogue prints it for a
+# drive on this harness; a drive never prints its own.
+drive_summary() {
+    [ "$DRIVE__SUMMARY_PRINTED" = "1" ] && return 0
+    DRIVE__SUMMARY_PRINTED=1
+    echo "${DRIVE_NAME}: ${PASSED:-0} passed · ${FAILED:-0} failed · ${DRIVE_SKIPPED:-0} skipped"
+}
+
+# Whether the drive asserts through THIS file's `ok` and lets this file parse
+# its arguments — the one condition under which the epilogue owns its summary
+# and its status. Read off the function itself, so a drive that defines its own
+# `ok` keeps its own summary.
+drive__on_the_harness() {
+    [ "${DRIVE__OWNS_ITS_PARSE:-1}" = "0" ] || return 1
+    case "$(declare -f ok 2>/dev/null)" in
+    *drive__label*) return 0 ;;
+    esac
     return 1
 }
 
-# Printed by the epilogue, under the drive's own summary line; nothing at all
-# when nothing was skipped.
-drive__skip_report() {
-    [ "${DRIVE_SKIPPED:-0}" != 0 ] || return 0
-    echo "${DRIVE_NAME}: ${DRIVE_SKIPPED} skipped — template-only cases this tree cannot pose:"
-    printf '%s' "$DRIVE_SKIP_REASONS"
+# drive_scratch_repo <var> [<author>] — a throwaway repository on `main`, at
+# the path the NAMED variable holds, with an author and one empty base commit.
+# It wraps section 2's belt, so the path is proven before git is handed it;
+# what the repository then carries is the case's business.
+drive_scratch_repo() {
+    local var="${1:-}" author="${2:-drive}" path
+    case "$var" in
+    '' | [0-9]* | *[!A-Za-z0-9_]*)
+        drive_cannot_look "drive_scratch_repo: '${var}' is not a variable NAME — it takes the name of the variable that holds the path, the way drive_require_scratch does"
+        ;;
+    esac
+    path="${!var-}"
+    drive_require_scratch "$var" "$path"
+    mkdir -p "$path" || drive_cannot_look "drive_scratch_repo: could not make ${path}"
+    {
+        git -C "$path" init -q &&
+            git -C "$path" symbolic-ref HEAD refs/heads/main &&
+            git -C "$path" config user.email "${author}@example.invalid" &&
+            git -C "$path" config user.name "$author" &&
+            git -C "$path" config commit.gpgsign false &&
+            git -C "$path" commit -q --allow-empty -m "base"
+    } || drive_cannot_look "drive_scratch_repo: git could not build the scratch repository at ${path}"
 }
+
+# drive_checkout_mirror <var> [<checkout>] — a repository at the path the NAMED variable holds that
+# borrows <checkout>'s objects (this one by default) and carries its refs, its HEAD, its working tree,
+# a copy of its `.env` and a link to its `.venv`; a plant there never reaches the real `apps/`.
+# does-not-cover: an ignored file other than `.env`/`.venv` (a drawer's local state) is not carried.
+drive_checkout_mirror() {
+    local var="${1:-}" src="${2:-$DRIVE__ROOT}" path head branch objects
+    case "$var" in
+    '' | [0-9]* | *[!A-Za-z0-9_]*)
+        drive_cannot_look "drive_checkout_mirror: '${var}' is not a variable NAME — it takes the name of the variable that holds the path"
+        ;;
+    esac
+    path="${!var-}"
+    drive_require_scratch "$var" "$path"
+    [ ! -e "$path" ] || drive_cannot_look "drive_checkout_mirror: ${path} already exists — a mirror is built fresh, never over something"
+    head="$(git -C "$src" rev-parse --verify -q HEAD)" ||
+        drive_cannot_look "drive_checkout_mirror: ${src} has no HEAD to mirror"
+    branch="$(git -C "$src" symbolic-ref -q --short HEAD || true)"
+    objects="$(cd "$src" && cd "$(git rev-parse --git-common-dir)" && pwd -P)/objects" ||
+        drive_cannot_look "drive_checkout_mirror: ${src} has no object store to borrow"
+    git init -q "$path" >/dev/null 2>&1 && printf '%s\n' "$objects" >"${path}/.git/objects/info/alternates" ||
+        drive_cannot_look "drive_checkout_mirror: could not make a repository at ${path}"
+    git -C "$path" fetch -q --update-head-ok --no-tags "$src" '+refs/heads/*:refs/heads/*' \
+        '+refs/remotes/*:refs/remotes/*' '+refs/tags/*:refs/tags/*' '+refs/djb/*:refs/djb/*' >/dev/null 2>&1 ||
+        drive_cannot_look "drive_checkout_mirror: could not carry ${src}'s refs into ${path}"
+    if [ -n "$branch" ]; then
+        git -C "$path" checkout -q -f -B "$branch" "$head" >/dev/null 2>&1
+    else
+        git -C "$path" checkout -q -f --detach "$head" >/dev/null 2>&1
+    fi || drive_cannot_look "drive_checkout_mirror: could not check out ${head} in ${path}"
+    git -C "$path" config user.email drive@example.invalid
+    git -C "$path" config user.name "$DRIVE_NAME"
+    git -C "$path" config commit.gpgsign false
+    (cd "$src" && git diff -z --name-only --diff-filter=D HEAD) | (cd "$path" && xargs -0 rm -f --) ||
+        drive_cannot_look "drive_checkout_mirror: could not carry ${src}'s deletions into ${path}"
+    { (cd "$src" && git diff -z --name-only --diff-filter=d HEAD && git ls-files -z --others --exclude-standard) |
+        (cd "$src" && tar -cf - --null -T -) | (cd "$path" && tar -xf -); } ||
+        drive_cannot_look "drive_checkout_mirror: could not carry ${src}'s working tree into ${path}"
+    [ ! -f "${src}/.env" ] || cp "${src}/.env" "${path}/.env" ||
+        drive_cannot_look "drive_checkout_mirror: could not copy ${src}/.env"
+    [ ! -e "${src}/.venv" ] || ln -s "${src}/.venv" "${path}/.venv" ||
+        drive_cannot_look "drive_checkout_mirror: could not link ${src}/.venv"
+}
+
+# Whether the drive's own text carries a `case` arm for exactly this token —
+# a drive that still parses its own arguments (`--list`), or a migrated drive
+# that takes a flag of its own.
+drive__has_arm() {
+    local token="$1" src="$DRIVE__SOURCE" line
+    [ -r "$src" ] || return 1
+    while IFS= read -r line; do
+        line="${line#*$'\t'}"
+        line="${line#"${line%%[![:space:]]*}"}"
+        case "$line" in
+        "${token})"* | "${token} |"* | "${token}|"* | "\"${token}\")"* | "'${token}')"*) return 0 ;;
+        esac
+    done < <(drive__code_lines "$src")
+    return 1
+}
+
+# THE ARGUMENTS, read before the drive's first line. A drive with its own
+# `--list)` arm parses for itself (section 5a's read above is all this file
+# does for it); every other drive is answered here, and the two answers are
+# consumed so the drive's `$@` holds only what is left.
+#
+# THE SAME READ SAYS WHETHER THE DRIVE IS ON THIS HARNESS. Dropping its own
+# `--list)` arm is the step that migrates a drive, so a drive that still
+# carries one keeps its own summary and its own status even when it defines no
+# `ok` of its own (it asserts through `holds` or `says`, and counts itself).
+DRIVE__OWNS_ITS_PARSE=0
+drive__has_arm --list && DRIVE__OWNS_ITS_PARSE=1
+if [ "$DRIVE__OWNS_ITS_PARSE" = "0" ]; then
+    case "${1:-}" in
+    "") ;;
+    --list)
+        drive__cases="$(drive_list_cases)"
+        [ -n "$drive__cases" ] ||
+            drive_cannot_look "this drive defines no \`case_\` function — nothing to list"
+        printf '%s\n' "$drive__cases"
+        exit 0
+        ;;
+    --case)
+        # Repeatable: each `--case <name>` adds one case to the set this run runs.
+        drive__cases="$(drive_list_cases)"
+        while [ "${1:-}" = "--case" ]; do
+            drive__only="${2:-}"
+            case $'\n'"${drive__cases}"$'\n' in
+            *$'\n'"${drive__only:-"(none)"}"$'\n'*) ;;
+            *) drive_cannot_look "--case '${drive__only}' names no case this drive defines — \`bash ${DRIVE__SOURCE} --list\` names them" ;;
+            esac
+            case $'\n'"${DRIVE_ONLY_CASE}"$'\n' in
+            *$'\n'"${drive__only}"$'\n'*) ;;
+            *) DRIVE_ONLY_CASE="${DRIVE_ONLY_CASE}${DRIVE_ONLY_CASE:+$'\n'}${drive__only}" ;;
+            esac
+            shift 2
+        done
+        unset drive__only drive__cases
+        ;;
+    *)
+        drive__has_arm "$1" ||
+            drive_cannot_look "unknown argument '$1': ${DRIVE_NAME} takes nothing, --list or --case <name> — a mistyped flag is never a silently different run"
+        ;;
+    esac
+fi

@@ -1,0 +1,34 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "imports", "text": ""}
+from apps.example.schemas import WidgetTransitionIn
+from apps.example.services import transition_widget
+
+# golden-anchor: {"nth": 0, "scope": [], "side": "after", "text": "return widgets.annotate(undated=undated).order_by(\"undated\", *widgets.query.order_by)"}
+@road(
+    "widget_transition",
+    example="apps/example/tests/test_doors_over_the_wire.py::test_a_transition_is_one_body_on_rest_mcp_and_the_outbox",
+)
+def widget_transition(*, tenant: Tenant, actor: Actor, widget_id: UUID, status: str) -> WidgetOut:
+    """Move one widget this hat reaches to the next status."""
+    # authz: `transition_widget` asks `widget.update` at the row's node.
+    widget = get_widget(tenant=tenant, widget_id=widget_id, org=actor.org, actor=actor)
+    if not may_be_named(actor, widget):
+        raise NotFound()
+    moved = transition_widget(tenant=tenant, actor=actor, widget=widget, status=status)
+    return WidgetOut.from_orm(with_allowed_acts([moved], actor)[0])
+
+
+@router.post("/{widget_id}/transition/", response=WidgetOut, url_name="widget-transition")
+@also_refuses("archived", "conflict", "invalid")
+
+
+def transition_widget_route(
+    request: TenantRequest, widget_id: UUID, payload: WidgetTransitionIn
+) -> WidgetOut:
+    """Move a widget's status
+
+    Send the `status` the widget moves to: the one step forward from the one it has.
+    """
+    actor, tenant = acting(request)
+    return widget_transition(tenant=tenant, actor=actor, widget_id=widget_id, status=payload.status)
+
+

@@ -156,21 +156,7 @@ class Category(models.TextChoices):
     MARKETING = "marketing", "Marketing"
 
 
-# --- the quiet window, as arithmetic rather than as columns ----------------------
-#
-# **Three module-level functions, and they moved here at T4 rather than being
-# copied.** `ChannelPreference` has carried this window since ADR comms-10 and
-# is still its only *column* holder; what changed is that a SECOND caller
-# appeared — the tenant quiet-hours seam (`services.tenant_quiet_window`, RUL-2's
-# empty seam) asks the same two questions of a window that has no row at all.
-#
-# A second implementation is the drift `SENDABLE` had to come back and fix once
-# already and that `ChannelPreference`'s own note above records. So the
-# arithmetic is here, keyed on nothing but three values and an instant, and both
-# holders call it — which is what makes "the tenant's window and the person's
-# window mean the same thing" a fact rather than a claim. The DST clause, the
-# exclusive end, the wrap across midnight and the round-up to the whole second
-# are all decided once, below, and their reasons travel with them.
+# --- the quiet window, as arithmetic: one implementation for the person's and the tenant's --
 
 
 def quiet_zone(name: str, *, where: str = "") -> ZoneInfo:
@@ -294,7 +280,7 @@ class Recipient(OrgScopedModel, Archivable):
     #: guarantees is one row per person carrying every way to reach them, so a
     #: policy that escalates from SMS to email is reading one contact and not
     #: joining two. An empty address is a fail-closed refusal at send time
-    #: (`providers.ConnectionChannel`), never a message sent to nowhere.
+    #: in the transport, never a message sent to nowhere.
     phone = models.CharField(max_length=32, blank=True, default="")
     chat_handle = models.CharField(max_length=255, blank=True, default="")
     #: Set when this person also has an account. Nullable and `SET_NULL`:

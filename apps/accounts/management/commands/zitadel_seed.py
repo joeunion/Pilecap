@@ -4,7 +4,7 @@
 
 Zitadel starts with an organisation, an admin and a machine user, and nothing a
 product can sign anybody in *through*. This makes the rest: the project every
-application hangs off, the browser RP client W2-R3's login flow uses, the MCP
+application hangs off, the browser RP client the allauth login flow uses, the MCP
 resource an access token's audience has to name, the pre-registered native
 client a third-party MCP caller uses (the DCR hedge, ADR ident-3), and a dev
 person to sign in as.
@@ -48,10 +48,20 @@ are idempotent the same way everything else here is: compare first, and say
 `exists` on the second run.
 
 **It is a door** (house rule 10), so it goes through `apps.accounts.zitadel`
-like the activity does, and house rule 27 names this file as one of the three
-places that may. It writes no rows of ours at all: the objects it makes are
-deployment infrastructure, not any tenant's configuration, and a tenant's
-configuration is `sync_identity_config`'s job.
+like the activity does, and house rule 27 names this file as one of the places
+that may. The objects it makes are deployment infrastructure, not any tenant's
+configuration — a tenant's is `sync_identity_config`'s and its realm is
+`EnsureTenantIdentityHomeWorkflow`'s — and it writes ONE row of ours, through a
+service: which organisation is the deployment's own **staff realm**
+(`services.record_staff_realm`), the realm a sign-in that names no tenant's
+realm is confined to.
+
+**And the three facts identity option B leans on** (a realm per tenant): the
+project check ON, so a person in an organisation the project was not granted to
+cannot sign in to it at all; `IAM_OWNER` asserted on the credential, which
+administers every tenant's realm; and a browser redirect URI for EVERY surface
+the deployment answers at (`core.surfaces.surface_base_urls`), because allauth builds the
+callback from the host the sign-in started on.
 
 **The dev user is refused outside DEBUG**, exactly as `seed` refuses the
 published ones it carries. The variable that holds it ships in `.env.example`,
@@ -68,12 +78,18 @@ from django.core.management.base import CommandError
 
 from apps.accounts import zitadel
 from apps.core.management import BaseCommand
+from apps.core.surfaces import PUBLIC_BASE_URL_SETTING
 
 # Where Zitadel sends the browser back to after a login. allauth's
 # `openid_connect` provider serves its callback under the provider id, and
-# W2-R3 registers Zitadel as the one static provider named `zitadel`.
+# the settings register Zitadel as the one static provider named `zitadel`.
 BROWSER_CALLBACK_PATH = "/accounts/oidc/zitadel/login/callback/"
 BROWSER_LOGOUT_PATH = "/"
+
+#: The instance manager role the credential administers every tenant's realm
+#: with. `scripts/setup.sh` grants it; the seed asserts it.
+INSTANCE_OWNER_ROLE = "IAM_OWNER"
+
 
 # Where a scripted MCP client is sent back to. A native client runs on somebody
 # else's machine and listens on a loopback port it picked at run time, so the
@@ -117,7 +133,7 @@ def declared_login_base_uri(base_url: str) -> str | None:
     one spelling and the audit cannot come to disagree with the writer about
     what is declared.
 
-    It takes the base URL rather than reading `PUBLIC_BASE_URL` because the
+    It takes the base URL rather than reading the setting because the
     seed's `--base-url` flag exists and a declaration built from a different
     origin than the redirect URIs beside it would send people to a page on a
     host that is not the one they came back to.
@@ -147,7 +163,7 @@ class Command(BaseCommand):
             default="",
             help=(
                 "Public base URL this product is reached at; the browser client's "
-                "redirect URI is built from it (default: PUBLIC_BASE_URL)."
+                f"redirect URI is built from it (default: {PUBLIC_BASE_URL_SETTING})."
             ),
         )
         parser.add_argument(
@@ -181,20 +197,27 @@ class Command(BaseCommand):
                 "(drop the zitadel database and the volume) and run setup again."
             )
 
-        base_url = str(options["base_url"] or settings.PUBLIC_BASE_URL).rstrip("/")
+        from apps.core.surfaces import surface_base_urls
+
+        base_url = str(options["base_url"] or surface_base_urls()[0]).rstrip("/")
 
         try:
             org = zitadel.organization()
             self.stdout.write(f"org             {org.get('name', '?')} ({org.get('id', '?')})")
+            self._staff_realm(org_id=str(org.get("id", "")))
 
             project = zitadel.ensure_project(name=settings.ZITADEL_PROJECT_NAME)
             self._say("project", settings.ZITADEL_PROJECT_NAME, project)
+            self.stdout.write(f"{'':26}ZITADEL_MCP_AUDIENCE={project.id}")
+            checked = zitadel.set_project_check(project_id=project.id)
+            self._say("project check", "on — only granted realms sign in", checked)
 
+            bases = self._bases(base_url)
             browser = zitadel.ensure_web_application(
                 project_id=project.id,
                 name=settings.ZITADEL_BROWSER_APP_NAME,
-                redirect_uris=[f"{base_url}{BROWSER_CALLBACK_PATH}"],
-                post_logout_uris=[f"{base_url}{BROWSER_LOGOUT_PATH}"],
+                redirect_uris=[f"{base}{BROWSER_CALLBACK_PATH}" for base in bases],
+                post_logout_uris=[f"{base}{BROWSER_LOGOUT_PATH}" for base in bases],
                 # Zitadel refuses plain-http redirect URIs unless the
                 # application says it is in development. A laptop is, and a
                 # deployment behind TLS never takes this branch.
@@ -224,7 +247,8 @@ class Command(BaseCommand):
                     settings.ZITADEL_MCP_CLIENT_NAME: mcp_client.id,
                 },
             )
-            self._login_client_role()
+            self._instance_role(zitadel.LOGIN_CLIENT_ROLE, "login client")
+            self._instance_role(INSTANCE_OWNER_ROLE, "realm admin")
 
             self._posture(org_name=str(org.get("name", "?")))
 
@@ -313,8 +337,36 @@ class Command(BaseCommand):
             )
             self._say("login version", f"{name}: {stated}", declared)
 
-    def _login_client_role(self) -> None:
-        """The manager role the login-v2 finalize needs, on the machine user.
+    @staticmethod
+    def _bases(base_url: str) -> list[str]:
+        """The surfaces' base URLs (`core.surfaces.surface_base_urls`), `--base-url` first."""
+        from apps.core.surfaces import surface_base_urls
+
+        return list(dict.fromkeys([base_url, *surface_base_urls()[1:]]))
+
+    def _staff_realm(self, *, org_id: str) -> None:
+        """Record the credential's own organisation as the deployment's staff realm."""
+        # Imported here: `config/settings/production.py` imports this module at
+        # settings time for its path constants, before any app registry exists.
+        from apps.accounts.services import record_staff_realm
+        from apps.core.actor import system_actor
+
+        if not org_id:
+            self.stdout.write(
+                f"unknown  {'staff realm':<15} Zitadel did not say which organisation "
+                "this credential belongs to — nothing recorded"
+            )
+            return
+        home = record_staff_realm(actor=system_actor(), tenant=None, realm_id=org_id)
+        self.stdout.write(f"{'recorded':<8} {'staff realm':<15} ({home.realm_id})")
+
+    def _instance_role(self, role: str, label: str) -> None:
+        """One instance manager role on the machine user — granted additively, asserted.
+
+        The login client (`IAM_LOGIN_CLIENT`) is the role the login-v2 finalize
+        needs; the realm admin (`IAM_OWNER`) is what administers every tenant's
+        realm, and a credential that lacks it cannot grant it to itself, so the
+        run fails naming it rather than homing no tenant.
 
         **Declared here rather than remembered in a runbook.** Zitadel's
         `IAM_OWNER` does not carry `IAM_LOGIN_CLIENT`, and without it
@@ -337,14 +389,12 @@ class Command(BaseCommand):
         login_name = str(user.get("preferredLoginName", "") or user.get("userName", "?"))
         if not user_id:
             self.stdout.write(
-                f"unknown  {'login client':<15} Zitadel did not say which user this "
+                f"unknown  {label:<15} Zitadel did not say which user this "
                 "credential belongs to — nothing granted"
             )
             return
-        granted = zitadel.ensure_instance_member_role(
-            user_id=user_id, role=zitadel.LOGIN_CLIENT_ROLE
-        )
-        self._say("login client", f"{zitadel.LOGIN_CLIENT_ROLE} on {login_name}", granted)
+        granted = zitadel.ensure_instance_member_role(user_id=user_id, role=role)
+        self._say(label, f"{role} on {login_name}", granted)
 
     def _posture(self, *, org_name: str) -> None:
         """The deployment's sign-in posture, applied to the live instance.

@@ -8,17 +8,17 @@ first one ever had.
 
 Everything in Part 1 runs on one laptop with no AWS account and no cost, which
 is the point: a drill that needs a cloud is a drill nobody performs. Part 2 is
-the managed layer, and it is **deferred** — see it before you believe this
-document covers your data.
+the managed layer, and **nothing here has performed it** — see it before you
+believe this document covers your data.
 
 | Part | What it proves | Where it runs | Status |
 |---|---|---|---|
 | 1 · The laptop drill | the logical layer: `pg_dump -Fc` restores into a *deployment*, and today's code can run the schema it produced | one laptop, two compose stacks | **performable now** |
-| 2 · The managed layer | RDS automated snapshots restore to a scratch instance the app can boot against | AWS, after the box exists | **deferred to V1's tail** |
+| 2 · The managed layer | RDS automated snapshots restore to a scratch instance the app can boot against | AWS, after the box exists | **unperformed** |
 
 ---
 
-## The two layers, and why one of them is not here yet
+## The two layers, and why one of them is unperformed
 
 **The logical layer** is `scripts/backup.sh` and `scripts/restore_drill.sh`: a
 portable `pg_dump -Fc` object and a drill that restores it. Portable is the
@@ -31,31 +31,28 @@ window, point-in-time recovery. ADR deploy-1 chose it deliberately — managed
 snapshots ARE half the backup posture, and none of a retention policy belongs
 in a script in an application repository.
 
-The managed layer is **deferred to V1's tail** and is performed, when the box
-exists, as follows: an RDS snapshot restored to a scratch instance,
+The managed layer is **unperformed**. It is performed on a real box as
+follows: an RDS snapshot restored to a scratch instance,
 the app booted against it, a row written before the snapshot read back after,
 the scratch instance torn down with a census showing zero orphan instances.
 Nothing in this document proves it, and no reading of Part 1 should be mistaken
 for it. Part 1 proves the *portable* layer, on the *laptop*.
 
-**RPO is not stated here** and will not be until the snapshot cadence is an
-observed value on a real instance rather than an aspiration — that belongs with
-Part 2.
+**No RPO is stated**: it is derived from a snapshot cadence observed on a real
+instance plus the logical dump schedule, which is Part 2's step 6, unperformed.
 
-**The drill cadence is deferred too**: this document proves the mechanism once.
+**The drill cadence is the product's**: this document proves the mechanism once.
 *How often* the drill is re-performed is the consuming product's schedule to
 set — typically `asserted:owner — before pilot users`, with a standing path
 re-trigger `paths:apps/events/**,apps/workflows/**` (any outbox, ledger or
 reconciler change re-opens the question).
 
-**Object storage: `--to-s3` has no local twin yet.** `backup.sh --to-s3` and
+**Object storage: `--to-s3` is not drilled locally.** `backup.sh --to-s3` and
 `--to-dir` are one code path with two targets, so the copy is exercised on a
-laptop — but the *S3 API* is not. The trigger for closing that is bringing
-MinIO into the compose stack as the S3-compatible local endpoint (see
-`docs/product/adrs-ingredients.md` for the recommended default and its stated
-price: one more compose service, and an S3-compatibility assumption). When MinIO
-lands, `--to-s3` is drillable locally and step 6 below stops being a stand-in.
-Until then the S3 leg is proven only against real S3, in Part 2's environment.
+laptop — but the *S3 API* is not. The compose stack carries an S3-compatible
+endpoint (`compose.yaml`'s `minio` service, ADR files-2), and this drill does not
+point `--to-s3` at it: step 6 below copies with `--to-dir`, a stand-in. The S3 leg
+is proven only against real S3, in Part 2's environment.
 
 ---
 
@@ -315,9 +312,9 @@ here. Remove the two env files as well; `teardown.sh` only knows about
 
 ---
 
-## Part 2 · The managed layer — deferred to V1's tail
+## Part 2 · The managed layer — unperformed
 
-Performed, when the box exists, as follows:
+Performed on a real box as follows:
 
 1. Confirm RDS automated backups are on, and record the observed retention
    window and snapshot cadence — the numbers, not the intention.

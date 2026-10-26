@@ -12,7 +12,7 @@ ADR comms-9's push half. Four claims:
   fail-closed refusal rather than a notification that goes nowhere;
 * **`DevicePushChannel` is the real shape and it is driven**, against
   `httpx.MockTransport` — the same seam `apps/connections`' own client
-  documents and the same one `ConnectionChannel` is tested through. What that
+  documents. What that
   proves and what it does not is stated in the module docstring of
   `providers.py` and again at the bottom of this file;
 * **the consent wall applies unchanged.** A suppressed `push` channel refuses
@@ -54,8 +54,8 @@ from apps.core.models import Tenant
 
 pytestmark = pytest.mark.django_db
 
-A_TOKEN = "not-a-real-registration-token-0001"
-ANOTHER_TOKEN = "not-a-real-registration-token-0002"
+A_TOKEN = "not-a-real-registration-token-0001"  # noqa: S105 — a fake token value only this test holds
+ANOTHER_TOKEN = "not-a-real-registration-token-0002"  # noqa: S105 — a fake token value only this test holds
 
 
 # --- fixtures --------------------------------------------------------------------
@@ -279,7 +279,7 @@ def test_a_contact_with_no_device_is_a_refusal_not_a_silent_nothing(
     outbox: Any,
     recorded_workflow_starts: None,
 ) -> None:
-    """Fail closed, exactly as `ConnectionChannel` does on a missing phone number.
+    """Fail closed, exactly as the SMS transport does on a missing phone number.
 
     *Absent:* the transport returns having done nothing, the delivery activity
     records `sent`, and the message log claims a notification that never

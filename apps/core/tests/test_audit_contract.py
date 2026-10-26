@@ -1,3 +1,4 @@
+# census: cross-app population=apps/*/migrations/*.py every RunPython in any app's migrations
 """ADR core-22's generic half, at the seam that owns it.
 
 `test_revoke_audit.py` proves the contract on the one credential pair the
@@ -37,6 +38,7 @@ from uuid import uuid4
 import pytest
 from django.apps import apps as django_apps
 from django.conf import settings
+from django.test import Client
 
 from apps.accounts.models import ApiToken
 from apps.accounts.services import issue_token, revoke_token
@@ -46,6 +48,12 @@ from apps.core.exceptions import DomainError, refusal_for
 from apps.core.models import Tenant
 from apps.core.service import _object_of, _plain, redact
 from apps.core.services import create_tenant, invite_member
+from apps.core.tests.test_surfaces import (  # noqa: F401 — the fixtures, by name
+    CUSTOMER_HOST,
+    customer,
+    customer_role,
+    two_faces,
+)
 from apps.core.tests.tree_census import source_text
 
 pytestmark = pytest.mark.django_db
@@ -433,4 +441,67 @@ def test_a_refusals_error_code_is_a_registered_one(tenant: Tenant, owner: Any) -
     ).get()
     assert refusal_for(row.error_code) is not None, (
         f"{row.error_code!r} is not a registered refusal code; a reader cannot look it up"
+    )
+
+
+# --- the surface column -------------------------------------------------------
+#
+# Which audience's address a call came in at, beside `door`: bound by the door,
+# written by the one seam from the bound context, `staff` for every row a
+# product with one face writes and for every row written before the column.
+
+
+def test_the_surface_column_is_expand_only_and_reads_staff_by_default(
+    tenant: Tenant, owner: Any
+) -> None:
+    field = AuditEntry._meta.get_field("surface")
+    assert field.default == "staff" and not field.null
+    migration = importlib.import_module("apps.core.migrations.0020_auditentry_surface")
+    (operation,) = migration.Migration.operations
+    assert type(operation).__name__ == "AddField" and operation.name == "surface"
+
+    invite_member(tenant=tenant, email="newcomer@example.com", actor=system_actor(tenant=tenant))
+
+    assert AuditEntry.objects.get(action="core.invite_member").surface == "staff"
+
+
+def test_a_write_from_the_customer_host_is_audited_at_its_surface(
+    request: pytest.FixtureRequest, tenant: Tenant
+) -> None:
+    """The customer surface's world is `test_surfaces.py`'s, asked for by name.
+
+    The customer role holds exactly its declaration, so a create at the customer
+    host is refused — and a refusal raised inside a `@service` writes its
+    `outcome=error` row, which is the row that carries where the call came in.
+    """
+    request.getfixturevalue("two_faces")
+    client = Client()
+    client.force_login(request.getfixturevalue("customer"))
+    response = client.post(
+        "/api/v1/widgets/",
+        data={"name": "From the customer host"},
+        content_type="application/json",
+        HTTP_HOST=CUSTOMER_HOST,
+    )
+
+    assert response.status_code == 403, response.content
+    row = AuditEntry.objects.for_tenant(tenant).get(action="example.create_widget", outcome="error")
+    assert row.error_code == "forbidden"
+    assert row.surface == "customer"
+    assert row.door == "rest"
+
+
+def test_a_write_from_the_staff_host_is_audited_as_staff(tenant: Tenant, owner: Any) -> None:
+    client = Client()
+    client.force_login(owner)
+    response = client.post(
+        "/api/v1/widgets/",
+        data={"name": "From the staff host"},
+        content_type="application/json",
+        HTTP_HOST="localhost",
+    )
+
+    assert response.status_code == 201, response.content
+    assert AuditEntry.objects.for_tenant(tenant).get(action="example.create_widget").surface == (
+        "staff"
     )

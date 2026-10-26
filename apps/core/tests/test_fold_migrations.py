@@ -326,7 +326,11 @@ def test_the_direction_is_positional_even_mid_merge(
 
 def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     return subprocess.run(  # noqa: S603 - a scratch repo this test just created
-        ["git", *args], cwd=repo, capture_output=True, text=True, check=check
+        ["git", *args],  # noqa: S607 — `git` resolved on PATH, as the gate's own legs run it
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=check,
     )
 
 
@@ -518,7 +522,7 @@ def test_a_leaf_the_conflict_names_that_does_not_exist_is_refused(
 def test_the_linear_migrations_internals_we_hold_still_exist() -> None:
     """Rule 44's third half, instrumented here because its check cannot walk it.
 
-    `quality/checks.py::ninja_internals_census` validates the ninja and MCP
+    `quality/checks/rule_44.py::ninja_internals_census` validates the ninja and MCP
     halves off the installed packages; its two lists are named in code, so a
     third declared list is checked by nobody. Rule 44's own comment says this
     and names this test. What it does is the half a census can do on a

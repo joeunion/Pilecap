@@ -27,6 +27,7 @@ What is proved here, in the order the criteria ask for it:
 from __future__ import annotations
 
 import hashlib
+import re
 import threading
 from decimal import Decimal
 from tempfile import SpooledTemporaryFile
@@ -34,7 +35,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
 
 import pytest
-from django.db import connection
+from django.db import connection, transaction
 
 from apps.core.actor import actor_for, system_actor
 from apps.core.exceptions import Conflict, Invalid, NotFound
@@ -959,3 +960,103 @@ def test_store_stream_needs_a_person_exactly_as_store_bytes_does(
 
     assert "uploaded_by" in refused.value.errors
     assert not StoredFile.objects.filter(tenant=tenant).exists()
+
+
+_LOCKING = re.compile(r"FOR (NO KEY )?UPDATE")  # both forms lock the row (V-LA-LOCKUP1 F2)
+
+
+def _locked_before_the_store(monkeypatch: pytest.MonkeyPatch, mint: Any) -> list[str]:
+    """The `files_storedfile` FOR UPDATE statements sent before the store's client was built."""
+    from django.test.utils import CaptureQueriesContext
+
+    real = storage.client
+    seen: list[list[str]] = []
+    with CaptureQueriesContext(connection) as captured:
+
+        def recording() -> Any:
+            seen.append([q["sql"] for q in captured.captured_queries])
+            return real()
+
+        monkeypatch.setattr(storage, "client", recording)
+        mint()
+    assert seen, "the mint built no store client, so this measured nothing"
+    return [sql for sql in seen[0] if _LOCKING.search(sql) and _from_documents(sql)]
+
+
+def _from_documents(sql: str) -> bool:
+    return '"files_storedfile"' in sql.split("FROM")[1]
+
+
+def test_no_document_row_is_locked_while_the_upload_url_is_signed(
+    tenant: Tenant, owner_actor: Actor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The store's client is built before the document is locked, on both mints."""
+
+    def create() -> Any:
+        return services.create_file(
+            tenant=tenant,
+            actor=owner_actor,
+            filename="contract.pdf",
+            content_type="application/pdf",
+            size_bytes=len(BODY),
+            purpose=StoredFile.Purpose.UPLOAD,
+        )
+
+    assert _locked_before_the_store(monkeypatch, create) == []
+    monkeypatch.undo()
+    filed = create()
+
+    def replace() -> Any:
+        return services.add_version(
+            tenant=tenant,
+            actor=owner_actor,
+            file=filed.file,
+            content_type="application/pdf",
+            size_bytes=len(BODY),
+        )
+
+    assert _locked_before_the_store(monkeypatch, replace) == []
+
+
+def _key_share_waits(table: str, pk: Any) -> str | None:
+    """A foreign-key check on `table`'s row from a second session: the refusal, or None."""
+    from django.db import connections
+    from django.db.utils import OperationalError
+
+    other = connections.create_connection("default")
+    try:
+        with other.cursor() as cursor:
+            cursor.execute("SET lock_timeout = '300ms'")
+            try:
+                cursor.execute(f'SELECT 1 FROM "{table}" WHERE id = %s FOR KEY SHARE', [pk])  # noqa: S608 — the table name is the model's own db_table; the id is a bound parameter
+            except OperationalError as refused:
+                return str(refused).splitlines()[0]
+        return None
+    finally:
+        other.close()
+
+
+@pytest.mark.django_db(transaction=True)
+def test_a_finalize_lock_lets_every_other_writer_check_its_keys(
+    tenant: Tenant, owner_actor: Actor
+) -> None:
+    """The document locks hold the document's rows only, and never against a key check."""
+    ticket = services.create_file(
+        tenant=tenant,
+        actor=owner_actor,
+        filename="contract.pdf",
+        content_type="application/pdf",
+        size_bytes=len(BODY),
+        purpose=StoredFile.Purpose.UPLOAD,
+    )
+    document = ticket.file
+    with transaction.atomic():
+        services._locked_document(tenant=tenant, hat=document.organization, file_id=document.pk)
+        services._next_version(
+            file=document,
+            org=document.organization,
+            content_type="application/pdf",
+            uploaded_by_id=services._uploader_id(owner_actor),
+        )
+        assert _key_share_waits("core_organization", document.organization_id) is None
+        assert _key_share_waits("files_storedfile", document.pk) is None

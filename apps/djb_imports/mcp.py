@@ -1,10 +1,4 @@
-"""The machine door onto imports — the same six capabilities, over the same seams.
-
-Every tool calls the selector or service its REST twin calls, answers the same
-schema, and says the same thing: each `description=` is `contract_of(<the
-route>)` (house rule 41). Who is calling comes from the principal, never an
-argument; refusals are mapped once, by `tool_call`.
-"""
+"""The machine door onto imports — each tool calls the selector and service its REST twin calls."""
 
 from __future__ import annotations
 
@@ -31,12 +25,12 @@ from apps.djb_imports.api import (
 )
 from apps.djb_imports.models import Import, ImportRow
 from apps.djb_imports.schemas import (
-    ImportFilter,
-    ImportOut,
-    ImportPage,
-    ImportRowOut,
-    ImportRowPage,
-    ImportStagedOut,
+    DjbImportFilter,
+    DjbImportOut,
+    DjbImportPage,
+    DjbImportRowOut,
+    DjbImportRowPage,
+    DjbImportStagedOut,
 )
 from apps.djb_imports.selectors import get_import, get_import_source, list_import_rows, list_imports
 from apps.djb_imports.services import apply_import, cancel_import, create_import
@@ -54,17 +48,21 @@ def register(server: MCPServer[Any]) -> None:
         cursor: str | None = None,
         limit: int | None = None,
         include_count: bool = False,
-    ) -> ImportPage:
+    ) -> DjbImportPage:
         with tool_call(ctx) as acting:
-            runs: QuerySet[Import] = ImportFilter(status=status, kind=kind).filter(
-                list_imports(tenant=acting.tenant, org=acting.org, actor=acting.actor())
+            runs: QuerySet[Import] = DjbImportFilter(status=status, kind=kind).filter(
+                list_imports(tenant=acting_tenant(acting), org=acting.org, actor=acting.actor())
             )
             runs = ordered_by(runs, ordering, allowed=ORDERING, default="-created_at")
             page = cursor_page(
-                runs, tenant=acting.tenant, cursor=cursor, limit=limit, include_count=include_count
+                runs,
+                tenant=acting_tenant(acting),
+                cursor=cursor,
+                limit=limit,
+                include_count=include_count,
             )
-            return ImportPage(
-                items=[ImportOut.from_orm(run) for run in page.items],
+            return DjbImportPage(
+                items=[DjbImportOut.from_orm(run) for run in page.items],
                 has_more=page.has_more,
                 next_cursor=page.next_cursor,
                 count=page.count,
@@ -73,11 +71,11 @@ def register(server: MCPServer[Any]) -> None:
     @server.tool(name="create_djb_import", description=contract_of(create_import_route))
     def create_import_tool(
         ctx: Context[Any], kind: str, file_id: UUID, idempotency_key: str = ""
-    ) -> ImportStagedOut:
+    ) -> DjbImportStagedOut:
         with tool_call(ctx) as acting:
             actor = acting.actor()
             version = get_import_source(
-                tenant=acting.tenant, file_id=file_id, org=acting.org, actor=actor
+                tenant=acting_tenant(acting), file_id=file_id, org=acting.org, actor=actor
             )
             run, created = create_import(
                 tenant=acting_tenant(acting),
@@ -89,11 +87,14 @@ def register(server: MCPServer[Any]) -> None:
             return staged_out(run, created)
 
     @server.tool(name="get_djb_import", description=contract_of(retrieve_import))
-    def get_import_tool(ctx: Context[Any], import_id: UUID) -> ImportOut:
+    def get_import_tool(ctx: Context[Any], import_id: UUID) -> DjbImportOut:
         with tool_call(ctx) as acting:
-            return ImportOut.from_orm(
+            return DjbImportOut.from_orm(
                 get_import(
-                    tenant=acting.tenant, import_id=import_id, org=acting.org, actor=acting.actor()
+                    tenant=acting_tenant(acting),
+                    import_id=import_id,
+                    org=acting.org,
+                    actor=acting.actor(),
                 )
             )
 
@@ -105,37 +106,51 @@ def register(server: MCPServer[Any]) -> None:
         cursor: str | None = None,
         limit: int | None = None,
         include_count: bool = False,
-    ) -> ImportRowPage:
+    ) -> DjbImportRowPage:
         with tool_call(ctx) as acting:
             actor = acting.actor()
-            run = get_import(tenant=acting.tenant, import_id=import_id, org=acting.org, actor=actor)
+            run = get_import(
+                tenant=acting_tenant(acting), import_id=import_id, org=acting.org, actor=actor
+            )
             rows: QuerySet[ImportRow] = list_import_rows(
-                tenant=acting.tenant, import_=run, org=acting.org, actor=actor, outcome=outcome
+                tenant=acting_tenant(acting),
+                import_=run,
+                org=acting.org,
+                actor=actor,
+                outcome=outcome,
             )
             page = cursor_page(
-                rows, tenant=acting.tenant, cursor=cursor, limit=limit, include_count=include_count
+                rows,
+                tenant=acting_tenant(acting),
+                cursor=cursor,
+                limit=limit,
+                include_count=include_count,
             )
-            return ImportRowPage(
-                items=[ImportRowOut.from_orm(row) for row in page.items],
+            return DjbImportRowPage(
+                items=[DjbImportRowOut.from_orm(row) for row in page.items],
                 has_more=page.has_more,
                 next_cursor=page.next_cursor,
                 count=page.count,
             )
 
     @server.tool(name="apply_djb_import", description=contract_of(apply_import_route))
-    def apply_import_tool(ctx: Context[Any], import_id: UUID) -> ImportOut:
+    def apply_import_tool(ctx: Context[Any], import_id: UUID) -> DjbImportOut:
         with tool_call(ctx) as acting:
             actor = acting.actor()
-            run = get_import(tenant=acting.tenant, import_id=import_id, org=acting.org, actor=actor)
-            return ImportOut.from_orm(
+            run = get_import(
+                tenant=acting_tenant(acting), import_id=import_id, org=acting.org, actor=actor
+            )
+            return DjbImportOut.from_orm(
                 apply_import(tenant=acting_tenant(acting), actor=actor, import_=run)
             )
 
     @server.tool(name="cancel_djb_import", description=contract_of(cancel_import_route))
-    def cancel_import_tool(ctx: Context[Any], import_id: UUID) -> ImportOut:
+    def cancel_import_tool(ctx: Context[Any], import_id: UUID) -> DjbImportOut:
         with tool_call(ctx) as acting:
             actor = acting.actor()
-            run = get_import(tenant=acting.tenant, import_id=import_id, org=acting.org, actor=actor)
-            return ImportOut.from_orm(
+            run = get_import(
+                tenant=acting_tenant(acting), import_id=import_id, org=acting.org, actor=actor
+            )
+            return DjbImportOut.from_orm(
                 cancel_import(tenant=acting_tenant(acting), actor=actor, import_=run)
             )

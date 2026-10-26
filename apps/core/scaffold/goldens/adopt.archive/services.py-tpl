@@ -1,0 +1,61 @@
+# golden: noun begin
+from typing import cast
+
+from apps.example.events import WIDGET_ARCHIVED, WIDGET_RESTORED
+from apps.example.models import Widget
+from apps.example.schemas import WidgetOut
+from pilecap import (
+    Actor,
+    NotFound,
+    archive_row,
+    event_payload,
+    get_logger,
+    may_be_named,
+    require,
+    restore_row,
+    service,
+)
+from pilecap.events import EMIT, listener
+from pilecap.tenancy import Tenant
+
+
+# golden: noun begin
+log = get_logger("apps.example.services")
+# golden: noun end
+
+
+def _publish_widget(
+    name: str, *, tenant: Tenant, widget: Widget, actor: Actor, out: WidgetOut | None = None
+) -> bool:
+    """Say what happened inside the write's transaction: the `Out` as every viewer sees it."""
+    emit = listener(EMIT)
+    if emit is None:
+        log.info("example.event.unpublished", event_name=name, widget_id=str(widget.pk))
+        return False
+    payload = event_payload(out or WidgetOut.from_orm(widget))
+    emit(name=name, tenant=tenant, payload=payload, actor=actor)
+    return True
+
+
+@service
+def archive_widget(*, tenant: Tenant, actor: Actor, widget: Widget) -> Widget:
+    """Take a widget out of the book. **A repeat press changes nothing.**"""
+    if not may_be_named(actor, widget):
+        raise NotFound()
+    require(actor, "widget.archive", widget)
+    widget, changed = archive_row(tenant=tenant, actor=actor, row=widget, noun="widget")
+    if changed:
+        _publish_widget(WIDGET_ARCHIVED, tenant=tenant, widget=widget, actor=actor)
+    return widget
+
+
+@service
+def restore_widget(*, tenant: Tenant, actor: Actor, widget: Widget) -> Widget:
+    """Put an archived widget back in the book. **A repeat press changes nothing.**"""
+    if not may_be_named(actor, widget):
+        raise NotFound()
+    require(actor, "widget.restore", widget)
+    widget, changed = restore_row(tenant=tenant, actor=actor, row=widget, noun="widget")
+    if changed:
+        _publish_widget(WIDGET_RESTORED, tenant=tenant, widget=widget, actor=actor)
+    return widget

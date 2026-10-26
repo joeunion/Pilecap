@@ -8,17 +8,21 @@ see is exactly the kind of break a test has to catch.
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import inspect
 from uuid import UUID
 
 import pytest
+from channels_redis.core import RedisChannelLayer
 from django.utils import timezone
 
 from apps.core import bridge
 from apps.realtime.bridge import (
     GROUP_PREFIX,
     MESSAGE_TYPE,
+    kick_from_spine,
+    kick_tenant_from_spine,
     push_event,
     push_from_spine,
     tenant_group,
@@ -133,3 +137,47 @@ async def test_an_org_bearing_frame_on_an_org_less_kind_is_dropped(
         await push_event(tenant_id=UUID("018f3a2b-0000-7000-8000-00000000abcd"), event=frame)
 
     assert "realtime.frame.org_on_orgless_kind" in caplog.text
+
+
+PUSHES = 1000
+
+#: The three sync adapters `core.bridge` holds, each with arguments it accepts.
+ADAPTERS = {
+    "push": lambda: push_from_spine(
+        tenant_id="00000000-0000-0000-0000-000000000001",
+        event={
+            "name": "example.widget.created",
+            "occurred_at": "2026-10-22T00:00:00Z",
+            "payload": {},
+        },
+    ),
+    "kick_user": lambda: kick_from_spine(user_id="00000000-0000-0000-0000-000000000003"),
+    "kick_tenant": lambda: kick_tenant_from_spine(tenant_id="00000000-0000-0000-0000-000000000001"),
+}
+
+
+@pytest.mark.parametrize("adapter", sorted(ADAPTERS))
+def test_a_thousand_pushes_leave_one_loop_and_one_pool(
+    adapter: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """N calls through a registered sync adapter run on one loop and build one pool."""
+    layer = RedisChannelLayer(hosts=["redis://127.0.0.1:1/0"])
+    loops: set[int] = set()
+    pools: list[object] = []
+    create_pool = layer.create_pool
+
+    def counting_pool(index: int) -> object:
+        pool = create_pool(index)
+        pools.append(pool)
+        return pool
+
+    async def group_send(_group: str, _message: dict[str, object]) -> None:
+        loops.add(id(asyncio.get_running_loop()))
+        layer.connection(0)
+
+    monkeypatch.setattr(layer, "create_pool", counting_pool)
+    monkeypatch.setattr(layer, "group_send", group_send)
+    monkeypatch.setattr("apps.realtime.bridge.get_channel_layer", lambda: layer)
+    for _ in range(PUSHES):
+        ADAPTERS[adapter]()
+    assert (len(loops), len(pools)) == (1, 1), f"{len(loops)} loops, {len(pools)} pools"

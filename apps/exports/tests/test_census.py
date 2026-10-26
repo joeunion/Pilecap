@@ -61,6 +61,12 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 #: `comms.MessageEngagement`, added later.
 EXPECTED: frozenset[str] = frozenset(
     {
+        # A tenant's identity home — the realm its people sign in at, beside
+        # the connections that federate into that realm. It carries a `tenant`,
+        # so the derived census took it the day the model existed; it belongs
+        # in the tenant's archive for SsoConnection's reason. The staff realm's
+        # row has no tenant and is in nobody's.
+        "accounts.IdentityHome",
         "accounts.SsoConnection",
         "accounts.SsoDomain",
         "accounts.SsoIdentity",
@@ -162,6 +168,11 @@ EXPECTED: frozenset[str] = frozenset(
         "djb_notes.Note",
         "djb_tags.Tag",
         "djb_tags.TagLink",
+        # The worked customer surface's noun (`apps/example_portal`), in the
+        # partition from the day it shipped: a request is the customer's own
+        # words about a widget, org-scoped at the hat it was sent from, so a
+        # subtree export narrows it and a tenant's archive carries it.
+        "example_portal.PortalRequest",
         # The census is DERIVED, so `usage.UsageEntry` joined the
         # archive the moment the model existed; this line is the diff the pin
         # exists to make somebody read. It BELONGS in a tenant's archive: the
@@ -475,10 +486,8 @@ def test_the_counts_this_report_states(capsys: Any) -> None:
     concrete = len(not_a_product_model([m for m in django_apps.get_models() if not m._meta.proxy]))
     # 39 -> 40: `usage.UsageEntry`, the metering ledger.
     # 40 -> 41: `comms.MessageEngagement`, the opened/clicked record.
-    # 41 -> 43: `files.StoredFile` and `files.FileVersion`, the
-    # document aggregate (both models landed together; the three numbers move
-    # together by construction, and a diff that moved only one would be the
-    # thing to look at).
+    # 41 -> 43: `files.StoredFile` and `files.FileVersion`, the document aggregate;
+    # the three numbers move together, and a diff moving only one is the thing to look at.
     # 43 -> 44: `comms.Device`, the push address book.
     # 44 -> 45: `accounts.IdentityBranding`, the hosted sign-in screen's intent
     # row. Only THIS number moves, unlike every entry above: it carries no
@@ -496,13 +505,22 @@ def test_the_counts_this_report_states(capsys: Any) -> None:
     # joined the template's partition, so a count scoped to this tree's own apps
     # now sees them. All three numbers move together (each carries a `tenant`,
     # none is excluded).
-    assert concrete == 53, (
+    # 53 -> 54: `example_portal.PortalRequest`, the worked customer surface's
+    # noun. All three numbers move together (it carries a `tenant`, it is not
+    # excluded).
+    # 54 -> 55: `accounts.IdentityHome`, a tenant's realm (identity option B).
+    # All three numbers move together: it carries a `tenant`, so it joins
+    # `scoped_models()`, and it is not excluded, so it is dispositioned.
+    # 55 -> 56: `accounts.FirstAdminVouch`, the day-zero vouch. Only THIS number moves, as with
+    # `IdentityBranding`: no `tenant`, so never in `scoped_models()`, dispositioned or excluded.
+    assert concrete == 56, (
         "the review's 38, plus exports.Export, usage.UsageEntry, "
         "comms.MessageEngagement, the two files models, "
-        "comms.Device, accounts.IdentityBranding, the three permission tables "
-        "and the five of imports, notes and tags"
+        "comms.Device, accounts.IdentityBranding, the three permission tables, "
+        "the five of imports, notes and tags, the portal's request, and "
+        "accounts.IdentityHome, and accounts.FirstAdminVouch"
     )
-    assert len(not_a_product_model(scoped_models())) == 37
-    assert len(platform_only(dispositions())) == 34
+    assert len(not_a_product_model(scoped_models())) == 39
+    assert len(platform_only(dispositions())) == 36
     assert len(platform_only(exclusions())) == 3
     assert issubclass(dispositions()["core.AuditEntry"].model, BaseModel)

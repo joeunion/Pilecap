@@ -1,9 +1,4 @@
-"""The version adoption's own test — copied with the adoption, and green on the copy.
-
-Every line is fenced `golden: version`, so a product that copies the version
-blocks onto its own noun gets this file too, with the one rename applied. It
-builds its rows by hand: the noun's create is the product's own business.
-"""
+"""The version adoption's own test — copied with the adoption, and green on the copy."""
 
 # golden: version begin
 import json
@@ -12,9 +7,9 @@ from typing import Any
 import pytest
 from django.test import Client
 
-from apps.accounts.models import User
-from apps.core.models import Organization, Tenant
 from apps.example.models import Widget
+from pilecap.accounts import User
+from pilecap.tenancy import Organization, Tenant
 
 pytestmark = pytest.mark.django_db
 

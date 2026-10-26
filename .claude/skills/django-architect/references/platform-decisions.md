@@ -31,7 +31,8 @@ touches the area, the rule is applied and cited; none is re-argued.
   filenames); bytes never transit Django (presigned URLs both directions,
   TTLs declared in settings); uploads two-phase through services, and
   "replace" is a new `FileVersion`, never an overwrite.
-- **Tenant settings & flags** — `Tenant.settings` JSON (schema-validated) +
+- **Tenant settings & flags** — `Tenant.settings` JSON (merged key by key;
+  the values are NOT schema-validated — a declared gap, `architecture.md`) +
   `core.flags.is_enabled(tenant, name)`; no third-party flag service; a flag
   is named in the rung that adds it and removed by a named later rung.
 - **Events** — `v` on every payload; the outbox is retained;
@@ -48,5 +49,5 @@ touches the area, the rule is applied and cited; none is re-argued.
   gate is the only CI; a rung never adds a second pipeline.
 - **i18n** — off by default (`USE_I18N=False`); `Tenant.timezone` / `locale`
   are present for display; a product turns i18n on as a recorded decision.
-- **Template updates** — no sync tooling yet: `TEMPLATE_VERSION` +
-  `CHANGELOG.md`; products cherry-pick system-layer commits.
+- **Template updates** — `docs/product/architecture.md` § "The platform the template ships", the
+  "Template updates" row, is the ruling; this line does not restate it.

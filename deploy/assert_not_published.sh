@@ -65,7 +65,7 @@ fi
 # NOTHING HERE PRINTS A VALUE. A refusal names the VARIABLE and says how long
 # what it holds was. A belt that echoed the secret to prove it was wrong would
 # put it in every log the deployment ships.
-exec "$PYTHON_BIN" - "$DJB_ROOT" "$@" <<'PYTHON'
+exec "$PYTHON_BIN" - "$DJB_ROOT" "$HERE" "$@" <<'PYTHON'
 from __future__ import annotations
 
 import sys
@@ -75,7 +75,22 @@ BROKEN = 2
 REFUSED = 1
 
 root = Path(sys.argv[1])
-sources = sys.argv[2:]
+sources = sys.argv[3:]
+
+# The env file's one reader — the subset `docker compose --env-file` and
+# `set -a` agree on — is deploy/envfile.py, beside this script (in the
+# container, /deploy). Stdlib only, so the belt still runs before anything is
+# installed; a reader it cannot load is a belt that cannot read, exit 2.
+sys.path.insert(0, sys.argv[2])
+try:
+    from envfile import read_env_file
+except Exception as error:  # pragma: no cover - the broken-enforcement path
+    print(
+        f"!! assert_not_published: cannot import envfile from {sys.argv[2]} "
+        f"({type(error).__name__}: {error}). The env file cannot be read.",
+        file=sys.stderr,
+    )
+    raise SystemExit(BROKEN)
 
 # --- half one: what guards already knows, read live -------------------------
 sys.path.insert(0, str(root))
@@ -136,31 +151,6 @@ WATCHED: list[tuple[str, str | None, str | None]] = [
     # paths that go through them, and this one costs a dictionary entry.
     ("ZITADEL_DEV_USER_PASSWORD", None, "Password1!"),  # pragma: allowlist secret
 ]
-
-
-def read_env_file(path: Path) -> dict[str, str]:
-    """NAME=VALUE, the subset `docker compose --env-file` and `set -a` agree on.
-
-    Deliberately not a dotenv library: this runs inside a distroless-adjacent
-    container at the moment before anything starts, and a dependency there is a
-    reason for the belt not to run.
-    """
-    values: dict[str, str] = {}
-    for raw in path.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[len("export ") :].strip()
-        name, sep, value = line.partition("=")
-        if not sep:
-            continue
-        name = name.strip()
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-            value = value[1:-1]
-        values[name] = value
-    return values
 
 
 if sources:

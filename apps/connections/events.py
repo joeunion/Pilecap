@@ -17,6 +17,7 @@ V = 1
 CONNECTION_CREATED = "connections.connection.created"
 CONNECTION_CREDENTIALS_UPDATED = "connections.connection.credentials_updated"
 CONNECTION_REVOKED = "connections.connection.revoked"
+CONNECTION_SIGNATURE_SCHEME_UPDATED = "connections.connection.signature_scheme_updated"
 
 # Something arrived from the outside, was signature-verified, and was stored.
 # The payload is the receipt (`InboundWebhookOut`) — never the body: an event

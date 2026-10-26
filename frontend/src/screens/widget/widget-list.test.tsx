@@ -1,14 +1,14 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import axe from "axe-core";
 import { useState } from "react";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, expectTypeOf, it, vi } from "vitest";
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { WIDGET_COPY as C } from "@/copy/widget";
-import { REQUIRED_STORY_EXPORTS } from "@/screens/state";
-import { type BulkAnswer, WidgetList } from "@/screens/widget/widget-list";
+import { WIDGET_COPY as C } from "@pilecap/copy/widget";
+import { REQUIRED_STORY_EXPORTS } from "@pilecap/ui/state";
+import { type BulkAnswer, type Cut, WidgetList } from "@/screens/widget/widget-list";
 import * as stories from "@/screens/widget/widget-list.stories";
 import {
     ARCHIVED_PAGE,
@@ -124,9 +124,9 @@ describe("the populated list (the Ready story)", () => {
     it("puts the name block first, then the facts as days; a row at rest wears no pill", () => {
         const { container } = render(<Ready />);
         const [first, second] = Array.from(container.querySelectorAll("ul > li a"));
-        expect(first?.textContent).toBe("Bench press #4" + "Added 23 August 2026" + "Last changed 2 September 2026");
+        expect(first?.textContent).toBe("Bench press #4" + "Status draft" + "Added 23 August 2026" + "Last changed 2 September 2026");
         expect(first?.querySelectorAll("[data-pill]")).toHaveLength(0);
-        expect(second?.textContent).toBe("Rowing machine\u00a0Onboarding" + "Added 24 August 2026" + "Last changed 20 September 2026");
+        expect(second?.textContent).toBe("Rowing machine\u00a0Onboarding" + "Status draft" + "Added 24 August 2026" + "Last changed 20 September 2026");
     });
 
     it("the pill is the departure: only onboarding rows wear it, one neutral word each", () => {
@@ -318,7 +318,7 @@ describe("accessibility", () => {
 
 describe("the face stylesheet's desk grid and phone stack", () => {
     it("lays the desk row out as the name block then one column per fact, aligned across rows", () => {
-        expect(FACE_CSS).toMatch(/\.widget-rows \{[^}]*grid-template-columns: minmax\(0, 1fr\) auto auto;/);
+        expect(FACE_CSS).toMatch(/\.widget-rows \{[^}]*grid-template-columns: minmax\(0, 1fr\) repeat\(\d+, auto\);/);
         expect(FACE_CSS).toMatch(/\.widget-row \{[^}]*grid-template-columns: subgrid;[^}]*min-block-size: var\(--act-min\);/);
         expect(FACE_CSS).toMatch(/@media \(width <= 40rem\) \{[^@]*\.widget-row \{[^}]*flex-direction: column;/);
     });
@@ -593,5 +593,52 @@ describe("the selection bar's Merge, at exactly two checked rows (§7, §1)", ()
         fireEvent.click(unchecked);
         fireEvent.click(boxes.find((box) => box.checked) as HTMLInputElement);
         expect(container.querySelector('[data-seat="list-select"] [data-act="merge"]')).toBeNull();
+    });
+});
+
+describe("the cuts are the wire's `show`, less `all`", () => {
+    // The cuts this face draws; the type below holds them equal to `Cut`, which is
+    // read from the generated client, so the list and the wire cannot drift apart.
+    const FACE_CUTS = ["live", "archived"] as const;
+
+    it("the face's cuts are `Cut`, and `Cut` is the generated client's `show`", () => {
+        expectTypeOf<(typeof FACE_CUTS)[number]>().toEqualTypeOf<Cut>();
+    });
+
+    it("the document's `show` for the widget list is the face's cuts and `all`, which no face draws", () => {
+        const document = JSON.parse(readFileSync(resolve(process.cwd(), "openapi.json"), "utf8")) as {
+            readonly paths: Readonly<Record<string, { readonly get?: { readonly parameters?: readonly { readonly name: string; readonly schema?: { readonly enum?: readonly string[] } }[] } }>>;
+        };
+        const show = document.paths["/api/v1/widgets/"]?.get?.parameters?.find((parameter) => parameter.name === "show")?.schema?.enum;
+        expect(show, "the document publishes the list's `show` enum").toBeDefined();
+        expect([...(show ?? [])].filter((value) => value !== "all").sort()).toEqual([...FACE_CUTS].sort());
+    });
+});
+
+describe("the noun's own fields and the live board (the screen shape's list)", () => {
+    const DUE = { ...BENCH, due_at: "2026-11-02T17:00:00.000Z", status: "active" };
+    const page = { items: [DUE, ROWING], has_more: false, next_cursor: null, count: null, allowed_acts: ["create"] };
+
+    it("rows show the noun's own fields: its status and its due day beside the name and the two dates", () => {
+        const { container } = render(<WidgetList state={{ kind: "ready", data: page }} />);
+        const [first, second] = Array.from(container.querySelectorAll(".widget-row"));
+        const facts = Array.from(first?.querySelectorAll(".widget-fact") ?? [], (fact) => fact.textContent);
+        expect(facts).toEqual(["Due at 2 November 2026", "Status active", `${C.addedLabel} 23 August 2026`, expect.stringContaining(C.changedLabel)]);
+        // A row that lacks a fact keeps its column and says nothing in it.
+        const blank = Array.from(second?.querySelectorAll(".widget-fact") ?? [], (fact) => fact.textContent);
+        expect(blank.slice(0, 2)).toEqual(["", `Status ${ROWING.status}`]);
+        expect(container.textContent).not.toMatch(/undefined|null/);
+    });
+
+    it("the face's grid holds one column per fact: the name, the noun's own, then the two dates", () => {
+        const own = Object.keys(C.columns).length;
+        expect(FACE_CSS).toContain(`grid-template-columns: minmax(0, 1fr) repeat(${own + 2}, auto);`);
+    });
+
+    it("data-board=live: the list says the socket feed's state on its page, and nothing without one", () => {
+        const { container, rerender } = render(<WidgetList state={{ kind: "ready", data: page }} board="live" />);
+        expect(container.querySelector("main")?.getAttribute("data-board")).toBe("live");
+        rerender(<WidgetList state={{ kind: "ready", data: page }} />);
+        expect(container.querySelector("main")?.hasAttribute("data-board")).toBe(false);
     });
 });

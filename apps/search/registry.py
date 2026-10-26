@@ -55,17 +55,16 @@ once, from `SearchConfig.ready()`, and a bad declaration stops the process
 from __future__ import annotations
 
 import hashlib
-import importlib
-import importlib.util
 import json
 import re
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from typing import Any
 from uuid import UUID
 
 from django.apps import apps as django_apps
 from django.core.exceptions import FieldDoesNotExist, ImproperlyConfigured
 
+from apps.core.discovery import declared, imported
 from apps.core.exceptions import Invalid, Remedy
 from apps.core.models import is_org_scoped
 from apps.search.types import ScopeFilter, Searchable, SearchKind
@@ -115,50 +114,31 @@ EVENTS_MODULE = "events"
 
 
 def declarations() -> tuple[Searchable, ...]:
-    """Every `Searchable` the installed apps declare, in app order.
+    """Every `Searchable` the installed apps declare, in app order; import errors are raised."""
+    return tuple(
+        searchable
+        for _config, declared_here in declared(
+            DECLARATION_MODULE, DECLARATION_ATTRIBUTE, predicate=_is_sequence
+        )
+        for searchable in declared_here
+    )
 
-    Import errors are not swallowed. A declaration module that does not import
-    is a deployment that would have answered searches from an index nobody
-    described, and the boot refusal is the cheapest place to find out (the
-    strongest tier — hardened from "it imported" to "every field, weight
-    and event name in it is real").
-    """
-    return tuple(_discovered())
 
-
-def _discovered() -> Iterator[Searchable]:
-    for config in django_apps.get_app_configs():
-        if not config.name.startswith("apps."):
-            continue
-        module_name = f"{config.name}.{DECLARATION_MODULE}"
-        if importlib.util.find_spec(module_name) is None:
-            continue
-        module = importlib.import_module(module_name)
-        yield from getattr(module, DECLARATION_ATTRIBUTE, ()) or ()
+def _is_sequence(value: Any) -> bool:
+    """The shape a discovered `SEARCHABLES` takes."""
+    return isinstance(value, (list, tuple))
 
 
 def declared_event_names(app_label: str) -> frozenset[str]:
-    """Every event name `apps/<app_label>/events.py` declares, as strings.
-
-    Read out of the module rather than off a central catalogue, because that is
-    where house rule 16 puts them — one file per app, discovered, so adding an
-    event edits no shared file. An app with no `events.py` declares none, which
-    is a different fact from "the app does not exist" and is refused with its
-    own sentence below.
-
-    Only module-level UPPER_CASE strings count: a helper, a version integer or
-    an imported name is not a declaration, and treating one as such would let a
-    `refresh_on` entry validate against something nobody publishes.
-    """
-    module_name = f"apps.{app_label}.{EVENTS_MODULE}"
-    if importlib.util.find_spec(module_name) is None:
-        return frozenset()
-    module = importlib.import_module(module_name)
-    return frozenset(
-        value
-        for name, value in vars(module).items()
-        if name.isupper() and not name.startswith("_") and isinstance(value, str)
-    )
+    """Every module-level UPPER_CASE string `apps/<app_label>/events.py` declares (rule 16)."""
+    for config, module in imported(EVENTS_MODULE):
+        if config.label == app_label:
+            return frozenset(
+                value
+                for name, value in vars(module).items()
+                if name.isupper() and not name.startswith("_") and isinstance(value, str)
+            )
+    return frozenset()
 
 
 def refresh_map(

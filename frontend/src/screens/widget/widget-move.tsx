@@ -30,12 +30,14 @@
 // golden: bulk begin
 import { useEffect, useId, useRef, useState } from "react";
 
-import { WIDGET_COPY as C } from "@/copy/widget";
-import { Dialog } from "@/primitives/dialog";
-import { RefusalPanel } from "@/screens/refusal-panel";
-import type { Refusal, SurfaceState } from "@/screens/state";
-import type { Act } from "@/screens/verbs";
-import { type Destination, StillLine } from "@/screens/widget/parts";
+import { WIDGET_COPY as C } from "@pilecap/copy/widget";
+import { Dialog } from "@pilecap/ui/dialog";
+import { RefusalPanel } from "@pilecap/ui/refusal-panel";
+import { STAFF_SURFACE } from "@pilecap/ui/routes";
+import type { Refusal, SurfaceState } from "@pilecap/ui/state";
+import type { Act } from "@pilecap/ui/verbs";
+import { StillLine } from "@pilecap/ui/still-line";
+import { type Destination } from "@/screens/widget/parts";
 
 /** What the route hands the sheet: the destinations it read, and the move (answering whether it moved). */
 export type MovePress = {
@@ -115,7 +117,7 @@ export function MoveSheet({
                 ) : null}
                 {state.kind === "empty" ? <p>{C.moveNowhere}</p> : null}
                 {state.kind === "error" ? (
-                    <RefusalPanel refusal={state.refusal} words={{ label: move.words.refused, remedies: C.remedies }} />
+                    <RefusalPanel surface={STAFF_SURFACE} refusal={state.refusal} refused={move.words.refused} />
                 ) : null}
                 {state.kind === "ready" ? (
                     <fieldset className="widget-choices" aria-label={title}>
@@ -144,7 +146,7 @@ export function MoveSheet({
                 ) : null}
                 {refused === null ? null : (
                     <div className="widget-refusal-seat">
-                        <RefusalPanel refusal={refused} seat="sheet-foot" words={{ label: move.words.refused, remedies: C.remedies }} />
+                        <RefusalPanel surface={STAFF_SURFACE} refusal={refused} seat="sheet-foot" refused={move.words.refused} />
                     </div>
                 )}
             </div>

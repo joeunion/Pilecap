@@ -1,36 +1,5 @@
 #!/usr/bin/env bash
-# THIS FILE IS EXECUTED, AND IT IS BASH — not POSIX sh, and not zsh. The
-# shebang above is honoured by `./this`; `sh this` and `zsh this` IGNORE it,
-# and neither of them fails where the mistake was made. Measured on this tree:
-#
-#   zsh scripts/queue_cited.sh   exit 2 blaming the TREE ("this is not a
-#                                checkout root") for zsh's word-splitting
-#   zsh scripts/kill_mine.sh     an ordinary-looking census of nothing
-#   sh  scripts/sweep.sh         "lifecycle.sh: line 152: syntax error"
-#
-# A wrong shell here does not crash. It ANSWERS, and the answer looks like the
-# tree's fault.
-#
-# TWO TESTS, because on macOS `/bin/sh` IS bash: BASH_VERSION is set under
-# `sh x.sh` and only POSIX MODE tells the two apart (SHELLOPTS carries
-# `posix`). On Linux `/bin/sh` is dash and the first test is the one that
-# fires. Neither test alone covers both machines.
-#
-# A SOURCED library must never carry this. There the interpreter is the
-# caller's ON PURPOSE and an `exit` would kill the caller's shell — the
-# argument is scripts/db.sh's, at scripts/db.sh:50-57, and it is why db.sh is
-# the one executable in this tree deliberately without a belt.
-[ -n "${BASH_VERSION:-}" ] || {
-    echo "${0##*/}: must run under bash — not sh, not zsh. Try \`bash ${0}\`." >&2
-    exit 2
-}
-case ":${SHELLOPTS:-}:" in
-*:posix:*)
-    echo "${0##*/}: bash is in POSIX mode — which is what \`sh ${0}\` does on a" >&2
-    echo "  machine whose /bin/sh is bash. Try \`bash ${0}\`." >&2
-    exit 2
-    ;;
-esac
+. "$(dirname -- "${BASH_SOURCE:-$0}")/bash_only.sh" || exit 2
 # The census and the broom for LEFT-BEHIND TEST DATABASES.
 #
 #   ./scripts/db_sweep.sh                    census: this checkout's test databases
@@ -667,3 +636,33 @@ if [ "$ORPHANS" -eq 1 ] && [ "$foreign" -gt 0 ]; then
     echo "        this repository live — and only then, having read that census,"
     echo "        --roots <dir> --sweep --force-foreign to drop what is left by hand."
 fi
+
+# THE BUCKET HALF (`manage.py bucket_sweep`, through the storage seam): a
+# checkout's bucket goes with its database, and no bucket is removed whose name
+# was not derived from a path this run was handed — this checkout's own on
+# `--sweep`; under `--orphans`, a directory a `--roots` scan found that is no
+# live checkout — and, with `--force-foreign`, every FOREIGN name too, on the
+# same roots and after the same printed census. Could-not-look is exit 2.
+bucket_paths() {
+    local root top
+    git worktree list --porcelain 2>/dev/null | sed -n 's/^worktree /live /p'
+    for root in ${LC_ROOTS+"${LC_ROOTS[@]}"}; do
+        while IFS= read -r top; do
+            git -C "$top" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree /live /p'
+        done < <(lc_checkouts_under "$root")
+        find "$root" -maxdepth "$LC_ROOT_SCAN_DEPTH" -type d \
+            \( -name node_modules -o -name .git -o -name .venv \) -prune -o -type d -print \
+            2>/dev/null | sed 's/^/handed /'
+    done
+}
+bucket_rc=0
+if [ "$ORPHANS" -eq 1 ]; then
+    bucket_flags=(--orphans)
+    [ "$SWEEP" -eq 1 ] && bucket_flags+=(--sweep)
+    for root in ${LC_ROOTS+"${LC_ROOTS[@]}"}; do bucket_flags+=(--roots "$root"); done
+    [ "$FORCE_FOREIGN" -eq 1 ] && bucket_flags+=(--force-foreign)
+    bucket_paths | uv run python manage.py bucket_sweep "${bucket_flags[@]}" || bucket_rc=2
+elif [ "$SWEEP" -eq 1 ] && [ "$SCOPE_ALL" -eq 0 ] && [ -z "$ONE_NAME" ]; then
+    uv run python manage.py bucket_sweep --sweep || bucket_rc=2
+fi
+exit "$bucket_rc"

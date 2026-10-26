@@ -52,7 +52,7 @@ def test_syncing_records_the_intent_and_starts_a_run_on_commit(
 ) -> None:
     """W2R2-2's first half: the row says pending, and a run exists for it.
 
-    The fixture's `create_sso_connection` has already asked once (W2-R5), so the
+    The fixture's `create_sso_connection` has already asked once (ADR ident-6), so the
     row arrives at `pending` rather than `unmanaged` — asking again under the
     same unchanged intent is the *same* run, which is the property house rule 18
     exists for and the reason this still reads as one assertion.
@@ -89,7 +89,7 @@ def test_a_rolled_back_sync_leaves_no_run(
     started, so the world outside the database learns nothing about a write
     that did not happen.
 
-    Measured as a delta since W2-R5: the fixture's own `create_sso_connection`
+    Measured as a delta (ADR ident-6): the fixture's own `create_sso_connection`
     committed one run before this test began, so what has to be true is that the
     *rolled-back* sync added nothing and moved nothing — which is the same
     property, counted the honest way now that creating a connection is itself a
@@ -217,7 +217,7 @@ def test_recording_the_outcome_writes_the_resource_and_starts_nothing(
     if this branch started a run it would need both, so the test failing to even
     reach a Temporal client is itself the assertion.
 
-    **The count is a delta and not a zero since W2-R5**: creating a connection
+    **The count is a delta and not a zero**: creating a connection
     now asks for its own materialisation (ADR ident-6), so the fixture arrives
     with one run already recorded. What this pins is that the *outcome* branch
     adds none — which is what keeps the activity from re-entering the workflow
@@ -228,7 +228,6 @@ def test_recording_the_outcome_writes_the_resource_and_starts_nothing(
         kind=KIND_SSO_CONNECTION,
         key=str(sso_connection.pk),
         resource_id="387100000000000001",
-        created=True,
     )
 
     sync_identity_config(
@@ -257,7 +256,7 @@ def test_a_member_may_not_configure_identity(
     with pytest.raises(Forbidden):
         sync_identity_config(tenant=tenant, actor=member_actor, connection=sso_connection)
 
-    # Unchanged rather than `unmanaged`: since W2-R5 the owner's `create` already
+    # Unchanged rather than `unmanaged`: under ADR ident-6 the owner's `create` already
     # asked for this row's materialisation, so what the refusal owes is that it
     # moved nothing — not that nothing had ever moved.
     sso_connection.refresh_from_db()

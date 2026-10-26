@@ -28,26 +28,25 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any
 
 import pytest
 from django.core.management import call_command
 from django.test import Client
-from mcp.server import MCPServer
-from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 
 from apps.accounts.models import User
 from apps.core.actor import actor_for, system_actor
 from apps.core.authz import allows, refusal_sentence
 from apps.core.exceptions import Forbidden, NotFound
-from apps.core.mcp import SCOPE_KEY, Principal
 from apps.core.models import Grant, Membership, Organization, Tenant
 from apps.core.services import root_organization
+from apps.core.tests.mcp_context import context_for
+from apps.core.tests.mcp_context import tool as mcp_tool
 from apps.workflows.mcp import register
 from apps.workflows.models import WorkflowRun
 from apps.workflows.selectors import get_run, list_runs
-from apps.workflows.services import record_run, workflow_id
+from apps.workflows.services import _starter_actor, record_run, workflow_id
 
 pytestmark = pytest.mark.django_db
 
@@ -65,7 +64,7 @@ def _run(*, tenant: Tenant, user: User | None, key: str) -> WorkflowRun:
         workflow_id=workflow_id(tenant=tenant, app="example", noun="widget", key=key),
         workflow_type="WidgetOnboardingWorkflow",
         input_digest="d" * 64,
-        user=user,
+        actor=_starter_actor(tenant=tenant, user=user),
     )
 
 
@@ -110,28 +109,9 @@ def ledger(
     )
 
 
-@dataclass
-class _FakeRequest:
-    scope: dict[str, Any]
-
-
-@dataclass
-class _FakeRequestContext:
-    request: _FakeRequest
-
-
-def context_for(user: User, tenant: Tenant, org: Organization) -> Context[Any]:
-    scope = {SCOPE_KEY: Principal(user=user, tenant=tenant, org=org)}
-    return Context(
-        request_context=cast(Any, _FakeRequestContext(request=_FakeRequest(scope=scope)))
-    )
-
-
 def tool(name: str) -> Callable[..., Any]:
-    server: MCPServer[Any] = MCPServer(name="test", version="1")
-    register(server)
-    found: Callable[..., Any] = cast(Any, server._tool_manager._tools[name]).fn  # noqa: SLF001
-    return found
+    """The function this app's `register` binds to `name`."""
+    return mcp_tool(name, register=register)
 
 
 # --- PR4.i.1 · the selectors ask for the kind they hand back ------------------

@@ -10,7 +10,7 @@
  * else — never Close · Cancel · Done in a foot, because the dismiss is already
  * in the head and a second one is a second way out that says less.
  *
- * WHY IT LIVES IN `primitives/`, WHICH OTHERWISE SHIPS EMPTY. A primitive
+ * WHY IT LIVES IN `primitives/`, WHICH HOLDS TOKEN-ONLY SHAPES. A primitive
  * knows no product nouns, and the sheet's shape is not taste: it is the
  * book's §1 floor, and a rule that says "only the primitive draws a dialog"
  * needs the primitive to exist. It is drawn with the tokens alone, so a
@@ -67,6 +67,7 @@ export function Dialog({ open, title, onDismiss, foot, focusTitle, children }: D
                 event.preventDefault();
                 onDismiss();
             }}
+            // paint: the primitive's token-only sheet box; a primitive has no stylesheet (§26).
             style={{
                 maxWidth: "var(--measure)",
                 padding: 0,
@@ -77,6 +78,7 @@ export function Dialog({ open, title, onDismiss, foot, focusTitle, children }: D
             }}
         >
             <header
+                // paint: the primitive's token-only head row; a primitive has no stylesheet (§26).
                 style={{
                     display: "flex",
                     alignItems: "center",
@@ -89,6 +91,7 @@ export function Dialog({ open, title, onDismiss, foot, focusTitle, children }: D
                     id={titleId}
                     ref={head}
                     tabIndex={focusTitle === true ? -1 : undefined}
+                    // paint: the primitive's token-only title; a primitive has no stylesheet (§26).
                     style={{ margin: 0, fontSize: "var(--type-section)" }}
                 >
                     {title}
@@ -97,9 +100,17 @@ export function Dialog({ open, title, onDismiss, foot, focusTitle, children }: D
                     {DIALOG_COPY.dismiss}
                 </button>
             </header>
-            <div style={{ padding: "0 var(--space-3) var(--space-3)", overflow: "auto" }}>{children}</div>
+            <div
+                // paint: the primitive's token-only body; a primitive has no stylesheet (§26).
+                style={{ padding: "0 var(--space-3) var(--space-3)", overflow: "auto" }}
+            >
+                {children}
+            </div>
             {foot === undefined ? null : (
-                <footer style={{ display: "flex", gap: "var(--space-2)", padding: "var(--space-2) var(--space-3)" }}>
+                <footer
+                    // paint: the primitive's token-only foot row; a primitive has no stylesheet (§26).
+                    style={{ display: "flex", gap: "var(--space-2)", padding: "var(--space-2) var(--space-3)" }}
+                >
                     {foot}
                 </footer>
             )}

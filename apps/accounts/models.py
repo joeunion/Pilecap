@@ -20,7 +20,6 @@ connection's `default_role` says and not one permission more.
 from __future__ import annotations
 
 from typing import Any, ClassVar
-from uuid import UUID
 
 from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
 from django.contrib.auth.models import PermissionsMixin
@@ -85,21 +84,15 @@ class User(BaseModel, AbstractBaseUser, PermissionsMixin):
     is_staff = models.BooleanField(default=False)
     date_joined = models.DateTimeField(default=timezone.now)
 
-    # The one identity join between this table and Zitadel: the `sub` claim the
-    # platform IdP asserts for this person. **Nullable, and it stays nullable
-    # forever** — a user created by `seed`, by `createsuperuser` or by an
-    # invitation has never signed in through Zitadel and has no subject yet, and
-    # a column that demanded one would make every one of those paths a migration
-    # problem instead of a login problem.
-    #
-    # Unique for the reason `SsoIdentity.subject` is: a subject is the account
-    # itself, where an address is a label an employer can reassign. Two rows
-    # claiming one subject would be two people inheriting one login.
-    #
-    # Written at first RP login and nowhere else (W2-R3, one writer). It is here
-    # now, in R2's single expand-only leaf, because rule 6 allows one migration
-    # leaf per app per rung and R3 has none of its own.
-    zitadel_sub = models.CharField(max_length=255, null=True, blank=True, unique=True)
+    # RETIRED — read by nothing, written by nothing. A person holds one subject
+    # PER REALM now, so the identity join is `SsoIdentity` keyed `(realm,
+    # subject)` and this single column could only ever have held one of them;
+    # migration 0011 moved every value into the join and its reverse writes them
+    # back. The column stays until a later release drops it, because a deploy
+    # that stops reading a column and drops it in one step is the deploy house
+    # rule 22 refuses.
+    # rule-22: only the retirement comment on this line changed; the column is as it was.
+    zitadel_sub = models.CharField(max_length=255, null=True, blank=True, unique=True)  # RETIRED
 
     USERNAME_FIELD = "email"
     EMAIL_FIELD = "email"
@@ -207,20 +200,13 @@ class ApiToken(BaseModel):
 # that IdP, keyed on the subject the IdP asserts rather than on their address.
 
 
-# The prefix every per-connection allauth provider id carries. allauth resolves
-# a provider config by this string (`SOCIALACCOUNT_PROVIDERS`, or an adapter's
-# `list_apps`), so it has to be stable, free of meaning a reader could guess a
-# tenant from, and derivable from the row without a second lookup. The
-# connection's own UUID is all three.
-PROVIDER_ID_PREFIX = "sso-"
-
 # The keys inside `SsoConnection.metadata`. Named once, here, because they are
 # written by a service and read by the provider resolver, and a typo between
 # those two would be a login that silently talked to the wrong issuer.
 ISSUER_KEY = "issuer"
 CLIENT_ID_KEY = "client_id"
 # A dict KEY name, not a credential; the pragma is the audit, not a mute.
-CLIENT_SECRET_KEY = "client_secret"  # pragma: allowlist secret
+CLIENT_SECRET_KEY = "client_secret"  # noqa: S105 — the dict key a connection's secret is stored under  # pragma: allowlist secret
 
 
 def normalise_domain(value: str) -> str:
@@ -238,49 +224,6 @@ def domain_of(email: str) -> str:
     """The domain half of an address, normalised. Empty when there is not one."""
     _, _, domain = (email or "").strip().partition("@")
     return normalise_domain(domain)
-
-
-def provider_id_for(connection_pk: UUID) -> str:
-    """The allauth provider id a connection's login URL is built from."""
-    return f"{PROVIDER_ID_PREFIX}{connection_pk.hex}"
-
-
-def connection_pk_from_provider_id(provider_id: str) -> UUID | None:
-    """The connection a provider id names, or `None` if it names none.
-
-    Deliberately total: this is called with whatever appeared in a URL, and a
-    malformed id has to be "no such connection" rather than an exception in the
-    middle of a login.
-    """
-    if not provider_id.startswith(PROVIDER_ID_PREFIX):
-        return None
-    try:
-        return UUID(hex=provider_id[len(PROVIDER_ID_PREFIX) :])
-    except (ValueError, AttributeError):
-        return None
-
-
-class SsoConnectionManager(ScopedManager["SsoConnection"]):
-    """`for_tenant`, plus the lookup a login has before it knows the tenant."""
-
-    def by_provider_id(self, provider_id: str) -> SsoConnection | None:
-        """Resolve the connection an allauth callback names, tenant unknown.
-
-        The second of the two reads in this repository that cannot go through
-        `for_tenant`, and for the same structural reason as
-        `connections.ConnectionManager.for_webhook`: **the tenant is a fact
-        about the connection, and the connection is what we are looking up.** A
-        browser coming back from an IdP carries no session for this product yet,
-        no bearer token and no `X-Tenant` header — the provider id in the
-        callback URL is the whole of what it has.
-
-        A disabled connection resolves to nothing, so switching a connection off
-        stops its logins at the callback rather than merely hiding its button.
-        """
-        pk = connection_pk_from_provider_id(provider_id)
-        if pk is None:
-            return None
-        return self.get_queryset().filter(pk=pk, status=SsoConnection.Status.ACTIVE).first()
 
 
 class SsoConnection(TenantScopedModel):
@@ -354,6 +297,7 @@ class SsoConnection(TenantScopedModel):
     # domains) is a column or a row beside it.
     metadata = EncryptedJSONField(default=dict, blank=True)
 
+    # rule-16: a column, wire and admin field share it — until the SSO schema's first breaking cut
     enforced = models.BooleanField(default=False)
     # **No `choices`, and the default is the deployment's own answer.** A role
     # is a row a tenant owns (`core.Role`) or a declaration an app makes
@@ -365,13 +309,6 @@ class SsoConnection(TenantScopedModel):
     # `services._refuse_role_above_the_configurer`, which validates the key
     # against `{owner} + declared + this tenant's rows` where a human is typing
     # it and says `invalid` in a sentence rather than at a database constraint.
-    #
-    # RECORDED, not fixed: `schemas.py`'s `default_role` is still
-    # `Literal["owner", "admin", "member"]`, so a custom role key this column
-    # now accepts cannot arrive through the REST or MCP door. The column and
-    # the service are right; the WIRE is the half still carrying the old enum,
-    # and widening it is a contract change with its own criteria rather than a
-    # line this sweep takes on the way past.
     default_role = models.CharField(max_length=64, default=default_role_key)
     disabled_at = models.DateTimeField(null=True, blank=True)
 
@@ -391,8 +328,6 @@ class SsoConnection(TenantScopedModel):
         default=SyncState.UNMANAGED,
     )
 
-    objects: ClassVar[SsoConnectionManager] = SsoConnectionManager()
-
     class Meta(TenantScopedModel.Meta):
         verbose_name = "SSO connection"
         verbose_name_plural = "SSO connections"
@@ -411,9 +346,17 @@ class SsoConnection(TenantScopedModel):
         return self.status == self.Status.ACTIVE
 
     @property
-    def provider_id(self) -> str:
-        """The allauth provider id this connection is known by."""
-        return provider_id_for(self.pk)
+    def idp_name(self) -> str:
+        """What this connection is called at the identity platform: `<tenant slug>:<pk>`.
+
+        The name is the second net a materialisation falls back to when the
+        recorded id is gone, so it is derived from nothing renamable — the
+        connection's display name is not in it, because a rename would stop it
+        matching and silently create a second provider. ONE derivation, here on
+        the row, for the activity that writes the provider, the realm adapter
+        that makes it inside a tenant's realm and the audit that compares it.
+        """
+        return f"{self.tenant.slug}:{self.pk}"
 
     @property
     def issuer(self) -> str:
@@ -488,13 +431,13 @@ class SsoDomainManager(ScopedManager["SsoDomain"]):
             return None
         return self.get_queryset().select_related("connection").filter(domain=cleaned).first()
 
-    def for_domain(self, domain: str) -> SsoDomain | None:
-        """The **verified** claim on an email domain, whoever holds it.
+    def for_domain(self, domain: str, *, live: bool = True) -> SsoDomain | None:
+        """The verified claim on an email domain, whoever holds it; `live=False` keeps dormant ones.
 
         This is home-realm discovery: a person types an address, and the whole
         question is *which tenant's IdP owns that domain* — so a tenant-scoped
         read is not merely inconvenient here, it is the wrong question. What
-        makes it safe is that the caller (`selectors.realm_for_email`) returns
+        makes it safe is that the caller (`selectors.get_realm_for_email`) returns
         only the method and the connection's own id: never a tenant name, never
         a slug, never a count.
 
@@ -509,7 +452,7 @@ class SsoDomainManager(ScopedManager["SsoDomain"]):
         hole, and this filter is the fix.
 
         **Unverified reads exactly like unclaimed**, byte for byte, at every
-        caller: `realm_for_email` answers the same `Realm`, `sso_enforced_for`
+        caller: `get_realm_for_email` answers the same `Realm`, `get_enforcing_connection_for`
         answers `None` even when the connection says `enforced`, and
         `get_connection_for_email` sends the assertion down the platform branch
         where it would have gone with no claim at all. A claim still RESERVES
@@ -519,16 +462,14 @@ class SsoDomainManager(ScopedManager["SsoDomain"]):
         cleaned = normalise_domain(domain)
         if not cleaned:
             return None
-        return (
+        claims = (
             self.get_queryset()
             .select_related("connection", "connection__tenant")
-            .filter(
-                domain=cleaned,
-                verified_at__isnull=False,
-                connection__status=SsoConnection.Status.ACTIVE,
-            )
-            .first()
+            .filter(domain=cleaned, verified_at__isnull=False)
         )
+        if live:
+            claims = claims.filter(connection__status=SsoConnection.Status.ACTIVE)
+        return claims.first()
 
 
 class SsoDomain(TenantScopedModel):
@@ -593,8 +534,129 @@ class SsoDomain(TenantScopedModel):
         return self.domain
 
 
+#: The deployment's own realm, as the identity join spells it. The staff realm
+#: is the identity platform's organisation the deployment already had — every
+#: person who signed in before tenants had realms lives there — so it exists
+#: before anybody has recorded its id, and a join row needs a name for it that
+#: does not wait on the seed. A tenant's realm is spelled by its id.
+STAFF_REALM = "staff"
+
+
+class IdentityHomeManager(ScopedManager["IdentityHome"]):
+    """`for_tenant`, plus the two reads a sign-in makes before it knows a tenant."""
+
+    def staff(self) -> IdentityHome | None:
+        """The deployment's own realm, as the seed recorded it — or `None` before it has."""
+        # rule-8: the staff realm is the one home with NO tenant; there is no
+        # tenant to scope by, and this manager method is the one read of it.
+        return self.get_queryset().filter(tenant__isnull=True).first()
+
+    def of_realm(self, realm_id: str) -> IdentityHome | None:
+        """The home whose realm is `realm_id`, whoever's it is — the assertion's own question."""
+        if not realm_id:
+            return None
+        # rule-8: an assertion names its realm before anybody knows its tenant; the realm id IS
+        # the lookup.
+        return self.get_queryset().select_related("tenant").filter(realm_id=realm_id).first()
+
+
+class IdentityHome(TenantScopedModel):
+    """Where one tenant's people sign in: its realm at the identity platform.
+
+    **A realm per tenant** (identity option B): a customer's people must not
+    share a login policy, a password rule or a provider list with staff or with
+    another customer, and the identity platform's unit for that is a realm of its
+    own. `core.Tenant` knows nothing of it — `create_tenant` asks through
+    `core.bridge`, this app writes the `pending` row and starts the run that
+    makes the realm, and the run's write-back turns it into `own_org`.
+
+    **Pending is fail-closed.** A tenant whose realm is not made yet has no
+    realm for a sign-in to name, so its people wait the seconds the run takes;
+    `zitadel_audit` prints it.
+
+    **One row has no tenant: the staff realm**, the deployment's own people. The
+    seed records it (`services.record_staff_realm`), and the constraint below
+    lets exactly one such row exist.
+    """
+
+    #: ADR core-13. A home belongs to its tenant and dies with it — the key
+    #: CASCADEs, one row per tenant plus the staff realm's one — so the
+    #: population is the tenant count plus one, and never grows past it.
+    lifecycle: ClassVar[Lifecycle] = Lifecycle(kind=LifecycleKind.BOUNDED)
+
+    class State(models.TextChoices):
+        """Whether the realm exists yet."""
+
+        PENDING = "pending", "Waiting for its realm"
+        OWN_ORG = "own_org", "Has its own realm"
+
+    # The staff realm's home has no tenant, so the inherited key is widened to
+    # nullable (and to one-to-one) here.
+    tenant = models.OneToOneField(  # type: ignore[assignment]  # widened: see above
+        Tenant,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="identity_home",
+    )
+    #: The realm's id at the identity platform. Blank while `pending`.
+    realm_id = models.CharField(max_length=64, blank=True, default="")
+    state = models.CharField(max_length=16, choices=State.choices, default=State.PENDING)
+
+    objects: ClassVar[IdentityHomeManager] = IdentityHomeManager()
+
+    class Meta(TenantScopedModel.Meta):
+        verbose_name = "identity home"
+        verbose_name_plural = "identity homes"
+        constraints = [
+            # One home per tenant, and — NULLS NOT DISTINCT — one staff realm.
+            models.UniqueConstraint(
+                fields=["tenant"],
+                nulls_distinct=False,
+                name="identityhome_one_per_tenant",
+            ),
+            models.UniqueConstraint(
+                fields=["realm_id"],
+                condition=~models.Q(realm_id=""),
+                name="identityhome_one_home_per_realm",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.realm_id or '(pending)'} for {self.tenant_id or 'staff'}"
+
+
 class SsoIdentityManager(ScopedManager["SsoIdentity"]):
-    """`for_tenant`, plus the lookup one assertion makes."""
+    """`for_tenant`, plus the lookups one assertion makes."""
+
+    def in_realm(self, *, realm: str, subject: str) -> SsoIdentity | None:
+        """The join row for `subject` in `realm`, whoever holds it.
+
+        A sign-in asks this before it knows whose person the subject is — the
+        subject IS the question — so there is no tenant to scope by.
+        """
+        # rule-8: the assertion's realm and subject are the whole key; a tenant
+        # is what this read finds out, never what it narrows by.
+        return (
+            self.get_queryset()
+            .select_related("user")
+            .filter(connection__isnull=True, realm=realm, subject=subject)
+            .first()
+        )
+
+    def of_subject(self, subject: str) -> SsoIdentity | None:
+        """The join row for a platform subject in any realm — a subject names one account."""
+        if not subject:
+            return None
+        # rule-8: an access token names its subject and nothing else; the
+        # subject is instance-unique at the identity platform, so the realm is
+        # read off the row rather than narrowed by.
+        return (
+            self.get_queryset()
+            .select_related("user")
+            .filter(connection__isnull=True, subject=subject)
+            .first()
+        )
 
     def for_subject(self, *, connection: SsoConnection, subject: str) -> SsoIdentity | None:
         """This connection's row for this IdP subject, or none.
@@ -613,13 +675,22 @@ class SsoIdentityManager(ScopedManager["SsoIdentity"]):
 
 
 class SsoIdentity(TenantScopedModel):
-    """One person at one identity provider.
+    """One person at one identity provider — and the identity join for every subject.
 
     **Keyed on the IdP's subject, not on the email address.** An address is a
     label a person's employer can reassign — `j.smith@acme.com` can become a
     different human being — while the subject an IdP asserts is the account
     itself. Keying on the address is how somebody inherits their predecessor's
     access along with their desk.
+
+    **Two kinds of row, told apart by `connection`.** A row WITH a connection
+    is a customer IdP's person, provisioned just in time and keyed on that
+    connection. A row WITHOUT one is **the identity join**: the subject a realm
+    of the identity platform asserts for one of our people, keyed `(realm,
+    subject)`. A person in two tenants is two subjects — one per realm — and one
+    `User`, which is why the join is a table and not a column on `User`. The
+    staff realm's rows carry no tenant (`STAFF_REALM`); a tenant realm's carry
+    its tenant.
 
     The email is stored anyway, as *what the IdP said at the time*, because it
     is what makes a support conversation possible and because it is the thing a
@@ -635,9 +706,21 @@ class SsoIdentity(TenantScopedModel):
     #: matched against and a login time is a fact about a login.
     lifecycle: ClassVar[Lifecycle] = Lifecycle(kind=LifecycleKind.BOUNDED)
 
+    #: Nullable for the staff realm's join rows only: the deployment's own people
+    #: belong to no tenant. Every other row names one.
+    tenant = models.ForeignKey(  # type: ignore[assignment]  # widened: see above
+        Tenant,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="%(app_label)s_%(class)s_set",
+    )
+    #: Empty on the identity join's rows, which no customer connection asserted.
     connection = models.ForeignKey(
         SsoConnection,
         on_delete=models.CASCADE,
+        null=True,
+        blank=True,
         related_name="identities",
     )
     user = models.ForeignKey(
@@ -646,6 +729,11 @@ class SsoIdentity(TenantScopedModel):
         related_name="sso_identities",
     )
     subject = models.CharField(max_length=255)
+    #: Which realm asserted the subject — `STAFF_REALM` or a tenant realm's id.
+    #: Empty on a connection's rows, whose namespace is the connection.
+    realm = models.CharField(max_length=64, blank=True, default="")
+    #: The issuer that asserted it, kept so a row says whose subject it is.
+    issuer = models.CharField(max_length=255, blank=True, default="")
     email = models.EmailField(blank=True)
     last_seen_at = models.DateTimeField(null=True, blank=True)
 
@@ -658,6 +746,18 @@ class SsoIdentity(TenantScopedModel):
             models.UniqueConstraint(
                 fields=["connection", "subject"],
                 name="ssoidentity_unique_subject_per_connection",
+            ),
+            # The join's key: one account per subject in a realm, and one
+            # subject per person in a realm.
+            models.UniqueConstraint(
+                fields=["realm", "subject"],
+                condition=models.Q(connection__isnull=True),
+                name="ssoidentity_unique_subject_per_realm",
+            ),
+            models.UniqueConstraint(
+                fields=["user", "realm"],
+                condition=models.Q(connection__isnull=True),
+                name="ssoidentity_one_subject_per_person_per_realm",
             ),
         ]
         indexes = [
@@ -808,3 +908,43 @@ class IdentityBranding(BaseModel):
 
     def __str__(self) -> str:
         return f"{self.product_name} ({self.accent})"
+
+
+class FirstAdminVouch(BaseModel):
+    """The operator's word that one address is the first human: once, unexpired, no tenant yet."""
+
+    lifecycle: ClassVar[Lifecycle] = Lifecycle(
+        kind=LifecycleKind.UNBOUNDED,
+        reason=(
+            "one row per address the day-zero command invited, and that command "
+            "refuses once a tenant exists; spent rows stay as the record of who "
+            "the operator let in before there was anybody to audit an invitation."
+        ),
+        trigger=(
+            "2026-10-19 — a deployment that holds more than a dozen rows, which "
+            "would mean the day-zero door was used as an invitation path."
+        ),
+    )
+
+    email = models.EmailField(unique=True)
+    expires_at = models.DateTimeField()
+    consumed_at = models.DateTimeField(null=True, blank=True)
+    consumed_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="first_admin_vouches",
+    )
+
+    class Meta(BaseModel.Meta):
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(consumed_at__isnull=True, consumed_by__isnull=True)
+                | models.Q(consumed_at__isnull=False, consumed_by__isnull=False),
+                name="accounts_firstadminvouch_spent_by_somebody",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"first admin {self.email}"

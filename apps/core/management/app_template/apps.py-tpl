@@ -1,11 +1,4 @@
-"""How `{{ app_name }}` registers itself — and the whole of its registration.
-
-Nothing else is edited to install this app. `config/settings/discovery.py` reads
-every `apps/*/apps.py` with `ast` and derives `INSTALLED_APPS` from what it
-finds, so creating the package IS registering it — which is what lets one agent
-per app run in parallel without queueing for a shared file
-(django-conventions §1). Never add this app to `config/` or `pyproject.toml`.
-"""
+"""How `{{ app_name }}` registers: discovery reads this file, never `config/`."""
 
 from __future__ import annotations
 
@@ -17,10 +10,5 @@ class {{ camel_case_app_name }}Config(AppConfig):
 
     name = "apps.{{ app_name }}"
 
-    #: What this app may import — house rule 7 reads it off this attribute, by
-    #: AST, and refuses an import outside it. `core` and `accounts` are the
-    #: floor every app stands on; add the spine app you actually use (`events`
-    #: to `emit`, `workflows` to start a durable run) and nothing you do not. A
-    #: sideways import into another domain app is a lead decision to record,
-    #: never an entry added here in passing.
+    #: What this app may import (rule 7): the floor and each spine app it uses; no sideways import.
     depends_on: tuple[str, ...] = ("core", "accounts")

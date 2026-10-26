@@ -2,7 +2,7 @@
 
     python3 quality/runners/js_route_table.py <root> [<root> …]
 
-THE CLOSED QUESTION: does the route table — `frontend/src/screens/routes.ts`,
+THE CLOSED QUESTION: does the route table — `frontend/src/kit/routes.ts`,
 the head of the book — name exactly the routes the app router draws? The
 router discovers a route from a file (`frontend/src/app/**/page.tsx`), so a
 page can land with nobody having said what the route is FOR; the table is
@@ -36,9 +36,13 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from quality.runners import _css, _source  # noqa: E402
+from quality.runners import (  # noqa: E402
+    _css,
+    _kindscope,  # noqa: E402
+    _source,
+)
 
-TABLE = "frontend/src/screens/routes.ts"
+TABLE = "frontend/src/kit/routes.ts"
 APP = ("frontend", "src", "app")
 PAGE_STEM = "page"
 COLUMNS = ("path", "job", "primarySeat", "operation")
@@ -60,7 +64,7 @@ def main(argv: list[str]) -> int:
     findings: list[dict] = []
     pages: dict[str, str] = {}
     for root in argv:
-        for path in _css.files_under(Path(root)):
+        for path in _kindscope.files_under(Path(root), _css.SUFFIXES, under=_css.SRC_ROOT):
             if path.parts[: len(APP)] != APP or path.suffix not in _source.SCRIPT_SUFFIXES:
                 continue
             if path.stem != PAGE_STEM:

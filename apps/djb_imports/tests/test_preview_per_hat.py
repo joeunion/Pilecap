@@ -24,7 +24,7 @@ from apps.core.services import create_organization
 from apps.djb_imports.models import Import, ImportRow
 from apps.djb_imports.selectors import get_importer
 from apps.djb_imports.services import apply_import_row, create_import
-from apps.djb_imports.tests.conftest import stored_csv
+from apps.djb_imports.tests.store import stored_csv
 from apps.example.models import Widget
 from apps.example.services import create_widget
 

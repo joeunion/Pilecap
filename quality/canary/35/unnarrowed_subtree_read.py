@@ -9,6 +9,11 @@
 # `for_tenant` leg's `Index Cond` alone — which the any-Index-Cond form of
 # `index_served` called index-served. That is the blindness this fixture exists
 # to prove is over: planted on the baseline it fired NOTHING.
+from django.db.models import Q  # noqa: E402
+
+from apps.core.models import PATH_SEPARATOR, Organization  # noqa: E402
+
+
 def list_subtree_org_ids(*, tenant, org):  # noqa: F811 # planted violation
     if tenant is None or org is None:
         return []

@@ -72,7 +72,7 @@ def test_a_sibling_branch_row_is_not_found(
 ) -> None:
     from apps.accounts.services import create_user
 
-    user = create_user(email="a-admin@example.com", password="pw-for-tests-only")
+    user = create_user(email="a-admin@example.com", password="pw-for-tests-only")  # noqa: S106 — a throwaway password a test user is made with
     add_membership(
         user=user,
         tenant=tenant,

@@ -167,20 +167,8 @@ def test_a_service_call_writes_exactly_one_audit_row(tenant: Tenant, owner_actor
     widget = create_widget(tenant=tenant, actor=owner_actor, name="Audited", notes="secret")
 
     entries = list(AuditEntry.objects.for_tenant(tenant))
-    # One row per service *call*, and the call graph is named rather than
-    # counted: creating a widget also says what happened (`events.emit`, which
-    # writes the event, its outbox row and the run that will dispatch it) and
-    # starts its onboarding workflow — and `workflows.record_run` is a service
-    # too, once per run. An action appearing here that is not on this list is a
-    # write nobody declared, which is exactly what this assertion is for.
-    assert sorted(entry.action for entry in entries) == [
-        "events.emit",
-        "events.enqueue_dispatch",
-        "events.record_event",
-        "example.create_widget",
-        "workflows.record_run",  # the dispatch run
-        "workflows.record_run",  # the onboarding run
-    ]
+    # One row per door call (ADR core-29): the emit chain and the run rows are `witness=False`.
+    assert [entry.action for entry in entries] == ["example.create_widget"]
     entry = AuditEntry.objects.for_tenant(tenant).get(action="example.create_widget")
     assert entry.action == "example.create_widget"
     assert entry.outcome == AuditEntry.Outcome.OK

@@ -276,13 +276,13 @@ export interface paths {
          *     you sent it from. Set `is_default` if this should be the membership used
          *     when the person names no organization.
          *
-         *     Roles are `owner`, `admin` and `member`, in that order of seniority.
+         *     A role is a set of capability keys; `GET /roles/` lists each role's.
          *
-         *     **You cannot grant a role above your own.** An `admin` may make somebody an
-         *     `admin` or a `member`, never an `owner`, and nobody can grant a role in a
-         *     part of the tree they hold no role over. Both answer `forbidden`, and the
-         *     message says which of the two it was so you can tell "wrong place" from
-         *     "too senior".
+         *     **You cannot hand out what you do not hold.** Every key the role carries
+         *     must already be yours at the organization the membership lands on, and
+         *     nobody can grant a role in a part of the tree they hold no role over. Both
+         *     answer `forbidden`, and the message says which: that you hold no role
+         *     there, or the sentences of the keys you are short of.
          *
          *     A `user_id` that matches nobody answers `not_found`, and so does an
          *     `organization_id` outside the part of the tree you can see.
@@ -329,10 +329,10 @@ export interface paths {
          * Change a member's role
          * @description Change the role someone holds.
          *
-         *     Send `role` — one of `owner`, `admin` or `member`.
+         *     Send `role` — the key of a role this product knows (`GET /roles/`).
          *
          *     The same ceiling applies as when granting a role in the first place: you
-         *     cannot set a role above the one you hold yourself over that organization,
+         *     cannot set a role carrying a key you do not hold yourself at that organization,
          *     and you cannot change a membership in a part of the tree you hold no role
          *     over. Both answer `forbidden`.
          *
@@ -346,8 +346,8 @@ export interface paths {
          *
          *     * `400 invalid` — `role` is not one this product knows.
          *     * `403 forbidden` — you do not administer that organization, or the new
-         *       role is above your own there, or the membership you are changing is
-         *       already above your own.
+         *       role carries a key you do not hold there, or the person already holds a
+         *       key there that you do not.
          *     * `404 not_found` — that membership is outside the part of the tree you
          *       can see, or nothing has that id.
          *     * `409 conflict` — it is the last `owner` membership in the tenant.
@@ -382,7 +382,7 @@ export interface paths {
          *     so access ends immediately rather than when they next reload.
          *
          *     You must hold `admin` or `owner` over the organization the membership sits
-         *     on, and you cannot remove somebody more senior than you are — both answer
+         *     on, and you cannot remove somebody holding a key there that you do not — both answer
          *     refused. Removing the tenant's last `owner` is refused too: a tenant
          *     with no owner is a tenant nobody can administer.
          *
@@ -391,8 +391,7 @@ export interface paths {
          *     Refusals you can get here:
          *
          *     * `403 forbidden` — you do not administer that organization, or the
-         *       membership is above your own role there. Nobody removes above
-         *       themselves.
+         *       person holds a key there that you do not.
          *     * `404 not_found` — that membership is outside the part of the tree you
          *       can see, or nothing has that id.
          *     * `409 conflict` — it is the last `owner` membership in the tenant. Make
@@ -534,10 +533,9 @@ export interface paths {
          *
          *     Refusals you can get here:
          *
-         *     * `400 invalid` — that key belongs to the product rather than to this
-         *       tenant.
          *     * `403 forbidden` — you may not delete roles here.
-         *     * `404 not_found` — nothing in this tenant has that key.
+         *     * `404 not_found` — this tenant made no role with that key; `owner` and
+         *       the product's own roles answer this too.
          *     * `409 conflict` — somebody still holds the role, or an invitation still
          *       offers it.
          *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
@@ -905,15 +903,15 @@ export interface paths {
          *     Two separate permissions apply and both answer `forbidden`, and **both are
          *     asked about the organization the invitation is placed in**: you must hold
          *     `admin` or `owner` there to invite anybody at all, and you cannot invite
-         *     somebody at a role above your own there.
+         *     somebody at a role carrying a key you do not hold there.
          *
          *     Refusals you can get here:
          *
          *     * `400 invalid` — the `email` is missing or malformed, or `role` is not
          *       one this product knows. `errors` names the fields.
          *     * `403 forbidden` — you are not an owner or an administrator of the
-         *       organization this invitation is placed in, or the `role` you asked for is
-         *       above your own there.
+         *       organization this invitation is placed in, or the `role` you asked for
+         *       carries a key you do not hold there.
          *     * `404 not_found` — the `organization_id` is outside the part of the tree
          *       you can see, or nothing has that id.
          *     * `409 conflict` — that address already has an invitation waiting in that
@@ -1161,8 +1159,8 @@ export interface paths {
          *
          *     Refusals you can get here:
          *
-         *     * `400 invalid` — the body was not `{"value": true}`, `{"value": false}`
-         *       or `{"value": null}`.
+         *     * `400 invalid` — the body was not `{"enabled": true}`, `{"enabled": false}`
+         *       or `{"enabled": null}`.
          *     * `403 forbidden` — you are not an owner or an administrator of the
          *       tenant, or the request resolved no tenant.
          *     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
@@ -1210,7 +1208,7 @@ export interface paths {
          *
          *     Refusals you can get here:
          *
-         *     * `403 forbidden` — you are signed in but the request resolved no tenant.
+         *     * `403 no_acting_scope` — you are signed in but the request resolved no tenant.
          *       Send `X-Tenant` naming one you belong to.
          *     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
          *       `Idempotency-Key` for a different request, or the first request under it
@@ -1260,7 +1258,7 @@ export interface paths {
          *     * `409 conflict` — you are the only owner of a tenant, and erasing you
          *       would leave it with nobody who can administer it. The message names each
          *       tenant. Make somebody else an owner there first, then retry.
-         *     * `403 forbidden` — you are signed in but the request resolved no tenant.
+         *     * `403 no_acting_scope` — you are signed in but the request resolved no tenant.
          *       Send `X-Tenant` naming one you belong to.
          *     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
          *       `Idempotency-Key` for a different request, or the first request under it
@@ -1468,7 +1466,7 @@ export interface paths {
          *     * `403 session_required` — you called with a bearer token instead of a
          *       browser session. No token can make this call, so there is no wider one to
          *       go and mint; sign in, or ask somebody with a shell on the server.
-         *     * `403 forbidden` — you are signed in, and the request resolved no tenant.
+         *     * `403 no_acting_scope` — you are signed in, and the request resolved no tenant.
          *       Send `X-Tenant` naming a tenant you belong to.
          *     * `400 invalid` — the `name` was empty or longer than 200 characters, or
          *       `scopes` was missing, empty, or named something this API does not have.
@@ -1628,10 +1626,10 @@ export interface paths {
          *
          *     Send the provider's `issuer` URL, its `client_id` and `client_secret`, a
          *     `name` you will recognise, and `email_domains` — the domains this provider
-         *     owns, such as `acme.com`. Optionally `default_role` (the role people who
-         *     arrive through it join at; `member` unless you say otherwise, and it never
-         *     changes an existing membership) and `enforced` (when `true`, people in those
-         *     domains may not sign in any other way).
+         *     owns, such as `acme.com`. Optionally `default_role` (the role key people who
+         *     arrive through it join at; the deployment's default role unless you say
+         *     otherwise, and it never changes an existing membership) and `enforced` (when
+         *     `true`, people in those domains may not sign in any other way).
          *
          *     **An email domain belongs to exactly one provider across the whole
          *     product.** Claiming one somebody else already has is refused.
@@ -1655,8 +1653,9 @@ export interface paths {
          *
          *     Refusals you can get here:
          *
-         *     * `403 forbidden` — you are not an owner or administrator of this tenant, or
-         *       the request resolved no tenant. Send `X-Tenant` naming one you belong to.
+         *     * `403 no_acting_scope` — the request resolved no tenant. Send `X-Tenant`
+         *       naming one you belong to.
+         *     * `403 forbidden` — you are not an owner or administrator of this tenant.
          *       **Measured at the tenant's root**: an administrator of one branch
          *       administers that branch, and may not configure the tenant's identity
          *       provider.
@@ -1708,8 +1707,8 @@ export interface paths {
          *
          *     * `404 not_found` — no provider with that id belongs to the tenant you are
          *       acting in.
-         *     * `403 forbidden` — you are not an owner or administrator of this tenant, or
-         *       the request resolved no tenant.
+         *     * `403 no_acting_scope` — the request resolved no tenant.
+         *     * `403 forbidden` — you are not an owner or administrator of this tenant.
          *       **Measured at the tenant's root**: an administrator of one branch
          *       administers that branch, and may not configure the tenant's identity
          *       provider.
@@ -1745,18 +1744,26 @@ export interface paths {
          *
          *     * `404 not_found` — no provider with that id belongs to the tenant you are
          *       acting in.
-         *     * `403 forbidden` — you are not an owner or administrator of this tenant, or
-         *       the request resolved no tenant.
+         *     * `403 no_acting_scope` — the request resolved no tenant.
+         *     * `403 forbidden` — you are not an owner or administrator of this tenant.
          *       **Measured at the tenant's root**: an administrator of one branch
          *       administers that branch, and may not configure the tenant's identity
          *       provider.
          *     * `400 invalid` — a field you sent is malformed, or `default_role` is above
          *       your own role. `errors` names the fields.
          *     * `409 conflict` — one of the `email_domains` is already claimed elsewhere.
+         *     * `409 enforced_without_provider` — you switched `enforced` on before this
+         *       provider was set up at the identity platform; requiring it now would leave
+         *       its people no way to sign in. Read the provider back until `sync_state` is
+         *       `applied`, then switch it on.
          *     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
          *       `Idempotency-Key` for a different request, or the first request under it
          *       has not finished. Resend the identical request, or use a new key.
          *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+         *
+         *     `enforced` in the answer is what the identity platform has applied, not only
+         *     what you asked for: it reads `false` with `sync_state` `pending` until the
+         *     change lands.
          *
          *     **Token scope:** a bearer token must carry `auth:write` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted.
          */
@@ -1798,7 +1805,8 @@ export interface paths {
          *
          *     * `400 invalid` — `?ordering=` named a field this list does not accept, or
          *       a filter value was malformed. The response says what you may sort by.
-         *     * `403 forbidden` — the request resolved no tenant or no acting
+         *     * `403 forbidden` — your membership here does not allow you to read this.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
          *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
          *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
          *
@@ -1867,8 +1875,9 @@ export interface paths {
          *       sent neither, named a template or policy that has no live version, the
          *       `context` did not match the template's declared variables, or `send_at`
          *       carried no timezone. `errors` names the field and nothing is sent.
-         *     * `403 forbidden` — you hold no membership in this tenant, or the request
-         *       resolved no tenant or no acting organization.
+         *     * `403 forbidden` — your membership here does not allow this.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
+         *       organization.
          *     * `404 not_found` — no contact your acting organization can address has
          *       that id. A contact in a branch you hold no membership over answers
          *       this too.
@@ -1912,7 +1921,8 @@ export interface paths {
          *
          *     * `404 not_found` — no message your acting organization can see has that
          *       id.
-         *     * `403 forbidden` — the request resolved no tenant or no acting
+         *     * `403 forbidden` — your membership here does not allow you to read this.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
          *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
          *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
          *
@@ -1967,7 +1977,8 @@ export interface paths {
          *     Refusals you can get here:
          *
          *     * `400 invalid` — `?ordering=` named a field this list does not accept.
-         *     * `403 forbidden` — the request resolved no tenant or no acting
+         *     * `403 forbidden` — your membership here does not allow you to read this.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
          *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
          *     * `404 not_found` — no message your acting organization can see has that
          *       id, or `?cursor=` did not come from this list.
@@ -2018,8 +2029,9 @@ export interface paths {
          *
          *     Refusals you can get here:
          *
-         *     * `403 forbidden` — you hold no membership in this tenant, or the request
-         *       resolved no tenant or no acting organization.
+         *     * `403 forbidden` — your membership here does not allow this.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
+         *       organization.
          *     * `404 not_found` — no message your acting organization can see has that
          *       id. A message in a branch you hold no membership over answers this too.
          *     * `409 conflict` — that message is past the point of being cancelled. The
@@ -2068,7 +2080,8 @@ export interface paths {
          *
          *     * `400 invalid` — `?ordering=` named a field this list does not accept, or
          *       a filter value was malformed. The response says what you may sort by.
-         *     * `403 forbidden` — the request resolved no tenant or no acting
+         *     * `403 forbidden` — your membership here does not allow you to read this.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
          *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
          *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
          *
@@ -2101,7 +2114,9 @@ export interface paths {
          *       `category` is not one this product knows. `errors` names the fields
          *       and nothing is created.
          *     * `403 forbidden` — you are not an owner or an administrator of the
-         *       tenant, or the request resolved no tenant or no acting organization.
+         *       tenant.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
+         *       organization.
          *     * `409 conflict` — a template already exists under that name. Publish a
          *       new version of it instead.
          *     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
@@ -2160,7 +2175,9 @@ export interface paths {
          *     * `400 invalid` — a field is missing or malformed. `errors` names the
          *       fields and no version is published.
          *     * `403 forbidden` — you are not an owner or an administrator of the
-         *       tenant, or the request resolved no tenant or no acting organization.
+         *       tenant.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
+         *       organization.
          *     * `404 not_found` — no template of this tenant's has that name.
          *     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
          *       `Idempotency-Key` for a different request, or the first request under
@@ -2212,7 +2229,9 @@ export interface paths {
          *     Refusals you can get here:
          *
          *     * `403 forbidden` — you are not an owner or an administrator of the
-         *       tenant, or the request resolved no tenant or no acting organization.
+         *       tenant.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
+         *       organization.
          *     * `404 not_found` — no template of this tenant's has that name, or it has
          *       no live version to retire.
          *     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
@@ -2256,7 +2275,8 @@ export interface paths {
          *
          *     * `404 not_found` — no template of this tenant's has that name, or none of
          *       its versions is live.
-         *     * `403 forbidden` — the request resolved no tenant or no acting
+         *     * `403 forbidden` — your membership here does not allow you to read this.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
          *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
          *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
          *
@@ -2309,7 +2329,8 @@ export interface paths {
          *
          *     * `400 invalid` — `?ordering=` named a field this list does not accept, or
          *       a filter value was malformed. The response says what you may sort by.
-         *     * `403 forbidden` — the request resolved no tenant or no acting
+         *     * `403 forbidden` — your membership here does not allow you to read this.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
          *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
          *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
          *
@@ -2343,7 +2364,9 @@ export interface paths {
          *       template or channel this product does not know. `errors` names the
          *       fields and nothing is created.
          *     * `403 forbidden` — you are not an owner or an administrator of the
-         *       tenant, or the request resolved no tenant or no acting organization.
+         *       tenant.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
+         *       organization.
          *     * `409 conflict` — a policy already exists under that name. Publish a new
          *       version of it instead.
          *     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
@@ -2399,7 +2422,9 @@ export interface paths {
          *     * `400 invalid` — a field is missing or malformed. `errors` names the
          *       fields and no version is published.
          *     * `403 forbidden` — you are not an owner or an administrator of the
-         *       tenant, or the request resolved no tenant or no acting organization.
+         *       tenant.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
+         *       organization.
          *     * `404 not_found` — no policy of this tenant's has that name.
          *     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
          *       `Idempotency-Key` for a different request, or the first request under
@@ -2445,7 +2470,9 @@ export interface paths {
          *     Refusals you can get here:
          *
          *     * `403 forbidden` — you are not an owner or an administrator of the
-         *       tenant, or the request resolved no tenant or no acting organization.
+         *       tenant.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
+         *       organization.
          *     * `404 not_found` — no policy of this tenant's has that name, or it has no
          *       live version to retire.
          *     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
@@ -2485,7 +2512,8 @@ export interface paths {
          *
          *     * `404 not_found` — no policy of this tenant's has that name, or none of
          *       its versions is live.
-         *     * `403 forbidden` — the request resolved no tenant or no acting
+         *     * `403 forbidden` — your membership here does not allow you to read this.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
          *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
          *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
          *
@@ -2520,8 +2548,8 @@ export interface paths {
          *
          *     **Archived contacts are left out.** `?show=archived` lists only the
          *     archived ones and `?show=all` lists both; the default is `?show=live`.
-         *     `?archived=` is no longer accepted: it is refused with `400 invalid` naming
-         *     `show`, the parameter to ask with instead.
+         *     There is no `?archived=` — it is refused with `400 invalid` naming `show`,
+         *     the parameter to ask with instead, rather than ignored.
          *
          *     Which contacts you see depends on the organization you are acting as (the
          *     `X-Org` header) — its own and those of organizations beneath it. The same
@@ -2538,7 +2566,8 @@ export interface paths {
          *       `?show=` named a cut other than `live`, `archived` or `all`, you sent
          *       `?archived=`, or a filter value was malformed. `errors` names the
          *       parameter and what it accepts.
-         *     * `403 forbidden` — the request resolved no tenant or no acting
+         *     * `403 forbidden` — your membership here does not allow you to read this.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
          *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
          *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
          *
@@ -2573,8 +2602,9 @@ export interface paths {
          *
          *     * `400 invalid` — a field is missing or malformed. `errors` names the
          *       fields and nothing is created.
-         *     * `403 forbidden` — you hold no membership in this tenant, or the request
-         *       resolved no tenant or no acting organization.
+         *     * `403 forbidden` — your membership here does not allow this.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
+         *       organization.
          *     * `409 conflict` — this organization already has a contact at that
          *       address.
          *     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
@@ -2623,7 +2653,8 @@ export interface paths {
          *     * `404 not_found` — no contact your acting organization can address has
          *       that id. A contact in a branch you hold no membership over answers
          *       this too.
-         *     * `403 forbidden` — the request resolved no tenant or no acting
+         *     * `403 forbidden` — your membership here does not allow you to read this.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
          *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
          *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
          *
@@ -2660,8 +2691,9 @@ export interface paths {
          *
          *     * `400 invalid` — a field you sent is malformed. `errors` names it and
          *       nothing is changed.
-         *     * `403 forbidden` — you hold no membership in this tenant, or the request
-         *       resolved no tenant or no acting organization.
+         *     * `403 forbidden` — your membership here does not allow this.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
+         *       organization.
          *     * `404 not_found` — no contact your acting organization can address has
          *       that id. A contact in a branch you hold no membership over answers
          *       this too.
@@ -2712,7 +2744,9 @@ export interface paths {
          *     Refusals you can get here:
          *
          *     * `403 forbidden` — you do not administer the organization this contact
-         *       belongs to, or the request resolved no tenant or no acting organization.
+         *       belongs to.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
+         *       organization.
          *     * `404 not_found` — no contact your acting organization can address has
          *       that id. A contact in a branch you hold no membership over answers
          *       this too.
@@ -2761,7 +2795,9 @@ export interface paths {
          *     Refusals you can get here:
          *
          *     * `403 forbidden` — you do not administer the organization this contact
-         *       belongs to, or the request resolved no tenant or no acting organization.
+         *       belongs to.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
+         *       organization.
          *     * `404 not_found` — no contact your acting organization can address has
          *       that id. A contact in a branch you hold no membership over answers
          *       this too.
@@ -2864,7 +2900,9 @@ export interface paths {
          *     * `400 invalid` — `channel` is not one this product knows. `errors` names
          *       it and nothing is recorded.
          *     * `403 forbidden` — you are not an owner or an administrator of the
-         *       tenant, or the request resolved no tenant or no acting organization.
+         *       tenant.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
+         *       organization.
          *     * `404 not_found` — no contact your acting organization can address has
          *       that id. A contact in a branch you hold no membership over answers
          *       this too.
@@ -2916,7 +2954,9 @@ export interface paths {
          *
          *     * `400 invalid` — `channel` is not one this product knows.
          *     * `403 forbidden` — you are not an owner or an administrator of the
-         *       tenant, or the request resolved no tenant or no acting organization.
+         *       tenant.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
+         *       organization.
          *     * `404 not_found` — no contact your acting organization can address has
          *       that id. A contact in a branch you hold no membership over answers
          *       this too.
@@ -2974,7 +3014,9 @@ export interface paths {
          *       sent, or the timezone is not one this product recognises. `errors`
          *       names the field and nothing is changed.
          *     * `403 forbidden` — you are not an owner or an administrator of the
-         *       tenant, or the request resolved no tenant or no acting organization.
+         *       tenant.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
+         *       organization.
          *     * `404 not_found` — no contact your acting organization can address has
          *       that id. A contact in a branch you hold no membership over answers
          *       this too.
@@ -3024,7 +3066,9 @@ export interface paths {
          *
          *     * `400 invalid` — `channel` is not one this product knows.
          *     * `403 forbidden` — you are not an owner or an administrator of the
-         *       tenant, or the request resolved no tenant or no acting organization.
+         *       tenant.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
+         *       organization.
          *     * `404 not_found` — no contact your acting organization can address has
          *       that id. A contact in a branch you hold no membership over answers
          *       this too.
@@ -3074,7 +3118,9 @@ export interface paths {
          *
          *     * `400 invalid` — `channel` is not one this product knows.
          *     * `403 forbidden` — you are not an owner or an administrator of the
-         *       tenant, or the request resolved no tenant or no acting organization.
+         *       tenant.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
+         *       organization.
          *     * `404 not_found` — no contact your acting organization can address has
          *       that id. A contact in a branch you hold no membership over answers
          *       this too.
@@ -3141,8 +3187,9 @@ export interface paths {
          *     * `422 invalid_body` — the body carried a field this operation does not
          *       have, or was missing one it needs. Bodies are strict here: a misspelled
          *       field name is refused by name rather than dropped in silence.
-         *     * `403 forbidden` — you hold no membership in this tenant, or the request
-         *       resolved no tenant or no acting organization.
+         *     * `403 forbidden` — your membership here does not allow this.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
+         *       organization.
          *     * `404 not_found` — no contact your acting organization can address has
          *       that `recipient_id`. A contact in a branch you hold no membership over
          *       answers this too.
@@ -3190,8 +3237,9 @@ export interface paths {
          *
          *     Refusals you can get here:
          *
-         *     * `403 forbidden` — you hold no membership in this tenant, or the request
-         *       resolved no tenant or no acting organization.
+         *     * `403 forbidden` — your membership here does not allow this.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
+         *       organization.
          *     * `404 not_found` — no device your acting organization can reach has that
          *       id. A device belonging to a contact in a branch you hold no membership
          *       over answers this too.
@@ -3231,15 +3279,15 @@ export interface paths {
          *     **No stored credential is ever in the response.** There is no field on the
          *     connection shape that carries one, on this route or any other in this API,
          *     so there is no way to read back a key you sent. `has_credentials` tells you
-         *     whether one is stored; `status` and `last_error` tell you whether it is
-         *     working.
+         *     whether one is stored; `status` is `connected` or `revoked` (`error` is
+         *     reserved and unset), and `last_error` is the reason given at revocation.
          *
          *     Refusals you can get here:
          *
          *     * `400 invalid` — `?ordering=` named a field this list does not accept, or
          *       a filter value was malformed. The response says what you may sort by.
-         *     * `403 forbidden` — the request resolved no tenant. Send `X-Tenant` naming
-         *       one you belong to.
+         *     * `403 no_acting_scope` — the request resolved no tenant. Send `X-Tenant`
+         *       naming one you belong to.
          *     * `403 forbidden` — your role here does not let you read connections. A
          *       role with no read of this kind reads none of them: ask an administrator
          *       for the permission, or act under an organization where you hold it.
@@ -3255,6 +3303,9 @@ export interface paths {
          *
          *     Send `provider` (the provider's short name — letters, digits, `-` and `_`)
          *     and `name` (yours, to tell two connections to the same provider apart).
+         *
+         *     Its inbound webhook accepts only `X-Signature-V2` unless you send
+         *     `is_signature_v2_required: false`, for a provider that cannot timestamp a request.
          *
          *     There are two ways to supply the credentials, and you pick one here:
          *
@@ -3276,7 +3327,9 @@ export interface paths {
          *     * `400 invalid` — a field is missing or malformed. `errors` names the
          *       fields and nothing is created.
          *     * `403 forbidden` — you are not an owner or an administrator of the
-         *       tenant, or the request resolved no tenant.
+         *       tenant.
+         *     * `403 no_acting_scope` — the request resolved no tenant. Send `X-Tenant`
+         *       naming one you belong to.
          *     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
          *       `Idempotency-Key` for a different request, or the first request under
          *       it has not finished. Resend the identical request, or use a new key.
@@ -3327,6 +3380,8 @@ export interface paths {
          *     * `403 forbidden` — storing credentials changes the connection, and you
          *       are not an owner or an administrator of the tenant. This is where a
          *       handshake a member started is refused; nothing is stored.
+         *     * `403 no_acting_scope` — the request resolved no tenant. Send `X-Tenant`
+         *       naming one you belong to.
          *     * `404 not_found` — the connection the `state` names no longer exists.
          *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
          *
@@ -3353,8 +3408,8 @@ export interface paths {
          * @description Fetch one connection by id.
          *
          *     Answers with its `provider`, your `name` for it, its `status`,
-         *     `has_credentials`, the last error the provider gave (`last_error`, empty
-         *     string when there is none), and when it was connected or revoked.
+         *     `has_credentials`, the reason given when it was revoked (`last_error`,
+         *     empty string when there is none), and when it was connected or revoked.
          *
          *     The stored credentials are not in the answer and cannot be read back through
          *     any route here. A connection belonging to another tenant, or an id that
@@ -3363,8 +3418,8 @@ export interface paths {
          *     Refusals you can get here:
          *
          *     * `404 not_found` — no connection of this tenant's has that id.
-         *     * `403 forbidden` — the request resolved no tenant. Send `X-Tenant` naming
-         *       one you belong to.
+         *     * `403 no_acting_scope` — the request resolved no tenant. Send `X-Tenant`
+         *       naming one you belong to.
          *     * `403 forbidden` — your role here does not let you read connections. A
          *       role with no read of this kind reads none of them: ask an administrator
          *       for the permission, or act under an organization where you hold it.
@@ -3403,8 +3458,8 @@ export interface paths {
          *     result back, so keep your own copy of anything you cannot regenerate.
          *
          *     A successful call also marks the connection `connected` and clears
-         *     `last_error`, so this is how you bring a failing connection back after
-         *     rotating a key.
+         *     `last_error`, so this is how you bring a revoked connection back with a
+         *     new key.
          *
          *     Answers `200` with the connection (credentials not included).
          *
@@ -3423,6 +3478,31 @@ export interface paths {
          *     **Token scope:** a bearer token must carry `connections:write` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted.
          */
         post: operations["apps_connections_api_update_credentials_route"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/connections/{connection_id}/signature-scheme/": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Choose the webhook signature scheme
+         * @description Send `is_signature_v2_required`: `true` (new connections) refuses a delivery signed only
+         *     with `X-Signature`; `false` (connections older than 2.5.0) also accepts it. Answers `200`.
+         *
+         *     Refusals: `403 forbidden` (not an owner or administrator), `404 not_found`, `422 invalid_body`.
+         *
+         *     **Token scope:** a bearer token must carry `connections:write` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted.
+         */
+        post: operations["apps_connections_api_set_signature_scheme_route"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3516,8 +3596,8 @@ export interface paths {
          *
          *     * `400 invalid` — this connection's provider is not one this deployment
          *       has OAuth configured for.
-         *     * `403 forbidden` — the request resolved no tenant. Send `X-Tenant` naming
-         *       one you belong to.
+         *     * `403 no_acting_scope` — the request resolved no tenant. Send `X-Tenant`
+         *       naming one you belong to.
          *     * `404 not_found` — no connection of this tenant's has that id.
          *     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
          *       `Idempotency-Key` for a different request, or the first request under
@@ -3560,9 +3640,10 @@ export interface paths {
          *       signature is. That window is what stops a delivery captured off the wire
          *       from being sent again tomorrow.
          *     * `X-Signature: sha256=<hex>` — HMAC-SHA256 over the raw body bytes and
-         *       nothing else. Still accepted, and still the whole scheme for a sender that
-         *       cannot put a timestamp on a request, but it carries no freshness at all:
-         *       those exact bytes keep verifying for as long as the secret lives.
+         *       nothing else. `sha256=<hex>` or the bare hex are both accepted, in either
+         *       case. No freshness: those bytes verify as long as the secret lives, so it
+         *       is accepted only where the connection's `is_signature_v2_required` is
+         *       `false`, and refused with `401 timestamped_signature_required` everywhere else.
          *
          *     **Send one, not a hopeful pair.** When `X-Signature-V2` is present it is the
          *     only header consulted: a correct `X-Signature` beside a stale or wrong
@@ -3578,23 +3659,17 @@ export interface paths {
          *     be worked through afterwards, and this answer says only that it is safely
          *     ours. Do not read a 202 as "the effects have happened".
          *
-         *     `401` means the signature did not check out. It says nothing more —
-         *     deliberately, and whether the connection exists, whether it has a secret,
-         *     what the expected signature was, and whether what failed was the digest or
-         *     the 5 minutes of freshness are all withheld. If you get one, check that you
-         *     are signing the raw body bytes with the right secret, that the `t` you sign
-         *     and send is the current time in whole seconds, and that you have not
-         *     re-serialized the JSON on the way.
-         *
          *     Refusals you can get here:
          *
-         *     * `401` — the signature did not check out, or there is no connection with
-         *       that id. Those answer identically and deliberately: whether the
+         *     * `401 invalid_signature` — the signature did not check out, or there is
+         *       no connection with that id. Those answer identically and deliberately: whether the
          *       connection exists, whether it has a secret, what the expected signature
          *       was, and whether a `t` you sent was outside the 5 minutes are all
          *       withheld. Check that you are signing the raw body bytes with the right
          *       secret, that your `t` is current, and that you have not re-serialized the
          *       JSON on the way.
+         *     * `401 timestamped_signature_required` — a correct `X-Signature` on a connection
+         *       that accepts only `X-Signature-V2`.
          *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
          *
          *     Retry on anything other than a `202`; nothing was stored.
@@ -4674,59 +4749,7 @@ export interface paths {
         };
         /**
          * List widgets
-         * @description List widgets, newest first.
-         *
-         *     **Which cut of the book** with `show`: `live` (the default) lists the
-         *     widgets in use; `archived` lists only the archived ones; `all` lists both.
-         *     Any other value is refused with `400 invalid` naming `show`. An archived
-         *     widget carries `archived_at` and `archived_by`; a live one carries `null`
-         *     in both.
-         *
-         *     **What you may press** is on the wire, never for you to work out: every
-         *     widget carries `allowed_acts` — the acts you may take on that widget as it
-         *     stands — and the page carries its own `allowed_acts`, which holds `create`
-         *     when you may create a widget where you are acting.
-         *
-         *     **Narrow** with `name` — a case-insensitive substring match, not an exact
-         *     one, so `?name=bolt` finds "Left bolt".
-         *
-         *     **Search** with `q`, which looks in the name and the notes of each widget
-         *     and nothing else. There is no wildcard syntax; send the words.
-         *
-         *     **Sort** with `ordering`. It accepts `created_at`, `updated_at` or `name`,
-         *     each optionally prefixed with `-` for descending, and the default is
-         *     `-created_at`. Any other value is refused with `400 invalid` rather than
-         *     quietly ignored, so you never get a page sorted by something you did not
-         *     ask for.
-         *
-         *     **Pages** are `?cursor=` and `?limit=` (50 by default, 200 at most). The
-         *     body is `{"items": [...], "has_more": ..., "next_cursor": ...}`: send the
-         *     `next_cursor` you were given back as `?cursor=` for the following page, and
-         *     stop when `has_more` is false. A cursor is opaque — never build or edit one
-         *     — and it is tied to the `?ordering=` it was minted under.
-         *
-         *     **`count` is `null` unless you send `?include_count=true`**, because a total
-         *     costs a second pass over the matches and most callers never show one. Ask
-         *     for it when you need it; it is the exact number of matches, not the number
-         *     on this page.
-         *
-         *     **What you can see** depends on the organization you are acting as — the
-         *     `X-Org` header, or your default organization if you send none. You get that
-         *     organization's widgets and those of every organization beneath it in the
-         *     tree. Widgets belonging to an organization alongside yours, or above it, are
-         *     not in the list and are not counted.
-         *
-         *     Refusals you can get here:
-         *
-         *     * `400 invalid` — `?ordering=` or `?show=` named a value this list does
-         *       not accept, or a filter value was malformed. The response names the
-         *       parameter and what it accepts.
-         *     * `403 forbidden` — the request resolved no tenant or no acting
-         *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
-         *     * `403 forbidden` — your role here does not let you read widgets. A role
-         *       with no read of this kind reads none of them: ask an administrator for
-         *       the permission, or act under an organization where you hold it.
-         *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+         * @description List widgets, newest first; without the read, `403 forbidden`: ask an administrator.
          *
          *     **Token scope:** a bearer token must carry `widgets:read` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted. A token carrying `widgets:write` satisfies this too: within one section, the write scope includes the read.
          */
@@ -4736,42 +4759,53 @@ export interface paths {
          * Create a widget
          * @description Create a widget.
          *
-         *     Send a `name` (required) and optionally `notes`, an `external_ref` — the id
-         *     the widget has in the system it came from, unique within your organization
-         *     — and a `policy_id`.
-         *
-         *     The new widget belongs to the organization you are acting as — the `X-Org`
-         *     header, or your default organization if you send none. There is no field in
-         *     the body that sets it, so you cannot create a widget somewhere you are not a
-         *     member.
-         *
-         *     A `policy_id`, if you send one, must name a widget policy that organization
-         *     can reach: one set on your own organization or on one beneath it, or one an
-         *     organization above you set and that therefore governs you. Any other id
-         *     answers `404 not_found` and **nothing is created** — the same answer an id
-         *     that does not exist at all gets, so a 404 here never tells you whether the
-         *     policy is real.
-         *
-         *     Answers `201` with the created widget.
-         *
-         *     Refusals you can get here:
-         *
-         *     * `400 invalid` — `name` is missing, empty or too long, you already own a
-         *       widget with this name, or another widget in your organization already
-         *       carries this `external_ref`. `errors` names it and nothing is created.
-         *     * `403 forbidden` — you may not create widgets here, or the request
-         *       resolved no acting organization.
-         *     * `404 not_found` — the `policy_id` names a policy you could not have
-         *       reached. A policy in a branch you hold no membership over answers
-         *       this, not `403`.
-         *     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
-         *       `Idempotency-Key` for a different request, or the first request under
-         *       it has not finished. Resend the identical request, or use a new key.
-         *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
-         *
          *     **Token scope:** a bearer token must carry `widgets:write` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted.
          */
         post: operations["apps_example_api_create_widget_route"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/widgets/{widget_id}/touch/": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Touch a widget
+         * @description Mark one widget as seen now. Takes no body; only its `updated_at` moves.
+         *
+         *     **Token scope:** a bearer token must carry `widgets:write` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted.
+         */
+        post: operations["apps_example_api_touch_widget_route"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/widgets/{widget_id}/transition/": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Move a widget's status
+         * @description Send the `status` the widget moves to: the one step forward from the one it has.
+         *
+         *     **Token scope:** a bearer token must carry `widgets:write` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted.
+         */
+        post: operations["apps_example_api_transition_widget_route"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4787,30 +4821,7 @@ export interface paths {
         };
         /**
          * Retrieve widget statistics
-         * @description How many widgets you can see, with the arithmetic attached.
-         *
-         *     The same set the widget list covers: your acting organization's widgets and
-         *     those of every organization beneath it.
-         *
-         *     The count comes back as a **measured** number rather than a bare integer.
-         *     You get `value` (the total), `basis.formula` (the string
-         *     `"onboarded + pending"`) and `basis.inputs` (an object with `onboarded` and
-         *     `pending` in it), so you can check the sum without asking a second question.
-         *
-         *     Every number in it is a JSON **string**, not a JSON number — `"7"`, not `7`
-         *     — so that no client's float handling can change the value on the way in.
-         *     Parse them as decimals.
-         *
-         *     Takes no parameters.
-         *
-         *     Refusals you can get here:
-         *
-         *     * `403 forbidden` — the request resolved no tenant or no acting
-         *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
-         *     * `403 forbidden` — your role here does not let you read widgets. A role
-         *       with no read of this kind reads none of them: ask an administrator for
-         *       the permission, or act under an organization where you hold it.
-         *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+         * @description How many widgets you see; without the read, `403 forbidden`: ask an administrator.
          *
          *     **Token scope:** a bearer token must carry `widgets:read` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted. A token carrying `widgets:write` satisfies this too: within one section, the write scope includes the read.
          */
@@ -4832,32 +4843,7 @@ export interface paths {
         };
         /**
          * List widget policies
-         * @description List the widget policies your acting organization owns.
-         *
-         *     `show` picks the cut of the book: `live` (the default), `archived` for the
-         *     archived policies alone, or `all`. An archived policy governs nobody.
-         *
-         *     That means policies set on your own organization and on organizations
-         *     beneath it. **It does not include the policy that governs you** — a policy
-         *     an organization above you set applies to you and is not yours to list, so
-         *     this can come back empty while your widgets are still being governed. To
-         *     find out what governs you, call `GET /api/v1/widgets/policies/governing/`.
-         *
-         *     Takes no filter, search or ordering parameters beyond `show`. Paged like every other list:
-         *     `?cursor=`, `?limit=`, body
-         *     `{"items": [...], "has_more": ..., "next_cursor": ...}`; `count` only with
-         *     `?include_count=true`.
-         *
-         *     Refusals you can get here:
-         *
-         *     * `400 invalid` — `?show=` named a cut this list does not have. The
-         *       response names it and what it accepts.
-         *     * `403 forbidden` — the request resolved no tenant or no acting
-         *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
-         *     * `403 forbidden` — your role here does not let you read widget policies. A role
-         *       with no read of this kind reads none of them: ask an administrator for
-         *       the permission, or act under an organization where you hold it.
-         *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+         * @description List widget policies; without the read, `403 forbidden`: ask an administrator.
          *
          *     **Token scope:** a bearer token must carry `widgets:read` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted. A token carrying `widgets:write` satisfies this too: within one section, the write scope includes the read.
          */
@@ -4866,28 +4852,6 @@ export interface paths {
         /**
          * Create a widget policy
          * @description Create a widget policy on your acting organization.
-         *
-         *     Send a `name` and a `body`. The policy is created on the organization you
-         *     are acting as — the `X-Org` header, or your default organization if you send
-         *     none — and there is no field that names a different one.
-         *
-         *     It then governs that organization **and every organization beneath it**.
-         *     Those organizations cannot list it (it is not theirs) and are governed by it
-         *     all the same; they find out what governs them by calling
-         *     `GET /api/v1/widgets/policies/governing/`.
-         *
-         *     Answers `201` with the created policy.
-         *
-         *     Refusals you can get here:
-         *
-         *     * `400 invalid` — `name` is missing, empty or too long. `errors` names the
-         *       fields.
-         *     * `403 forbidden` — you may not set policy for this organization, or the
-         *       request resolved no acting organization.
-         *     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
-         *       `Idempotency-Key` for a different request, or the first request under
-         *       it has not finished. Resend the identical request, or use a new key.
-         *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
          *
          *     **Token scope:** a bearer token must carry `widgets:write` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted.
          */
@@ -4907,29 +4871,7 @@ export interface paths {
         };
         /**
          * Retrieve the governing widget policy
-         * @description The widget policy currently governing your acting organization.
-         *
-         *     Answers with one policy: the nearest one set on your own organization or, if
-         *     none is, on the closest organization above you that has set one. This is the
-         *     only route here that reads upward, and it can return a policy that
-         *     `GET /api/v1/widgets/policies/` will not list for you — a policy set above
-         *     you governs you without becoming yours to see.
-         *
-         *     `404 not_found` when no organization on that chain has set one. That is the
-         *     normal answer for an ungoverned organization, not an error to retry.
-         *
-         *     Takes no parameters.
-         *
-         *     Refusals you can get here:
-         *
-         *     * `404 not_found` — no policy governs your acting organization: neither it
-         *       nor anything above it has one.
-         *     * `403 forbidden` — the request resolved no tenant or no acting
-         *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
-         *     * `403 forbidden` — your role here does not let you read widget policies. A role
-         *       with no read of this kind reads none of them: ask an administrator for
-         *       the permission, or act under an organization where you hold it.
-         *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+         * @description The governing policy; without the read, `403 forbidden`: ask an administrator.
          *
          *     **Token scope:** a bearer token must carry `widgets:read` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted. A token carrying `widgets:write` satisfies this too: within one section, the write scope includes the read.
          */
@@ -4953,27 +4895,7 @@ export interface paths {
         put?: never;
         /**
          * Archive a widget policy
-         * @description Take one widget policy out of the book. Takes no body.
-         *
-         *     An archived policy governs nobody: `GET /api/v1/widgets/policies/governing/`
-         *     stops answering with it, and new widgets cannot name it. It stays readable
-         *     in `GET /api/v1/widgets/policies/?show=archived`. Pressing it again answers
-         *     the policy unchanged.
-         *
-         *     A policy that a widget still in use names cannot be archived — archiving
-         *     it would leave that widget governed by nothing. The refusal names the
-         *     widgets' list, narrowed to this policy, as the place to clear the way.
-         *
-         *     Refusals you can get here:
-         *
-         *     * `409 archive_blocked` — a widget in use still names this policy.
-         *       `blocking` names the kind and the door; archive those widgets or give
-         *       them another policy, then archive again. Nothing was written.
-         *     * `403 forbidden` — you do not administer the organization that set this
-         *       policy.
-         *     * `404 not_found` — nothing has that id among the policies your acting
-         *       organization owns.
-         *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+         * @description Archive one widget policy; `403 forbidden` unless you administer its node.
          *
          *     **Token scope:** a bearer token must carry `widgets:write` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted.
          */
@@ -4995,16 +4917,7 @@ export interface paths {
         put?: never;
         /**
          * Restore a widget policy
-         * @description Put one archived widget policy back in the book, where it governs again.
-         *     Takes no body. Pressing it again answers the policy unchanged.
-         *
-         *     Refusals you can get here:
-         *
-         *     * `403 forbidden` — you do not administer the organization that set this
-         *       policy.
-         *     * `404 not_found` — nothing has that id among the policies your acting
-         *       organization owns.
-         *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+         * @description Put one archived widget policy back; `403 forbidden` unless you administer its node.
          *
          *     **Token scope:** a bearer token must carry `widgets:write` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted.
          */
@@ -5024,27 +4937,7 @@ export interface paths {
         };
         /**
          * List ledger entries
-         * @description List ledger entries, newest first.
-         *
-         *     Pass `?widget_id=<uuid>` for one widget's entries, or omit it for every
-         *     entry your acting organization can see. Paged: `?cursor=`, `?limit=`, body
-         *     `{"items": [...], "has_more": ..., "next_cursor": ...}`; `count` only with
-         *     `?include_count=true`.
-         *
-         *     Entries cannot be changed or removed once written. There is no `PATCH` and
-         *     no `DELETE` for an entry anywhere in this API, and that is the contract, not
-         *     a missing feature — do not build a client that expects to correct one. To
-         *     record a correction, append another entry.
-         *
-         *     Refusals you can get here:
-         *
-         *     * `400 invalid` — `?widget_id=` is not a valid id. The response names it.
-         *     * `403 forbidden` — the request resolved no tenant or no acting
-         *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
-         *     * `403 forbidden` — your role here does not let you read ledger entries. A role
-         *       with no read of this kind reads none of them: ask an administrator for
-         *       the permission, or act under an organization where you hold it.
-         *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+         * @description List ledger entries, newest first; without the read, `403 forbidden`: ask an administrator.
          *
          *     **Token scope:** a bearer token must carry `widgets:read` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted. A token carrying `widgets:write` satisfies this too: within one section, the write scope includes the read.
          */
@@ -5053,38 +4946,6 @@ export interface paths {
         /**
          * Record a ledger entry
          * @description Append one entry to a widget's ledger.
-         *
-         *     Send `widget_id` and `kind`, and optionally `note`.
-         *
-         *     A `widget_id` your acting organization cannot see — one belonging to an
-         *     organization alongside yours, above yours, or in another tenant — answers
-         *     `404 not_found` and **nothing is written**.
-         *
-         *     `organization_slug` is optional and cannot move the entry anywhere: it is
-         *     always recorded against the widget's **own** organization. If you send the
-         *     slug, it must be that organization's; any other value — including one that
-         *     names a real organization elsewhere in your tenant — is refused with
-         *     `400 invalid` naming the `organization` field, rather than being silently
-         *     corrected. Omit it unless you want that check.
-         *
-         *     The entry cannot afterwards be changed or removed; there is no route that
-         *     does either. Answers `201` with the entry.
-         *
-         *     Refusals you can get here:
-         *
-         *     * `400 invalid` — a field is malformed, or `organization_slug` names a
-         *       branch that is not the widget's own. An entry takes its branch from
-         *       its widget and nothing you send can move it.
-         *     * `403 forbidden` — you may not add entries here, or the request resolved
-         *       no acting organization.
-         *     * `404 not_found` — the `widget_id` names a widget you could not have
-         *       reached.
-         *     * `409 archived` — the widget is archived: it reads, and nothing about it
-         *       changes until it is restored (`POST /api/v1/widgets/{id}/restore/`).
-         *     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
-         *       `Idempotency-Key` for a different request, or the first request under
-         *       it has not finished. Resend the identical request, or use a new key.
-         *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
          *
          *     **Token scope:** a bearer token must carry `widgets:write` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted.
          */
@@ -5106,35 +4967,7 @@ export interface paths {
         put?: never;
         /**
          * Archive, restore or move many widgets
-         * @description Run one verb — `archive`, `restore` or `move` — over up to 200 widgets,
-         *     and hear what happened to each.
-         *
-         *     Send `verb` and `ids`; a `move` also sends `organization_id` (and,
-         *     optionally, `owner_id`), exactly as a single move does. Answers `200` once
-         *     the batch is understood, with one result per id **in the order you sent
-         *     them**: `done`, `unchanged` (it was already where the verb would put it) or
-         *     `refused`, carrying the very refusal a single press on that widget would
-         *     have answered. `done`, `unchanged` and `refused` count them.
-         *
-         *     **Safe to retry.** A batch sent again does only what is left — the rest
-         *     answer `unchanged` — and with the same `Idempotency-Key` you get the first
-         *     answer back, byte for byte.
-         *
-         *     A widget you cannot see — one in an organization alongside yours — is
-         *     `refused` with `not_found`, and the others still run.
-         *
-         *     Refusals you can get here:
-         *
-         *     * `400 invalid` — no ids, more than 200, an id twice, or a destination on
-         *       a verb that is not a move. `errors` names it and nothing ran.
-         *     * `422 invalid_body` — `verb` is not one of the three, or a field is not
-         *       one this verb takes.
-         *     * `404 not_found` — a move's `organization_id` names an organization you
-         *       could not have reached; nothing ran.
-         *     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
-         *       `Idempotency-Key` for a different request, or the first request under
-         *       it has not finished. Resend the identical request, or use a new key.
-         *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+         * @description Run one verb — `archive`, `restore` or `move` — over up to 200 widgets.
          *
          *     **Token scope:** a bearer token must carry `widgets:write` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted.
          */
@@ -5154,30 +4987,7 @@ export interface paths {
         };
         /**
          * Retrieve a widget
-         * @description Fetch one widget by id, with the `tags` on it.
-         *
-         *     You get it if your acting organization covers it — its own widgets and those
-         *     of organizations beneath it.
-         *
-         *     **An archived widget answers too, read-only**: `archived_at` and
-         *     `archived_by` say when and by whom, `allowed_acts` offers only `restore`,
-         *     and every change to it is refused with `409 archived` until it is restored.
-         *
-         *     Anything else answers `404 not_found`: a widget in an organization alongside
-         *     yours, one above yours, one in another tenant, and an id that names nothing
-         *     all give the identical answer. **A 404 here is not evidence that the widget
-         *     does not exist**, so do not build a client that reads it that way.
-         *
-         *     Refusals you can get here:
-         *
-         *     * `404 not_found` — nothing has that id in the part of the tenant your
-         *       `X-Org` hat covers. A widget in a sibling branch answers this too.
-         *     * `403 forbidden` — the request resolved no tenant or no acting
-         *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
-         *     * `403 forbidden` — your role here does not let you read widgets. A role
-         *       with no read of this kind reads none of them: ask an administrator for
-         *       the permission, or act under an organization where you hold it.
-         *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+         * @description One widget and its `tags`; without the read, `403 forbidden`: ask an administrator.
          *
          *     **Token scope:** a bearer token must carry `widgets:read` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted. A token carrying `widgets:write` satisfies this too: within one section, the write scope includes the read.
          */
@@ -5186,26 +4996,7 @@ export interface paths {
         post?: never;
         /**
          * Delete a widget
-         * @description Delete a widget.
-         *
-         *     Answers `204` with an empty body over HTTP. Over MCP the same call answers
-         *     with the widget that was removed, because a tool result has no equivalent of
-         *     an empty response — the two are the same act, told in each protocol's own
-         *     grammar.
-         *
-         *     A widget your acting organization cannot see answers `404 not_found`, the
-         *     same as an id that names nothing, and nothing is removed.
-         *
-         *     Refusals you can get here:
-         *
-         *     * `403 forbidden` — the widget is not yours and you are not an
-         *       administrator of this organization.
-         *     * `404 not_found` — nothing has that id where you can see.
-         *     * `409 archived` — the widget is archived: it reads, and nothing about it
-         *       changes until it is restored (`POST /api/v1/widgets/{id}/restore/`).
-         *     * `409 merge_survivor` — other widgets were merged into this one and still
-         *       point at it; archive it instead (`POST /api/v1/widgets/{id}/archive/`).
-         *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+         * @description Delete a widget; `403 forbidden` unless it is yours or you administer its node.
          *
          *     **Token scope:** a bearer token must carry `widgets:write` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted.
          */
@@ -5214,43 +5005,7 @@ export interface paths {
         head?: never;
         /**
          * Update a widget
-         * @description Change a widget's name, notes or governing policy.
-         *
-         *     **Send the `version` you read** — every widget carries one — and only the
-         *     fields you want to change. A field you omit is left alone, and so is a field
-         *     you send as `null` — `null` means "leave it alone" here, not "clear it", so
-         *     **there is no way through this route to remove a widget's policy**; set a
-         *     different one instead.
-         *
-         *     If somebody else saved the widget after you read it, your `version` is no
-         *     longer its version: the save is refused with `409 stale_version`, nothing is
-         *     changed, and the refusal carries `current_version`. Read the widget again,
-         *     show what changed, and send your edit with the new version.
-         *
-         *     A `policy_id` your acting organization cannot reach answers `404 not_found`
-         *     and nothing at all is written — not even the `name` you sent in the same
-         *     body. That is the same answer an id naming no policy gets.
-         *
-         *     Answers `200` with the widget as it now stands, and its new `version`.
-         *
-         *     Refusals you can get here:
-         *
-         *     * `422 invalid_body` — `version` is missing, or a field is not one this
-         *       route takes. `errors` names it and nothing is changed.
-         *     * `400 invalid` — a field you sent is malformed. `errors` names it and
-         *       nothing is changed.
-         *     * `403 forbidden` — the widget is not yours and you are not an
-         *       administrator of this organization.
-         *     * `404 not_found` — nothing has that id where you can see, or the
-         *       `policy_id` names a policy you could not have reached.
-         *     * `409 stale_version` — somebody saved the widget after you read it.
-         *       `current_version` is its version now; nothing was written.
-         *     * `409 archived` — the widget is archived: it reads, and nothing about it
-         *       changes until it is restored (`POST /api/v1/widgets/{id}/restore/`).
-         *     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
-         *       `Idempotency-Key` for a different request, or the first request under
-         *       it has not finished. Resend the identical request, or use a new key.
-         *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+         * @description Change a widget; `403 forbidden` unless it is yours or you administer its node.
          *
          *     **Token scope:** a bearer token must carry `widgets:write` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted.
          */
@@ -5268,26 +5023,7 @@ export interface paths {
         put?: never;
         /**
          * Archive a widget
-         * @description Take one widget out of the book. Takes no body.
-         *
-         *     An archived widget leaves the widget list and every count, and stays
-         *     readable: `GET` it by id, or list `?show=archived`. It answers read-only —
-         *     every change is refused with `409 archived` until it is restored.
-         *
-         *     **Safe to retry.** Pressing it again answers the widget unchanged — the
-         *     same `archived_at`, the same `archived_by` — and tells nobody a second
-         *     time.
-         *
-         *     Refusals you can get here:
-         *
-         *     * `409 archive_blocked` — something still in use depends on this widget.
-         *       `blocking` names each kind and the door that clears it. Nothing was
-         *       written.
-         *     * `403 forbidden` — you do not administer the organization this widget
-         *       belongs to. Archiving is an administrator's press.
-         *     * `404 not_found` — nothing has that id where you can see. A widget in a
-         *       sibling branch answers this too.
-         *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+         * @description Archive one widget; `403 forbidden` unless you administer its organization.
          *
          *     **Token scope:** a bearer token must carry `widgets:write` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted.
          */
@@ -5309,20 +5045,7 @@ export interface paths {
         put?: never;
         /**
          * Restore a widget
-         * @description Put one archived widget back in the book. Takes no body.
-         *
-         *     It returns to the widget list with `archived_at` and `archived_by` both
-         *     `null`, and can be changed again. **Safe to retry**: pressing it on a
-         *     widget that is not archived answers the widget unchanged.
-         *
-         *     Refusals you can get here:
-         *
-         *     * `409 restore_blocked` — something this widget depends on is not there
-         *       for it any more. `blocking` names it and the door that puts it right.
-         *     * `403 forbidden` — you do not administer the organization this widget
-         *       belongs to.
-         *     * `404 not_found` — nothing has that id where you can see.
-         *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+         * @description Put one archived widget back; `403 forbidden` unless you administer its organization.
          *
          *     **Token scope:** a bearer token must carry `widgets:write` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted.
          */
@@ -5344,41 +5067,7 @@ export interface paths {
         put?: never;
         /**
          * Move a widget
-         * @description Re-home one widget at another organization, and hand it to another owner
-         *     if you name one.
-         *
-         *     Send the `version` you read, the `organization_id` it is going to and,
-         *     optionally, an `owner_id`. Leaving `organization_id` out keeps it where it
-         *     is, which is how you hand it to another owner without moving it. The
-         *     organizations you may move it to are
-         *     `GET /api/v1/organizations/?can=widget.move` — your own and those beneath
-         *     it where you administer widgets.
-         *
-         *     **Safe to retry**: moving it to where it already is, owned by who already
-         *     owns it, answers the widget unchanged and tells nobody.
-         *
-         *     A widget with a line in its ledger cannot move: its entries are recorded
-         *     where they were written and never follow it, so the move is refused
-         *     `409 move_blocked` naming them, and nothing moves.
-         *
-         *     Answers `200` with the widget where it now is: `organization_name` names
-         *     the new organization, `owner_name` the owner, and `version` is new.
-         *
-         *     Refusals you can get here:
-         *
-         *     * `409 move_blocked` — something recorded under this widget must stay
-         *       where it is. `blocking` names it; nothing moved.
-         *     * `409 stale_version` — somebody saved the widget after you read it.
-         *       `current_version` is its version now; nothing was written.
-         *     * `409 archived` — the widget is archived: restore it before moving it.
-         *     * `403 forbidden` — you do not administer widgets where it lives, or where
-         *       it is going. Moving is an administrator's press at both ends.
-         *     * `404 not_found` — the widget, the organization or the new owner is not
-         *       one you could have reached: a sibling branch's organization answers
-         *       this, and so does an owner with no membership where it is going.
-         *     * `422 invalid_body` — `version` is missing, or a field is not one this
-         *       route takes. `errors` names it.
-         *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+         * @description Re-home a widget (and maybe its owner); `403 forbidden` unless you administer both.
          *
          *     **Token scope:** a bearer token must carry `widgets:write` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted.
          */
@@ -5398,25 +5087,7 @@ export interface paths {
         };
         /**
          * List a widget's history
-         * @description What happened to one widget, newest first: each thing somebody did to it,
-         *     who did it, through which door, and which fields they sent.
-         *
-         *     Every entry carries `at`, `verb` (`create`, `update`, `move`, `archive`,
-         *     `restore`, …), `actor` (an `id` and a `name` when a person acted, and a
-         *     `kind`), `door` (`rest`, `mcp`, `workflow`, …) and `changed_fields` — the
-         *     fields the call was SENT, never their values: the history keeps no before
-         *     and after. A refused attempt is not history and is not listed.
-         *
-         *     Paged like every other list: `?cursor=`, `?limit=`, body
-         *     `{"items": [...], "has_more": ..., "next_cursor": ...}`; `count` only with
-         *     `?include_count=true`.
-         *
-         *     Refusals you can get here:
-         *
-         *     * `404 not_found` — nothing has that id where you can see. A widget in a
-         *       sibling branch answers this too.
-         *     * `403 forbidden` — your role here does not let you read widgets.
-         *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+         * @description What happened to one widget, newest first.
          *
          *     **Token scope:** a bearer token must carry `widgets:read` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted. A token carrying `widgets:write` satisfies this too: within one section, the write scope includes the read.
          */
@@ -5442,29 +5113,6 @@ export interface paths {
          * Duplicate a widget
          * @description Make a new widget from this one. Takes no body.
          *
-         *     The copy carries the notes and the policy of the widget it was made from,
-         *     and its tags; it is yours, it belongs to the organization you are acting
-         *     as, and it is called `Copy of <name>`. It starts with an empty ledger and
-         *     is onboarded like any new widget. `duplicated_from_id` names the widget it
-         *     was copied from. Answers `201` with the copy.
-         *
-         *     **Safe to retry with a key**: send an `Idempotency-Key` and a repeat of the
-         *     same press answers the first copy rather than making a second.
-         *
-         *     Refusals you can get here:
-         *
-         *     * `400 invalid` — you already have a widget called `Copy of <name>`:
-         *       rename it, then copy again. `errors` names `name`; nothing is created.
-         *     * `403 forbidden` — you may not create widgets where you are acting.
-         *     * `404 not_found` — nothing has that id where you can see.
-         *     * `409 archived` — the widget is archived: restore it before copying it.
-         *     * `409 merged` — the widget was merged into another; copy that one.
-         *       `merged_into` names it.
-         *     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
-         *       `Idempotency-Key` for a different request, or the first request under
-         *       it has not finished. Resend the identical request, or use a new key.
-         *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
-         *
          *     **Token scope:** a bearer token must carry `widgets:write` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted.
          */
         post: operations["apps_example_api_duplicate_widget_route"];
@@ -5483,20 +5131,7 @@ export interface paths {
         };
         /**
          * Preview a widget merge
-         * @description What merging this widget into the widget `?into=` names WOULD move — read
-         *     before you confirm, and nothing is written.
-         *
-         *     `repoints` lists, per kind of thing attached to a widget, its `title`
-         *     (*Notes*, *Tags*, *Files*) and `left` — how many would leave this widget
-         *     for the other one. The widget's ledger is not listed: its entries stay
-         *     where they were written, and the surviving widget's ledger reads them.
-         *
-         *     Refusals you can get here:
-         *
-         *     * `400 invalid` — `into` names this same widget.
-         *     * `403 forbidden` — you do not administer both widgets' organizations.
-         *     * `404 not_found` — either widget is not one you could have reached.
-         *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+         * @description What a merge into `?into=` WOULD move; `403 forbidden` unless you administer both.
          *
          *     **Token scope:** a bearer token must carry `widgets:read` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted. A token carrying `widgets:write` satisfies this too: within one section, the write scope includes the read.
          */
@@ -5504,34 +5139,7 @@ export interface paths {
         put?: never;
         /**
          * Merge a widget into another
-         * @description Fold this widget into the widget `into_id` names, which survives. **There
-         *     is no undo**: preview it first — a `GET` on this path names the other widget
-         *     and answers what would move.
-         *
-         *     Send `into_id`, the `version` of this widget and the `into_version` of the
-         *     other — both as you read them. Everything attached to this widget (notes,
-         *     tags, files) moves to the survivor; its ledger stays where it was written
-         *     and the survivor's ledger reads it. This widget is archived and answers
-         *     read-only from then on, with `merged_into_id` naming the survivor, and every
-         *     change to it is refused `409 merged`. Answers `200` with the survivor.
-         *
-         *     **Safe to retry**: merging the same pair again answers the survivor
-         *     unchanged and tells nobody.
-         *
-         *     Refusals you can get here:
-         *
-         *     * `400 invalid` — `into_id` names this same widget.
-         *     * `403 forbidden` — you do not administer both widgets' organizations.
-         *     * `404 not_found` — either widget is not one you could have reached.
-         *     * `409 merge_blocked` — something still holds this widget where it is.
-         *       `blocking` names it; nothing was written.
-         *     * `409 merged` — one of the two was already merged into a third widget;
-         *       `merged_into` names where it went.
-         *     * `409 archived` — one of the two is archived: restore it first.
-         *     * `409 stale_version` — somebody saved one of them after you read it.
-         *       `current_version` is its version now; nothing was written.
-         *     * `422 invalid_body` — `into_id`, `version` or `into_version` is missing.
-         *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+         * @description Fold this into `into_id`, with no undo; `403 forbidden` unless you administer both.
          *
          *     **Token scope:** a bearer token must carry `widgets:write` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted.
          */
@@ -5555,31 +5163,106 @@ export interface paths {
          * Approve a widget
          * @description Approve a widget that is waiting to be onboarded.
          *
-         *     Takes no body. Answers `200` with the widget, and an entry is appended to
-         *     its ledger.
-         *
-         *     There is no field anywhere that you can `PATCH` to do this, and no way to
-         *     un-approve: approval is this route and nothing else.
-         *
-         *     **Safe to retry.** Calling it again while the widget is still being
-         *     onboarded answers `200` again and changes nothing further, so a client that
-         *     never saw the first answer can simply send it a second time.
-         *
-         *     Refusals you can get here:
-         *
-         *     * `409 conflict` — the onboarding this would have approved has already
-         *       ended. Retrying will not change that; read the widget instead.
-         *     * `404 not_found` — there is no onboarding under way for this widget, or
-         *       your acting organization cannot see it, or the id names nothing.
-         *     * `409 archived` — the widget is archived: it reads, and nothing about it
-         *       changes until it is restored (`POST /api/v1/widgets/{id}/restore/`).
-         *
-         *     A `200` means the approval was recorded. It does not mean onboarding has
-         *     finished — read the widget's `onboarded_at`, which is set when it has.
-         *
          *     **Token scope:** a bearer token must carry `widgets:write` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted.
          */
         post: operations["apps_example_api_approve_widget_route"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/portal-requests/": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List portal requests
+         * @description List the requests you can see, newest first: the ones sent from the
+         *     organization you are acting as and from every organization beneath it.
+         *     `widget_id` and `priority` narrow them; a widget you cannot see lists none.
+         *
+         *     **Pages** are `?cursor=` and `?limit=` (50 by default, 200 at most). Send the
+         *     `next_cursor` you were given back as `?cursor=` and stop when `has_more` is
+         *     false. `count` is `null` unless you send `?include_count=true`.
+         *
+         *     Refusals you can get here:
+         *
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
+         *       organization.
+         *     * `403 forbidden` — your role here does not let you read requests.
+         *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+         *
+         *     **Token scope:** a bearer token must carry `portal_requests:read` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted. A token carrying `portal_requests:write` satisfies this too: within one section, the write scope includes the read.
+         */
+        get: operations["apps_example_portal_api_list_portal_requests_route"];
+        put?: never;
+        /**
+         * Send a portal request
+         * @description Ask about a widget, in your own words.
+         *
+         *     Send the `widget_id` of a widget you can see, a `note` and, optionally, a
+         *     `priority` (`low`, `normal` or `high`). It lives where you are acting — no
+         *     field sets it — so you read it back, and so do the people above you.
+         *
+         *     Answers `201` with the request.
+         *
+         *     Refusals you can get here:
+         *
+         *     * `400 invalid` — `note` is empty or too long; `errors` names it.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
+         *       organization.
+         *     * `403 forbidden` — you may not send requests here.
+         *     * `404 not_found` — the widget is not one you can see from where you are
+         *       acting; nothing is sent. A widget in a branch alongside yours answers
+         *       this, exactly as one that does not exist.
+         *     * `409 archived` — the widget is archived; nothing is sent.
+         *     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
+         *       `Idempotency-Key` for a different request, or the first request under
+         *       it has not finished. Resend the identical request, or use a new key.
+         *     * `422 invalid_body` — `priority` is not one of the three; nothing is sent.
+         *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+         *
+         *     **Token scope:** a bearer token must carry `portal_requests:write` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted.
+         */
+        post: operations["apps_example_portal_api_submit_portal_request_route"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/portal-requests/{request_id}/": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Retrieve a portal request
+         * @description Fetch one request by id.
+         *
+         *     You get it only if it was sent from the organization you are acting as or
+         *     from one beneath it. Anything else answers `404 not_found`, the same answer
+         *     an id that names nothing gets.
+         *
+         *     Refusals you can get here:
+         *
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
+         *       organization.
+         *     * `403 forbidden` — your role here does not let you read requests.
+         *     * `404 not_found` — nothing with that id that you can see.
+         *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+         *
+         *     **Token scope:** a bearer token must carry `portal_requests:read` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted. A token carrying `portal_requests:write` satisfies this too: within one section, the write scope includes the read.
+         */
+        get: operations["apps_example_portal_api_retrieve_portal_request"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -5624,9 +5307,9 @@ export interface paths {
          *
          *     * `400 invalid` — `?ordering=` named a field this list does not accept, or
          *       a filter value was malformed. The response says what you may sort by.
-         *     * `403 forbidden` — the request resolved no tenant or no acting
-         *       organization (send `X-Tenant` and `X-Org` naming ones you belong to), or
-         *       your role does not include reading exports here.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
+         *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+         *     * `403 forbidden` — your role does not include reading exports here.
          *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
          *
          *     **Token scope:** a bearer token must carry `exports:read` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted. A token carrying `exports:write` satisfies this too: within one section, the write scope includes the read.
@@ -5667,6 +5350,8 @@ export interface paths {
          *     * `403 forbidden` — you asked for the whole account and you are not an
          *       owner or an administrator of it, or the request resolved no acting
          *       organization.
+         *     * `403 no_acting_scope` — the request resolved no tenant. Send `X-Tenant`
+         *       naming one you belong to.
          *     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
          *       `Idempotency-Key` header for a different request, or the first request
          *       under it has not finished. Resend the identical request, or use a new key.
@@ -5711,9 +5396,9 @@ export interface paths {
          *
          *     Refusals you can get here:
          *
-         *     * `403 forbidden` — the request resolved no tenant or no acting
-         *       organization (send `X-Tenant` and `X-Org` naming ones you belong to), or
-         *       your role does not include reading exports here.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
+         *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+         *     * `403 forbidden` — your role does not include reading exports here.
          *     * `404 not_found` — nothing has that id where you can see.
          *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
          *
@@ -5765,9 +5450,9 @@ export interface paths {
          *
          *     Refusals you can get here:
          *
-         *     * `403 forbidden` — the request resolved no tenant or no acting
-         *       organization (send `X-Tenant` and `X-Org` naming ones you belong to), or
-         *       your role does not include reading exports here.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
+         *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+         *     * `403 forbidden` — your role does not include reading exports here.
          *     * `404 not_found` — nothing has that id where you can see, or there is no
          *       archive on it to fetch.
          *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
@@ -5843,8 +5528,8 @@ export interface paths {
          *       filter value was malformed, `?show=` was not `live`, `archived` or `all`
          *       (or `?archived=` was sent), or `?subject=` was not `<kind>:<id>` or names a
          *       kind that takes no documents. The response names the parameter.
-         *     * `403 forbidden` — the request resolved no tenant or no acting organization.
-         *       Send `X-Tenant` and `X-Org` naming ones you belong to.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
+         *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
          *     * `403 insufficient_scope` — the token authenticated and its ceiling does not
          *       carry `files:read`. Mint one that does.
          *     * `404 not_found` — `?subject=` names a record you cannot see, or none at all.
@@ -5909,8 +5594,9 @@ export interface paths {
          *       was created.
          *     * `422 invalid_body` — the body carried a field this endpoint does not accept,
          *       or one was missing or the wrong type. `errors` names the fields.
-         *     * `403 forbidden` — the request resolved no tenant, or you may not file
-         *       documents in this organization.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
+         *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+         *     * `403 forbidden` — you may not file documents in this organization.
          *     * `403 insufficient_scope` — the token's ceiling does not carry `files:write`.
          *     * `404 not_found` — `subject` names a record you cannot see, or none at all.
          *     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
@@ -5953,8 +5639,8 @@ export interface paths {
          *
          *     Refusals you can get here:
          *
-         *     * `403 forbidden` — the request resolved no tenant or no acting organization.
-         *       Send `X-Tenant` and `X-Org` naming ones you belong to.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
+         *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
          *     * `403 insufficient_scope` — the token's ceiling does not carry `files:read`.
          *     * `404 not_found` — nothing has that id where you can see.
          *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
@@ -6007,8 +5693,9 @@ export interface paths {
          *     Refusals you can get here:
          *
          *     * `403 forbidden` — you do not administer the part of the organization this
-         *       document belongs to, or the request resolved no tenant or no acting
-         *       organization.
+         *       document belongs to.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
+         *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
          *     * `403 insufficient_scope` — the token's ceiling does not carry `files:write`.
          *     * `404 not_found` — nothing has that id where you can see.
          *     * `409 archive_blocked` — something still depends on this document; the answer
@@ -6054,8 +5741,9 @@ export interface paths {
          *     Refusals you can get here:
          *
          *     * `403 forbidden` — you do not administer the part of the organization this
-         *       document belongs to, or the request resolved no tenant or no acting
-         *       organization.
+         *       document belongs to.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
+         *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
          *     * `403 insufficient_scope` — the token's ceiling does not carry `files:write`.
          *     * `404 not_found` — nothing has that id where you can see.
          *     * `409 restore_blocked` — something stops this document coming back; the answer
@@ -6117,8 +5805,9 @@ export interface paths {
          *
          *     * `422 invalid_body` — the body carried a field this endpoint does not accept,
          *       or `version` was not a positive whole number.
-         *     * `403 forbidden` — the request resolved no tenant or no acting organization,
-         *       or you may not read this organization's documents.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
+         *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+         *     * `403 forbidden` — you may not read this organization's documents.
          *     * `403 insufficient_scope` — the token's ceiling does not carry `files:write`.
          *       Issuing a link records an entry against the document, which is what puts this
          *       operation on the writing side of a token's ceiling.
@@ -6165,7 +5854,8 @@ export interface paths {
          *     Refusals you can get here:
          *
          *     * `400 invalid` — `?ordering=` named a field this list does not accept.
-         *     * `403 forbidden` — the request resolved no tenant or no acting organization.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
+         *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
          *     * `403 insufficient_scope` — the token's ceiling does not carry `files:read`.
          *     * `404 not_found` — nothing has that id where you can see, or a `?cursor=` you
          *       sent belongs to a different walk.
@@ -6203,8 +5893,9 @@ export interface paths {
          *     * `400 invalid` — the declared size is above the limit, your credential
          *       resolved no person, or the request resolved no acting organization.
          *     * `422 invalid_body` — the body carried a field this endpoint does not accept.
-         *     * `403 forbidden` — the request resolved no tenant, or you may not add versions
-         *       in this organization.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
+         *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+         *     * `403 forbidden` — you may not add versions in this organization.
          *     * `403 insufficient_scope` — the token's ceiling does not carry `files:write`.
          *     * `404 not_found` — nothing has that id where you can see.
          *     * `409 archived` — the document is archived, so nothing new goes into it.
@@ -6261,8 +5952,9 @@ export interface paths {
          *     * `400 invalid` — `idempotency_key` was blank, or the request resolved no
          *       acting organization.
          *     * `422 invalid_body` — the body carried a field this endpoint does not accept.
-         *     * `403 forbidden` — the request resolved no tenant, or you may not add versions
-         *       in this organization.
+         *     * `403 no_acting_scope` — the request resolved no tenant or no acting
+         *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+         *     * `403 forbidden` — you may not add versions in this organization.
          *     * `403 insufficient_scope` — the token's ceiling does not carry `files:write`.
          *     * `404 not_found` — nothing has that id where you can see, or that document has
          *       no version with that number.
@@ -6271,6 +5963,28 @@ export interface paths {
          *     **Token scope:** a bearer token must carry `files:write` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted.
          */
         post: operations["apps_files_api_confirm_upload_route"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/socket-tickets/": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mint a socket ticket
+         * @description A one-use ticket, good for 60 seconds, that opens this tenant's socket as `ws/events/?ticket=`.
+         *
+         *     **Token scope:** a bearer token must carry `socket-tickets:write` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted.
+         */
+        post: operations["apps_realtime_api_create_socket_ticket_route"];
         delete?: never;
         options?: never;
         head?: never;
@@ -6313,8 +6027,8 @@ export interface paths {
          *
          *     Refusals you can get here:
          *
-         *     * `403 forbidden` — the request resolved no account. Send `X-Tenant` naming
-         *       one you belong to.
+         *     * `403 no_acting_scope` — the request resolved no account. Send `X-Tenant`
+         *       naming one you belong to.
          *     * `400 invalid_cursor` — the cursor was edited, or came from a different
          *       endpoint. Start the walk again without one.
          *     * `404 not_found` — the cursor was minted for a different account.
@@ -6381,10 +6095,9 @@ export interface paths {
          *     typos are not forgiven. What you can see does not change either way.
          *
          *     **One field here is deliberately not a report of what happened, and it is
-         *     this one.** When the answer is empty because you can see nothing — you sent
-         *     an `X-Org` this product could not resolve for you, or you belong to no
-         *     account — no engine is asked at all, and the page still names the engine
-         *     this deployment searches with. That is on purpose: a page you are not
+         *     this one.** When the answer is empty because you can see nothing — you act
+         *     as no organization in this account — no engine is asked at all, and the page
+         *     still names the engine this deployment searches with. That is on purpose: a page you are not
          *     entitled to and a page that genuinely matched nothing are the same page,
          *     down to the byte, so that nobody can use this endpoint to find out whether a
          *     record they cannot reach exists. Everything else in the body is exactly what
@@ -6392,11 +6105,11 @@ export interface paths {
          *
          *     Refusals you can get here:
          *
-         *     * `403 forbidden` — the request resolved no account or no acting
-         *       organization (send `X-Tenant` and `X-Org` naming ones you belong to), or
-         *       `kinds` named a kind your role does not include reading. Leave `kinds` out
-         *       to search everything you can read; a kind you may not read is simply not
-         *       in the results.
+         *     * `403 no_acting_scope` — the request resolved no account. Send `X-Tenant`
+         *       naming one you belong to.
+         *     * `403 forbidden` — `kinds` named a kind your role does not include reading.
+         *       Leave `kinds` out to search everything you can read; a kind you may not
+         *       read is simply not in the results.
          *     * `400 invalid` — `kinds` named something this product cannot search. The
          *       message says what you sent and lists what it does have;
          *       `GET /search/kinds/` is the same list. **`403` and `400` are different
@@ -6468,8 +6181,9 @@ export interface paths {
          *     `X-Org` header, or your default organization if you send none. You get that
          *     organization's consumption and that of every organization beneath it. A
          *     branch alongside yours, or above it, is not in the total. **An `X-Org` you
-         *     send that we cannot resolve is refused** (`403 forbidden`) rather than
-         *     quietly ignored: a mistyped hat must never come back as a bill of zero.
+         *     send that we cannot resolve is refused** (`403 addressing_header_not_honoured`)
+         *     rather than quietly ignored: a mistyped hat must never come back as a bill of
+         *     zero.
          *
          *     **There is no way to write usage here, and that is deliberate.** Consumption
          *     is recorded by the platform as it happens, so nothing you send could add to
@@ -6483,10 +6197,12 @@ export interface paths {
          *       was not a date, or a `meters` entry is not a meter this deployment
          *       declares. The response says which parameter, and for a meter it says what
          *       the vocabulary is and where to list it.
-         *     * `403 forbidden` — the request resolved no tenant, or the `X-Org` you sent
-         *       is not one you can act as, or this credential may not read usage. Send an
-         *       `X-Tenant` and an `X-Org` naming ones you belong to, or send neither and
-         *       act as your defaults.
+         *     * `403 no_acting_scope` — the request resolved no tenant. Send an `X-Tenant`
+         *       naming one you belong to.
+         *     * `403 addressing_header_not_honoured` — the `X-Tenant` or `X-Org` you sent
+         *       is not one you can act as. Name one you belong to, or send neither and act
+         *       as your defaults.
+         *     * `403 forbidden` — this credential may not read usage.
          *     * `403 insufficient_scope` — the token authenticated and its ceiling does
          *       not carry `usage:read`. Mint one that does.
          *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
@@ -8051,14 +7767,14 @@ export interface components {
          * @description A person, as the deactivation and erasure doors hand them back.
          *
          *     **What is not here is the point.** `is_superuser` is the deployment's own
-         *     business and no tenant's; `zitadel_sub` is the identity platform's subject
-         *     and naming it over the wire would hand a caller the key to somebody's
-         *     account on it; `password` is a hash and there is no door in this repository
-         *     that returns one.
+         *     business and no tenant's; the identity platform's subjects (the identity
+         *     join, `SsoIdentity`) are not here either, because naming one over the wire
+         *     would hand a caller the key to somebody's account on it; `password` is a
+         *     hash and there is no door in this repository that returns one.
          *
          *     `email` **is** here, and it is what makes an erasure legible: the address
          *     that comes back from `POST /users/{id}/erase` is the anonymised
-         *     `erased+<uuid>@invalid` one, which is the caller's evidence that the act
+         *     `erased+<uuid>@erased.invalid` one, which is the caller's evidence that the act
          *     landed rather than a copy of the person who used to be there.
          * @example {
          *       "id": "0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f21",
@@ -8078,7 +7794,7 @@ export interface components {
             id: string;
             /**
              * Email
-             * @description After an erasure this is the anonymised `erased+<uuid>@invalid` form.
+             * @description After an erasure this is the anonymised `erased+<uuid>@erased.invalid` form.
              * @example dana@example.com
              */
             email: string;
@@ -8206,7 +7922,7 @@ export interface components {
          * RealmOut
          * @description Where that address signs in — and nothing else about it.
          *
-         *     **`method` is `sso` for every address** (ADR ident-6, W2-R5). Zitadel hosts
+         *     **`method` is `sso` for every address** (ADR ident-6). Zitadel hosts
          *     every interactive authentication now, including the passwords of local
          *     users, so there is one door and the question "which door" has one answer.
          *     `authorize_url` is always populated and always points at that door;
@@ -8277,7 +7993,8 @@ export interface components {
          *             "acme.com"
          *           ],
          *           "default_role": "admin",
-         *           "enforced": true,
+         *           "enforced": false,
+         *           "sync_state": "applied",
          *           "created_at": "2026-08-23T09:30:00Z",
          *           "updated_at": "2026-08-23T09:30:00Z",
          *           "disabled_at": "2026-08-23T09:30:00Z"
@@ -8325,7 +8042,8 @@ export interface components {
          *         "acme.com"
          *       ],
          *       "default_role": "admin",
-         *       "enforced": true,
+         *       "enforced": false,
+         *       "sync_state": "applied",
          *       "created_at": "2026-08-23T09:30:00Z",
          *       "updated_at": "2026-08-23T09:30:00Z",
          *       "disabled_at": "2026-08-23T09:30:00Z"
@@ -8360,8 +8078,18 @@ export interface components {
             verified_domains: string[];
             /** Default Role */
             default_role: string;
-            /** Enforced */
+            /**
+             * Enforced
+             * @description Whether sign-in for these domains requires this provider now.
+             * @example false
+             */
             enforced: boolean;
+            /**
+             * Sync State
+             * @description `applied` once the identity platform agrees with this connection; `pending` while a change is on its way; `failed` if it could not be applied.
+             * @example applied
+             */
+            sync_state: string;
             /**
              * Created At
              * Format: date-time
@@ -8387,7 +8115,7 @@ export interface components {
          *         "email domains"
          *       ],
          *       "protocol": "oidc",
-         *       "default_role": "owner",
+         *       "default_role": "admin",
          *       "enforced": false
          *     }
          */
@@ -8423,11 +8151,9 @@ export interface components {
             protocol: "oidc";
             /**
              * Default Role
-             * @description The role a person provisioned by this connection joins at. It is applied to new memberships only and never changes an existing one.
-             * @default member
-             * @enum {string}
+             * @description The role key a person provisioned by this connection joins at; when omitted, this deployment's default role. It is applied to new memberships only and never changes an existing one.
              */
-            default_role: "owner" | "admin" | "member";
+            default_role?: string | null;
             /**
              * Enforced
              * @description When true, people in these domains may not sign in with a password.
@@ -8449,7 +8175,7 @@ export interface components {
          *       "email_domains": [
          *         "email domains"
          *       ],
-         *       "default_role": "owner",
+         *       "default_role": "admin",
          *       "enforced": true
          *     }
          */
@@ -8465,7 +8191,7 @@ export interface components {
             /** Email Domains */
             email_domains?: string[] | null;
             /** Default Role */
-            default_role?: ("owner" | "admin" | "member") | null;
+            default_role?: string | null;
             /** Enforced */
             enforced?: boolean | null;
         };
@@ -9790,6 +9516,7 @@ export interface components {
          *       "name": "Northern branch",
          *       "status": "active",
          *       "has_credentials": true,
+         *       "is_signature_v2_required": true,
          *       "last_error": "last error",
          *       "connected_at": "2026-08-23T09:30:00Z",
          *       "revoked_at": "2026-08-23T09:30:00Z",
@@ -9816,6 +9543,11 @@ export interface components {
             status: string;
             /** Has Credentials */
             has_credentials: boolean;
+            /**
+             * Is Signature V2 Required
+             * @example true
+             */
+            is_signature_v2_required: boolean;
             /** Last Error */
             last_error: string;
             /** Connected At */
@@ -9844,6 +9576,7 @@ export interface components {
          *           "name": "Northern branch",
          *           "status": "active",
          *           "has_credentials": true,
+         *           "is_signature_v2_required": true,
          *           "last_error": "last error",
          *           "connected_at": "2026-08-23T09:30:00Z",
          *           "revoked_at": "2026-08-23T09:30:00Z",
@@ -9884,7 +9617,8 @@ export interface components {
          * @example {
          *       "provider": "stripe",
          *       "name": "Northern branch",
-         *       "credentials": {}
+         *       "credentials": {},
+         *       "is_signature_v2_required": true
          *     }
          */
         ConnectionIn: {
@@ -9896,6 +9630,12 @@ export interface components {
             credentials?: {
                 [key: string]: unknown;
             };
+            /**
+             * Is Signature V2 Required
+             * @default true
+             * @example true
+             */
+            is_signature_v2_required: boolean;
         };
         /**
          * CredentialsIn
@@ -9909,6 +9649,20 @@ export interface components {
             credentials: {
                 [key: string]: unknown;
             };
+        };
+        /**
+         * SignatureSchemeIn
+         * @description Whether the connection's inbound webhook refuses a body-only signature.
+         * @example {
+         *       "is_signature_v2_required": true
+         *     }
+         */
+        SignatureSchemeIn: {
+            /**
+             * Is Signature V2 Required
+             * @example true
+             */
+            is_signature_v2_required: boolean;
         };
         /**
          * RevokeIn
@@ -9983,14 +9737,14 @@ export interface components {
             status: string;
         };
         /**
-         * ImportFilter
+         * DjbImportFilter
          * @description The narrowings a client may ask the list for. `status` is an exact match.
          * @example {
          *       "status": "previewed",
          *       "kind": "widget"
          *     }
          */
-        ImportFilter: {
+        DjbImportFilter: {
             /**
              * Status
              * @example previewed
@@ -10003,7 +9757,7 @@ export interface components {
             kind?: string | null;
         };
         /**
-         * ImportCountsOut
+         * DjbImportCountsOut
          * @description What the dry run found, and then what the apply did.
          * @example {
          *       "create": 4,
@@ -10012,7 +9766,7 @@ export interface components {
          *       "refused": 1
          *     }
          */
-        ImportCountsOut: {
+        DjbImportCountsOut: {
             /**
              * Create
              * @example 4
@@ -10035,7 +9789,7 @@ export interface components {
             refused: number;
         };
         /**
-         * ImportOut
+         * DjbImportOut
          * @description One import run.
          * @example {
          *       "id": "6f1b1f9c-1d3e-4a5b-8c7d-2e9f0a1b2c3d",
@@ -10064,7 +9818,7 @@ export interface components {
          *       "expires_at": "2026-10-27T09:31:12Z"
          *     }
          */
-        ImportOut: {
+        DjbImportOut: {
             /**
              * Id
              * Format: uuid
@@ -10123,7 +9877,7 @@ export interface components {
              * @example
              */
             idempotency_key: string;
-            counts: components["schemas"]["ImportCountsOut"];
+            counts: components["schemas"]["DjbImportCountsOut"];
             /**
              * Apply Writes
              * @example 4
@@ -10166,7 +9920,7 @@ export interface components {
             expires_at: string;
         };
         /**
-         * PagedImportOut
+         * PagedDjbImportOut
          * @example {
          *       "items": [
          *         {
@@ -10201,9 +9955,9 @@ export interface components {
          *       "count": null
          *     }
          */
-        PagedImportOut: {
+        PagedDjbImportOut: {
             /** Items */
-            items: components["schemas"]["ImportOut"][];
+            items: components["schemas"]["DjbImportOut"][];
             /**
              * Has More
              * @example true
@@ -10221,7 +9975,7 @@ export interface components {
             count: number | null;
         };
         /**
-         * ImportStagedOut
+         * DjbImportStagedOut
          * @description The answer to staging: the run, and whether this call made it.
          * @example {
          *       "id": "6f1b1f9c-1d3e-4a5b-8c7d-2e9f0a1b2c3d",
@@ -10251,7 +10005,7 @@ export interface components {
          *       "created": true
          *     }
          */
-        ImportStagedOut: {
+        DjbImportStagedOut: {
             /**
              * Id
              * Format: uuid
@@ -10310,7 +10064,7 @@ export interface components {
              * @example
              */
             idempotency_key: string;
-            counts: components["schemas"]["ImportCountsOut"];
+            counts: components["schemas"]["DjbImportCountsOut"];
             /**
              * Apply Writes
              * @example 4
@@ -10358,7 +10112,7 @@ export interface components {
             created: boolean;
         };
         /**
-         * ImportIn
+         * DjbImportIn
          * @description What a client sends to stage a file. The organization is the acting hat's.
          * @example {
          *       "kind": "widget",
@@ -10366,7 +10120,7 @@ export interface components {
          *       "idempotency_key": "crm-migration-batch-1"
          *     }
          */
-        ImportIn: {
+        DjbImportIn: {
             /**
              * Kind
              * @description Which kind of row the file makes — one of the declared importers.
@@ -10390,7 +10144,7 @@ export interface components {
             idempotency_key: string;
         };
         /**
-         * ImportRowOut
+         * DjbImportRowOut
          * @description One line of the file: its values, the preview, and what the apply did.
          * @example {
          *       "id": "5a6b7c8d-9e0f-4a1b-8c2d-3e4f5a6b7c8d",
@@ -10415,7 +10169,7 @@ export interface components {
          *       "object_id": null
          *     }
          */
-        ImportRowOut: {
+        DjbImportRowOut: {
             /**
              * Id
              * Format: uuid
@@ -10481,7 +10235,7 @@ export interface components {
             object_id?: string | null;
         };
         /**
-         * PagedImportRowOut
+         * PagedDjbImportRowOut
          * @example {
          *       "items": [
          *         {
@@ -10512,9 +10266,9 @@ export interface components {
          *       "count": null
          *     }
          */
-        PagedImportRowOut: {
+        PagedDjbImportRowOut: {
             /** Items */
-            items: components["schemas"]["ImportRowOut"][];
+            items: components["schemas"]["DjbImportRowOut"][];
             /**
              * Has More
              * @example true
@@ -10532,14 +10286,14 @@ export interface components {
             count: number | null;
         };
         /**
-         * NoteFilter
+         * DjbNoteFilter
          * @description The two query parameters a note list reads: whose notes, and which cut.
          * @example {
          *       "subject": "widget:3f0c2a8e-54b1-4c5e-9d7a-1b2c3d4e5f60",
          *       "show": "live"
          *     }
          */
-        NoteFilter: {
+        DjbNoteFilter: {
             /**
              * Subject
              * @description Whose notes, as `<kind>:<id>` — for example `widget:<id>`.
@@ -10556,7 +10310,7 @@ export interface components {
             show: "live" | "archived" | "all";
         };
         /**
-         * NoteOut
+         * DjbNoteOut
          * @description A note as every door answers it.
          *
          *     `subject` is the pointer exactly as it was written (`<kind>:<id>`);
@@ -10578,7 +10332,7 @@ export interface components {
          *       "updated_at": "2026-09-27T09:12:00Z"
          *     }
          */
-        NoteOut: {
+        DjbNoteOut: {
             /**
              * Archived At
              * @example 2026-09-26T08:24:00Z
@@ -10642,7 +10396,7 @@ export interface components {
             updated_at: string;
         };
         /**
-         * PagedNoteOut
+         * PagedDjbNoteOut
          * @example {
          *       "items": [
          *         {
@@ -10667,9 +10421,9 @@ export interface components {
          *       "count": null
          *     }
          */
-        PagedNoteOut: {
+        PagedDjbNoteOut: {
             /** Items */
-            items: components["schemas"]["NoteOut"][];
+            items: components["schemas"]["DjbNoteOut"][];
             /**
              * Has More
              * @example true
@@ -10687,7 +10441,7 @@ export interface components {
             count: number | null;
         };
         /**
-         * NoteIn
+         * DjbNoteIn
          * @description What a client may send to write a note.
          *
          *     `subject` names what the note is about, as `<kind>:<id>`. There is no
@@ -10697,7 +10451,7 @@ export interface components {
          *       "body": "Called the site lead; the mount ships Tuesday."
          *     }
          */
-        NoteIn: {
+        DjbNoteIn: {
             /**
              * Subject
              * @description What the note is about, as `<kind>:<id>` — for example `widget:<id>`.
@@ -10711,13 +10465,13 @@ export interface components {
             body: string;
         };
         /**
-         * NotePatch
+         * DjbNotePatch
          * @description A change to a note's words. The subject never moves by an edit.
          * @example {
          *       "body": "Called the site lead; the mount now ships Wednesday."
          *     }
          */
-        NotePatch: {
+        DjbNotePatch: {
             /**
              * Body
              * @example Called the site lead; the mount now ships Wednesday.
@@ -10725,49 +10479,7 @@ export interface components {
             body?: string | null;
         };
         /**
-         * PagedTagOut
-         * @example {
-         *       "items": [
-         *         {
-         *           "archived_at": "2026-09-26T08:24:00Z",
-         *           "archived_by": {
-         *             "id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d40",
-         *             "name": "Maria Delgado"
-         *           },
-         *           "id": "0196a1f2-7c3d-7e41-9b2a-5d6e7f8a9b0c",
-         *           "name": "Urgent",
-         *           "slug": "urgent",
-         *           "tenant_id": "0196a1f2-0000-7000-8000-000000000001",
-         *           "created_at": "2026-09-27T08:24:00Z",
-         *           "updated_at": "2026-09-27T08:24:00Z"
-         *         }
-         *       ],
-         *       "has_more": true,
-         *       "next_cursor": "eyJrIjpbIjIwMjYtMDgtMjNUMDk6MzA6MDBaIl0sInYiOjF9.p3Qb1w",
-         *       "count": null
-         *     }
-         */
-        PagedTagOut: {
-            /** Items */
-            items: components["schemas"]["TagOut"][];
-            /**
-             * Has More
-             * @example true
-             */
-            has_more: boolean;
-            /**
-             * Next Cursor
-             * @example eyJrIjpbIjIwMjYtMDgtMjNUMDk6MzA6MDBaIl0sInYiOjF9.p3Qb1w
-             */
-            next_cursor: string | null;
-            /**
-             * Count
-             * @example null
-             */
-            count: number | null;
-        };
-        /**
-         * TagOut
+         * DjbTagOut
          * @description One word in the tenant's vocabulary, live or archived.
          * @example {
          *       "archived_at": "2026-09-26T08:24:00Z",
@@ -10783,7 +10495,7 @@ export interface components {
          *       "updated_at": "2026-09-27T08:24:00Z"
          *     }
          */
-        TagOut: {
+        DjbTagOut: {
             /**
              * Archived At
              * @example 2026-09-26T08:24:00Z
@@ -10830,48 +10542,21 @@ export interface components {
             updated_at: string;
         };
         /**
-         * TagIn
-         * @description A word to coin. Its slug is derived from the name and is the identity.
-         * @example {
-         *       "name": "Urgent"
-         *     }
-         */
-        TagIn: {
-            /**
-             * Name
-             * @example Urgent
-             */
-            name: string;
-        };
-        /**
-         * TagPatch
-         * @description A new spelling for a word. The slug follows the name.
-         * @example {
-         *       "name": "Very urgent"
-         *     }
-         */
-        TagPatch: {
-            /**
-             * Name
-             * @example Very urgent
-             */
-            name: string;
-        };
-        /**
-         * PagedTagLinkOut
+         * PagedDjbTagOut
          * @example {
          *       "items": [
          *         {
-         *           "id": "0196a1f2-8d4e-7f52-ac3b-6e7f8a9b0c1d",
-         *           "tag_id": "0196a1f2-7c3d-7e41-9b2a-5d6e7f8a9b0c",
-         *           "tag_name": "Urgent",
-         *           "tag_slug": "urgent",
-         *           "subject": "widget:0196a1f2-6b1c-7a30-8e4f-1a2b3c4d5e6f",
-         *           "subject_kind": "widget",
-         *           "subject_id": "0196a1f2-6b1c-7a30-8e4f-1a2b3c4d5e6f",
+         *           "archived_at": "2026-09-26T08:24:00Z",
+         *           "archived_by": {
+         *             "id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d40",
+         *             "name": "Maria Delgado"
+         *           },
+         *           "id": "0196a1f2-7c3d-7e41-9b2a-5d6e7f8a9b0c",
+         *           "name": "Urgent",
+         *           "slug": "urgent",
          *           "tenant_id": "0196a1f2-0000-7000-8000-000000000001",
-         *           "organization_id": "0196a1f2-0000-7000-8000-000000000002",
-         *           "created_at": "2026-09-27T08:24:00Z"
+         *           "created_at": "2026-09-27T08:24:00Z",
+         *           "updated_at": "2026-09-27T08:24:00Z"
          *         }
          *       ],
          *       "has_more": true,
@@ -10879,9 +10564,9 @@ export interface components {
          *       "count": null
          *     }
          */
-        PagedTagLinkOut: {
+        PagedDjbTagOut: {
             /** Items */
-            items: components["schemas"]["TagLinkOut"][];
+            items: components["schemas"]["DjbTagOut"][];
             /**
              * Has More
              * @example true
@@ -10899,7 +10584,35 @@ export interface components {
             count: number | null;
         };
         /**
-         * TagLinkOut
+         * DjbTagIn
+         * @description A word to coin. Its slug is derived from the name and is the identity.
+         * @example {
+         *       "name": "Urgent"
+         *     }
+         */
+        DjbTagIn: {
+            /**
+             * Name
+             * @example Urgent
+             */
+            name: string;
+        };
+        /**
+         * DjbTagPatch
+         * @description A new spelling for a word. The slug follows the name.
+         * @example {
+         *       "name": "Very urgent"
+         *     }
+         */
+        DjbTagPatch: {
+            /**
+             * Name
+             * @example Very urgent
+             */
+            name: string;
+        };
+        /**
+         * DjbTagLinkOut
          * @description One tag on one subject, in the branch the subject lives in.
          * @example {
          *       "id": "0196a1f2-8d4e-7f52-ac3b-6e7f8a9b0c1d",
@@ -10914,7 +10627,7 @@ export interface components {
          *       "created_at": "2026-09-27T08:24:00Z"
          *     }
          */
-        TagLinkOut: {
+        DjbTagLinkOut: {
             /**
              * Id
              * Format: uuid
@@ -10973,14 +10686,55 @@ export interface components {
             created_at: string;
         };
         /**
-         * TagLinkIn
+         * PagedDjbTagLinkOut
+         * @example {
+         *       "items": [
+         *         {
+         *           "id": "0196a1f2-8d4e-7f52-ac3b-6e7f8a9b0c1d",
+         *           "tag_id": "0196a1f2-7c3d-7e41-9b2a-5d6e7f8a9b0c",
+         *           "tag_name": "Urgent",
+         *           "tag_slug": "urgent",
+         *           "subject": "widget:0196a1f2-6b1c-7a30-8e4f-1a2b3c4d5e6f",
+         *           "subject_kind": "widget",
+         *           "subject_id": "0196a1f2-6b1c-7a30-8e4f-1a2b3c4d5e6f",
+         *           "tenant_id": "0196a1f2-0000-7000-8000-000000000001",
+         *           "organization_id": "0196a1f2-0000-7000-8000-000000000002",
+         *           "created_at": "2026-09-27T08:24:00Z"
+         *         }
+         *       ],
+         *       "has_more": true,
+         *       "next_cursor": "eyJrIjpbIjIwMjYtMDgtMjNUMDk6MzA6MDBaIl0sInYiOjF9.p3Qb1w",
+         *       "count": null
+         *     }
+         */
+        PagedDjbTagLinkOut: {
+            /** Items */
+            items: components["schemas"]["DjbTagLinkOut"][];
+            /**
+             * Has More
+             * @example true
+             */
+            has_more: boolean;
+            /**
+             * Next Cursor
+             * @example eyJrIjpbIjIwMjYtMDgtMjNUMDk6MzA6MDBaIl0sInYiOjF9.p3Qb1w
+             */
+            next_cursor: string | null;
+            /**
+             * Count
+             * @example null
+             */
+            count: number | null;
+        };
+        /**
+         * DjbTagLinkIn
          * @description Put a tag on a subject. Sending the same pair twice answers the same link.
          * @example {
          *       "tag_id": "0196a1f2-7c3d-7e41-9b2a-5d6e7f8a9b0c",
          *       "subject": "widget:0196a1f2-6b1c-7a30-8e4f-1a2b3c4d5e6f"
          *     }
          */
-        TagLinkIn: {
+        DjbTagLinkIn: {
             /**
              * Tag Id
              * Format: uuid
@@ -11430,28 +11184,34 @@ export interface components {
         /**
          * WidgetFilter
          * @description The narrowings a client may ask for, declared rather than improvised.
-         *
-         *     A `FilterSchema` is how ninja turns query parameters into a `Q` without any
-         *     route reading `request.GET` — which is where filtering usually goes wrong,
-         *     because a hand-rolled filter reaches straight into `.filter(**request.GET)`
-         *     and lets a client query any column and traverse any relation.
-         *
-         *     `name` is `icontains` here rather than exact, because "find the widget I
-         *     half-remember the name of" is what a client actually wants; exact matching
-         *     is what the detail route by id is for.
          * @example {
-         *       "name": "Northern branch",
-         *       "policy": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d43"
+         *       "name": "bench",
+         *       "policy": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d43",
+         *       "due_before": "2026-11-01T00:00:00Z",
+         *       "due_after": "2026-10-01T00:00:00Z"
          *     }
          */
         WidgetFilter: {
-            /** Name */
+            /**
+             * Name
+             * @example bench
+             */
             name?: string | null;
             /**
              * Policy
              * @example 019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d43
              */
             policy?: string | null;
+            /**
+             * Due Before
+             * @example 2026-11-01T00:00:00Z
+             */
+            due_before?: string | null;
+            /**
+             * Due After
+             * @example 2026-10-01T00:00:00Z
+             */
+            due_after?: string | null;
         };
         /**
          * PagedWidgetOut
@@ -11485,6 +11245,8 @@ export interface components {
          *           "merged_into_id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d44",
          *           "external_ref": "CRM-0042",
          *           "onboarded_at": "2026-09-26T09:00:00Z",
+         *           "due_at": "2026-11-02T17:00:00Z",
+         *           "status": "active",
          *           "policy_id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d43"
          *         }
          *       ],
@@ -11525,47 +11287,6 @@ export interface components {
         /**
          * WidgetOut
          * @description What a client gets back.
-         *
-         *     `owner_email` is resolved from the related row, which is why every list
-         *     selects `owner`; it is also the field that would turn into an N+1 the day
-         *     somebody removes the `select_related`, and the query pin in the tests is
-         *     what makes that a failure rather than a slow page.
-         *
-         *     **Nothing here carries a `Field(alias=...)`, and that is a rule rather than
-         *     an accident.** An alias is a *name*, and the doors do not agree on which
-         *     name to put on the wire: REST renders by field name, the MCP transport
-         *     renders `structuredContent` by alias. `owner_email = Field(alias=
-         *     "owner.email")` therefore made the machine door answer `owner.email` — same
-         *     row, same values, two key sets (ADR example-3). A relation is
-         *     walked by a **property on the model** instead: a real attribute, which
-         *     `from_attributes` finds under one name, so both doors say the same thing.
-         *     `apps/example/tests/test_doors_over_the_wire.py` compares the two wire
-         *     shapes key-for-key and is what keeps this true.
-         *
-         *     **The break this cost, stated rather than discovered:** an MCP client that
-         *     had learned to read `owner.email` and `organization.slug` off
-         *     `structuredContent` now reads `owner_email` and `organization_slug`. That
-         *     was accepted when the aliases came out (ADR example-3) because REST is the
-         *     contract and the machine door was the one saying something REST never said.
-         *     Nothing on the REST wire moved — the same bytes before and after.
-         *
-         *     **`archived_at` and `archived_by` come from `ArchivedOut`** and are never
-         *     re-declared here: every archivable noun publishes one archive shape.
-         *     **`allowed_acts` is the server's answer to "what may I press on this row"**
-         *     — the verbs the acting hat may take on THIS row in its state (an archived
-         *     row offers only `restore`; a member is offered no `archive`), set on the row
-         *     by `core.verbs.with_allowed_acts` (a list page through `ActsPagination`, a
-         *     single row at its door) and never computed by a client. It is per VIEWER,
-         *     so it never rides an event payload. It comes from `core.schemas.ActsOut`,
-         *     and is ALSO re-declared below, for one reason: this class published it
-         *     first, and the wire contract's diff reads a class's own fields, so a
-         *     re-declaration dropped before that diff reads bases would read as a removed
-         *     field.
-         *
-         *     **The family's three fields come from their bases too**: `version` from
-         *     `VersionedOut` (what the next write names), `organization_name` from
-         *     `HomedOut` (where it lives, in words — a list selects `organization`, so it
-         *     costs no query). `owner_name` is the owner axis a move can change.
          * @example {
          *       "organization_id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d41",
          *       "organization_name": "Northern branch",
@@ -11594,6 +11315,8 @@ export interface components {
          *       "merged_into_id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d44",
          *       "external_ref": "CRM-0042",
          *       "onboarded_at": "2026-09-26T09:00:00Z",
+         *       "due_at": "2026-11-02T17:00:00Z",
+         *       "status": "active",
          *       "policy_id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d43"
          *     }
          */
@@ -11710,6 +11433,16 @@ export interface components {
              */
             onboarded_at?: string | null;
             /**
+             * Due At
+             * @example 2026-11-02T17:00:00Z
+             */
+            due_at?: string | null;
+            /**
+             * Status
+             * @example active
+             */
+            status: string;
+            /**
              * Policy Id
              * @example 019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d43
              */
@@ -11718,17 +11451,12 @@ export interface components {
         /**
          * WidgetIn
          * @description What a client may send. `owner` and `tenant` are not on this list.
-         *
-         *     `policy_id` is on it and `organization` is not, and the pair is the whole
-         *     reachability story in two lines: a caller may **name** a policy (the door
-         *     then asks `may_be_named` whether they could have reached it), and may not
-         *     name a branch at all (the hat decides, and no answer a client sends can move
-         *     it).
          * @example {
          *       "name": "Bench press #4",
          *       "notes": "Needs the heavy-duty mount.",
          *       "external_ref": "CRM-0042",
-         *       "policy_id": "0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f21"
+         *       "policy_id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d43",
+         *       "due_at": "2026-11-02T17:00:00Z"
          *     }
          */
         WidgetIn: {
@@ -11749,8 +11477,30 @@ export interface components {
              * @example CRM-0042
              */
             external_ref: string;
-            /** Policy Id */
+            /**
+             * Policy Id
+             * @example 019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d43
+             */
             policy_id?: string | null;
+            /**
+             * Due At
+             * @example 2026-11-02T17:00:00Z
+             */
+            due_at?: string | null;
+        };
+        /**
+         * WidgetTransitionIn
+         * @description The status a widget moves to: one step along its chain from where it is.
+         * @example {
+         *       "status": "active"
+         *     }
+         */
+        WidgetTransitionIn: {
+            /**
+             * Status
+             * @example active
+             */
+            status: string;
         };
         /**
          * MeasuredBasisOut
@@ -11816,11 +11566,7 @@ export interface components {
          *     a `Decimal` as a **string** in `model_dump(mode="json")` and on the wire, so
          *     the value that arrives is the value that was computed.
          *
-         *     **The name.** The suffix is the naming grammar's (rule 16) and it is
-         *     accurate: this shape only ever travels outward. ADR core-7 writes it
-         *     `Measured`/`MeasuredBasis` in prose; the classes carry the suffix every
-         *     other schema in the tree carries, which is what keeps rule 16 silent
-         *     without an exemption. See rung W1-R1's report.
+         *     The `Out` suffix is rule 16's grammar; ADR core-7's prose says `Measured`/`MeasuredBasis`.
          *
          *     **Enforcement is at criteria-tier, honestly** (ADR core-7): "any endpoint
          *     returning a computed aggregate" is an open set, and no closed question can
@@ -11857,19 +11603,6 @@ export interface components {
         /**
          * WidgetStatsOut
          * @description The widget count for the acting hat, **with the arithmetic attached**.
-         *
-         *     One field, and it is a `MeasuredOut` rather than an `int` (ADR core-7): a
-         *     number a door computed travels with the formula and the inputs it was
-         *     computed from, so a screen, an export and an assistant cannot come to
-         *     disagree about it while all three read the same rows. `count` here is
-         *     `onboarded + pending`, and both terms are on the wire — a client can check
-         *     the arithmetic without a second request and without a second
-         *     implementation, which is the whole contract.
-         *
-         *     A second aggregate would be a second `MeasuredOut` beside this one, not a
-         *     naked number added to it. That is the convention this schema exists to
-         *     demonstrate; enforcing it is criteria-tier and honestly so, because "any
-         *     endpoint returning a computed aggregate" is an open set.
          * @example {
          *       "count": {
          *         "value": "1240.50",
@@ -11896,14 +11629,14 @@ export interface components {
          *             "id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d40",
          *             "name": "Maria Delgado"
          *           },
-         *           "id": "0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f21",
+         *           "id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d43",
          *           "name": "Heavy equipment",
          *           "body": "Anything over 50kg needs two approvals.",
-         *           "tenant_id": "0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f21",
-         *           "organization_id": "0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f21",
+         *           "tenant_id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d47",
+         *           "organization_id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d41",
          *           "organization_slug": "northern-branch",
-         *           "created_at": "2026-08-23T09:30:00Z",
-         *           "updated_at": "2026-08-23T09:30:00Z"
+         *           "created_at": "2026-09-26T08:24:00Z",
+         *           "updated_at": "2026-09-26T08:24:00Z"
          *         }
          *       ],
          *       "has_more": true,
@@ -11933,29 +11666,20 @@ export interface components {
         /**
          * WidgetPolicyOut
          * @description What a client gets back for a policy.
-         *
-         *     `organization_slug` is on it for the same reason it is on `WidgetOut` — a
-         *     caller wearing the group's hat lists policies from several branches at once
-         *     — and here it does a second job: it is how a caller can tell that the policy
-         *     **governing** them was set one or more levels up. The resolution answers
-         *     with the row; the slug says whose row it is.
-         *
-         *     An archivable noun's answer, so `archived_at` and `archived_by` come from
-         *     `ArchivedOut`: an archived policy reads the same as a widget does.
          * @example {
          *       "archived_at": "2026-09-26T08:24:00Z",
          *       "archived_by": {
          *         "id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d40",
          *         "name": "Maria Delgado"
          *       },
-         *       "id": "0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f21",
+         *       "id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d43",
          *       "name": "Heavy equipment",
          *       "body": "Anything over 50kg needs two approvals.",
-         *       "tenant_id": "0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f21",
-         *       "organization_id": "0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f21",
+         *       "tenant_id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d47",
+         *       "organization_id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d41",
          *       "organization_slug": "northern-branch",
-         *       "created_at": "2026-08-23T09:30:00Z",
-         *       "updated_at": "2026-08-23T09:30:00Z"
+         *       "created_at": "2026-09-26T08:24:00Z",
+         *       "updated_at": "2026-09-26T08:24:00Z"
          *     }
          */
         WidgetPolicyOut: {
@@ -11972,6 +11696,7 @@ export interface components {
             /**
              * Id
              * Format: uuid
+             * @example 019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d43
              */
             id: string;
             /**
@@ -11987,11 +11712,13 @@ export interface components {
             /**
              * Tenant Id
              * Format: uuid
+             * @example 019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d47
              */
             tenant_id: string;
             /**
              * Organization Id
              * Format: uuid
+             * @example 019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d41
              */
             organization_id: string;
             /**
@@ -12002,23 +11729,19 @@ export interface components {
             /**
              * Created At
              * Format: date-time
+             * @example 2026-09-26T08:24:00Z
              */
             created_at: string;
             /**
              * Updated At
              * Format: date-time
+             * @example 2026-09-26T08:24:00Z
              */
             updated_at: string;
         };
         /**
          * WidgetPolicyIn
          * @description What a client may send to set a policy.
-         *
-         *     There is no `organization` on this list, and its absence is the enforcement:
-         *     a policy lands at the hat the request was made under, exactly as a widget
-         *     does. A caller that could name a branch could set config for a branch it
-         *     holds no membership over — and config, unlike a row, is obeyed by
-         *     everything underneath it.
          * @example {
          *       "name": "Heavy equipment",
          *       "body": "Anything over 50kg needs two approvals."
@@ -12042,14 +11765,14 @@ export interface components {
          * @example {
          *       "items": [
          *         {
-         *           "id": "0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f21",
-         *           "widget_id": "0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f21",
-         *           "kind": "inspection",
+         *           "id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d50",
+         *           "widget_id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d45",
+         *           "kind": "note",
          *           "note": "Checked and signed off.",
-         *           "tenant_id": "0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f21",
-         *           "organization_id": "0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f21",
+         *           "tenant_id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d47",
+         *           "organization_id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d41",
          *           "organization_slug": "northern-branch",
-         *           "created_at": "2026-08-23T09:30:00Z"
+         *           "created_at": "2026-09-26T08:24:00Z"
          *         }
          *       ],
          *       "has_more": true,
@@ -12079,34 +11802,33 @@ export interface components {
         /**
          * WidgetEntryOut
          * @description One ledger line, as every door renders it.
-         *
-         *     There is no `WidgetEntryPatch` and there will not be one: the model is
-         *     `append_only`, so there is nothing to send.
          * @example {
-         *       "id": "0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f21",
-         *       "widget_id": "0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f21",
-         *       "kind": "inspection",
+         *       "id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d50",
+         *       "widget_id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d45",
+         *       "kind": "note",
          *       "note": "Checked and signed off.",
-         *       "tenant_id": "0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f21",
-         *       "organization_id": "0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f21",
+         *       "tenant_id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d47",
+         *       "organization_id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d41",
          *       "organization_slug": "northern-branch",
-         *       "created_at": "2026-08-23T09:30:00Z"
+         *       "created_at": "2026-09-26T08:24:00Z"
          *     }
          */
         WidgetEntryOut: {
             /**
              * Id
              * Format: uuid
+             * @example 019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d50
              */
             id: string;
             /**
              * Widget Id
              * Format: uuid
+             * @example 019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d45
              */
             widget_id: string;
             /**
              * Kind
-             * @example inspection
+             * @example note
              */
             kind: string;
             /**
@@ -12117,11 +11839,13 @@ export interface components {
             /**
              * Tenant Id
              * Format: uuid
+             * @example 019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d47
              */
             tenant_id: string;
             /**
              * Organization Id
              * Format: uuid
+             * @example 019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d41
              */
             organization_id: string;
             /**
@@ -12132,25 +11856,16 @@ export interface components {
             /**
              * Created At
              * Format: date-time
+             * @example 2026-09-26T08:24:00Z
              */
             created_at: string;
         };
         /**
          * WidgetEntryIn
          * @description One line to append to a widget's ledger.
-         *
-         *     `organization_slug` is **optional and inert by construction**, and it is on
-         *     this shape deliberately rather than by accident. An entry takes its
-         *     organization from its widget (`WidgetEntry.derive_org_from`), so the only
-         *     value the landing gate will accept is the one it would have derived anyway:
-         *     naming the widget's own branch changes nothing, and naming any other branch
-         *     is refused field-by-field on `organization`. It is here so that the gate is
-         *     a *live* refusal on the wire rather than a model invariant nobody can reach
-         *     — the thing that would otherwise be true only until somebody wrote a service
-         *     that stamped the actor's hat on it.
          * @example {
-         *       "widget_id": "0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f21",
-         *       "kind": "inspection",
+         *       "widget_id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d45",
+         *       "kind": "note",
          *       "note": "Checked and signed off.",
          *       "organization_slug": "northern-branch"
          *     }
@@ -12159,12 +11874,13 @@ export interface components {
             /**
              * Widget Id
              * Format: uuid
+             * @example 019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d45
              */
             widget_id: string;
             /**
              * Kind
              * @default note
-             * @example inspection
+             * @example note
              */
             kind: string;
             /**
@@ -12181,16 +11897,15 @@ export interface components {
         };
         /**
          * BulkRefusalOut
-         * @description One item's refusal: the body a single call would have answered.
-         *
-         *     Open (`extra="allow"`) because a refusal's structured half — a blocked
-         *     archive's `blocking`, a stale write's `current_version` — rides beside the
-         *     four common keys exactly as it does on a single call.
+         * @description One item's refusal: the body a single call would have answered — `RefusalOut`, in a batch.
          * @example {
-         *       "detail": "This cannot be archived while something still depends on it.",
          *       "code": "archive_blocked",
+         *       "detail": "This cannot be archived while something still depends on it.",
          *       "remedies": [
-         *         {}
+         *         {
+         *           "destination": "field:blocking",
+         *           "label": "Archive what still depends on it first"
+         *         }
          *       ]
          *     }
          */
@@ -12205,12 +11920,36 @@ export interface components {
              * @example archive_blocked
              */
             code: string;
+            /** Errors */
+            errors?: {
+                [key: string]: string[];
+            };
             /** Remedies */
-            remedies?: {
-                [key: string]: string;
-            }[];
+            remedies?: components["schemas"]["RefusalRemedyOut"][];
         } & {
             [key: string]: unknown;
+        };
+        /**
+         * RefusalRemedyOut
+         * @description One thing the caller can do about a refusal — `apps.core.exceptions.Remedy` on the wire.
+         *
+         *     `destination` is an opaque `<kind>:<name>` token, never a URL.
+         * @example {
+         *       "label": "Name the organization to act as",
+         *       "destination": "header:X-Org"
+         *     }
+         */
+        RefusalRemedyOut: {
+            /**
+             * Label
+             * @example Name the organization to act as
+             */
+            label: string;
+            /**
+             * Destination
+             * @example header:X-Org
+             */
+            destination: string;
         };
         /**
          * WidgetBulkOut
@@ -12249,13 +11988,18 @@ export interface components {
          *             "merged_into_id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d44",
          *             "external_ref": "CRM-0042",
          *             "onboarded_at": "2026-09-26T09:00:00Z",
+         *             "due_at": "2026-11-02T17:00:00Z",
+         *             "status": "active",
          *             "policy_id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d43"
          *           },
          *           "refusal": {
-         *             "detail": "This cannot be archived while something still depends on it.",
          *             "code": "archive_blocked",
+         *             "detail": "This cannot be archived while something still depends on it.",
          *             "remedies": [
-         *               {}
+         *               {
+         *                 "destination": "field:blocking",
+         *                 "label": "Archive what still depends on it first"
+         *               }
          *             ]
          *           }
          *         }
@@ -12323,13 +12067,18 @@ export interface components {
          *         "merged_into_id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d44",
          *         "external_ref": "CRM-0042",
          *         "onboarded_at": "2026-09-26T09:00:00Z",
+         *         "due_at": "2026-11-02T17:00:00Z",
+         *         "status": "active",
          *         "policy_id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d43"
          *       },
          *       "refusal": {
-         *         "detail": "This cannot be archived while something still depends on it.",
          *         "code": "archive_blocked",
+         *         "detail": "This cannot be archived while something still depends on it.",
          *         "remedies": [
-         *           {}
+         *           {
+         *             "destination": "field:blocking",
+         *             "label": "Archive what still depends on it first"
+         *           }
          *         ]
          *       }
          *     }
@@ -12437,12 +12186,6 @@ export interface components {
         /**
          * WidgetDetailOut
          * @description One widget, as its detail door answers it: the row and the words on it.
-         *
-         *     A widget that takes tags (`Widget.attachments`) answers them HERE — on the
-         *     record — and nowhere else: a list's row is `WidgetOut`, and an event's
-         *     payload is the row, never what one reader sees attached to it. `tags` are
-         *     the words on this widget as the reader's hat sees them, archived words
-         *     included (the link stands; the word is read-only).
          * @example {
          *       "organization_id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d41",
          *       "organization_name": "Northern branch",
@@ -12471,6 +12214,8 @@ export interface components {
          *       "merged_into_id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d44",
          *       "external_ref": "CRM-0042",
          *       "onboarded_at": "2026-09-26T09:00:00Z",
+         *       "due_at": "2026-11-02T17:00:00Z",
+         *       "status": "active",
          *       "policy_id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d43",
          *       "tags": [
          *         {
@@ -12599,6 +12344,16 @@ export interface components {
              */
             onboarded_at?: string | null;
             /**
+             * Due At
+             * @example 2026-11-02T17:00:00Z
+             */
+            due_at?: string | null;
+            /**
+             * Status
+             * @example active
+             */
+            status: string;
+            /**
              * Policy Id
              * @example 019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d43
              */
@@ -12618,26 +12373,18 @@ export interface components {
              *       }
              *     ]
              */
-            tags?: components["schemas"]["TagOut"][];
+            tags?: components["schemas"]["DjbTagOut"][];
         };
         /**
          * WidgetPatch
          * @description A partial update: absent means "leave it alone", not "set it to null".
-         *
-         *     Which is also why there is no way to *clear* a policy here — `null` already
-         *     means "leave it alone" in this grammar, and "stop being governed by this"
-         *     is a different sentence. `update_widget` says the same thing from the other
-         *     side.
-         *
-         *     **`version` is required** (`VersionedIn`): the version the caller read, off
-         *     the widget's own `version`. A save made against a version the widget no
-         *     longer has is refused `stale_version` naming the current one, so two
-         *     people editing at once never silently overwrite each other.
          * @example {
          *       "version": 1790411040000000,
          *       "name": "Bench press #5",
          *       "notes": "Moved to bay 3.",
-         *       "policy_id": "0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f21"
+         *       "policy_id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d43",
+         *       "due_at": "2026-12-01T09:30:00Z",
+         *       "clear_due_at": false
          *     }
          */
         WidgetPatch: {
@@ -12656,8 +12403,21 @@ export interface components {
              * @example Moved to bay 3.
              */
             notes?: string | null;
-            /** Policy Id */
+            /**
+             * Policy Id
+             * @example 019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d43
+             */
             policy_id?: string | null;
+            /**
+             * Due At
+             * @example 2026-12-01T09:30:00Z
+             */
+            due_at?: string | null;
+            /**
+             * Clear Due At
+             * @example false
+             */
+            clear_due_at?: boolean | null;
         };
         /**
          * VersionedMoveIn
@@ -12744,8 +12504,9 @@ export interface components {
             /**
              * Verb
              * @example update
+             * @enum {string}
              */
-            verb: string;
+            verb: "accept" | "add" | "announce" | "apply" | "approve" | "archive" | "cancel" | "close" | "confirm" | "create" | "deactivate" | "dead" | "delete" | "disable" | "duplicate" | "emit" | "enqueue" | "ensure" | "erase" | "finish" | "grant" | "invite" | "issue" | "mark" | "merge" | "move" | "provision" | "purge" | "record" | "redact" | "register" | "rename" | "restore" | "resume" | "retire" | "revise" | "revoke" | "send" | "set" | "signal" | "start" | "store" | "submit" | "suppress" | "suspend" | "sync" | "touch" | "transition" | "unlink" | "unsuppress" | "update" | "verify";
             actor: components["schemas"]["HistoryActorOut"];
             /**
              * Door
@@ -12871,10 +12632,6 @@ export interface components {
         /**
          * WidgetMergeIn
          * @description Fold this widget into another: the one it becomes, and both versions read.
-         *
-         *     `version` is the version of the widget in the path — the one that goes —
-         *     and `into_version` the survivor's: a merge edits both, so both must be the
-         *     versions the person was looking at when they confirmed it.
          * @example {
          *       "version": 1790411040000000,
          *       "into_id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d44",
@@ -12898,6 +12655,176 @@ export interface components {
              * @example 1790411040000000
              */
             into_version: number;
+        };
+        /**
+         * PortalRequestFilter
+         * @description The narrowings a client may ask of the request list, declared, never read off the query.
+         * @example {
+         *       "widget_id": "3f0c2a8e-54b1-4c5e-9d7a-1b2c3d4e5f60",
+         *       "priority": "high"
+         *     }
+         */
+        PortalRequestFilter: {
+            /**
+             * Widget Id
+             * @example 3f0c2a8e-54b1-4c5e-9d7a-1b2c3d4e5f60
+             */
+            widget_id?: string | null;
+            /**
+             * Priority
+             * @example high
+             */
+            priority?: ("low" | "normal" | "high") | null;
+        };
+        /**
+         * PagedPortalRequestOut
+         * @example {
+         *       "items": [
+         *         {
+         *           "id": "4c1e7a2b-9d3f-4e5a-8b6c-7d8e9f0a1b2c",
+         *           "widget_id": "3f0c2a8e-54b1-4c5e-9d7a-1b2c3d4e5f60",
+         *           "note": "The left mount arrived scratched; can you send another?",
+         *           "priority": "normal",
+         *           "requester_id": "5b7c9d1e-3f5a-4b7c-8d9e-0f1a2b3c4d5e",
+         *           "requester_email": "pat@customer.example",
+         *           "tenant_id": "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+         *           "organization_id": "6e7f8a9b-0c1d-4e2f-9a3b-4c5d6e7f8a9b",
+         *           "created_at": "2026-09-30T09:12:00Z",
+         *           "updated_at": "2026-09-30T09:12:00Z"
+         *         }
+         *       ],
+         *       "has_more": true,
+         *       "next_cursor": "eyJrIjpbIjIwMjYtMDgtMjNUMDk6MzA6MDBaIl0sInYiOjF9.p3Qb1w",
+         *       "count": null
+         *     }
+         */
+        PagedPortalRequestOut: {
+            /** Items */
+            items: components["schemas"]["PortalRequestOut"][];
+            /**
+             * Has More
+             * @example true
+             */
+            has_more: boolean;
+            /**
+             * Next Cursor
+             * @example eyJrIjpbIjIwMjYtMDgtMjNUMDk6MzA6MDBaIl0sInYiOjF9.p3Qb1w
+             */
+            next_cursor: string | null;
+            /**
+             * Count
+             * @example null
+             */
+            count: number | null;
+        };
+        /**
+         * PortalRequestOut
+         * @description A portal request as every door answers it.
+         *
+         *     `organization_id` is the node the customer was acting at when they asked —
+         *     where the request lives, and whose readers can see it.
+         * @example {
+         *       "id": "4c1e7a2b-9d3f-4e5a-8b6c-7d8e9f0a1b2c",
+         *       "widget_id": "3f0c2a8e-54b1-4c5e-9d7a-1b2c3d4e5f60",
+         *       "note": "The left mount arrived scratched; can you send another?",
+         *       "priority": "normal",
+         *       "requester_id": "5b7c9d1e-3f5a-4b7c-8d9e-0f1a2b3c4d5e",
+         *       "requester_email": "pat@customer.example",
+         *       "tenant_id": "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+         *       "organization_id": "6e7f8a9b-0c1d-4e2f-9a3b-4c5d6e7f8a9b",
+         *       "created_at": "2026-09-30T09:12:00Z",
+         *       "updated_at": "2026-09-30T09:12:00Z"
+         *     }
+         */
+        PortalRequestOut: {
+            /**
+             * Id
+             * Format: uuid
+             * @example 4c1e7a2b-9d3f-4e5a-8b6c-7d8e9f0a1b2c
+             */
+            id: string;
+            /**
+             * Widget Id
+             * Format: uuid
+             * @example 3f0c2a8e-54b1-4c5e-9d7a-1b2c3d4e5f60
+             */
+            widget_id: string;
+            /**
+             * Note
+             * @example The left mount arrived scratched; can you send another?
+             */
+            note: string;
+            /**
+             * Priority
+             * @example normal
+             * @enum {string}
+             */
+            priority: "low" | "normal" | "high";
+            /**
+             * Requester Id
+             * Format: uuid
+             * @example 5b7c9d1e-3f5a-4b7c-8d9e-0f1a2b3c4d5e
+             */
+            requester_id: string;
+            /**
+             * Requester Email
+             * @example pat@customer.example
+             */
+            requester_email: string;
+            /**
+             * Tenant Id
+             * Format: uuid
+             * @example 1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d
+             */
+            tenant_id: string;
+            /**
+             * Organization Id
+             * Format: uuid
+             * @example 6e7f8a9b-0c1d-4e2f-9a3b-4c5d6e7f8a9b
+             */
+            organization_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             * @example 2026-09-30T09:12:00Z
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             * @example 2026-09-30T09:12:00Z
+             */
+            updated_at: string;
+        };
+        /**
+         * PortalRequestIn
+         * @description What a customer sends to ask about a widget.
+         *
+         *     There is no `organization` here: the request lands where the customer is
+         *     acting, and there is nothing for a caller to forge.
+         * @example {
+         *       "widget_id": "3f0c2a8e-54b1-4c5e-9d7a-1b2c3d4e5f60",
+         *       "note": "The left mount arrived scratched; can you send another?",
+         *       "priority": "high"
+         *     }
+         */
+        PortalRequestIn: {
+            /**
+             * Widget Id
+             * Format: uuid
+             * @example 3f0c2a8e-54b1-4c5e-9d7a-1b2c3d4e5f60
+             */
+            widget_id: string;
+            /**
+             * Note
+             * @example The left mount arrived scratched; can you send another?
+             */
+            note: string;
+            /**
+             * Priority
+             * @example high
+             */
+            priority?: ("low" | "normal" | "high") | null;
         };
         /**
          * ExportFilter
@@ -13741,6 +13668,33 @@ export interface components {
             idempotency_key: string;
         };
         /**
+         * SocketTicketOut
+         * @description A socket ticket: present it once as `?ticket=` on `ws/events/` within `expires_in` s.
+         * @example {
+         *       "ticket": "q3Vb0cX9-one-use-ticket",
+         *       "expires_in": 60,
+         *       "expires_at": "2026-10-23T18:01:00Z"
+         *     }
+         */
+        SocketTicketOut: {
+            /**
+             * Ticket
+             * @example q3Vb0cX9-one-use-ticket
+             */
+            ticket: string;
+            /**
+             * Expires In
+             * @example 60
+             */
+            expires_in: number;
+            /**
+             * Expires At
+             * Format: date-time
+             * @example 2026-10-23T18:01:00Z
+             */
+            expires_at: string;
+        };
+        /**
          * SearchKindOut
          * @description One kind of thing this product can search, and the part of it that owns them.
          *
@@ -14250,34 +14204,31 @@ export interface components {
          *     }
          */
         Refusal: {
-            /** Detail */
+            /**
+             * Detail
+             * @example This cannot be archived while something still depends on it.
+             */
             detail: string;
             /**
              * Code
+             * @example archive_blocked
              * @enum {string}
              */
-            code: "addressing_header_not_honoured" | "archive_blocked" | "archived" | "conflict" | "database_unavailable" | "error" | "forbidden" | "idempotency_key_reuse" | "import_invalid" | "in_progress" | "insufficient_scope" | "invalid" | "invalid_arguments" | "invalid_body" | "invalid_cursor" | "merge_blocked" | "merge_survivor" | "merged" | "method_not_allowed" | "move_blocked" | "not_found" | "page_token_missing" | "rate_limited" | "restore_blocked" | "search_unavailable" | "session_required" | "stale_version" | "unauthenticated";
+            code: "addressing_header_not_honoured" | "ambiguous_tenant" | "archive_blocked" | "archived" | "conflict" | "database_unavailable" | "enforced_without_provider" | "forbidden" | "idempotency_key_reuse" | "import_invalid" | "in_progress" | "insufficient_scope" | "invalid" | "invalid_arguments" | "invalid_body" | "invalid_cursor" | "invalid_signature" | "merge_blocked" | "merge_survivor" | "merged" | "method_not_allowed" | "move_blocked" | "no_acting_scope" | "not_found" | "page_token_missing" | "rate_limited" | "restore_blocked" | "run_failed" | "search_unavailable" | "session_required" | "signed_door_takes_no_address" | "socket_credential_in_url" | "stale_version" | "surface_does_not_expose" | "surface_unknown_host" | "timestamped_signature_required" | "unauthenticated" | "unavailable";
             /** Errors */
             errors?: {
                 [key: string]: string[];
             };
             /** Remedies */
-            remedies?: components["schemas"]["RefusalRemedy"][];
+            remedies?: components["schemas"]["RefusalRemedyOut"][];
+        } & {
+            [key: string]: unknown;
         };
-        /**
-         * RefusalRemedy
-         * @description One thing the caller can do about a refusal. `destination` is an opaque `<kind>:<name>` token — `header:X-Org`, `docs:openapi`, `introspect:refusals` — that says where to look without promising a URL.
-         * @example {
+        /** @example {
          *       "label": "Name the organization to act as",
          *       "destination": "header:X-Org"
-         *     }
-         */
-        RefusalRemedy: {
-            /** Label */
-            label: string;
-            /** Destination */
-            destination: string;
-        };
+         *     } */
+        RefusalRemedy: components["schemas"]["RefusalRemedyOut"];
     };
     responses: never;
     parameters: never;
@@ -14419,7 +14370,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -14683,7 +14639,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -14983,7 +14944,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -15249,7 +15215,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -15592,7 +15563,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -15936,7 +15912,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -16200,7 +16181,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -16543,7 +16529,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -16841,7 +16832,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -17145,7 +17141,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -17409,7 +17410,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -17709,7 +17715,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -17930,7 +17941,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -18231,7 +18247,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -18574,7 +18595,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -18913,7 +18939,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -19180,7 +19211,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -19479,7 +19515,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -19737,7 +19778,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -20011,7 +20057,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -20281,7 +20332,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -20545,7 +20601,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -20886,7 +20947,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -21186,7 +21252,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -21477,7 +21548,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -21706,7 +21782,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -22039,7 +22120,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -22270,7 +22356,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -22607,7 +22698,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -22874,7 +22970,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -23108,7 +23209,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -23377,7 +23483,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -23680,6 +23791,11 @@ export interface operations {
              *     - Check the role your membership gives you here (`self:membership`)
              *     - Ask somebody who administers this organization (`header:X-Org`)
              *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
+             *
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
@@ -23907,7 +24023,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -24460,7 +24581,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -24724,7 +24850,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -25022,7 +25153,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -25323,7 +25459,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -25400,7 +25541,11 @@ export interface operations {
              *     - Give a genuinely different write a key of its own (`header:Idempotency-Key`)
              *
              *     **`in_progress`** — The first request under this Idempotency-Key is still running, so its answer does not exist yet. Yours was not run — which is the point: two concurrent retries of one write must not both write.
-             *     - Wait, then retry the identical request (`header:Idempotency-Key`) */
+             *     - Wait, then retry the identical request (`header:Idempotency-Key`)
+             *
+             *     **`enforced_without_provider`** — This identity provider is not set up at the identity platform yet, so requiring it would leave the people it covers with no way to sign in. Nothing was changed.
+             *     - Read the provider back until it says it is applied (`route:sso-connection-list`)
+             *     - Require it once it is applied (`route:sso-connection-update`) */
             409: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -25668,7 +25813,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -25932,7 +26082,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -26232,7 +26387,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -26411,7 +26571,11 @@ export interface operations {
             };
             /** @description **`invalid_cursor`** — That cursor is not one this API issued for this walk. A cursor is opaque and signed, and it names a position in ONE list in ONE ordering — editing one, presenting one to a different list, or replaying one against a different sort order has no meaning to answer. Nothing was skipped and nothing was lost.
              *     - Start the walk again with no cursor (`field:cursor`)
-             *     - Follow the next_cursor the last response gave you (`field:next_cursor`) */
+             *     - Follow the next_cursor the last response gave you (`field:next_cursor`)
+             *
+             *     **`invalid`** — The input does not hold. The answer names each field that is wrong and why, in the schema's own field names, so the failure can be pointed at rather than guessed at.
+             *     - Read the failing fields and resend (`field:errors`)
+             *     - Read the shape this endpoint accepts (`docs:openapi`) */
             400: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -26495,7 +26659,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -26722,7 +26891,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -27032,7 +27206,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -27296,7 +27475,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -27639,7 +27823,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -27943,7 +28132,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -28208,7 +28402,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -28474,7 +28673,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -28738,7 +28942,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -29081,7 +29290,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -29385,7 +29599,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -29650,7 +29869,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -29796,6 +30020,11 @@ export interface operations {
                 cursor?: string | null;
                 limit?: number | null;
                 include_count?: boolean;
+                /**
+                 * @deprecated
+                 * @description `archived` is not a parameter of this list. Send `show=archived` for the archived ones, `show=all` for both, or leave it out for the live ones.
+                 */
+                archived?: string;
             };
             header?: {
                 /** @description Which tenant to act in, by slug. **Omit it** and you act in your default membership's tenant, which is the ordinary case. **Send it** and it is honoured or the request is refused: a tenant you hold no membership in, one that does not exist, one a pinned token may not act in, and an empty value are all refused with `addressing_header_not_honoured` (403) — identically, so the refusal says nothing about what exists. Nothing is read and nothing is written. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
@@ -29917,7 +30146,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -30181,7 +30415,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -30481,7 +30720,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -30739,6 +30983,11 @@ export interface operations {
             /** @description **`forbidden`** — You are who you say you are, and this is still not yours to do here. The row exists and you can see it; the action is what was refused.
              *     - Check the role your membership gives you here (`self:membership`)
              *     - Ask somebody who administers this organization (`header:X-Org`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
              *
              *     **`insufficient_scope`** — This token is limited to a set of scopes, and this operation needs one it does not carry. Nothing was read and nothing was written. The limit is on the token, not on the person who minted it — the same person signed in with a browser, or holding a wider token, may well be allowed to do this.
              *     - Mint a new token that carries the scope named here — the operation that mints one is under API tokens (`docs:openapi`)
@@ -31043,6 +31292,11 @@ export interface operations {
              *     - Check the role your membership gives you here (`self:membership`)
              *     - Ask somebody who administers this organization (`header:X-Org`)
              *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
+             *
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
@@ -31302,6 +31556,11 @@ export interface operations {
             /** @description **`forbidden`** — You are who you say you are, and this is still not yours to do here. The row exists and you can see it; the action is what was refused.
              *     - Check the role your membership gives you here (`self:membership`)
              *     - Ask somebody who administers this organization (`header:X-Org`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
              *
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
@@ -31605,7 +31864,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -31871,7 +32135,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -32214,7 +32483,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -32557,7 +32831,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -32900,7 +33179,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -33243,7 +33527,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -33584,7 +33873,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -33888,7 +34182,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -34198,7 +34497,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -34462,7 +34766,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -34791,6 +35100,11 @@ export interface operations {
              *     - Check the role your membership gives you here (`self:membership`)
              *     - Ask somebody who administers this organization (`header:X-Org`)
              *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
+             *
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
@@ -35017,7 +35331,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -35283,7 +35602,360 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
+            403: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "forbidden",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Check the role your membership gives you here",
+                     *           "destination": "self:membership"
+                     *         },
+                     *         {
+                     *           "label": "Ask somebody who administers this organization",
+                     *           "destination": "header:X-Org"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`not_found`** — There is no such row here. A row that exists in another tenant, or in a part of this tenant's tree your acting organization does not cover, answers exactly the same way — not-there and not-yours are one answer, deliberately, because a refusal that told them apart would confirm the row exists.
+             *     - Check which tenant you are acting in (`header:X-Tenant`)
+             *     - Check which organization you are wearing (`header:X-Org`) */
+            404: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "not_found",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Check which tenant you are acting in",
+                     *           "destination": "header:X-Tenant"
+                     *         },
+                     *         {
+                     *           "label": "Check which organization you are wearing",
+                     *           "destination": "header:X-Org"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`conflict`** — Something that already exists holds the name, the identifier or the state this write asked for. Nothing was written.
+             *     - Re-read the row and retry against what is true now (`self:reread`)
+             *     - Ask for the first answer back instead of a second attempt (`header:Idempotency-Key`)
+             *
+             *     **`idempotency_key_reuse`** — This Idempotency-Key has already been used, for a different request. The fingerprint covers the method, the path and the body, so one changed byte is a different request under a key that is already spoken for. Nothing was written.
+             *     - Resend the identical body to replay the first answer (`header:Idempotency-Key`)
+             *     - Give a genuinely different write a key of its own (`header:Idempotency-Key`)
+             *
+             *     **`in_progress`** — The first request under this Idempotency-Key is still running, so its answer does not exist yet. Yours was not run — which is the point: two concurrent retries of one write must not both write.
+             *     - Wait, then retry the identical request (`header:Idempotency-Key`) */
+            409: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "conflict",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Re-read the row and retry against what is true now",
+                     *           "destination": "self:reread"
+                     *         },
+                     *         {
+                     *           "label": "Ask for the first answer back instead of a second attempt",
+                     *           "destination": "header:Idempotency-Key"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`invalid_body`** — The request does not match the shape this operation accepts. Nothing was read and nothing was written — no route ran at all. The answer names each field and what is wrong with it, in the names you sent, including any field that is not part of this operation: unknown fields are refused rather than ignored, so a misspelled name can never look like a success.
+             *     - Read the failing fields and resend (`field:errors`)
+             *     - Read the shape this operation accepts (`docs:openapi`) */
+            422: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "invalid_body",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Read the failing fields and resend",
+                     *           "destination": "field:errors"
+                     *         },
+                     *         {
+                     *           "label": "Read the shape this operation accepts",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`rate_limited`** — You have asked for more than this door allows in the window it counts over. Nothing was written, and the allowance refills on its own.
+             *     - Wait the seconds Retry-After names, then retry (`header:Retry-After`) */
+            429: {
+                headers: {
+                    /** @description How many seconds to wait before trying again. Coming back sooner is refused the same way. */
+                    "Retry-After"?: string;
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "rate_limited",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Wait the seconds Retry-After names, then retry",
+                     *           "destination": "header:Retry-After"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`database_unavailable`** — The database could not be reached for this request. Nothing about the request was wrong and nothing was written — the same request sent again shortly is expected to succeed.
+             *     - Wait the interval in Retry-After and send the same request again (`header:Retry-After`)
+             *     - Check whether this deployment is ready to serve (`route:readyz`) */
+            503: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "database_unavailable",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Wait the interval in Retry-After and send the same request again",
+                     *           "destination": "header:Retry-After"
+                     *         },
+                     *         {
+                     *           "label": "Check whether this deployment is ready to serve",
+                     *           "destination": "route:readyz"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+        };
+    };
+    apps_connections_api_set_signature_scheme_route: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Which tenant to act in, by slug. **Omit it** and you act in your default membership's tenant, which is the ordinary case. **Send it** and it is honoured or the request is refused: a tenant you hold no membership in, one that does not exist, one a pinned token may not act in, and an empty value are all refused with `addressing_header_not_honoured` (403) — identically, so the refusal says nothing about what exists. Nothing is read and nothing is written. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
+                "X-Tenant"?: string;
+                /** @description Which PART of the tenant to act as, by slug — the hat you are wearing. It must be an organization you hold a membership on, or above; roles inherit downwards only, so naming your parent or a sibling is not wearable. **Omit it** and you act in your default membership's own node. **Send one you cannot wear** — or an empty value — and the request is refused with `addressing_header_not_honoured` (403) rather than answered under another hat. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
+                "X-Org"?: string;
+                /** @description A key of your choosing that makes this write safe to retry. An identical retry replays the first answer and carries `Idempotent-Replayed: true`; the same key with a different body is refused rather than executed. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                connection_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SignatureSchemeIn"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    /** @description `true` when this answer is a replay of an earlier identical request. */
+                    "Idempotent-Replayed"?: string;
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectionOut"];
+                };
+            };
+            /** @description **`invalid`** — The input does not hold. The answer names each field that is wrong and why, in the schema's own field names, so the failure can be pointed at rather than guessed at.
+             *     - Read the failing fields and resend (`field:errors`)
+             *     - Read the shape this endpoint accepts (`docs:openapi`) */
+            400: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "invalid",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Read the failing fields and resend",
+                     *           "destination": "field:errors"
+                     *         },
+                     *         {
+                     *           "label": "Read the shape this endpoint accepts",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`unauthenticated`** — We could not tell who is making this request. Either nothing was sent to identify you, or what was sent is no longer good — an expired or withdrawn token and no token at all are answered the same way on purpose, because a refusal that told them apart would confirm which tokens exist. Nothing was read and nothing was written.
+             *     - Sign in, and let the browser send the session it gives you (`self:session`)
+             *     - Or send a token you hold as `Authorization: Bearer <token>` (`header:Authorization`)
+             *     - Mint a fresh token — the operation is under API tokens (`docs:openapi`) */
+            401: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "unauthenticated",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Sign in, and let the browser send the session it gives you",
+                     *           "destination": "self:session"
+                     *         },
+                     *         {
+                     *           "label": "Or send a token you hold as `Authorization: Bearer <token>`",
+                     *           "destination": "header:Authorization"
+                     *         },
+                     *         {
+                     *           "label": "Mint a fresh token — the operation is under API tokens",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`forbidden`** — You are who you say you are, and this is still not yours to do here. The row exists and you can see it; the action is what was refused.
+             *     - Check the role your membership gives you here (`self:membership`)
+             *     - Ask somebody who administers this organization (`header:X-Org`)
+             *
+             *     **`insufficient_scope`** — This token is limited to a set of scopes, and this operation needs one it does not carry. Nothing was read and nothing was written. The limit is on the token, not on the person who minted it — the same person signed in with a browser, or holding a wider token, may well be allowed to do this.
+             *     - Mint a new token that carries the scope named here — the operation that mints one is under API tokens (`docs:openapi`)
+             *     - See which scope each operation needs, beside the operation (`docs:openapi`)
+             *
+             *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
+             *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -35626,7 +36298,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -35969,7 +36646,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -36218,10 +36900,12 @@ export interface operations {
                     "application/json": components["schemas"]["WebhookAcceptedOut"];
                 };
             };
-            /** @description **`not_found`** — There is no such row here. A row that exists in another tenant, or in a part of this tenant's tree your acting organization does not cover, answers exactly the same way — not-there and not-yours are one answer, deliberately, because a refusal that told them apart would confirm the row exists.
-             *     - Check which tenant you are acting in (`header:X-Tenant`)
-             *     - Check which organization you are wearing (`header:X-Org`) */
-            404: {
+            /** @description **`invalid_signature`** — This request's signature does not match the body it came with, so nothing in it was believed. Nothing was read and nothing was written.
+             *     - Re-sign the body with the connection's current secret; rotate it if you suspect it leaked (`header:X-Signature`)
+             *
+             *     **`timestamped_signature_required`** — This connection accepts only the timestamped X-Signature-V2 scheme, and this delivery carried only the body-only X-Signature. Nothing was stored.
+             *     - Sign the delivery with X-Signature-V2: a timestamp, a full stop and the raw body (`header:X-Signature-V2`) */
+            401: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
                     "X-Correlation-Id"?: string;
@@ -36238,14 +36922,50 @@ export interface operations {
                 content: {
                     /** @example {
                      *       "detail": "The request could not be completed.",
-                     *       "code": "not_found",
+                     *       "code": "invalid_signature",
                      *       "remedies": [
                      *         {
-                     *           "label": "Check which tenant you are acting in",
+                     *           "label": "Re-sign the body with the connection's current secret; rotate it if you suspect it leaked",
+                     *           "destination": "header:X-Signature"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`signed_door_takes_no_address`** — this door takes no bearer and no addressing header — the signature is the credential; send the signed bytes bare
+             *     - Send no Authorization header to this door (`header:Authorization`)
+             *     - Send no X-Tenant header to this door (`header:X-Tenant`)
+             *     - Send no X-Org header to this door (`header:X-Org`) */
+            403: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "signed_door_takes_no_address",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Send no Authorization header to this door",
+                     *           "destination": "header:Authorization"
+                     *         },
+                     *         {
+                     *           "label": "Send no X-Tenant header to this door",
                      *           "destination": "header:X-Tenant"
                      *         },
                      *         {
-                     *           "label": "Check which organization you are wearing",
+                     *           "label": "Send no X-Org header to this door",
                      *           "destination": "header:X-Org"
                      *         }
                      *       ]
@@ -36403,7 +37123,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PagedImportOut"];
+                    "application/json": components["schemas"]["PagedDjbImportOut"];
                 };
             };
             /** @description **`invalid`** — The input does not hold. The answer names each field that is wrong and why, in the schema's own field names, so the failure can be pointed at rather than guessed at.
@@ -36496,7 +37216,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -36649,7 +37374,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ImportIn"];
+                "application/json": components["schemas"]["DjbImportIn"];
             };
         };
         responses: {
@@ -36671,7 +37396,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ImportStagedOut"];
+                    "application/json": components["schemas"]["DjbImportStagedOut"];
                 };
             };
             /** @description Created */
@@ -36692,7 +37417,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ImportStagedOut"];
+                    "application/json": components["schemas"]["DjbImportStagedOut"];
                 };
             };
             /** @description **`invalid`** — The input does not hold. The answer names each field that is wrong and why, in the schema's own field names, so the failure can be pointed at rather than guessed at.
@@ -36781,7 +37506,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -37027,7 +37757,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ImportOut"];
+                    "application/json": components["schemas"]["DjbImportOut"];
                 };
             };
             /** @description **`unauthenticated`** — We could not tell who is making this request. Either nothing was sent to identify you, or what was sent is no longer good — an expired or withdrawn token and no token at all are answered the same way on purpose, because a refusal that told them apart would confirm which tokens exist. Nothing was read and nothing was written.
@@ -37081,7 +37811,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -37255,7 +37990,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PagedImportRowOut"];
+                    "application/json": components["schemas"]["PagedDjbImportRowOut"];
                 };
             };
             /** @description **`invalid_cursor`** — That cursor is not one this API issued for this walk. A cursor is opaque and signed, and it names a position in ONE list in ONE ordering — editing one, presenting one to a different list, or replaying one against a different sort order has no meaning to answer. Nothing was skipped and nothing was lost.
@@ -37344,7 +38079,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -37517,7 +38257,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ImportOut"];
+                    "application/json": components["schemas"]["DjbImportOut"];
                 };
             };
             /** @description **`import_invalid`** — This file cannot be imported as it is. It is not a UTF-8 CSV file, or its header row does not name the columns this kind of import reads, or it has more rows than one import takes. Nothing was imported.
@@ -37598,6 +38338,11 @@ export interface operations {
             /** @description **`forbidden`** — You are who you say you are, and this is still not yours to do here. The row exists and you can see it; the action is what was refused.
              *     - Check the role your membership gives you here (`self:membership`)
              *     - Ask somebody who administers this organization (`header:X-Org`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
              *
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
@@ -37810,7 +38555,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ImportOut"];
+                    "application/json": components["schemas"]["DjbImportOut"];
                 };
             };
             /** @description **`unauthenticated`** — We could not tell who is making this request. Either nothing was sent to identify you, or what was sent is no longer good — an expired or withdrawn token and no token at all are answered the same way on purpose, because a refusal that told them apart would confirm which tokens exist. Nothing was read and nothing was written.
@@ -37856,6 +38601,11 @@ export interface operations {
             /** @description **`forbidden`** — You are who you say you are, and this is still not yours to do here. The row exists and you can see it; the action is what was refused.
              *     - Check the role your membership gives you here (`self:membership`)
              *     - Ask somebody who administers this organization (`header:X-Org`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
              *
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
@@ -38076,7 +38826,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PagedNoteOut"];
+                    "application/json": components["schemas"]["PagedDjbNoteOut"];
                 };
             };
             /** @description **`invalid`** — The input does not hold. The answer names each field that is wrong and why, in the schema's own field names, so the failure can be pointed at rather than guessed at.
@@ -38169,7 +38919,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -38322,7 +39077,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["NoteIn"];
+                "application/json": components["schemas"]["DjbNoteIn"];
             };
         };
         responses: {
@@ -38344,7 +39099,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["NoteOut"];
+                    "application/json": components["schemas"]["DjbNoteOut"];
                 };
             };
             /** @description **`invalid`** — The input does not hold. The answer names each field that is wrong and why, in the schema's own field names, so the failure can be pointed at rather than guessed at.
@@ -38433,7 +39188,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -38679,7 +39439,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["NoteOut"];
+                    "application/json": components["schemas"]["DjbNoteOut"];
                 };
             };
             /** @description **`unauthenticated`** — We could not tell who is making this request. Either nothing was sent to identify you, or what was sent is no longer good — an expired or withdrawn token and no token at all are answered the same way on purpose, because a refusal that told them apart would confirm which tokens exist. Nothing was read and nothing was written.
@@ -38733,7 +39493,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -38888,7 +39653,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["NotePatch"];
+                "application/json": components["schemas"]["DjbNotePatch"];
             };
         };
         responses: {
@@ -38910,7 +39675,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["NoteOut"];
+                    "application/json": components["schemas"]["DjbNoteOut"];
                 };
             };
             /** @description **`invalid`** — The input does not hold. The answer names each field that is wrong and why, in the schema's own field names, so the failure can be pointed at rather than guessed at.
@@ -38991,6 +39756,11 @@ export interface operations {
             /** @description **`forbidden`** — You are who you say you are, and this is still not yours to do here. The row exists and you can see it; the action is what was refused.
              *     - Check the role your membership gives you here (`self:membership`)
              *     - Ask somebody who administers this organization (`header:X-Org`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
              *
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
@@ -39233,7 +40003,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["NoteOut"];
+                    "application/json": components["schemas"]["DjbNoteOut"];
                 };
             };
             /** @description **`unauthenticated`** — We could not tell who is making this request. Either nothing was sent to identify you, or what was sent is no longer good — an expired or withdrawn token and no token at all are answered the same way on purpose, because a refusal that told them apart would confirm which tokens exist. Nothing was read and nothing was written.
@@ -39279,6 +40049,11 @@ export interface operations {
             /** @description **`forbidden`** — You are who you say you are, and this is still not yours to do here. The row exists and you can see it; the action is what was refused.
              *     - Check the role your membership gives you here (`self:membership`)
              *     - Ask somebody who administers this organization (`header:X-Org`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
              *
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
@@ -39486,7 +40261,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["NoteOut"];
+                    "application/json": components["schemas"]["DjbNoteOut"];
                 };
             };
             /** @description **`unauthenticated`** — We could not tell who is making this request. Either nothing was sent to identify you, or what was sent is no longer good — an expired or withdrawn token and no token at all are answered the same way on purpose, because a refusal that told them apart would confirm which tokens exist. Nothing was read and nothing was written.
@@ -39532,6 +40307,11 @@ export interface operations {
             /** @description **`forbidden`** — You are who you say you are, and this is still not yours to do here. The row exists and you can see it; the action is what was refused.
              *     - Check the role your membership gives you here (`self:membership`)
              *     - Ask somebody who administers this organization (`header:X-Org`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
              *
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
@@ -39738,7 +40518,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PagedTagOut"];
+                    "application/json": components["schemas"]["PagedDjbTagOut"];
                 };
             };
             /** @description **`invalid`** — The input does not hold. The answer names each field that is wrong and why, in the schema's own field names, so the failure can be pointed at rather than guessed at.
@@ -39831,7 +40611,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -39984,7 +40769,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["TagIn"];
+                "application/json": components["schemas"]["DjbTagIn"];
             };
         };
         responses: {
@@ -40006,7 +40791,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TagOut"];
+                    "application/json": components["schemas"]["DjbTagOut"];
                 };
             };
             /** @description **`invalid`** — The input does not hold. The answer names each field that is wrong and why, in the schema's own field names, so the failure can be pointed at rather than guessed at.
@@ -40095,7 +40880,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -40341,7 +41131,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TagOut"];
+                    "application/json": components["schemas"]["DjbTagOut"];
                 };
             };
             /** @description **`unauthenticated`** — We could not tell who is making this request. Either nothing was sent to identify you, or what was sent is no longer good — an expired or withdrawn token and no token at all are answered the same way on purpose, because a refusal that told them apart would confirm which tokens exist. Nothing was read and nothing was written.
@@ -40395,7 +41185,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -40550,7 +41345,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["TagPatch"];
+                "application/json": components["schemas"]["DjbTagPatch"];
             };
         };
         responses: {
@@ -40572,7 +41367,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TagOut"];
+                    "application/json": components["schemas"]["DjbTagOut"];
                 };
             };
             /** @description **`invalid`** — The input does not hold. The answer names each field that is wrong and why, in the schema's own field names, so the failure can be pointed at rather than guessed at.
@@ -40661,7 +41456,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -40914,7 +41714,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TagOut"];
+                    "application/json": components["schemas"]["DjbTagOut"];
                 };
             };
             /** @description **`unauthenticated`** — We could not tell who is making this request. Either nothing was sent to identify you, or what was sent is no longer good — an expired or withdrawn token and no token at all are answered the same way on purpose, because a refusal that told them apart would confirm which tokens exist. Nothing was read and nothing was written.
@@ -40960,6 +41760,11 @@ export interface operations {
             /** @description **`forbidden`** — You are who you say you are, and this is still not yours to do here. The row exists and you can see it; the action is what was refused.
              *     - Check the role your membership gives you here (`self:membership`)
              *     - Ask somebody who administers this organization (`header:X-Org`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
              *
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
@@ -41167,7 +41972,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TagOut"];
+                    "application/json": components["schemas"]["DjbTagOut"];
                 };
             };
             /** @description **`unauthenticated`** — We could not tell who is making this request. Either nothing was sent to identify you, or what was sent is no longer good — an expired or withdrawn token and no token at all are answered the same way on purpose, because a refusal that told them apart would confirm which tokens exist. Nothing was read and nothing was written.
@@ -41213,6 +42018,11 @@ export interface operations {
             /** @description **`forbidden`** — You are who you say you are, and this is still not yours to do here. The row exists and you can see it; the action is what was refused.
              *     - Check the role your membership gives you here (`self:membership`)
              *     - Ask somebody who administers this organization (`header:X-Org`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
              *
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
@@ -41419,7 +42229,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PagedTagLinkOut"];
+                    "application/json": components["schemas"]["PagedDjbTagLinkOut"];
                 };
             };
             /** @description **`invalid`** — The input does not hold. The answer names each field that is wrong and why, in the schema's own field names, so the failure can be pointed at rather than guessed at.
@@ -41512,7 +42322,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -41665,7 +42480,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["TagLinkIn"];
+                "application/json": components["schemas"]["DjbTagLinkIn"];
             };
         };
         responses: {
@@ -41687,7 +42502,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TagLinkOut"];
+                    "application/json": components["schemas"]["DjbTagLinkOut"];
                 };
             };
             /** @description Created */
@@ -41708,7 +42523,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TagLinkOut"];
+                    "application/json": components["schemas"]["DjbTagLinkOut"];
                 };
             };
             /** @description **`invalid`** — The input does not hold. The answer names each field that is wrong and why, in the schema's own field names, so the failure can be pointed at rather than guessed at.
@@ -41797,7 +42612,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -42098,7 +42918,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -42400,7 +43225,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -42664,7 +43494,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -42964,7 +43799,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -43230,7 +44070,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -43534,7 +44379,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -43803,7 +44653,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -44072,7 +44927,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -44378,7 +45238,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -44645,7 +45510,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -44910,7 +45780,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -45086,6 +45961,41 @@ export interface operations {
                     "application/json": components["schemas"]["DeliveryOut"];
                 };
             };
+            /** @description **`invalid`** — The input does not hold. The answer names each field that is wrong and why, in the schema's own field names, so the failure can be pointed at rather than guessed at.
+             *     - Read the failing fields and resend (`field:errors`)
+             *     - Read the shape this endpoint accepts (`docs:openapi`) */
+            400: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "invalid",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Read the failing fields and resend",
+                     *           "destination": "field:errors"
+                     *         },
+                     *         {
+                     *           "label": "Read the shape this endpoint accepts",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
             /** @description **`unauthenticated`** — We could not tell who is making this request. Either nothing was sent to identify you, or what was sent is no longer good — an expired or withdrawn token and no token at all are answered the same way on purpose, because a refusal that told them apart would confirm which tokens exist. Nothing was read and nothing was written.
              *     - Sign in, and let the browser send the session it gives you (`self:session`)
              *     - Or send a token you hold as `Authorization: Bearer <token>` (`header:Authorization`)
@@ -45137,7 +46047,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -45319,9 +46234,14 @@ export interface operations {
     apps_example_api_list_widgets_route: {
         parameters: {
             query?: {
+                /** @example bench */
                 name?: string | null;
                 /** @example 019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d43 */
                 policy?: string | null;
+                /** @example 2026-11-01T00:00:00Z */
+                due_before?: string | null;
+                /** @example 2026-10-01T00:00:00Z */
+                due_after?: string | null;
                 q?: string | null;
                 ordering?: string;
                 show?: "live" | "archived" | "all";
@@ -45449,7 +46369,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -45713,7 +46638,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -45791,6 +46721,634 @@ export interface operations {
              *
              *     **`in_progress`** — The first request under this Idempotency-Key is still running, so its answer does not exist yet. Yours was not run — which is the point: two concurrent retries of one write must not both write.
              *     - Wait, then retry the identical request (`header:Idempotency-Key`) */
+            409: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "conflict",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Re-read the row and retry against what is true now",
+                     *           "destination": "self:reread"
+                     *         },
+                     *         {
+                     *           "label": "Ask for the first answer back instead of a second attempt",
+                     *           "destination": "header:Idempotency-Key"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`invalid_body`** — The request does not match the shape this operation accepts. Nothing was read and nothing was written — no route ran at all. The answer names each field and what is wrong with it, in the names you sent, including any field that is not part of this operation: unknown fields are refused rather than ignored, so a misspelled name can never look like a success.
+             *     - Read the failing fields and resend (`field:errors`)
+             *     - Read the shape this operation accepts (`docs:openapi`) */
+            422: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "invalid_body",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Read the failing fields and resend",
+                     *           "destination": "field:errors"
+                     *         },
+                     *         {
+                     *           "label": "Read the shape this operation accepts",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`rate_limited`** — You have asked for more than this door allows in the window it counts over. Nothing was written, and the allowance refills on its own.
+             *     - Wait the seconds Retry-After names, then retry (`header:Retry-After`) */
+            429: {
+                headers: {
+                    /** @description How many seconds to wait before trying again. Coming back sooner is refused the same way. */
+                    "Retry-After"?: string;
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "rate_limited",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Wait the seconds Retry-After names, then retry",
+                     *           "destination": "header:Retry-After"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`database_unavailable`** — The database could not be reached for this request. Nothing about the request was wrong and nothing was written — the same request sent again shortly is expected to succeed.
+             *     - Wait the interval in Retry-After and send the same request again (`header:Retry-After`)
+             *     - Check whether this deployment is ready to serve (`route:readyz`) */
+            503: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "database_unavailable",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Wait the interval in Retry-After and send the same request again",
+                     *           "destination": "header:Retry-After"
+                     *         },
+                     *         {
+                     *           "label": "Check whether this deployment is ready to serve",
+                     *           "destination": "route:readyz"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+        };
+    };
+    apps_example_api_touch_widget_route: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Which tenant to act in, by slug. **Omit it** and you act in your default membership's tenant, which is the ordinary case. **Send it** and it is honoured or the request is refused: a tenant you hold no membership in, one that does not exist, one a pinned token may not act in, and an empty value are all refused with `addressing_header_not_honoured` (403) — identically, so the refusal says nothing about what exists. Nothing is read and nothing is written. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
+                "X-Tenant"?: string;
+                /** @description Which PART of the tenant to act as, by slug — the hat you are wearing. It must be an organization you hold a membership on, or above; roles inherit downwards only, so naming your parent or a sibling is not wearable. **Omit it** and you act in your default membership's own node. **Send one you cannot wear** — or an empty value — and the request is refused with `addressing_header_not_honoured` (403) rather than answered under another hat. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
+                "X-Org"?: string;
+                /** @description A key of your choosing that makes this write safe to retry. An identical retry replays the first answer and carries `Idempotent-Replayed: true`; the same key with a different body is refused rather than executed. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                widget_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    /** @description `true` when this answer is a replay of an earlier identical request. */
+                    "Idempotent-Replayed"?: string;
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WidgetOut"];
+                };
+            };
+            /** @description **`unauthenticated`** — We could not tell who is making this request. Either nothing was sent to identify you, or what was sent is no longer good — an expired or withdrawn token and no token at all are answered the same way on purpose, because a refusal that told them apart would confirm which tokens exist. Nothing was read and nothing was written.
+             *     - Sign in, and let the browser send the session it gives you (`self:session`)
+             *     - Or send a token you hold as `Authorization: Bearer <token>` (`header:Authorization`)
+             *     - Mint a fresh token — the operation is under API tokens (`docs:openapi`) */
+            401: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "unauthenticated",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Sign in, and let the browser send the session it gives you",
+                     *           "destination": "self:session"
+                     *         },
+                     *         {
+                     *           "label": "Or send a token you hold as `Authorization: Bearer <token>`",
+                     *           "destination": "header:Authorization"
+                     *         },
+                     *         {
+                     *           "label": "Mint a fresh token — the operation is under API tokens",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`forbidden`** — You are who you say you are, and this is still not yours to do here. The row exists and you can see it; the action is what was refused.
+             *     - Check the role your membership gives you here (`self:membership`)
+             *     - Ask somebody who administers this organization (`header:X-Org`)
+             *
+             *     **`insufficient_scope`** — This token is limited to a set of scopes, and this operation needs one it does not carry. Nothing was read and nothing was written. The limit is on the token, not on the person who minted it — the same person signed in with a browser, or holding a wider token, may well be allowed to do this.
+             *     - Mint a new token that carries the scope named here — the operation that mints one is under API tokens (`docs:openapi`)
+             *     - See which scope each operation needs, beside the operation (`docs:openapi`)
+             *
+             *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
+             *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
+            403: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "forbidden",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Check the role your membership gives you here",
+                     *           "destination": "self:membership"
+                     *         },
+                     *         {
+                     *           "label": "Ask somebody who administers this organization",
+                     *           "destination": "header:X-Org"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`not_found`** — There is no such row here. A row that exists in another tenant, or in a part of this tenant's tree your acting organization does not cover, answers exactly the same way — not-there and not-yours are one answer, deliberately, because a refusal that told them apart would confirm the row exists.
+             *     - Check which tenant you are acting in (`header:X-Tenant`)
+             *     - Check which organization you are wearing (`header:X-Org`) */
+            404: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "not_found",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Check which tenant you are acting in",
+                     *           "destination": "header:X-Tenant"
+                     *         },
+                     *         {
+                     *           "label": "Check which organization you are wearing",
+                     *           "destination": "header:X-Org"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`conflict`** — Something that already exists holds the name, the identifier or the state this write asked for. Nothing was written.
+             *     - Re-read the row and retry against what is true now (`self:reread`)
+             *     - Ask for the first answer back instead of a second attempt (`header:Idempotency-Key`)
+             *
+             *     **`idempotency_key_reuse`** — This Idempotency-Key has already been used, for a different request. The fingerprint covers the method, the path and the body, so one changed byte is a different request under a key that is already spoken for. Nothing was written.
+             *     - Resend the identical body to replay the first answer (`header:Idempotency-Key`)
+             *     - Give a genuinely different write a key of its own (`header:Idempotency-Key`)
+             *
+             *     **`in_progress`** — The first request under this Idempotency-Key is still running, so its answer does not exist yet. Yours was not run — which is the point: two concurrent retries of one write must not both write.
+             *     - Wait, then retry the identical request (`header:Idempotency-Key`)
+             *
+             *     **`archived`** — This is archived. It can be read, and it cannot be changed until it is restored. Nothing was written.
+             *     - Restore it first (`route:widget-restore`) */
+            409: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "conflict",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Re-read the row and retry against what is true now",
+                     *           "destination": "self:reread"
+                     *         },
+                     *         {
+                     *           "label": "Ask for the first answer back instead of a second attempt",
+                     *           "destination": "header:Idempotency-Key"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`rate_limited`** — You have asked for more than this door allows in the window it counts over. Nothing was written, and the allowance refills on its own.
+             *     - Wait the seconds Retry-After names, then retry (`header:Retry-After`) */
+            429: {
+                headers: {
+                    /** @description How many seconds to wait before trying again. Coming back sooner is refused the same way. */
+                    "Retry-After"?: string;
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "rate_limited",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Wait the seconds Retry-After names, then retry",
+                     *           "destination": "header:Retry-After"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`database_unavailable`** — The database could not be reached for this request. Nothing about the request was wrong and nothing was written — the same request sent again shortly is expected to succeed.
+             *     - Wait the interval in Retry-After and send the same request again (`header:Retry-After`)
+             *     - Check whether this deployment is ready to serve (`route:readyz`) */
+            503: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "database_unavailable",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Wait the interval in Retry-After and send the same request again",
+                     *           "destination": "header:Retry-After"
+                     *         },
+                     *         {
+                     *           "label": "Check whether this deployment is ready to serve",
+                     *           "destination": "route:readyz"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+        };
+    };
+    apps_example_api_transition_widget_route: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Which tenant to act in, by slug. **Omit it** and you act in your default membership's tenant, which is the ordinary case. **Send it** and it is honoured or the request is refused: a tenant you hold no membership in, one that does not exist, one a pinned token may not act in, and an empty value are all refused with `addressing_header_not_honoured` (403) — identically, so the refusal says nothing about what exists. Nothing is read and nothing is written. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
+                "X-Tenant"?: string;
+                /** @description Which PART of the tenant to act as, by slug — the hat you are wearing. It must be an organization you hold a membership on, or above; roles inherit downwards only, so naming your parent or a sibling is not wearable. **Omit it** and you act in your default membership's own node. **Send one you cannot wear** — or an empty value — and the request is refused with `addressing_header_not_honoured` (403) rather than answered under another hat. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
+                "X-Org"?: string;
+                /** @description A key of your choosing that makes this write safe to retry. An identical retry replays the first answer and carries `Idempotent-Replayed: true`; the same key with a different body is refused rather than executed. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                widget_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WidgetTransitionIn"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    /** @description `true` when this answer is a replay of an earlier identical request. */
+                    "Idempotent-Replayed"?: string;
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WidgetOut"];
+                };
+            };
+            /** @description **`invalid`** — The input does not hold. The answer names each field that is wrong and why, in the schema's own field names, so the failure can be pointed at rather than guessed at.
+             *     - Read the failing fields and resend (`field:errors`)
+             *     - Read the shape this endpoint accepts (`docs:openapi`) */
+            400: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "invalid",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Read the failing fields and resend",
+                     *           "destination": "field:errors"
+                     *         },
+                     *         {
+                     *           "label": "Read the shape this endpoint accepts",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`unauthenticated`** — We could not tell who is making this request. Either nothing was sent to identify you, or what was sent is no longer good — an expired or withdrawn token and no token at all are answered the same way on purpose, because a refusal that told them apart would confirm which tokens exist. Nothing was read and nothing was written.
+             *     - Sign in, and let the browser send the session it gives you (`self:session`)
+             *     - Or send a token you hold as `Authorization: Bearer <token>` (`header:Authorization`)
+             *     - Mint a fresh token — the operation is under API tokens (`docs:openapi`) */
+            401: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "unauthenticated",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Sign in, and let the browser send the session it gives you",
+                     *           "destination": "self:session"
+                     *         },
+                     *         {
+                     *           "label": "Or send a token you hold as `Authorization: Bearer <token>`",
+                     *           "destination": "header:Authorization"
+                     *         },
+                     *         {
+                     *           "label": "Mint a fresh token — the operation is under API tokens",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`forbidden`** — You are who you say you are, and this is still not yours to do here. The row exists and you can see it; the action is what was refused.
+             *     - Check the role your membership gives you here (`self:membership`)
+             *     - Ask somebody who administers this organization (`header:X-Org`)
+             *
+             *     **`insufficient_scope`** — This token is limited to a set of scopes, and this operation needs one it does not carry. Nothing was read and nothing was written. The limit is on the token, not on the person who minted it — the same person signed in with a browser, or holding a wider token, may well be allowed to do this.
+             *     - Mint a new token that carries the scope named here — the operation that mints one is under API tokens (`docs:openapi`)
+             *     - See which scope each operation needs, beside the operation (`docs:openapi`)
+             *
+             *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
+             *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
+            403: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "forbidden",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Check the role your membership gives you here",
+                     *           "destination": "self:membership"
+                     *         },
+                     *         {
+                     *           "label": "Ask somebody who administers this organization",
+                     *           "destination": "header:X-Org"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`not_found`** — There is no such row here. A row that exists in another tenant, or in a part of this tenant's tree your acting organization does not cover, answers exactly the same way — not-there and not-yours are one answer, deliberately, because a refusal that told them apart would confirm the row exists.
+             *     - Check which tenant you are acting in (`header:X-Tenant`)
+             *     - Check which organization you are wearing (`header:X-Org`) */
+            404: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "not_found",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Check which tenant you are acting in",
+                     *           "destination": "header:X-Tenant"
+                     *         },
+                     *         {
+                     *           "label": "Check which organization you are wearing",
+                     *           "destination": "header:X-Org"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`conflict`** — Something that already exists holds the name, the identifier or the state this write asked for. Nothing was written.
+             *     - Re-read the row and retry against what is true now (`self:reread`)
+             *     - Ask for the first answer back instead of a second attempt (`header:Idempotency-Key`)
+             *
+             *     **`idempotency_key_reuse`** — This Idempotency-Key has already been used, for a different request. The fingerprint covers the method, the path and the body, so one changed byte is a different request under a key that is already spoken for. Nothing was written.
+             *     - Resend the identical body to replay the first answer (`header:Idempotency-Key`)
+             *     - Give a genuinely different write a key of its own (`header:Idempotency-Key`)
+             *
+             *     **`in_progress`** — The first request under this Idempotency-Key is still running, so its answer does not exist yet. Yours was not run — which is the point: two concurrent retries of one write must not both write.
+             *     - Wait, then retry the identical request (`header:Idempotency-Key`)
+             *
+             *     **`archived`** — This is archived. It can be read, and it cannot be changed until it is restored. Nothing was written.
+             *     - Restore it first (`route:widget-restore`) */
             409: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -46046,7 +47604,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -46276,7 +47839,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -46540,7 +48108,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -46831,6 +48404,11 @@ export interface operations {
              *     - Check the role your membership gives you here (`self:membership`)
              *     - Ask somebody who administers this organization (`header:X-Org`)
              *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
+             *
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
@@ -47061,7 +48639,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -47333,7 +48916,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -47643,7 +49231,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -47907,7 +49500,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -48254,7 +49852,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -48554,7 +50157,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -48775,7 +50383,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -49085,7 +50698,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -49395,7 +51013,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -49667,7 +51290,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -49978,7 +51606,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -50326,7 +51959,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -50502,6 +52140,41 @@ export interface operations {
                     "application/json": components["schemas"]["WidgetOut"];
                 };
             };
+            /** @description **`invalid`** — The input does not hold. The answer names each field that is wrong and why, in the schema's own field names, so the failure can be pointed at rather than guessed at.
+             *     - Read the failing fields and resend (`field:errors`)
+             *     - Read the shape this endpoint accepts (`docs:openapi`) */
+            400: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "invalid",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Read the failing fields and resend",
+                     *           "destination": "field:errors"
+                     *         },
+                     *         {
+                     *           "label": "Read the shape this endpoint accepts",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
             /** @description **`unauthenticated`** — We could not tell who is making this request. Either nothing was sent to identify you, or what was sent is no longer good — an expired or withdrawn token and no token at all are answered the same way on purpose, because a refusal that told them apart would confirm which tokens exist. Nothing was read and nothing was written.
              *     - Sign in, and let the browser send the session it gives you (`self:session`)
              *     - Or send a token you hold as `Authorization: Bearer <token>` (`header:Authorization`)
@@ -50553,7 +52226,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -50775,6 +52453,41 @@ export interface operations {
                     "application/json": components["schemas"]["WidgetMergePreviewOut"];
                 };
             };
+            /** @description **`invalid`** — The input does not hold. The answer names each field that is wrong and why, in the schema's own field names, so the failure can be pointed at rather than guessed at.
+             *     - Read the failing fields and resend (`field:errors`)
+             *     - Read the shape this endpoint accepts (`docs:openapi`) */
+            400: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "invalid",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Read the failing fields and resend",
+                     *           "destination": "field:errors"
+                     *         },
+                     *         {
+                     *           "label": "Read the shape this endpoint accepts",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
             /** @description **`unauthenticated`** — We could not tell who is making this request. Either nothing was sent to identify you, or what was sent is no longer good — an expired or withdrawn token and no token at all are answered the same way on purpose, because a refusal that told them apart would confirm which tokens exist. Nothing was read and nothing was written.
              *     - Sign in, and let the browser send the session it gives you (`self:session`)
              *     - Or send a token you hold as `Authorization: Bearer <token>` (`header:Authorization`)
@@ -50826,7 +52539,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -51092,7 +52810,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -51408,7 +53131,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -51518,6 +53246,856 @@ export interface operations {
                      *         {
                      *           "label": "Ask for the first answer back instead of a second attempt",
                      *           "destination": "header:Idempotency-Key"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`rate_limited`** — You have asked for more than this door allows in the window it counts over. Nothing was written, and the allowance refills on its own.
+             *     - Wait the seconds Retry-After names, then retry (`header:Retry-After`) */
+            429: {
+                headers: {
+                    /** @description How many seconds to wait before trying again. Coming back sooner is refused the same way. */
+                    "Retry-After"?: string;
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "rate_limited",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Wait the seconds Retry-After names, then retry",
+                     *           "destination": "header:Retry-After"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`database_unavailable`** — The database could not be reached for this request. Nothing about the request was wrong and nothing was written — the same request sent again shortly is expected to succeed.
+             *     - Wait the interval in Retry-After and send the same request again (`header:Retry-After`)
+             *     - Check whether this deployment is ready to serve (`route:readyz`) */
+            503: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "database_unavailable",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Wait the interval in Retry-After and send the same request again",
+                     *           "destination": "header:Retry-After"
+                     *         },
+                     *         {
+                     *           "label": "Check whether this deployment is ready to serve",
+                     *           "destination": "route:readyz"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+        };
+    };
+    apps_example_portal_api_list_portal_requests_route: {
+        parameters: {
+            query?: {
+                /** @example 3f0c2a8e-54b1-4c5e-9d7a-1b2c3d4e5f60 */
+                widget_id?: string | null;
+                /** @example high */
+                priority?: ("low" | "normal" | "high") | null;
+                cursor?: string | null;
+                limit?: number | null;
+                include_count?: boolean;
+            };
+            header?: {
+                /** @description Which tenant to act in, by slug. **Omit it** and you act in your default membership's tenant, which is the ordinary case. **Send it** and it is honoured or the request is refused: a tenant you hold no membership in, one that does not exist, one a pinned token may not act in, and an empty value are all refused with `addressing_header_not_honoured` (403) — identically, so the refusal says nothing about what exists. Nothing is read and nothing is written. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
+                "X-Tenant"?: string;
+                /** @description Which PART of the tenant to act as, by slug — the hat you are wearing. It must be an organization you hold a membership on, or above; roles inherit downwards only, so naming your parent or a sibling is not wearable. **Omit it** and you act in your default membership's own node. **Send one you cannot wear** — or an empty value — and the request is refused with `addressing_header_not_honoured` (403) rather than answered under another hat. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
+                "X-Org"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PagedPortalRequestOut"];
+                };
+            };
+            /** @description **`invalid`** — The input does not hold. The answer names each field that is wrong and why, in the schema's own field names, so the failure can be pointed at rather than guessed at.
+             *     - Read the failing fields and resend (`field:errors`)
+             *     - Read the shape this endpoint accepts (`docs:openapi`)
+             *
+             *     **`invalid_cursor`** — That cursor is not one this API issued for this walk. A cursor is opaque and signed, and it names a position in ONE list in ONE ordering — editing one, presenting one to a different list, or replaying one against a different sort order has no meaning to answer. Nothing was skipped and nothing was lost.
+             *     - Start the walk again with no cursor (`field:cursor`)
+             *     - Follow the next_cursor the last response gave you (`field:next_cursor`) */
+            400: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "invalid",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Read the failing fields and resend",
+                     *           "destination": "field:errors"
+                     *         },
+                     *         {
+                     *           "label": "Read the shape this endpoint accepts",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`unauthenticated`** — We could not tell who is making this request. Either nothing was sent to identify you, or what was sent is no longer good — an expired or withdrawn token and no token at all are answered the same way on purpose, because a refusal that told them apart would confirm which tokens exist. Nothing was read and nothing was written.
+             *     - Sign in, and let the browser send the session it gives you (`self:session`)
+             *     - Or send a token you hold as `Authorization: Bearer <token>` (`header:Authorization`)
+             *     - Mint a fresh token — the operation is under API tokens (`docs:openapi`) */
+            401: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "unauthenticated",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Sign in, and let the browser send the session it gives you",
+                     *           "destination": "self:session"
+                     *         },
+                     *         {
+                     *           "label": "Or send a token you hold as `Authorization: Bearer <token>`",
+                     *           "destination": "header:Authorization"
+                     *         },
+                     *         {
+                     *           "label": "Mint a fresh token — the operation is under API tokens",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`forbidden`** — You are who you say you are, and this is still not yours to do here. The row exists and you can see it; the action is what was refused.
+             *     - Check the role your membership gives you here (`self:membership`)
+             *     - Ask somebody who administers this organization (`header:X-Org`)
+             *
+             *     **`insufficient_scope`** — This token is limited to a set of scopes, and this operation needs one it does not carry. Nothing was read and nothing was written. The limit is on the token, not on the person who minted it — the same person signed in with a browser, or holding a wider token, may well be allowed to do this.
+             *     - Mint a new token that carries the scope named here — the operation that mints one is under API tokens (`docs:openapi`)
+             *     - See which scope each operation needs, beside the operation (`docs:openapi`)
+             *
+             *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
+             *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
+            403: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "forbidden",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Check the role your membership gives you here",
+                     *           "destination": "self:membership"
+                     *         },
+                     *         {
+                     *           "label": "Ask somebody who administers this organization",
+                     *           "destination": "header:X-Org"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`not_found`** — There is no such row here. A row that exists in another tenant, or in a part of this tenant's tree your acting organization does not cover, answers exactly the same way — not-there and not-yours are one answer, deliberately, because a refusal that told them apart would confirm the row exists.
+             *     - Check which tenant you are acting in (`header:X-Tenant`)
+             *     - Check which organization you are wearing (`header:X-Org`) */
+            404: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "not_found",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Check which tenant you are acting in",
+                     *           "destination": "header:X-Tenant"
+                     *         },
+                     *         {
+                     *           "label": "Check which organization you are wearing",
+                     *           "destination": "header:X-Org"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`rate_limited`** — You have asked for more than this door allows in the window it counts over. Nothing was written, and the allowance refills on its own.
+             *     - Wait the seconds Retry-After names, then retry (`header:Retry-After`) */
+            429: {
+                headers: {
+                    /** @description How many seconds to wait before trying again. Coming back sooner is refused the same way. */
+                    "Retry-After"?: string;
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "rate_limited",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Wait the seconds Retry-After names, then retry",
+                     *           "destination": "header:Retry-After"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`database_unavailable`** — The database could not be reached for this request. Nothing about the request was wrong and nothing was written — the same request sent again shortly is expected to succeed.
+             *     - Wait the interval in Retry-After and send the same request again (`header:Retry-After`)
+             *     - Check whether this deployment is ready to serve (`route:readyz`) */
+            503: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "database_unavailable",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Wait the interval in Retry-After and send the same request again",
+                     *           "destination": "header:Retry-After"
+                     *         },
+                     *         {
+                     *           "label": "Check whether this deployment is ready to serve",
+                     *           "destination": "route:readyz"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+        };
+    };
+    apps_example_portal_api_submit_portal_request_route: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Which tenant to act in, by slug. **Omit it** and you act in your default membership's tenant, which is the ordinary case. **Send it** and it is honoured or the request is refused: a tenant you hold no membership in, one that does not exist, one a pinned token may not act in, and an empty value are all refused with `addressing_header_not_honoured` (403) — identically, so the refusal says nothing about what exists. Nothing is read and nothing is written. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
+                "X-Tenant"?: string;
+                /** @description Which PART of the tenant to act as, by slug — the hat you are wearing. It must be an organization you hold a membership on, or above; roles inherit downwards only, so naming your parent or a sibling is not wearable. **Omit it** and you act in your default membership's own node. **Send one you cannot wear** — or an empty value — and the request is refused with `addressing_header_not_honoured` (403) rather than answered under another hat. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
+                "X-Org"?: string;
+                /** @description A key of your choosing that makes this write safe to retry. An identical retry replays the first answer and carries `Idempotent-Replayed: true`; the same key with a different body is refused rather than executed. */
+                "Idempotency-Key"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PortalRequestIn"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    /** @description `true` when this answer is a replay of an earlier identical request. */
+                    "Idempotent-Replayed"?: string;
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PortalRequestOut"];
+                };
+            };
+            /** @description **`invalid`** — The input does not hold. The answer names each field that is wrong and why, in the schema's own field names, so the failure can be pointed at rather than guessed at.
+             *     - Read the failing fields and resend (`field:errors`)
+             *     - Read the shape this endpoint accepts (`docs:openapi`) */
+            400: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "invalid",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Read the failing fields and resend",
+                     *           "destination": "field:errors"
+                     *         },
+                     *         {
+                     *           "label": "Read the shape this endpoint accepts",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`unauthenticated`** — We could not tell who is making this request. Either nothing was sent to identify you, or what was sent is no longer good — an expired or withdrawn token and no token at all are answered the same way on purpose, because a refusal that told them apart would confirm which tokens exist. Nothing was read and nothing was written.
+             *     - Sign in, and let the browser send the session it gives you (`self:session`)
+             *     - Or send a token you hold as `Authorization: Bearer <token>` (`header:Authorization`)
+             *     - Mint a fresh token — the operation is under API tokens (`docs:openapi`) */
+            401: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "unauthenticated",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Sign in, and let the browser send the session it gives you",
+                     *           "destination": "self:session"
+                     *         },
+                     *         {
+                     *           "label": "Or send a token you hold as `Authorization: Bearer <token>`",
+                     *           "destination": "header:Authorization"
+                     *         },
+                     *         {
+                     *           "label": "Mint a fresh token — the operation is under API tokens",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`forbidden`** — You are who you say you are, and this is still not yours to do here. The row exists and you can see it; the action is what was refused.
+             *     - Check the role your membership gives you here (`self:membership`)
+             *     - Ask somebody who administers this organization (`header:X-Org`)
+             *
+             *     **`insufficient_scope`** — This token is limited to a set of scopes, and this operation needs one it does not carry. Nothing was read and nothing was written. The limit is on the token, not on the person who minted it — the same person signed in with a browser, or holding a wider token, may well be allowed to do this.
+             *     - Mint a new token that carries the scope named here — the operation that mints one is under API tokens (`docs:openapi`)
+             *     - See which scope each operation needs, beside the operation (`docs:openapi`)
+             *
+             *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
+             *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
+            403: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "forbidden",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Check the role your membership gives you here",
+                     *           "destination": "self:membership"
+                     *         },
+                     *         {
+                     *           "label": "Ask somebody who administers this organization",
+                     *           "destination": "header:X-Org"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`not_found`** — There is no such row here. A row that exists in another tenant, or in a part of this tenant's tree your acting organization does not cover, answers exactly the same way — not-there and not-yours are one answer, deliberately, because a refusal that told them apart would confirm the row exists.
+             *     - Check which tenant you are acting in (`header:X-Tenant`)
+             *     - Check which organization you are wearing (`header:X-Org`) */
+            404: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "not_found",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Check which tenant you are acting in",
+                     *           "destination": "header:X-Tenant"
+                     *         },
+                     *         {
+                     *           "label": "Check which organization you are wearing",
+                     *           "destination": "header:X-Org"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`conflict`** — Something that already exists holds the name, the identifier or the state this write asked for. Nothing was written.
+             *     - Re-read the row and retry against what is true now (`self:reread`)
+             *     - Ask for the first answer back instead of a second attempt (`header:Idempotency-Key`)
+             *
+             *     **`idempotency_key_reuse`** — This Idempotency-Key has already been used, for a different request. The fingerprint covers the method, the path and the body, so one changed byte is a different request under a key that is already spoken for. Nothing was written.
+             *     - Resend the identical body to replay the first answer (`header:Idempotency-Key`)
+             *     - Give a genuinely different write a key of its own (`header:Idempotency-Key`)
+             *
+             *     **`in_progress`** — The first request under this Idempotency-Key is still running, so its answer does not exist yet. Yours was not run — which is the point: two concurrent retries of one write must not both write.
+             *     - Wait, then retry the identical request (`header:Idempotency-Key`)
+             *
+             *     **`archived`** — This is archived. It can be read, and it cannot be changed until it is restored. Nothing was written.
+             *     - Restore it first (`route:portal_request-restore`) */
+            409: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "conflict",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Re-read the row and retry against what is true now",
+                     *           "destination": "self:reread"
+                     *         },
+                     *         {
+                     *           "label": "Ask for the first answer back instead of a second attempt",
+                     *           "destination": "header:Idempotency-Key"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`invalid_body`** — The request does not match the shape this operation accepts. Nothing was read and nothing was written — no route ran at all. The answer names each field and what is wrong with it, in the names you sent, including any field that is not part of this operation: unknown fields are refused rather than ignored, so a misspelled name can never look like a success.
+             *     - Read the failing fields and resend (`field:errors`)
+             *     - Read the shape this operation accepts (`docs:openapi`) */
+            422: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "invalid_body",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Read the failing fields and resend",
+                     *           "destination": "field:errors"
+                     *         },
+                     *         {
+                     *           "label": "Read the shape this operation accepts",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`rate_limited`** — You have asked for more than this door allows in the window it counts over. Nothing was written, and the allowance refills on its own.
+             *     - Wait the seconds Retry-After names, then retry (`header:Retry-After`) */
+            429: {
+                headers: {
+                    /** @description How many seconds to wait before trying again. Coming back sooner is refused the same way. */
+                    "Retry-After"?: string;
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "rate_limited",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Wait the seconds Retry-After names, then retry",
+                     *           "destination": "header:Retry-After"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`database_unavailable`** — The database could not be reached for this request. Nothing about the request was wrong and nothing was written — the same request sent again shortly is expected to succeed.
+             *     - Wait the interval in Retry-After and send the same request again (`header:Retry-After`)
+             *     - Check whether this deployment is ready to serve (`route:readyz`) */
+            503: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "database_unavailable",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Wait the interval in Retry-After and send the same request again",
+                     *           "destination": "header:Retry-After"
+                     *         },
+                     *         {
+                     *           "label": "Check whether this deployment is ready to serve",
+                     *           "destination": "route:readyz"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+        };
+    };
+    apps_example_portal_api_retrieve_portal_request: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Which tenant to act in, by slug. **Omit it** and you act in your default membership's tenant, which is the ordinary case. **Send it** and it is honoured or the request is refused: a tenant you hold no membership in, one that does not exist, one a pinned token may not act in, and an empty value are all refused with `addressing_header_not_honoured` (403) — identically, so the refusal says nothing about what exists. Nothing is read and nothing is written. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
+                "X-Tenant"?: string;
+                /** @description Which PART of the tenant to act as, by slug — the hat you are wearing. It must be an organization you hold a membership on, or above; roles inherit downwards only, so naming your parent or a sibling is not wearable. **Omit it** and you act in your default membership's own node. **Send one you cannot wear** — or an empty value — and the request is refused with `addressing_header_not_honoured` (403) rather than answered under another hat. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
+                "X-Org"?: string;
+            };
+            path: {
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PortalRequestOut"];
+                };
+            };
+            /** @description **`unauthenticated`** — We could not tell who is making this request. Either nothing was sent to identify you, or what was sent is no longer good — an expired or withdrawn token and no token at all are answered the same way on purpose, because a refusal that told them apart would confirm which tokens exist. Nothing was read and nothing was written.
+             *     - Sign in, and let the browser send the session it gives you (`self:session`)
+             *     - Or send a token you hold as `Authorization: Bearer <token>` (`header:Authorization`)
+             *     - Mint a fresh token — the operation is under API tokens (`docs:openapi`) */
+            401: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "unauthenticated",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Sign in, and let the browser send the session it gives you",
+                     *           "destination": "self:session"
+                     *         },
+                     *         {
+                     *           "label": "Or send a token you hold as `Authorization: Bearer <token>`",
+                     *           "destination": "header:Authorization"
+                     *         },
+                     *         {
+                     *           "label": "Mint a fresh token — the operation is under API tokens",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`forbidden`** — You are who you say you are, and this is still not yours to do here. The row exists and you can see it; the action is what was refused.
+             *     - Check the role your membership gives you here (`self:membership`)
+             *     - Ask somebody who administers this organization (`header:X-Org`)
+             *
+             *     **`insufficient_scope`** — This token is limited to a set of scopes, and this operation needs one it does not carry. Nothing was read and nothing was written. The limit is on the token, not on the person who minted it — the same person signed in with a browser, or holding a wider token, may well be allowed to do this.
+             *     - Mint a new token that carries the scope named here — the operation that mints one is under API tokens (`docs:openapi`)
+             *     - See which scope each operation needs, beside the operation (`docs:openapi`)
+             *
+             *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
+             *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
+            403: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "forbidden",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Check the role your membership gives you here",
+                     *           "destination": "self:membership"
+                     *         },
+                     *         {
+                     *           "label": "Ask somebody who administers this organization",
+                     *           "destination": "header:X-Org"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`not_found`** — There is no such row here. A row that exists in another tenant, or in a part of this tenant's tree your acting organization does not cover, answers exactly the same way — not-there and not-yours are one answer, deliberately, because a refusal that told them apart would confirm the row exists.
+             *     - Check which tenant you are acting in (`header:X-Tenant`)
+             *     - Check which organization you are wearing (`header:X-Org`) */
+            404: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "not_found",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Check which tenant you are acting in",
+                     *           "destination": "header:X-Tenant"
+                     *         },
+                     *         {
+                     *           "label": "Check which organization you are wearing",
+                     *           "destination": "header:X-Org"
                      *         }
                      *       ]
                      *     } */
@@ -51723,7 +54301,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -51987,7 +54570,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -52287,7 +54875,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -52508,7 +55101,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -52653,11 +55251,16 @@ export interface operations {
                 /** @example invoice */
                 filename?: string | null;
                 ordering?: string;
-                show?: string;
+                show?: "live" | "archived" | "all";
                 subject?: string | null;
                 cursor?: string | null;
                 limit?: number | null;
                 include_count?: boolean;
+                /**
+                 * @deprecated
+                 * @description `archived` is not a parameter of this list. Send `show=archived` for the archived ones, `show=all` for both, or leave it out for the live ones.
+                 */
+                archived?: string;
             };
             header?: {
                 /** @description Which tenant to act in, by slug. **Omit it** and you act in your default membership's tenant, which is the ordinary case. **Send it** and it is honoured or the request is refused: a tenant you hold no membership in, one that does not exist, one a pinned token may not act in, and an empty value are all refused with `addressing_header_not_honoured` (403) — identically, so the refusal says nothing about what exists. Nothing is read and nothing is written. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
@@ -52779,7 +55382,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -53043,7 +55651,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -53343,7 +55956,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -53566,6 +56184,11 @@ export interface operations {
              *     **`insufficient_scope`** — This token is limited to a set of scopes, and this operation needs one it does not carry. Nothing was read and nothing was written. The limit is on the token, not on the person who minted it — the same person signed in with a browser, or holding a wider token, may well be allowed to do this.
              *     - Mint a new token that carries the scope named here — the operation that mints one is under API tokens (`docs:openapi`)
              *     - See which scope each operation needs, beside the operation (`docs:openapi`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
              *
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
@@ -53823,6 +56446,11 @@ export interface operations {
              *     **`insufficient_scope`** — This token is limited to a set of scopes, and this operation needs one it does not carry. Nothing was read and nothing was written. The limit is on the token, not on the person who minted it — the same person signed in with a browser, or holding a wider token, may well be allowed to do this.
              *     - Mint a new token that carries the scope named here — the operation that mints one is under API tokens (`docs:openapi`)
              *     - See which scope each operation needs, beside the operation (`docs:openapi`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
              *
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
@@ -54085,6 +56713,11 @@ export interface operations {
              *     - Mint a new token that carries the scope named here — the operation that mints one is under API tokens (`docs:openapi`)
              *     - See which scope each operation needs, beside the operation (`docs:openapi`)
              *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
+             *
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
@@ -54302,7 +56935,11 @@ export interface operations {
             };
             /** @description **`invalid_cursor`** — That cursor is not one this API issued for this walk. A cursor is opaque and signed, and it names a position in ONE list in ONE ordering — editing one, presenting one to a different list, or replaying one against a different sort order has no meaning to answer. Nothing was skipped and nothing was lost.
              *     - Start the walk again with no cursor (`field:cursor`)
-             *     - Follow the next_cursor the last response gave you (`field:next_cursor`) */
+             *     - Follow the next_cursor the last response gave you (`field:next_cursor`)
+             *
+             *     **`invalid`** — The input does not hold. The answer names each field that is wrong and why, in the schema's own field names, so the failure can be pointed at rather than guessed at.
+             *     - Read the failing fields and resend (`field:errors`)
+             *     - Read the shape this endpoint accepts (`docs:openapi`) */
             400: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -54386,7 +57023,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -54652,7 +57294,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -54999,7 +57646,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -55213,6 +57865,278 @@ export interface operations {
             };
         };
     };
+    apps_realtime_api_create_socket_ticket_route: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Which tenant to act in, by slug. **Omit it** and you act in your default membership's tenant, which is the ordinary case. **Send it** and it is honoured or the request is refused: a tenant you hold no membership in, one that does not exist, one a pinned token may not act in, and an empty value are all refused with `addressing_header_not_honoured` (403) — identically, so the refusal says nothing about what exists. Nothing is read and nothing is written. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
+                "X-Tenant"?: string;
+                /** @description Which PART of the tenant to act as, by slug — the hat you are wearing. It must be an organization you hold a membership on, or above; roles inherit downwards only, so naming your parent or a sibling is not wearable. **Omit it** and you act in your default membership's own node. **Send one you cannot wear** — or an empty value — and the request is refused with `addressing_header_not_honoured` (403) rather than answered under another hat. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
+                "X-Org"?: string;
+                /** @description A key of your choosing that makes this write safe to retry. An identical retry replays the first answer and carries `Idempotent-Replayed: true`; the same key with a different body is refused rather than executed. */
+                "Idempotency-Key"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    /** @description `true` when this answer is a replay of an earlier identical request. */
+                    "Idempotent-Replayed"?: string;
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SocketTicketOut"];
+                };
+            };
+            /** @description **`invalid`** — The input does not hold. The answer names each field that is wrong and why, in the schema's own field names, so the failure can be pointed at rather than guessed at.
+             *     - Read the failing fields and resend (`field:errors`)
+             *     - Read the shape this endpoint accepts (`docs:openapi`) */
+            400: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "invalid",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Read the failing fields and resend",
+                     *           "destination": "field:errors"
+                     *         },
+                     *         {
+                     *           "label": "Read the shape this endpoint accepts",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`unauthenticated`** — We could not tell who is making this request. Either nothing was sent to identify you, or what was sent is no longer good — an expired or withdrawn token and no token at all are answered the same way on purpose, because a refusal that told them apart would confirm which tokens exist. Nothing was read and nothing was written.
+             *     - Sign in, and let the browser send the session it gives you (`self:session`)
+             *     - Or send a token you hold as `Authorization: Bearer <token>` (`header:Authorization`)
+             *     - Mint a fresh token — the operation is under API tokens (`docs:openapi`) */
+            401: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "unauthenticated",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Sign in, and let the browser send the session it gives you",
+                     *           "destination": "self:session"
+                     *         },
+                     *         {
+                     *           "label": "Or send a token you hold as `Authorization: Bearer <token>`",
+                     *           "destination": "header:Authorization"
+                     *         },
+                     *         {
+                     *           "label": "Mint a fresh token — the operation is under API tokens",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`forbidden`** — You are who you say you are, and this is still not yours to do here. The row exists and you can see it; the action is what was refused.
+             *     - Check the role your membership gives you here (`self:membership`)
+             *     - Ask somebody who administers this organization (`header:X-Org`)
+             *
+             *     **`insufficient_scope`** — This token is limited to a set of scopes, and this operation needs one it does not carry. Nothing was read and nothing was written. The limit is on the token, not on the person who minted it — the same person signed in with a browser, or holding a wider token, may well be allowed to do this.
+             *     - Mint a new token that carries the scope named here — the operation that mints one is under API tokens (`docs:openapi`)
+             *     - See which scope each operation needs, beside the operation (`docs:openapi`)
+             *
+             *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
+             *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
+            403: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "forbidden",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Check the role your membership gives you here",
+                     *           "destination": "self:membership"
+                     *         },
+                     *         {
+                     *           "label": "Ask somebody who administers this organization",
+                     *           "destination": "header:X-Org"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`conflict`** — Something that already exists holds the name, the identifier or the state this write asked for. Nothing was written.
+             *     - Re-read the row and retry against what is true now (`self:reread`)
+             *     - Ask for the first answer back instead of a second attempt (`header:Idempotency-Key`)
+             *
+             *     **`idempotency_key_reuse`** — This Idempotency-Key has already been used, for a different request. The fingerprint covers the method, the path and the body, so one changed byte is a different request under a key that is already spoken for. Nothing was written.
+             *     - Resend the identical body to replay the first answer (`header:Idempotency-Key`)
+             *     - Give a genuinely different write a key of its own (`header:Idempotency-Key`)
+             *
+             *     **`in_progress`** — The first request under this Idempotency-Key is still running, so its answer does not exist yet. Yours was not run — which is the point: two concurrent retries of one write must not both write.
+             *     - Wait, then retry the identical request (`header:Idempotency-Key`) */
+            409: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "conflict",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Re-read the row and retry against what is true now",
+                     *           "destination": "self:reread"
+                     *         },
+                     *         {
+                     *           "label": "Ask for the first answer back instead of a second attempt",
+                     *           "destination": "header:Idempotency-Key"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`rate_limited`** — You have asked for more than this door allows in the window it counts over. Nothing was written, and the allowance refills on its own.
+             *     - Wait the seconds Retry-After names, then retry (`header:Retry-After`) */
+            429: {
+                headers: {
+                    /** @description How many seconds to wait before trying again. Coming back sooner is refused the same way. */
+                    "Retry-After"?: string;
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "rate_limited",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Wait the seconds Retry-After names, then retry",
+                     *           "destination": "header:Retry-After"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`database_unavailable`** — The database could not be reached for this request. Nothing about the request was wrong and nothing was written — the same request sent again shortly is expected to succeed.
+             *     - Wait the interval in Retry-After and send the same request again (`header:Retry-After`)
+             *     - Check whether this deployment is ready to serve (`route:readyz`) */
+            503: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "database_unavailable",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Wait the interval in Retry-After and send the same request again",
+                     *           "destination": "header:Retry-After"
+                     *         },
+                     *         {
+                     *           "label": "Check whether this deployment is ready to serve",
+                     *           "destination": "route:readyz"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+        };
+    };
     apps_search_api_list_search_kinds_route: {
         parameters: {
             query?: {
@@ -55325,9 +58249,10 @@ export interface operations {
                     "application/json": components["schemas"]["Refusal"];
                 };
             };
-            /** @description **`forbidden`** — You are who you say you are, and this is still not yours to do here. The row exists and you can see it; the action is what was refused.
-             *     - Check the role your membership gives you here (`self:membership`)
-             *     - Ask somebody who administers this organization (`header:X-Org`)
+            /** @description **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
              *
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
@@ -55350,14 +58275,18 @@ export interface operations {
                 content: {
                     /** @example {
                      *       "detail": "The request could not be completed.",
-                     *       "code": "forbidden",
+                     *       "code": "no_acting_scope",
                      *       "remedies": [
                      *         {
-                     *           "label": "Check the role your membership gives you here",
+                     *           "label": "Check which memberships you actually hold",
                      *           "destination": "self:membership"
                      *         },
                      *         {
-                     *           "label": "Ask somebody who administers this organization",
+                     *           "label": "Name a tenant you hold a membership in",
+                     *           "destination": "header:X-Tenant"
+                     *         },
+                     *         {
+                     *           "label": "Name an organization you hold a role on, or above — roles inherit downwards only",
                      *           "destination": "header:X-Org"
                      *         }
                      *       ]
@@ -55590,6 +58519,11 @@ export interface operations {
             /** @description **`forbidden`** — You are who you say you are, and this is still not yours to do here. The row exists and you can see it; the action is what was refused.
              *     - Check the role your membership gives you here (`self:membership`)
              *     - Ask somebody who administers this organization (`header:X-Org`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
              *
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
@@ -55853,7 +58787,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -56342,7 +59281,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -56565,7 +59509,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -56792,7 +59741,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
@@ -57061,7 +60015,12 @@ export interface operations {
              *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
              *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
              *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
-             *     - Check which memberships you actually hold (`self:membership`) */
+             *     - Check which memberships you actually hold (`self:membership`)
+             *
+             *     **`no_acting_scope`** — You are who you say you are, and this request resolved no workspace, or no part of one, for you to act in — you hold no membership it could act under. Nothing was read and nothing was written.
+             *     - Check which memberships you actually hold (`self:membership`)
+             *     - Name a tenant you hold a membership in (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`) */
             403: {
                 headers: {
                     /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */

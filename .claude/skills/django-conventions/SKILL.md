@@ -24,6 +24,47 @@ signal, a door that bypasses the service, a workflow that reads the clock.
 models, fields, relations, routes, tools, consumers, workflows, activities and
 non-secret settings as JSON. The schema is read, never guessed.
 
+**Before you write a helper:** `uv run python manage.py roads` — one line per
+job this platform does exactly one way, with the road that does it, its
+contract and a worked example; `roads <job>` prints one, and a job with a road
+is called, never re-implemented. `roads --json` is the `roads/1` document a
+brief cites and a verifier diffs: the header's `schema`, `tree` and
+`platform_apps`; `roads[]`, one per job (`job`, `import`, `path`, `line`,
+`contract`, `example`, …); `kept[]`, a product's declared second roads (valved
+`rule-84`, never in `roads[]`); `unmarked {measured, reason, total, classes}`,
+house rule 84's counted copies by shape.
+
+### The builder's seven
+
+1. **Ask the roads before writing a helper.** `manage.py roads <job>` first,
+   and a road that exists is called, never re-implemented. What house rule 84
+   SEES is a second marker for one job and the copies of the counted shapes —
+   `python -m quality.gate --explain 84` prints the classes and their
+   ratchets; a helper that is neither marked nor one of those shapes is
+   invisible to it (its own `does_not_cover`). So the door is asked whether
+   the gate would notice or not: the rule is a floor under this item, never
+   its measure.
+2. **The second copy is the moment to make a road.** When another app has what
+   you need, lift it into the platform module, mark it, and have both import
+   it — two implementations of one thing never coexist, and
+   duplicate-then-abstract is for the first copy only.
+3. **Derive counts, never type them.** A test asserts over a population it
+   derives; a typed number is legal only as a floor or ratchet pinned from a
+   printed line, with that line beside it, because a typed count over a
+   growing population reds the next honest change.
+4. **Refusals go through the registry.** Every refusal is a registered code
+   composed by `wire_refusal` (`core.exceptions`, `roads refuse`), because a
+   hand-typed sentence or dict is a second refusal grammar and a finding.
+5. **No new shell.** A new drive or leg is pytest, and a new `.sh` file needs
+   the PM's word in the brief, because the gate's shell is moving to Python and
+   every new line of it is one more to move.
+6. **One job per function, and its first docstring line is the contract.**
+   `manage.py roads` prints that line, so writing it is writing the
+   documentation.
+7. **Every mechanism ships with its worked example on the golden noun.** A
+   mechanism without its `Widget` example in `apps/example` is not done,
+   because the example is what a product copies.
+
 **The long form sits beside this file.** What follows is the imperative core —
 the rules as commands, and the wrong-form/right-form pair each one turns on.
 The arguments, the worked snippets and the lead-tier material live in
@@ -106,14 +147,11 @@ class Order(TenantScopedModel):                                      # right —
 
 ### Tenancy — ON by default; a product opts out
 
-One shape: **shared schema + tenant FK, read through a scoped manager, enforced
-by house rule 8.** `apps.core` ships `Tenant`, `Membership` (user × tenant ×
-organization × role), the abstract `TenantScopedModel(BaseModel)` with a `tenant` FK, a
-`ScopedQuerySet.for_tenant(tenant)` manager, and `TenantMiddleware`, which sets
-`request.tenant` from the user's membership (the default one, or the one an
-`X-Tenant: <slug>` header names, if the user belongs to it). **No membership →
-`request.tenant = None` and every scoped read returns nothing. Fails closed; no
-superuser exemption.**
+**The road is `apps.core.models.ScopedQuerySet` — `manage.py roads
+scope_read`**; shared schema + tenant FK, house rule 8. `TenantMiddleware`
+sets `request.tenant` from the user's membership (or the one `X-Tenant:
+<slug>` names); **none → `None`, every scoped read empty, no superuser
+exemption.**
 
 ```python
 # wrong — a bare manager on a scoped model; rule 8 refuses this in api, services, activities, tools, consumers, config
@@ -132,7 +170,10 @@ def create_order(*, tenant: Tenant, actor: Actor, customer: Customer, lines: lis
   `principal(ctx).tenant` (§9), activities the tenant restored from workflow
   context (`workflow_context()`, §7). Nothing reads it from thread-local state.
 - `Membership` is the only source of who belongs where; roles within a tenant
-  are fields on it, not on `User`.
+  are fields on it, not on `User`. It inherits `BaseModel`, not
+  `TenantScopedModel`, so its scoped reads are its own manager's —
+  `Membership.objects.for_tenant(t)` and `.of(user)`, both failing closed
+  (`apps/core/models.py::MembershipQuerySet` says why it is not the base).
 - Every door test that lists or fetches a scoped model has a sibling proving a
   second tenant's rows are absent — the test that cannot pass vacuously.
 
@@ -141,12 +182,23 @@ reason: models inherit `BaseModel`, `TenantMiddleware` comes out, rule 8 is
 `enabled: false`. No half-opt-out; schema-per-tenant is not a template option.
 
 **One level down, the tenant is a tree.** A row one *part* of the tenant owns
-inherits `OrgScopedModel` and is read `.for_tenant(t).visible_to(actor_or_org)` —
-both halves, every time; inherited configuration resolves upward through
+inherits `OrgScopedModel` and takes both halves of `roads scope_read`, every
+time, under the hat whose road is `apps.core.middleware.resolve_org` —
+`manage.py roads resolve_hat`; configuration resolves up through
 `governing()` and never widens visibility; a reference handed to a service passes
 `core.authz.may_be_named`; a row that inherits its branch declares
 `derive_org_from`. All four, wrong form and right form:
-`references/hierarchy-and-scoping.md`. A ledger declares `append_only = True` and
+`references/hierarchy-and-scoping.md`.
+
+**One level out, the host is a surface** (ADR surfaces-1, house rule 85). A
+door resolves the request's surface BEFORE its tenant — `manage.py roads
+resolve_surface`, and on the socket and MCP doors `roads request_host` for the
+host — and the surface then decides which families the door answers and how
+the tenant is chosen. That is the whole of its reach: **a service never reads
+`actor.surface`** (a branch on the audience would be a second permission
+system), and a write's wall is the role's permissions, never the surface. A
+product declares its surfaces in its own `apps/<x>/surfaces.py`; the worked
+one is `apps/example_portal/surfaces.py`. A ledger declares `append_only = True` and
 config a process consumes is versioned rather than edited in place:
 `references/ledgers-and-config.md`.
 
@@ -174,6 +226,10 @@ The worked service — `@service`, keyword-only, `transaction.atomic()`, the
 - **Keyword-only arguments**, typed, **return the object** (or a small typed
   result); **`transaction.atomic()` whenever more than one row is touched**,
   with the `emit()` inside it (§8).
+- **A field that names a person is marked on its `Out`** —
+  `Field(json_schema_extra=personal(example("dana@example.com")))`: the doors
+  answer it, `event_payload` strips it at any depth, and `emit` refuses it put
+  back; a subscriber that needs the person reads them through the API by id.
 - **No business logic in signals — no `signals.py` at all** unless the lead
   rules otherwise and records why. House rule with a canary. If you reach for
   `post_save` you want a service; if you reach for it to notify, `emit()`.
@@ -186,10 +242,34 @@ The worked service — `@service`, keyword-only, `transaction.atomic()`, the
 
 **Five valves exist and they differ in WHERE they have to sit** — `# rule-<id>:`,
 `# authz:`, `# reach:`, `# door:`, `# role-bound:`; a valve in the wrong place is
-invisible, which is the thing that costs merge cycles to rediscover. **And every
-refusal speaks the three-move grammar** — `code`, `fact`, structured `remedies`,
-declared at import beside the class that raises it, composed once by
-`core.exceptions.wire_refusal`. Both, in full: `references/services-and-refusals.md`.
+invisible (`# rule-<id>:`'s reader: `roads valve`). **Every refusal speaks the
+three-move grammar** — `code`, `fact`, `remedies` — declared beside the class
+that raises it; the road is `apps.core.exceptions` — `manage.py roads refuse` —
+and the one body both doors send is `apps/core/exceptions.py::wire_refusal`'s.
+Both, in full: `references/services-and-refusals.md`.
+
+**The actor a door hands a service has no road yet.** Most apps' doors
+carry their own `_acting(request)` — the request's actor and tenant — and
+house rule 84 counts every copy beyond the first as a `private_twin`; the
+ratchet holds the count (`--explain 84`), and it falls when the consolidation
+marks the one road. Until then a new app copies the nearest `_acting` rather
+than inventing a third shape, and never mints the road in a feature rung.
+
+**A role a declared surface admits holds exactly what its declaration says.**
+A predicate that says "any member" opens nothing for it: the platform's own
+roles keep the un-swept residue — every key with a predicate and no
+declaration — until the consolidation's sweep, and the flat census's
+`residue` section (`apps/core/tests/permissions_world.py`) is that count. So a
+product whose surface role needs one of those keys DECLARES the pattern in the
+role's `roles.py`; nothing grants it by default. Two facts a test of the wall
+meets: the vocabulary caches who holds the residue, so a test that swaps the
+declared surfaces calls `core.authz.reset_policies()` after the swap (and
+`core.surfaces.forget_declarations()`); and **a wall test asserts the
+refusal and the absence**, never the outcome the tree happened to produce — a
+customer's create at the customer host is a 403 with an `outcome=error` audit
+row naming that surface and no new row, because an audit case written against
+a successful create pinned the defect as the column's worked example. The
+worked wall is `apps/example_portal/tests/test_wall.py`.
 
 ## 5 · Queries
 
@@ -229,8 +309,8 @@ schema is a wrong map.
 
 The worked router and schemas, **choosing a tag key** (the key IS the scope
 family a token's ceiling names, and it freezes the day a token could hold it),
-**the one error envelope** (`{detail, code, errors?, remedies?}` from the single
-mapper in `config/api.py`) and **`MeasuredOut`** (a computed number travels with
+**the one error envelope** (its keys are `apps/core/exceptions.py::WIRE_COMMON_KEYS`;
+`core.exceptions.wire_refusal` composes it) and **`MeasuredOut`** (a computed number travels with
 its basis; the UI never computes one): `references/api-door.md`.
 
 - **Every route carries an explicit `auth=` — on its router or on the route —
@@ -274,6 +354,14 @@ its basis; the UI never computes one): `references/api-door.md`.
 
 The wrong-form/right-form pair for a strict body: `references/api-door.md`.
 
+- **A link to our own host in an `Out` names its surface's builder.** No `Out`
+  on the tree carries one today; the first that does builds it with `manage.py
+  roads absolute_url` for the surface of the role the link is for (`roads
+  surface_for_role`) — or the request's own surface when the reader is the
+  caller — so a customer's link lands on the customer host. A bare
+  `PUBLIC_BASE_URL` joined to a path outside `core.surfaces` and the settings
+  is house rule 84's `hand_url` class: counted, and the ratchet only falls.
+
 ## 7 · Workflows — Temporal
 
 **Anything that must wait or retry is a workflow** — a webhook delivery with
@@ -281,7 +369,7 @@ backoff, an integration sync, a wait for a human or a signal, a schedule. Not a
 thread, not a task queue, not a command on cron. Two files per app, both
 discovered by the worker:
 
-- `workflows.py` — `@workflow.defn(name="…")` classes, exported in `WORKFLOWS`. **Deterministic** (house rule 9): the module imports **only** stdlib `dataclasses` / `datetime.timedelta`, `temporalio.workflow`, and the app's own `types.py`. No ORM, no `httpx`, no `datetime.now()`, no `random`, no `time.sleep`, no settings read that can vary between runs — and **no import of `activities.py`**: activities are invoked **by name**, because importing them would drag the ORM into a module that has to replay identically years from now. `workflow.now()` for the clock; `workflow.random()` if you truly need randomness; `asyncio.sleep` / `workflow.wait_condition` for waiting; `workflow.execute_activity("<name>", …)` for everything that touches the world.
+- `workflows.py` — `@workflow.defn(name="…")` classes, exported in `WORKFLOWS`. **Deterministic** (house rule 9): the module imports **only** `pilecap.determinism` (and the app's own `types.py`), stdlib `dataclasses` / `datetime.timedelta` and `temporalio.workflow`; the ORM, `pilecap`'s root and the apps are the activities'. No ORM, no `httpx`, no `datetime.now()`, no `random`, no `time.sleep`, no settings read that can vary between runs — and **no import of `activities.py`**: activities are invoked **by name**, because importing them would drag the ORM into a module that has to replay identically years from now. `workflow.now()` for the clock; `workflow.random()` if you truly need randomness; `asyncio.sleep` / `workflow.wait_condition` for waiting; `workflow.execute_activity("<name>", …)` for everything that touches the world.
 - `activities.py` — `@activity.defn(name="…")` functions, exported in `ACTIVITIES`, and **plain `def`, not `async def`** (below). **Activities do the I/O, and they call services.** They restore the tenant, the user and the **acting hat** from workflow context (`apps.workflows.context`: the interceptor carries all three as Temporal headers; read them from there, never from a global, never from the payload), are **idempotent** (the same input twice is safe — Temporal retries), and take their retry policy at the call site, not inside.
 - `types.py` — the shapes that cross the boundary: plain `@dataclass`es in a module that imports nothing but the standard library. A workflow that took a model instance could not be replayed.
 
@@ -321,8 +409,7 @@ the cause and not the wrapper**, and why the blessed clock is spelled
 - **Activities are plain `def`**, and every activity in this repository is
   (`apps/events/activities.py`, `apps/example/activities.py`). The ORM is
   synchronous; the worker
-  (`apps.workflows.client.build_worker`, re-exported as
-  `config.temporal.build_worker`) is built with an
+  (`apps.workflows.client.build_worker`) is built with an
   `activity_executor=ThreadPoolExecutor(...)`, so Temporal runs a sync activity
   on a worker thread where a synchronous query belongs — nothing is blocking
   the event loop. What a sync activity owes that thread is
@@ -339,18 +426,15 @@ the cause and not the wrapper**, and why the blessed clock is spelled
 
 ## 8 · Events
 
-`apps.events.services.emit(*, name, tenant, payload, actor=None)` — keyword-only,
-the name included, because it is a `@service` (house rule 13) — writes the
-`Event` and its `Outbox` row **in the caller's transaction**; `events` itself
-starts the dispatch workflow on commit, which fans out to the tenant's
-`WebhookEndpoint`s (signed, retried, dead-lettered) and to the realtime bridge.
+The road is `apps.events.services.emit` — `manage.py roads emit`; after the
+commit `events` fans the row out to the tenant's `WebhookEndpoint`s and the
+realtime bridge.
 
-- **Emit inside the service's `transaction.atomic()`**, after the write it
-  describes. Never from a model's `save()`, a signal, or a door.
+- **Emit after the write it describes.** Never from a model's `save()`, a
+  signal, or a door.
 - Names are `<app>.<resource>.<past-tense verb>`: `orders.order.created`.
-  **Payloads are schemas** — `OrderOut.from_orm(order).model_dump(mode="json")`,
-  the shape the REST route returns, so webhook and socket clients see what a
-  REST client sees.
+  **The payload's road is `apps.core.schemas.event_payload` — `manage.py roads
+  event_payload`** — over the `Out` the REST route returns.
 - Nothing imports `events` except to `emit`; nothing subscribes in code —
   subscribers are data (`WebhookEndpoint` rows) and the realtime bridge.
   `emit()` is the whole of a service's responsibility; delivery is the
@@ -446,6 +530,21 @@ turns on (**test the property, not the mechanism**; **no test that cannot
 fail**; REST through the mounted API so `TenantMiddleware` runs; one query pin
 per list route at seeded scale × k): `references/testing.md`.
 
+- **A test of the template's own shape is DECLARED, never deleted**:
+  `@pytest.mark.template_only(reason="…")` (`apps/conftest.py` holds the
+  mark). It keys on the tree's fold predicate — the engine's own reading of
+  whether `rule_id_namespace:` is declared — never on a file's presence, so a
+  product never grows into it by adding a file; where something COULD retire
+  the skip, the reason names it. A drive's golden-face copy cases are the
+  other kind: they key on the worked face's presence, and retire themselves
+  when the face file appears.
+- **`accounts`' `instance` fixture homes every tenant** as a worker that is up
+  would (`apps/accounts/tests/conftest.py::_home_every_tenant`): the tenants
+  that exist get a realm on the fake, and one created later is homed as it
+  is asked for. A test whose subject IS a pending home sets it back to
+  `pending` itself; a module whose subject is the realm port declares
+  `HOMES_ITS_OWN_REALMS = True` and gets no homing at all.
+
 ## 13 · Typing, and the gate from the builder's seat
 
 `mypy --strict` with django-stubs is a blocking gate leg. Annotate every
@@ -458,6 +557,7 @@ a comment, or it does not land.
 
 ```bash
 ./scripts/check.sh --loop          # per rung. Never piped. Exit 0 clean · 1 violations · 2 enforcement broken.
+#   --loop runs on a verifier box (rung-execution §3; a local one refuses without --here "<rung-id>: <reason>"); the hook runs --fast.
 ```
 
 `scripts/check.sh` is the gate and it is on main; the legs it runs, and what
@@ -526,19 +626,49 @@ If you find yourself typing one, stop.
 ## 16 · Recipes — a family verb adopted on a noun
 
 Each noun-verb family verb is one adoption on the noun's own app, in one
-commit, over a seam `core` already ships. The worked example of each is on
+commit, over its road (each recipe opens with `roads <job>`). The worked example of each is on
 `Widget` in `apps/example`, **fenced `# golden: <verb> begin` / `# golden:
 <verb> end` around every block a product copies**, and
-`scripts/tests/test_golden_copy.sh --verb <verb>` copies exactly those blocks
+`quality/tests/test_golden_copy.py`'s verb arm copies exactly those blocks
 into a throwaway app with the one rename `Widget`→`Gadget` and proves they
 still build, check and pass. A block you copied that needed a hand edit beyond
 that rename is a finding against the example, not a step.
+
+**A fence holds what a product copies; a word can live outside every fence.**
+The worked second surface (`apps/example_portal`, fenced `# golden: portal`)
+is the instance: a product renaming the portal noun copies the app and the
+customer folder pair whole, and finds the word everywhere else by grep —
+
+```bash
+git grep -l -i portal -- . ':!apps/example_portal' ':!frontend/src/screens/customer' ':!frontend/src/app/(customer)' ':!docs' ':!*.md'
+```
+
+— which is the list, re-derived on every tree. Among what it prints, the
+files measured as needing the rename's edit when the portal landed — each a
+declaration, a pinned population or a pinned table, not a passing mention:
+`apps/conftest.py`, `apps/core/api/frozen_families.py`, `quality/budgets.yaml`,
+`quality/partition.yaml`, `quality/rules.yaml`, `frontend/src/api/client.ts`,
+`frontend/src/copy/lexicon.ts`, `frontend/src/kit/routes.test.ts`. The
+rest of what it prints is mixed, and each kind is read differently: platform
+tests and quality fixtures that drive the worked surface; road `example=`
+strings pointing into the portal's own tests (`apps/core/surfaces.py`); the
+published document and the generated client (`frontend/openapi.json`,
+`frontend/src/api/generated/`), which regenerate rather than edit; the
+portal's fenced blocks in shared files (`frontend/src/kit/routes.ts`,
+`frontend/src/copy/customer.ts`), which the copy carries; comments and
+examples that use the word as a sample key (`deploy/`, `quality/gate.py`);
+docstrings that cite the worked portal as the instance of a mechanism
+(`apps/core/authz.py::_attach_default_roles`,
+`config/settings/discovery.py::switched_off`), which a rename edits as
+prose; and
+a vendored bundle that merely contains the word (`vendor/`), which nobody
+edits.
 
 **Four lines every recipe below shares** (and one about the fences themselves):
 
 - **A fragment two or more verbs share is fenced ONCE, with the verb list** —
   `# golden: version move begin` … `# golden: version move end`: the drive
-  (`scripts/tests/test_golden_copy.sh`) reads a fence as a begin or an end for
+  (`quality/tests/test_golden_copy.py`) reads a fence as a begin or an end for
   every verb it names, so each verb's copy takes the block when ITS verb is in
   the list. Use it for a block two or more verbs share (the noun's imports, its
   class line, its detail route, a service body several copies need); a block
@@ -563,25 +693,28 @@ that rename is a finding against the example, not a step.
   which version it has now" — and the key a machine branches on rides
   `wire_extra`, never the sentence (`apps/core/tests/test_refusal_sentences.py`
   reads the whole registry).
-- **A new TEMPLATE refusal code is typed into `PRE_RUNG_CODE_STATUS`**
-  (`apps/core/tests/test_refusal_status.py`) with its status, in the change
-  that registers it; a PRODUCT's code registers in its own app with `status=`
-  and needs no core edit (the pin partitions template apps by
-  `quality/partition.yaml`).
+- **Every refusal code declares `status=` at its own `register_refusal` site,
+  and nothing else is typed** — template and product alike (ADR core-23). There
+  is no code→number table to append to: `CODE_STATUS` is derived from the
+  registry, and `apps/core/tests/test_refusal_status.py::test_the_template_publishes_at_least_its_floor`
+  holds the template's published codes above `TEMPLATE_PUBLISHED_FLOOR` (the
+  template's apps read from `quality/partition.yaml`), so a code that drops
+  out of `x-refusal-codes` reds and a new one is admitted by its own
+  declaration. The floor only falls by a human reading the count it prints.
 - **`allowed_acts` lives on the two viewer doors only** — REST and MCP, which
   rule 17 keeps equal. It is a fact about (row, viewer) and an event has no
-  viewer: every payload is built by `core.schemas.event_payload(out)` (the
-  `Out` minus `PER_VIEWER_FIELDS` at any depth — a nested `Out`'s acts too),
-  and `events.services.emit` refuses a payload carrying one at any depth. A noun names its own example with
+  viewer: `roads event_payload` drops it at any depth, and `emit` refuses a
+  payload carrying one. A noun names its own example with
   `allowed_acts: list[str] = acts_field("update", "archive")`; an act is offered
   only where its `<noun>-<verb>` door is mounted. A face re-reads the row after
   a socket frame to learn what it may press now.
 
 ### Adopt archive in one commit
 
-**An archivable noun carries its whole road** (house rule 74 reads it off
-`core.verbs.ROADS`); **append-only and archivable are disjoint** (house rule 75,
-and the mixin refuses the class at definition). In the noun's app, one commit:
+`roads archive` (`apps.core.verbs.archive_row`).
+**An archivable noun carries its whole road** (house rule 74, `roads
+family_doors`); **append-only and archivable are disjoint** (house rule 75).
+In the noun's app, one commit:
 
 1. **The model** — `class Widget(OrgScopedModel, Archivable)`: the mixin AFTER
    the scoped base (the reverse order is a `TypeError`); its migration — two
@@ -630,9 +763,9 @@ and the mixin refuses the class at definition). In the noun's app, one commit:
 
 ### Adopt version in one commit
 
+`roads version_row` (`apps.core.concurrency.require_version`).
 **A versioned row's writes move `updated_at`** (house rule 76) — the version
-IS that stamp, in integer microseconds (`core.concurrency.version_of`), with no
-column. Opt-in per noun; the noun that adopts it makes `version` REQUIRED on
+IS that stamp, no column. Opt-in; the noun that adopts it makes `version` REQUIRED on
 every write that edits it (house rule 74 reads the update body). One commit:
 
 1. **The model** — add `Versioned` (`core.models`) to the bases, after the
@@ -644,8 +777,7 @@ every write that edits it (house rule 74 reads the update body). One commit:
    `invalid_body` naming it.
 3. **The service** — lock, compare, write, and name the stamp:
    `locked = …select_for_update().get(pk=widget.pk)`,
-   `core.concurrency.require_version(locked, version)` (a mismatch is
-   `stale_version`, 409, `current_version` beside the four keys), then
+   `require_version(locked, version)` (409, `current_version` on the wire), then
    `locked.save(update_fields=[…, "updated_at"])`. A queryset `.update()` on
    the noun passes `updated_at=now()`.
 4. **The doors** — the update route and its MCP twin take the same `Patch`,
@@ -655,9 +787,9 @@ every write that edits it (house rule 74 reads the update body). One commit:
 
 ### Adopt move in one commit
 
-**A movable noun carries its move road** (house rule 74: `<noun>-move`, its
-twin, `<kind>.move` derived) and **its ledger stays where it was written** —
-`core.verbs.rehome` carries every MUTABLE row that derives its organization
+`roads move` (`apps.core.verbs.rehome`). **A movable noun carries its move
+road** (house rule 74) and **its ledger stays where it was written** —
+`rehome` carries every MUTABLE row that derives its organization
 from the noun (`derive_org_from`) and refuses `move_blocked` over an
 APPEND-ONLY one. One commit:
 
@@ -687,14 +819,12 @@ APPEND-ONLY one. One commit:
 
 ### Adopt bulk in one commit
 
-**A noun declaring `bulk_verbs` carries `<noun>-bulk`** and the single road of
-every verb it lists (house rule 74). `core.bulk.run_bulk` loops the noun's OWN
-per-item services inside ONE transaction — each item a savepoint with its own
-audit row — and answers 200 with one result per id: `done`, `unchanged` (the
-road's `settled`, so a retry converges) or `refused` (the single call's body).
-A refusal rolls back its item alone; an unhandled exception rolls back the
-batch (a 500 the same `Idempotency-Key` retries). One contract on both doors.
-One commit:
+`roads bulk` (`apps.core.bulk.run_bulk`). **A noun declaring `bulk_verbs`
+carries `<noun>-bulk`** and the single road of every verb it lists (house rule
+74). The items run inside ONE transaction, each a savepoint with its own audit
+row: `done`, `unchanged` (so a retry converges) or `refused` (the single
+call's body); an unhandled exception rolls back the batch (a 500 the same
+`Idempotency-Key` retries). One contract on both doors. One commit:
 
 1. **The model** — `bulk_verbs: ClassVar[tuple[str, ...]] = ("archive",
    "restore", "move")`.
@@ -710,11 +840,9 @@ One commit:
 
 ### Adopt history in one commit
 
+`roads history` (`apps.core.selectors.list_history`) — no table, no migration.
 **A noun declaring any family marker beyond archive carries
-`<noun>_history-list`** (house rule 74). The card is a read over the audit
-trail `@service` already writes — no table, no migration
-(`core.selectors.list_history`, served by `auditentry_object_history`). One
-commit:
+`<noun>_history-list`** (house rule 74). One commit:
 
 1. **The door** — `GET /widgets/{id}/history/` (`widget_history-list`),
    `@paginate(CursorPagination)` over
@@ -727,10 +855,9 @@ commit:
 
 ### Adopt duplicate in one commit
 
-**A duplicable noun carries `<noun>-duplicate`** (house rule 74) and **every
-concrete editable field is on one side** of its declaration (rule 74's
-duplicate clause, a closed question over `_meta.concrete_fields`). A duplicate
-IS a create. One commit:
+`roads duplicate` (`apps.core.verbs.duplicate_row`). **A duplicable noun
+carries `<noun>-duplicate`** (house rule 74) and **every concrete editable
+field is on one side** of its declaration. A duplicate IS a create. One commit:
 
 1. **The model** — add `Duplicable` after the scoped base and declare
    `duplicate = Duplicate(copies=("notes", "policy"), resets=("name", "owner",
@@ -768,10 +895,10 @@ IS a create. One commit:
 
 ### Adopt merge in one commit
 
-**A mergeable noun is archivable first** (the mixin refuses the class
-otherwise) and carries `<noun>-merge`, its dry run `<noun>_merge-detail` and
+`roads merge` (`apps.core.verbs.merge_rows`). **A mergeable noun is archivable
+first** and carries `<noun>-merge`, its dry run `<noun>_merge-detail` and
 `<noun>.merge` (house rule 74); **every foreign key into it is re-pointed or
-kept** (rule 74's FK census). The loser survives as a tombstone: archived, with
+kept**. The loser survives as a tombstone: archived, with
 `merged_into` naming the survivor; its reads answer read-only, its writes
 refuse `merged`. One commit:
 
@@ -819,11 +946,11 @@ Every `"*"` owner ships
 
 ### Adopt import in one commit
 
-**An imported noun has a create road** (rule 74: every `IMPORTERS` key has a
-`<noun>-create` route) — an import applies the noun's OWN services, row by
+`roads import_rows` (`apps.core.verbs.Importer`). **An imported noun has a
+create road** (rule 74) — an import applies the noun's OWN services, row by
 row. In the noun's app, one commit: an `importers.py` exporting
-`IMPORTERS = {"widget": Importer(row=WidgetRow, natural_key=…, apply=…)}`
-(`core.verbs.Importer`): `row` a `StrictIn` whose fields are the file's header,
+`IMPORTERS = {"widget": Importer(row=WidgetRow, natural_key=…, apply=…)}`:
+`row` a `StrictIn` whose fields are the file's header,
 `natural_key(*, tenant, actor, row)` finding the existing row read-only AT
 `actor.org` — the run's hat, where the apply will look, so the preview's
 `update` is a promise the apply keeps — and `apply(*, tenant, actor, row)`
@@ -833,9 +960,9 @@ registers it. The tests drive one file through the import door.
 
 ### Adopt attach in one commit
 
-**A noun takes notes, files and tags by declaring
-`attachments = ("notes", "files", "tags")`**; the rows live in the three owner
-apps, found by `(subject_kind, subject_id)`, and a noun listing `tags` answers
+`roads attach` (`apps.core.verbs.resolve_subject`). **A noun takes notes, files
+and tags by declaring `attachments = ("notes", "files", "tags")`**; the rows
+live in the three owner apps, and a noun listing `tags` answers
 `tags` on its detail (rule 74). **The landing law** (measured once across every
 owner by `apps/core/tests/test_attach_conformance.py`): an attachment lands at
 its SUBJECT's organization; a TENANT-WIDE subject has none, so it lands at the

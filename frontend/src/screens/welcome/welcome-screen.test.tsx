@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import axe from "axe-core";
 import { describe, expect, it } from "vitest";
 
-import { REQUIRED_STORY_EXPORTS } from "@/screens/state";
+import { REQUIRED_STORY_EXPORTS } from "@pilecap/ui/state";
 import { Empty, Error as Refused, Loading, Ready } from "@/screens/welcome/welcome-screen.stories";
 
 const STORIES = { Loading, Empty, Error: Refused, Ready } as const;

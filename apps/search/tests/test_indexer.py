@@ -188,10 +188,10 @@ def test_the_document_carries_the_ROW_and_not_the_payload(
     it says now, because a payload is a snapshot of a moment and an index is a
     claim about the present.
     """
-    widget = create_widget(tenant=world.tenant, actor=world.owner_actor, name="Before")
+    widget = create_widget(tenant=world.tenant, actor=world.owner, name="Before")
     stale = widget_payload(widget)
     update_widget(
-        tenant=world.tenant, actor=world.owner_actor, widget=widget, name="After", notes="fresh"
+        tenant=world.tenant, actor=world.owner, widget=widget, name="After", notes="fresh"
     )
 
     body = envelope_for(tenant=world.tenant, name=WIDGET_UPDATED, payload=stale)
@@ -217,7 +217,7 @@ def test_the_same_event_twice_leaves_one_document_with_current_state(
     Idempotency here is a property of the shape rather than a check somebody
     remembered to add.
     """
-    widget = create_widget(tenant=world.tenant, actor=world.owner_actor, name="Twice")
+    widget = create_widget(tenant=world.tenant, actor=world.owner, name="Twice")
     body = envelope_for(tenant=world.tenant, name=WIDGET_CREATED, payload=widget_payload(widget))
 
     assert index_event(tenant_id=world.tenant.pk, event=body) is True
@@ -239,9 +239,9 @@ def test_an_old_event_replayed_after_a_newer_write_converges_forward(
     cannot: it re-reads, so the *stale* event still produces the *current*
     document.
     """
-    widget = create_widget(tenant=world.tenant, actor=world.owner_actor, name="v1")
+    widget = create_widget(tenant=world.tenant, actor=world.owner, name="v1")
     old = envelope_for(tenant=world.tenant, name=WIDGET_CREATED, payload=widget_payload(widget))
-    update_widget(tenant=world.tenant, actor=world.owner_actor, widget=widget, name="v2")
+    update_widget(tenant=world.tenant, actor=world.owner, widget=widget, name="v2")
     new = envelope_for(
         tenant=world.tenant,
         name=WIDGET_UPDATED,
@@ -261,9 +261,9 @@ def test_a_deleted_row_takes_its_document_with_it(
     world: World, declared_widgets: Searchable, capturing: CapturingEngine
 ) -> None:
     """The row is gone, so the re-read finds nothing, so the document goes."""
-    widget = create_widget(tenant=world.tenant, actor=world.owner_actor, name="Doomed")
+    widget = create_widget(tenant=world.tenant, actor=world.owner, name="Doomed")
     payload = widget_payload(widget)
-    delete_widget(tenant=world.tenant, actor=world.owner_actor, widget=widget)
+    delete_widget(tenant=world.tenant, actor=world.owner, widget=widget)
 
     body = envelope_for(tenant=world.tenant, name=WIDGET_DELETED, payload=payload)
     assert index_event(tenant_id=world.tenant.pk, event=body) is True
@@ -298,15 +298,13 @@ def test_an_archived_row_takes_its_document_with_it_too(
     )
     monkeypatch.setattr(registry, "declarations", lambda: (kind,))
 
-    recipient = create_recipient(
-        tenant=world.tenant, actor=world.owner_actor, email="closed@acme.com"
-    )
+    recipient = create_recipient(tenant=world.tenant, actor=world.owner, email="closed@acme.com")
     body = envelope_for(tenant=world.tenant, name=MESSAGE_SENT, payload={"id": str(recipient.pk)})
 
     assert index_event(tenant_id=world.tenant.pk, event=body) is True
     assert [document["email"] for _label, document in capturing.upserted] == ["closed@acme.com"]
 
-    archive_recipient(tenant=world.tenant, actor=world.owner_actor, recipient=recipient)
+    archive_recipient(tenant=world.tenant, actor=world.owner, recipient=recipient)
     assert index_event(tenant_id=world.tenant.pk, event=body) is True
     assert capturing.deleted == [("contacts", str(recipient.pk))]
 
@@ -320,7 +318,7 @@ def test_a_row_in_another_tenant_is_not_reachable_through_the_tap(
     a document; it produces a delete, which is the fail-closed answer — the same
     posture `for_tenant(None)` has one level out.
     """
-    widget = create_widget(tenant=world.tenant, actor=world.owner_actor, name="Ours")
+    widget = create_widget(tenant=world.tenant, actor=world.owner, name="Ours")
     body = envelope_for(tenant=world.tenant, name=WIDGET_UPDATED, payload=widget_payload(widget))
 
     assert index_event(tenant_id=other_tenant.pk, event=body) is True
@@ -349,7 +347,7 @@ def test_the_first_document_of_a_new_kind_materializes_its_index_first(
     engine = CapturingEngine(index_exists=False)
     monkeypatch.setattr(engine_module, "engine", lambda: engine)
 
-    widget = create_widget(tenant=world.tenant, actor=world.owner_actor, name="First ever")
+    widget = create_widget(tenant=world.tenant, actor=world.owner, name="First ever")
     body = envelope_for(tenant=world.tenant, name=WIDGET_CREATED, payload=widget_payload(widget))
 
     assert index_event(tenant_id=world.tenant.pk, event=body) is True
@@ -366,7 +364,7 @@ def test_the_tap_never_rebuilds_a_kind_whose_digest_has_moved(
     reconcile's job: a tap that rebuilt would re-stream a whole table on the
     first row anybody touched after a deploy.
     """
-    widget = create_widget(tenant=world.tenant, actor=world.owner_actor, name="Ordinary")
+    widget = create_widget(tenant=world.tenant, actor=world.owner, name="Ordinary")
     body = envelope_for(tenant=world.tenant, name=WIDGET_UPDATED, payload=widget_payload(widget))
 
     assert index_event(tenant_id=world.tenant.pk, event=body) is True
@@ -405,18 +403,18 @@ def test_an_organization_re_parent_changes_zero_documents(
     resolved from the actor's hat in Postgres per request, so the first query
     after the move already filters against the new subtree.
     """
-    widget = create_widget(tenant=world.tenant, actor=world.region_actor, name="Under region")
+    widget = create_widget(tenant=world.tenant, actor=world.admin_at_a, name="Under region")
     before = document_for(WIDGETS, widget)
-    assert world.region.path != world.branch.path
+    assert world.a.path != world.a1.path
 
     apply_organization_move(
         tenant=world.tenant,
-        organization=world.region,
-        new_parent=world.sibling,
-        actor=world.owner_actor,
+        organization=world.a,
+        new_parent=world.b,
+        actor=world.owner,
     )
-    moved = Organization.objects.get(pk=world.region.pk)
-    assert moved.parent_id == world.sibling.pk, "the fixture has to have actually moved"
+    moved = Organization.objects.get(pk=world.a.pk)
+    assert moved.parent_id == world.b.pk, "the fixture has to have actually moved"
 
     after = document_for(WIDGETS, Widget.objects.get(pk=widget.pk))
     assert after == before
@@ -432,17 +430,17 @@ def test_a_row_level_org_reassignment_moves_the_document(
     itself, which emits the row's own refresh event and converges through the
     ordinary path. No special case, no second mechanism.
     """
-    widget = create_widget(tenant=world.tenant, actor=world.owner_actor, name="Handed over")
+    widget = create_widget(tenant=world.tenant, actor=world.owner, name="Handed over")
     payload = widget_payload(widget)
 
-    Widget.objects.filter(pk=widget.pk).update(organization=world.region)
+    Widget.objects.filter(pk=widget.pk).update(organization=world.a)
 
     body = envelope_for(tenant=world.tenant, name=WIDGET_UPDATED, payload=payload)
     assert index_event(tenant_id=world.tenant.pk, event=body) is True
 
     (_label, document) = capturing.upserted[-1]
-    assert document["org_id"] == str(world.region.pk)
-    assert payload["organization_id"] != str(world.region.pk), "the payload still says the old one"
+    assert document["org_id"] == str(world.a.pk)
+    assert payload["organization_id"] != str(world.a.pk), "the payload still says the old one"
 
 
 # --- criterion 6: a failing engine raises, so Temporal can retry ---------------
@@ -466,7 +464,7 @@ def test_an_engine_that_did_not_confirm_RAISES_rather_than_reporting_success(
 
     monkeypatch.setattr(engine_module, "engine", lambda: Refusing())
 
-    widget = create_widget(tenant=world.tenant, actor=world.owner_actor, name="Unlucky")
+    widget = create_widget(tenant=world.tenant, actor=world.owner, name="Unlucky")
     body = envelope_for(tenant=world.tenant, name=WIDGET_CREATED, payload=widget_payload(widget))
 
     with pytest.raises(EngineUnavailable):
@@ -518,7 +516,7 @@ async def test_an_emitted_event_puts_a_real_document_in_a_real_index(
     queue = f"djb-search-{live_label}"
 
     def make() -> tuple[Widget, dict[str, Any]]:
-        widget = create_widget(tenant=world.tenant, actor=world.owner_actor, name="Findable")
+        widget = create_widget(tenant=world.tenant, actor=world.owner, name="Findable")
         event = event_services.record_event(
             tenant=world.tenant,
             name=WIDGET_CREATED,
@@ -529,7 +527,7 @@ async def test_an_emitted_event_puts_a_real_document_in_a_real_index(
 
     def remove(widget: Widget) -> dict[str, Any]:
         payload = widget_payload(widget)
-        delete_widget(tenant=world.tenant, actor=world.owner_actor, widget=widget)
+        delete_widget(tenant=world.tenant, actor=world.owner, widget=widget)
         event = event_services.record_event(
             tenant=world.tenant,
             name=WIDGET_DELETED,
@@ -593,7 +591,7 @@ async def test_an_emitted_event_puts_a_real_document_in_a_real_index(
         ):
             try:
                 live.drop_index(uid=uid)
-            except Exception:  # noqa: BLE001 - a cleanup that raises hides the real failure
+            except Exception:  # noqa: BLE001, S110 — a cleanup that raises hides the real failure
                 pass
 
 
@@ -648,7 +646,7 @@ async def test_a_failing_index_is_retried_and_converges_rather_than_being_lost(
     queue = f"djb-search-retry-{live_label}"
 
     def make() -> tuple[Widget, str]:
-        widget = create_widget(tenant=world.tenant, actor=world.owner_actor, name="Persistent")
+        widget = create_widget(tenant=world.tenant, actor=world.owner, name="Persistent")
         event = event_services.record_event(
             tenant=world.tenant,
             name=WIDGET_CREATED,
@@ -694,7 +692,7 @@ async def test_a_failing_index_is_retried_and_converges_rather_than_being_lost(
         ):
             try:
                 live.drop_index(uid=uid)
-            except Exception:  # noqa: BLE001 - a cleanup that raises hides the real failure
+            except Exception:  # noqa: BLE001, S110 — a cleanup that raises hides the real failure
                 pass
 
 

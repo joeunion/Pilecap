@@ -1,0 +1,84 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "imports", "text": ""}
+from apps.example.models import WidgetEntry
+from apps.example.schemas import WidgetEntryIn, WidgetEntryOut
+from apps.example.selectors import list_widget_entries
+from apps.example.services import record_widget_entry
+
+# golden-anchor: {"nth": 0, "scope": [], "side": "after", "text": "return Status(201, created)"}
+@road(
+    "widget_entries_list",
+    example="apps/example/tests/test_api.py::test_entries_list_query_count_does_not_grow_with_rows",
+)
+def widget_entries_list(
+    *, tenant: Tenant, actor: Actor, widget_id: UUID | None = None
+) -> QuerySet[WidgetEntry]:
+    """The ledger lines the acting hat may see, newest first, optionally one widget's."""
+    # authz: `list_widget_entries` asks `widget_entry.read` at the hat.
+    entries: QuerySet[WidgetEntry] = list_widget_entries(
+        tenant=tenant, org=actor.org, widget_id=widget_id, actor=actor
+    )
+    return entries
+
+
+@router.get("/entries/", response=list[WidgetEntryOut], url_name="widget_entries-list")
+@paginate(CursorPagination)
+def list_widget_entries_route(
+    request: TenantRequest, widget_id: UUID | None = None
+) -> QuerySet[WidgetEntry]:
+    """List ledger entries
+
+    List ledger entries, newest first; without the read, `403 forbidden`: ask an administrator.
+    """
+    actor, tenant = acting(request)
+    return widget_entries_list(tenant=tenant, actor=actor, widget_id=widget_id)
+
+
+@road(
+    "widget_entry_record",
+    example="apps/example/tests/test_services.py::test_the_landing_gate_refuses_a_row_that_disagrees_with_its_widget",
+)
+def widget_entry_record(
+    *,
+    tenant: Tenant,
+    actor: Actor,
+    widget_id: UUID,
+    kind: str = "note",
+    note: str = "",
+    organization_slug: str | None = None,
+) -> WidgetEntryOut:
+    """Append one line to a widget's ledger, at the widget's own organization."""
+    widget = get_widget(tenant=tenant, widget_id=widget_id, org=actor.org, actor=actor)
+    if not may_be_named(actor, widget):
+        raise NotFound()
+    entry = record_widget_entry(
+        tenant=tenant,
+        actor=actor,
+        widget=widget,
+        kind=kind,
+        note=note,
+        organization_slug=organization_slug,
+    )
+    return WidgetEntryOut.from_orm(entry)
+
+
+@router.post("/entries/", response={201: WidgetEntryOut}, url_name="widget_entry-record")
+@also_refuses("archived", "merged")
+def record_widget_entry_route(
+    request: TenantRequest, payload: WidgetEntryIn
+) -> Status[WidgetEntryOut]:
+    """Record a ledger entry
+
+    Append one entry to a widget's ledger.
+    """
+    actor, tenant = acting(request)
+    entry = widget_entry_record(
+        tenant=tenant,
+        actor=actor,
+        widget_id=payload.widget_id,
+        kind=payload.kind,
+        note=payload.note,
+        organization_slug=payload.organization_slug,
+    )
+    return Status(201, entry)
+
+

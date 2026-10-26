@@ -1,16 +1,14 @@
 // golden: face begin
-// patterns: §10, §16
+// patterns: none — draws no face
 // golden: face end
 /**
- * EXAMPLE — the worked Widget face's shared parts: the card (patterns.md §10),
- * the state pill (§16), the fact line and the day. Token-only paint, no new
- * token, no primitive shipped: a product that fills `primitives/` replaces
- * these with its own and the screens above do not move.
+ * EXAMPLE — the worked Widget face's shared parts: the wire's shapes the face
+ * names (read from the generated client, verbatim) and the day a date reads
+ * as. It draws nothing: the card, the pill and the still line are the kit's
+ * (`@pilecap/ui/card`, `@pilecap/ui/pill`, `@pilecap/ui/still-line`).
  */
 
 // golden: face begin
-import type { ReactNode } from "react";
-
 import type { components } from "@/api/generated/schema";
 // golden: face end
 
@@ -37,9 +35,9 @@ export type WidgetBulk = components["schemas"]["WidgetBulkOut"];
 // golden: bulk end
 // golden: attach begin
 /** What attaches to the row, each the owner's own shape: a note, a file, a tag. */
-export type Note = components["schemas"]["NoteOut"];
+export type Note = components["schemas"]["DjbNoteOut"];
 export type StoredFile = components["schemas"]["StoredFileOut"];
-export type Tag = components["schemas"]["TagOut"];
+export type Tag = components["schemas"]["DjbTagOut"];
 // golden: attach end
 // golden: merge begin
 /** The merge's dry run: what moves to the survivor, per owner, in the owner's words. */
@@ -62,55 +60,16 @@ export function dayOf(iso: string): string {
     return DAY.format(new Date(iso));
 }
 
-/** §16: a state word after a name. Tinted, never filled; one neutral tone. */
-export function Pill({ word }: { readonly word: string }) {
-    return (
-        <span
-            data-pill=""
-            data-tone="neutral"
-            className="widget-pill"
-            style={{
-                fontSize: "var(--type-label)",
-                letterSpacing: "var(--type-label-tracking)",
-                fontWeight: 400,
-                color: "var(--muted)",
-            }}
-        >
-            {word}
-        </span>
-    );
+/** A row that may carry `K` — served once its noun adopts the shape that adds it. */
+type Carrying<K extends string, V> = { readonly id: string } & { readonly [P in K]?: V };
+
+/** When the onboarding run marked the row; null before it has, undefined on a noun without one. */
+export function onboardedOf(row: Carrying<"onboarded_at", string | null>): string | null | undefined {
+    return row.onboarded_at;
 }
 
-/** §10: head (a title of four words or fewer), body, and no foot until a card has acts. */
-export function Card({ title, busy, children }: { readonly title: string; readonly busy?: boolean; readonly children: ReactNode }) {
-    return (
-        <section
-            aria-label={title}
-            aria-busy={busy === true ? "true" : undefined}
-            style={{
-                background: "var(--surface-raised)",
-                border: "1px solid var(--faint)",
-                borderRadius: "var(--radius)",
-                padding: "var(--space-3)",
-            }}
-        >
-            <h2 style={{ fontSize: "var(--type-section)", margin: "0 0 var(--space-2)", color: "var(--ink)" }}>{title}</h2>
-            {children}
-        </section>
-    );
-}
-
-/** A still shape at a line's height, for the `loading` state (§13): never a shimmer. */
-export function StillLine({ tall }: { readonly tall?: boolean }) {
-    return (
-        <div
-            style={{
-                blockSize: tall === true ? "var(--act-min)" : "var(--type-title)",
-                margin: "0 0 var(--space-2)",
-                background: "var(--faint)",
-                borderRadius: "var(--radius)",
-            }}
-        />
-    );
+/** Where the row lives: the node by name when the wire names it, else its slug. */
+export function placeOf(row: Carrying<"organization_name", string | null> & { readonly organization_slug: string }): string {
+    return row.organization_name ?? row.organization_slug;
 }
 // golden: face end

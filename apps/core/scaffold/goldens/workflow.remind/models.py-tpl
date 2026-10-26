@@ -1,0 +1,6 @@
+# golden-anchor: {"nth": 0, "scope": ["Widget"], "side": "before", "text": "due_at = models.DateTimeField("}
+    reminded_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the reminder workflow reminded about this widget's due date.",
+    )

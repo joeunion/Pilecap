@@ -1,7 +1,7 @@
 """Where a DRAWER rule's fixtures live, asserted against the engine, not prose.
 
 THE DEFECT THIS CLOSES was a doc/code contradiction, and it was silent in the
-worst direction. `quality/gate.py::fixture_home` plants a drawer rule's
+worst direction. `quality/engine/world.py::fixture_home` plants a drawer rule's
 fixtures from `LOCAL_CANARY_DIR` and `LOCAL_NEGATIVE_DIR` — the drawer, which
 the divergence census already reserves under `**/local/**`. Three places that
 TEACH the four-places rule (ADR gate-5) named the same two kind directories
@@ -34,6 +34,8 @@ from __future__ import annotations
 import importlib
 from pathlib import Path
 
+from apps.core.tests.tree_census import source_text
+
 ROOT = Path(__file__).resolve().parents[3]
 
 #: Reached through `importlib` for the reason `test_audit_rule_seam.py` states:
@@ -55,6 +57,7 @@ WRONG = RIGHT.replace(f"{DRAWER}/", f"{DRAWER.split('/', 1)[0]}/")
 #: What a product learns the shape from. Not the ledgers (see the docstring).
 TEACHING_FILES = (
     "quality/gate.py",
+    *sorted(p.relative_to(ROOT).as_posix() for p in (ROOT / "quality" / "engine").glob("*.py")),
     "quality/rules.yaml",
     "CHANGELOG.md",
     "docs/product/build-contract.md",
@@ -74,14 +77,15 @@ def test_every_teaching_file_names_the_drawer_as_the_product_fixture_home() -> N
     for rel in TEACHING_FILES:
         path = ROOT / rel
         assert path.is_file(), f"{rel} is not in this tree — the census is reading nothing"
-        text = path.read_text()
+        # walked modules through the tolerant seam; listed files read directly (two censuses)
+        text = source_text(path) if rel.startswith("quality/engine/") else path.read_text()
         if WRONG in text:
             wrong_in.append(rel)
         if RIGHT in text:
             right_in.append(rel)
     assert not wrong_in, (
         f"{wrong_in} spell `{WRONG}` as a product rule's fixture directory. "
-        f"quality/gate.py::fixture_home plants a drawer rule's fixtures from "
+        f"`quality.gate.fixture_home` plants a drawer rule's fixtures from "
         f"`{RIGHT}` — a product that believes the prose plants canaries where the "
         "engine never looks, and a canary that is never planted never fires."
     )

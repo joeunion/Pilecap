@@ -49,9 +49,11 @@ act on beats two they cannot.
 from __future__ import annotations
 
 import math
+import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, cast
+from uuid import uuid4
 
 from django.http import HttpRequest
 from ninja.throttling import AnonRateThrottle as _NinjaAnonRateThrottle
@@ -160,28 +162,113 @@ def rate_limit_headers(request: Any) -> dict[str, str]:
     }
 
 
+#: One atomic check-and-spend in Redis, answering `{admitted, entries, oldest score}`.
+#: Scores travel as strings: a Lua number handed back is truncated to an integer.
+_WINDOW_SCRIPT = """
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[2])
+local entries = redis.call('ZCARD', KEYS[1])
+local admitted = 0
+if entries < tonumber(ARGV[3]) then
+  redis.call('ZADD', KEYS[1], ARGV[1], ARGV[5])
+  redis.call('EXPIRE', KEYS[1], ARGV[4])
+  entries = entries + 1
+  admitted = 1
+end
+local oldest = redis.call('ZRANGE', KEYS[1], 0, 0, 'WITHSCORES')
+return {admitted, entries, oldest[2] or false}
+"""
+
+#: A key of its own, so a deploy over a live cache never reads ninja's list as a set.
+_WINDOW_SUFFIX = ":window"
+
+#: The in-memory cache's check-and-spend: atomic within the one process it is shared by.
+_LOCAL_SPEND = threading.Lock()
+
+
+@dataclass(frozen=True)
+class Spent:
+    """What one check did to its bucket, read inside the check."""
+
+    admitted: bool
+    entries: int
+    oldest: float | None
+    now: float
+
+
+def _redis_client(store: Any) -> Any | None:
+    """The raw client under a django-redis cache, or `None` for any other store."""
+    get_client = getattr(getattr(store, "client", None), "get_client", None)
+    return get_client(write=True) if callable(get_client) else None
+
+
 class Recording(SimpleRateThrottle):
-    """Measures its own bucket as it checks it, and leaves the number behind.
+    """Spends from its bucket atomically, and leaves the number it measured behind.
 
-    The measurement is taken INSIDE the check and from local values, because
-    ninja builds one throttle object per operation and reuses it for every
-    request: `self.history` and `self.now` belong to whichever request last
-    touched them, so reading them afterwards from the middleware would report
-    somebody else's numbers under load. Recording on the REQUEST is what makes
-    the answer this request's.
+    One throttle object serves every request thread of its operation, so the
+    check is one atomic step on the store and nothing it read lives on `self`:
+    the measurement goes on the request, ninja's `wait()` reads a thread-local.
+    Only an `HttpRequest` is recorded on — `/mcp` hands a `ScopeSubject` and
+    speaks the refusal grammar instead (ADR core-19).
 
-    Only an `HttpRequest` is recorded on. The machine door hands these same
-    throttle objects a frozen `ScopeSubject` (there is no request at `/mcp`),
-    and it has no response-header surface anyway — ADR core-19's recorded
-    rejection: a tool speaks the refusal grammar.
+    Why-not ninja's check: read, decide, write back in three steps — 399 admitted of 50.
     """
 
-    def allow_request(self, request: HttpRequest) -> bool:
-        allowed = super().allow_request(request)
-        self._record_this_bucket(request)
-        return allowed
+    def __init__(self, rate: str | None = None) -> None:
+        super().__init__(rate)
+        self._last = threading.local()
 
-    def _record_this_bucket(self, subject: Any) -> None:
+    def allow_request(self, request: HttpRequest) -> bool:
+        key = self.get_cache_key(request)
+        limit, duration = self.num_requests, self.duration
+        if key is None or limit is None or duration is None:
+            self._last.spent = None
+            return True
+        spent = self._spend(key, limit=limit, duration=duration)
+        self._last.spent = spent
+        self._record_this_bucket(request, spent, limit=limit, duration=duration)
+        return spent.admitted
+
+    def wait(self) -> float | None:
+        """ninja's recommended wait, from this thread's last check.
+
+        Read off the thread-local and never `self`: other threads keep checking.
+        """
+        spent: Spent | None = getattr(self._last, "spent", None)
+        if spent is None or self.num_requests is None or self.duration is None:
+            return None
+        left = self.duration if spent.oldest is None else self.duration - (spent.now - spent.oldest)
+        available = self.num_requests - spent.entries + 1
+        return left / available if available > 0 else None
+
+    def _spend(self, key: str, *, limit: int, duration: int) -> Spent:
+        """Check the bucket and spend from it in one step no other check can split."""
+        now = float(type(self).timer())
+        client = _redis_client(self.cache)
+        if client is not None:
+            admitted, entries, oldest = client.register_script(_WINDOW_SCRIPT)(
+                keys=[self.cache.make_key(key + _WINDOW_SUFFIX)],
+                args=[repr(now), repr(now - duration), limit, duration, f"{now!r}:{uuid4().hex}"],
+            )
+            return Spent(
+                admitted=bool(admitted),
+                entries=int(entries),
+                oldest=None if oldest is None else float(oldest),
+                now=now,
+            )
+        with _LOCAL_SPEND:
+            history = [at for at in self.cache.get(key, []) if at > now - duration]
+            admitted = len(history) < limit
+            if admitted:
+                history.insert(0, now)
+                self.cache.set(key, history, duration)
+        return Spent(
+            admitted=admitted,
+            entries=len(history),
+            oldest=history[-1] if history else None,
+            now=now,
+        )
+
+    def _record_this_bucket(self, subject: Any, spent: Spent, *, limit: int, duration: int) -> None:
         """Measure what the check just did, and leave it on the request.
 
         `subject` is typed `Any` and not `HttpRequest` on purpose: the machine
@@ -191,24 +278,15 @@ class Recording(SimpleRateThrottle):
         """
         if not isinstance(subject, HttpRequest):
             return
-        limit = self.num_requests
-        duration = self.duration
-        # `key` is assigned on every call; `None` means this bucket had nothing
-        # to count against and `history`/`now` were never set for this request.
-        if getattr(self, "key", None) is None or limit is None or duration is None:
-            return
-        history = list(self.history)
-        # On success the current request is already in the history; on failure
-        # the history is full and nothing was added. Both give the same answer.
-        remaining = max(limit - len(history), 0)
-        # The window frees a slot when its OLDEST entry ages out — the history
-        # is newest-first, so that is the last one. Rounded UP for the reason
-        # `refusal()` rounds `retry_after` up: a client told to wait zero
-        # seconds comes back immediately and is refused again.
-        reset = duration if not history else duration - (self.now - history[-1])
+        # A slot frees when the OLDEST entry ages out; rounded up, as `refusal()` rounds.
+        reset = duration if spent.oldest is None else duration - (spent.now - spent.oldest)
         record(
             subject,
-            RateLimit(limit=limit, remaining=remaining, reset=max(math.ceil(reset), 0)),
+            RateLimit(
+                limit=limit,
+                remaining=max(limit - spent.entries, 0),
+                reset=max(math.ceil(reset), 0),
+            ),
         )
 
 

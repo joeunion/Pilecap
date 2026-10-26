@@ -1,0 +1,44 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ARegistryTokenTakesNoResource",
+      "Effect": "Allow",
+      "Action": "ecr:GetAuthorizationToken",
+      "Resource": "*"
+    },
+    {
+      "Sid": "ReadTheTwoRepositoriesOnly",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:BatchGetImage",
+        "ecr:DescribeImages"
+      ],
+      "Resource": [
+        "arn:aws:ecr:${REGION}:${ACCOUNT_ID}:repository/${NAMESPACE}/djb-web",
+        "arn:aws:ecr:${REGION}:${ACCOUNT_ID}:repository/${NAMESPACE}/djb-worker",
+        "arn:aws:ecr:${REGION}:${ACCOUNT_ID}:repository/${NAMESPACE}/djb-frontend"
+      ]
+    },
+    {
+      "Sid": "ReachThisDeploymentsBoxesOnly",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:StartSession",
+        "ec2-instance-connect:SendSSHPublicKey"
+      ],
+      "Resource": "arn:aws:ec2:${REGION}:${ACCOUNT_ID}:instance/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Project": "${NAMESPACE}"
+        }
+      }
+    },
+    {
+      "Sid": "TheSshSessionDocument",
+      "Effect": "Allow",
+      "Action": "ssm:StartSession",
+      "Resource": "arn:aws:ssm:${REGION}::document/AWS-StartSSHSession"
+    }
+  ]
+}

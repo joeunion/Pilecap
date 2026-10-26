@@ -27,6 +27,7 @@ from django.db import models
 
 from apps.core.ids import uuid7
 from apps.core.lifecycle import AppendOnlyViolation, Lifecycle, LifecycleKind
+from apps.core.roads import road
 
 # --- The materialized path -----------------------------------------------------
 #
@@ -131,6 +132,33 @@ def ancestor_paths(path: str) -> tuple[str, ...]:
     return tuple(PATH_SEPARATOR.join(segments[: index + 1]) for index in range(len(segments)))
 
 
+@road("subtree", example="apps/core/selectors.py::_organizations_in")
+def subtree_q(org: Organization | None, *, field: str = "path") -> models.Q:
+    """Everything at or below `org`, as a `Q` over a materialized `path` — down only.
+
+    The one spelling of the org-subtree predicate: an equality on the node's
+    own path OR one indexed `LIKE 'prefix.%'` under it. `field` is the lookup
+    that reaches a path — `"path"` on `Organization` itself,
+    `"organization__path"` across a foreign key — so every model reaches the
+    tree through one predicate instead of its own copy of it.
+
+    **Visibility flows down only** (A5a): the parent and the siblings never
+    match, because the predicate is the node and its descendants and nothing
+    else. `ScopedQuerySet.visible_to` is this predicate on `organization`.
+
+    `subtree_q(None)` is an impossible predicate, never `Q()`: an empty `Q`
+    would widen the read to the whole tenant, which is the failure this
+    exists to prevent — the same fail-closed shape `visible_to(None)` has.
+    Django escapes the LIKE metacharacters in `__startswith`, and paths are
+    base36 and dots anyway.
+    """
+    if org is None:
+        return models.Q(pk__in=[])
+    return models.Q(**{field: org.path}) | models.Q(
+        **{f"{field}__startswith": org.path + PATH_SEPARATOR}
+    )
+
+
 def is_org_scoped(model: type[models.Model]) -> bool:
     """Whether this model carries the `organization` foreign key.
 
@@ -175,6 +203,12 @@ class InheritedDownward:
 # house rule that reads it all say the same word.
 APPEND_ONLY_ATTR = "append_only"
 
+# The class attribute a model sets to say a RULE guards its writes rather than
+# the tenancy — the escalation wall for `Membership`, the tree's own services
+# for `Organization`. The admin reads it (`core.admin.is_guarded`) the way the
+# append-only marker is read: off the member, never off a list somebody keeps.
+WALL_GUARD_ATTR = "wall_guarded"
+
 
 def is_append_only(model: type[models.Model]) -> bool:
     """Whether this model declared `append_only = True`.
@@ -191,6 +225,16 @@ def is_append_only(model: type[models.Model]) -> bool:
     attribute already has, and the scanner reads the registry either way.
     """
     return bool(getattr(model, APPEND_ONLY_ATTR, False))
+
+
+def is_wall_guarded(model: type[models.Model]) -> bool:
+    """Whether this model declared `wall_guarded = True` — a rule guards its writes.
+
+    The member says so on its own class: a product that grows another such
+    model declares the attribute on it, with the reason beside it, and nothing
+    else is edited.
+    """
+    return bool(getattr(model, WALL_GUARD_ATTR, False))
 
 
 def append_only_models() -> list[type[models.Model]]:
@@ -476,7 +520,7 @@ class Tenant(BaseModel):
     # * **Stampede** — none: one instance, one thread, one call chain.
     #
     # **What it does NOT decide.** Whether a tenant-wide read should ask at the
-    # root or at the acting hat is open, and this is right under either answer:
+    # root or at the hat is open, and this is right under either answer:
     # it makes the resolution happen once per request instead of once per call,
     # and says nothing about which node the question is about.
     _root_organization: Organization | None = None
@@ -502,7 +546,7 @@ class Tenant(BaseModel):
 
         The other half of "one resolution": a site that has just resolved an
         organization for its own reasons — `core.middleware.resolve_org` reading
-        the acting hat, which every door does on every request — hands it here
+        the hat, which every door does on every request — hands it here
         rather than letting the request's first tenant-wide read fetch the same
         row again.
 
@@ -523,6 +567,42 @@ class Tenant(BaseModel):
         which is why this is unconditional rather than guarded.
         """
         self._root_organization = None
+
+
+@road("membership_read", example="apps/core/selectors.py::_memberships_in")
+class MembershipQuerySet(models.QuerySet["Membership"]):
+    """`Membership` read through a scope house rule 8 can see: `.for_tenant(t)` or `.of(user)`.
+
+    `Membership` is person × tenant × org × role and inherits `BaseModel`,
+    not `TenantScopedModel` — a base change would move it into every scoped
+    population at once (rules 24/37/38, the recency index, every fixture) and
+    cost a migration — so it carries this queryset instead, and the two reads
+    a membership has are named:
+
+    * **`for_tenant(tenant)`** — the memberships of one tenant. It fails
+      closed exactly as `ScopedQuerySet.for_tenant` does: `for_tenant(None)`
+      is `none()`, an unresolved tenant reads an empty table, never the table.
+    * **`of(user)`** — the memberships one PERSON holds, across tenants: the
+      per-person read ("a default is per person"), named so it can no longer be
+      mistaken for a tenant read somebody forgot to scope. `of(None)` is
+      `none()` for the same reason.
+
+    The two compose: `Membership.objects.for_tenant(t).of(user)` is one
+    person's rows in one tenant.
+    """
+
+    def for_tenant(self, tenant: Tenant | None) -> MembershipQuerySet:
+        """The memberships of `tenant`; nothing at all when the tenant is unresolved."""
+        if tenant is None:
+            return self.none()
+        return self.filter(tenant=tenant)
+
+    def of(self, user: Any) -> MembershipQuerySet:
+        """The memberships `user` holds; nothing at all when there is no user."""
+        pk = getattr(user, "pk", None)
+        if pk is None:
+            return self.none()
+        return self.filter(user_id=pk)
 
 
 class Membership(BaseModel):
@@ -558,16 +638,22 @@ class Membership(BaseModel):
     #: a membership somebody still holds.
     lifecycle: ClassVar[Lifecycle] = Lifecycle(kind=LifecycleKind.BOUNDED)
 
+    #: A rule guards this row's writes, not the tenancy: the escalation wall
+    #: (`core.services._refuse_escalation`) sits next to every membership write,
+    #: so an admin form that saved one directly would be a second door around it.
+    wall_guarded: ClassVar[bool] = True
+
     # deprecated v2.1 → removed v3.0, and deliberately still here. These three
     # are no longer this field's `choices` — a role is a key now, and two of the
     # three layers behind it are not enum members at all (ADR core-25). What
     # keeps the class is that `owner`, `admin` and `member` are still the
     # template's own roles by those exact names, every fixture and every test in
-    # the tree spells them through here, and house rule 41 reads "which roles
-    # are privileged" off this body and `is_privileged` below by AST
-    # (`quality/checks.py::_privileged_role_words`). Removing it in the same
-    # release that moved the validation would have been two changes wearing one
-    # migration.
+    # the tree spells them through here, and `is_privileged` below still reads
+    # two of them. Which roles are privileged is no longer read off this body:
+    # house rule 41 asks the role declarations ADR core-25 made the home of
+    # authority (`quality/checks/rule_41_role_promise_clause.py::
+    # _privileged_role_words`). Removing it in the same release that moved the
+    # validation would have been two changes wearing one migration.
     class Role(models.TextChoices):
         OWNER = "owner", "Owner"
         ADMIN = "admin", "Admin"
@@ -605,6 +691,10 @@ class Membership(BaseModel):
     # of the column and never a state a door sets — `set_role` refuses it.
     role = models.CharField(max_length=64, blank=True, default="")
 
+    #: Read through a named scope, never the bare table (house rule 8's seam;
+    #: `MembershipQuerySet` says why this is not the scoped base).
+    objects = MembershipQuerySet.as_manager()
+
     # NO RECENCY INDEX (ADR core-11). The reads ride
     # `membership_unique_user_per_organization` (measure_identity pins them
     # at 1/2/2 statements), and the memberships list door's `-created_at`
@@ -638,9 +728,10 @@ class Membership(BaseModel):
         consults it: what a person may do is a COLLECTION now, and two of the
         three layers behind a role key are not these two words. A predicate
         that wants "how much authority here" asks
-        `core.authz.holds(actor, "<kind>.<verb>", at=...)`; this stays through
-        v2.x because seven un-swept `policies.py` files read it and because
-        house rule 41 reads "which roles are privileged" off this body by AST.
+        `core.authz.holds(actor, "<kind>.<verb>", at=...)`. It stays through
+        v2.x as the compat answer a product's own predicate may still read; no
+        template `policies.py` reads it, and house rule 41 reads the role
+        declarations rather than this body.
         """
         return self.role in {self.Role.OWNER, self.Role.ADMIN}
 
@@ -670,8 +761,9 @@ ARCHIVE_SCOPE_ALL = "all"
 ARCHIVE_SCOPE_ARCHIVED = "archived"
 
 
+@road("scope_read", example="apps/example/selectors.py::list_widgets")
 class ScopedQuerySet(models.QuerySet[_ScopedT]):
-    """A queryset that can only be narrowed to one tenant, never widened.
+    """The scoped read: `for_tenant`, then `.visible_to` on an org row; narrowed, never widened.
 
     `for_tenant(None)` returns nothing. That is the whole fail-closed
     behaviour: an unresolved tenant reads an empty table rather than the
@@ -809,11 +901,7 @@ class ScopedQuerySet(models.QuerySet[_ScopedT]):
                 f"{self.model.__name__} has no `{ORG_FIELD}` — visible_to() is for an "
                 "OrgScopedModel. A tenant-scoped model is read with for_tenant() alone."
             )
-        prefix = org.path
-        return self.filter(
-            models.Q(**{f"{ORG_FIELD}__path": prefix})
-            | models.Q(**{f"{ORG_FIELD}__path__startswith": prefix + PATH_SEPARATOR})
-        )
+        return self.filter(subtree_q(org, field=f"{ORG_FIELD}__path"))
 
     def governing(self, org: Organization | None) -> ScopedQuerySet[_ScopedT]:
         """The rows on this org's **ancestor chain**, nearest first. Config only.
@@ -823,7 +911,7 @@ class ScopedQuerySet(models.QuerySet[_ScopedT]):
             )
 
         The read `visible_to` is deliberately not: "which of these rows governs
-        me", answered by walking *up* from the acting organization to the root
+        me", answered by walking *up* from the hat to the root
         and taking the nearest. Three call sites in the product this was lifted
         from ran the identical algorithm — a funnel definition, a document
         template and a quiet-hours window — and each had written it again
@@ -977,6 +1065,11 @@ class Organization(TenantScopedModel):
     #: PROTECT, and `Membership.organization` is too, so a node is removable
     #: only once nothing anywhere points at it — and nothing in this template
     #: removes one. The tree is the tenant's shape, and a shape does not expire.
+    #: A rule guards this row's writes: `path` and `parent` are the tree's own
+    #: services' (house rule 24 refuses them anywhere else), so an admin form
+    #: that saved a node directly would rewrite the tree around its one road.
+    wall_guarded: ClassVar[bool] = True
+
     lifecycle: ClassVar[Lifecycle] = Lifecycle(
         kind=LifecycleKind.UNBOUNDED,
         reason=(
@@ -1066,7 +1159,7 @@ class Organization(TenantScopedModel):
             # curve and a scan that never touches another tenant's entries.
             #
             # F1e measured this before landing it, at all six hat shapes in all
-            # three seeded worlds (`quality/perf-realtime-measurement.md` §5):
+            # three seeded worlds (the retired `perf-realtime-measurement.md` §5):
             # no hat in any world got a worse plan, and the wide hat's 1,052
             # discarded rows went to zero. It is not a universal fix and does
             # not pretend to be — at 100% of a tenant the planner still reads
@@ -1580,7 +1673,7 @@ class Duplicable(models.Model):
     history, not the copy's).
 
     A duplicate IS a create: the noun's service asks `<noun>.create` at the
-    acting hat, where the copy lands (ADR core-20), and reach on the source.
+    hat, where the copy lands (ADR core-20), and reach on the source.
     """
 
     duplicable: ClassVar[bool] = True
@@ -1617,7 +1710,7 @@ class Invitation(OrgScopedModel):
 
     **It records where it was sent from** (ADR core-20, the placement law:
     *"comes from where you sent it. Don't elevate
-    out of context"*). `organization` is the LANDING NODE — the acting hat at
+    out of context"*). `organization` is the LANDING NODE — the hat at
     grant time — and it is the node every authority question about this row is
     asked at: whether the sender may invite at all, whether the role they named
     is within their own ceiling there, which pending offer a re-issue supersedes,

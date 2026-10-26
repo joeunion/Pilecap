@@ -9,6 +9,9 @@ to remember: `core.service.service` writes it. What a row answers is fixed
   wearing as a hat, because in a networked tenant "who" alone is ambiguous;
 * **what** — `action`, the service's name, plus the object it returned;
 * **from where** — `door`: rest, mcp, socket, workflow, webhook, admin, shell;
+  and `surface`: which audience's address it came in at (`staff` for every
+  row a product with one face writes, and for every row written before the
+  column existed);
 * **how it went** — `outcome` and, when it failed, the domain `error_code`;
 * **with what** — `input`, redacted to the app's `LOG_KEYS` allow-list;
 * **as part of what** — `request_id`, `session_id`, `correlation_id`,
@@ -60,6 +63,7 @@ from django.db import models
 
 from apps.core.lifecycle import AppendOnlyViolation, Lifecycle, LifecycleKind
 from apps.core.models import ScopedManager, ScopedQuerySet, Tenant, TenantScopedModel
+from apps.core.surfaces import STAFF
 
 
 class AuditImmutable(AppendOnlyViolation):
@@ -154,7 +158,7 @@ class AuditEntry(TenantScopedModel):
             "for as long as anybody can ask, and a trail with a retention window is "
             "a trail whose oldest disputes are unanswerable. Growth is real and is "
             "accepted: the two indexes in `Meta` are what keep a big table's reads "
-            "cheap (`quality/perf-ledgers-measurement.md`, FINDINGs A and B)."
+            "cheap (the retired `perf-ledgers-measurement.md`, FINDINGs A and B)."
         ),
         trigger=(
             "2026-08-24 — archival, when it comes, is a DATED RESIDUAL and never a "
@@ -180,7 +184,7 @@ class AuditEntry(TenantScopedModel):
 
     #: Overridden from `BaseModel` to drop the **single-column** `created_at`
     #: index, and that is a performance fix with a measurement behind it
-    #: (`quality/perf-ledgers-measurement.md`, FINDINGs A and B; cycle P3, rung
+    #: (the retired `perf-ledgers-measurement.md`, FINDINGs A and B; cycle P3, rung
     #: F1b).
     #:
     #: `BaseModel` indexes `created_at` for every model in the product, which is
@@ -263,6 +267,10 @@ class AuditEntry(TenantScopedModel):
 
     # --- From where, and how it went ---------------------------------------
     door = models.CharField(max_length=16, blank=True)
+    # Which surface — the audience's address the call came in at, bound by the
+    # door beside `door` (`apps.core.surfaces`). `staff` by default, so every
+    # row written before surfaces existed reads as what it was: the one face.
+    surface = models.CharField(max_length=16, default=STAFF)
     outcome = models.CharField(max_length=16, choices=Outcome.choices, default=Outcome.OK)
     error_code = models.CharField(max_length=64, blank=True)
     input = models.JSONField(default=dict, blank=True)
@@ -291,7 +299,7 @@ class AuditEntry(TenantScopedModel):
             # rather than by whichever way the planner's estimate fell.
             models.Index(fields=["tenant", "-created_at"], name="auditentry_tenant_created"),
             # The **platform** population's own index (ADR core-8, and FINDING
-            # B of `quality/perf-ledgers-measurement.md`), partial because the
+            # B of the retired `perf-ledgers-measurement.md`), partial because the
             # population is: it indexes the deployment's own rows and no
             # tenant's, so a table that is 98% tenant rows pays for 2% of an
             # index.

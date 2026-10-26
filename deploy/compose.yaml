@@ -101,6 +101,18 @@ x-logging: &default-logging
     max-size: 50m
     max-file: "5"
 
+# THE TWO APP IMAGES, COMPOSED ONCE. `deploy/provision.sh image-ref` composes the
+# identical strings — CI pushes them and `release.sh` resolves them — and `web`
+# and `worker` alias these rather than restating them. Both halves are REQUIRED,
+# never defaulted, and required HERE, once: a guessed registry pulls somebody
+# else's image and succeeds. The worker's line (and the one-off door's) names
+# the same two variables without restating the refusal, because compose
+# interpolates this whole file before it starts anything and the line above
+# has already refused.
+x-image-web: &image-web ${DJB_IMAGE_REGISTRY:?DJB_IMAGE_REGISTRY is required — deploy/provision.sh env-file writes it; it is the repository prefix, '<account>.dkr.ecr.<region>.amazonaws.com/<namespace>' or 'local' on a laptop}/djb-web:${DJB_IMAGE_TAG:?DJB_IMAGE_TAG is required — deploy/provision.sh env-file writes it; provision.sh up reconciles it to this tree}
+x-image-worker: &image-worker ${DJB_IMAGE_REGISTRY}/djb-worker:${DJB_IMAGE_TAG}
+x-image-frontend: &image-frontend ${DJB_IMAGE_REGISTRY}/djb-frontend:${DJB_IMAGE_TAG}
+
 services:
   # --- Postgres, for the laptop proof ONLY ------------------------------------
   # A real environment's database is RDS and this service never starts there.
@@ -181,7 +193,7 @@ services:
   #
   # PINNED TO THE SAME PATCH THE LAPTOP RUNS (`compose.yaml` at the repository
   # root). Two compose files, one engine: a drift between them is a box proving a
-  # version nobody developed against, and `deploy/tests/test_release.sh` reads
+  # version nobody developed against, and `quality/tests/deploy/test_release.py` reads
   # both pins and refuses the drift rather than trusting a reviewer to diff them.
   #
   # DELIBERATELY NOT A `/readyz` DEPENDENCY, for `apps/core/health.py`'s reason:
@@ -340,7 +352,9 @@ services:
       # after this trim, the recovery is one step and env-only: set
       # `TEMPORAL_SQL_MAX_CONNS=6` in `deploy/.env` and RECREATE (not restart —
       # an environment change needs a new container). Minutes, no image, no
-      # code.
+      # code. On db.t4g.micro it is not free: 4 roles x 2 more is 8 slots the
+      # exactly-spent budget in deploy/env.staging.example does not have, so
+      # use it only on an instance class whose max_connections clears them.
       #
       # SHAPES SHOPPED AND REJECTED. Splitting the RDS instance (a purchase;
       # the data says trim first). Temporal dynamicconfig persistence QPS
@@ -398,7 +412,7 @@ services:
       DEFAULT_NAMESPACE_RETENTION: ${TEMPORAL_NAMESPACE_RETENTION:-720h}
       # DYNAMIC_CONFIG_FILE_PATH is deliberately NOT set. The path everybody
       # copies from Temporal's own docker-compose examples
-      # (`config/dynamicconfig/development-sql.yaml`) is not in the auto-setup
+      # (their `dynamicconfig/development-sql.yaml`) is not in the auto-setup
       # image, and pointing at a file that is not there makes the server log
       # "Unable to create dynamic config client" and never answer a health
       # check — an outage that reads as a database problem. The image's default
@@ -533,11 +547,13 @@ services:
       # criterion attributes it or stops and reports; the bound below is what
       # the configuration can promise.
       #
-      # 5 open / 2 idle. Zitadel serves the login and the token endpoints for
-      # one small deployment; its steady demand is a handful of short queries
-      # and its burst is a login storm nobody here has.
-      ZITADEL_DATABASE_POSTGRES_MAXOPENCONNS: ${ZITADEL_DATABASE_MAX_OPEN_CONNS:-5}
-      ZITADEL_DATABASE_POSTGRES_MAXIDLECONNS: ${ZITADEL_DATABASE_MAX_IDLE_CONNS:-2}
+      # 20 open / 5 idle, measured on a fresh box against RDS: at 5/2 the
+      # first sign-in's `POST /ui/login/loginname` hung 36 s and Zitadel logged
+      # `cannot get default org … context canceled`; at 20/5 it answered in
+      # ~2 s. The bound is a ceiling, not a draw — the same box held 2 idle.
+      # The budget it costs is recomputed in deploy/env.staging.example.
+      ZITADEL_DATABASE_POSTGRES_MAXOPENCONNS: ${ZITADEL_DATABASE_MAX_OPEN_CONNS:-20}
+      ZITADEL_DATABASE_POSTGRES_MAXIDLECONNS: ${ZITADEL_DATABASE_MAX_IDLE_CONNS:-5}
       # MAXCONNLIFETIME (30m) and MAXCONNIDLETIME (5m) keep the image's
       # defaults: once the COUNT is bounded the lifetimes are not the problem.
       # ZITADEL_FIRSTINSTANCE_* IS DELIBERATELY ABSENT HERE, and it moved for
@@ -624,7 +640,7 @@ services:
       # is the bug, and the tests pin the direction AND that every key here
       # interpolates a variable the env examples actually carry.
       ZITADEL_DEFAULTINSTANCE_LOGINPOLICY_ALLOWREGISTER: ${ZITADEL_ALLOW_SELF_REGISTRATION:-false}
-      ZITADEL_DEFAULTINSTANCE_LOCKOUTPOLICY_MAXPASSWORDATTEMPTS: ${ZITADEL_MAX_PASSWORD_ATTEMPTS:-100}
+      ZITADEL_DEFAULTINSTANCE_LOCKOUTPOLICY_MAXPASSWORDATTEMPTS: ${ZITADEL_MAX_PASSWORD_ATTEMPTS:-10}
       ZITADEL_DEFAULTINSTANCE_RESTRICTIONS_DISALLOWPUBLICORGREGISTRATION: ${ZITADEL_DISALLOW_PUBLIC_ORG_REGISTRATION:-true}
     volumes:
       # STILL MOUNTED ON THE SERVING CONTAINER, and it is not the writer. The
@@ -682,12 +698,19 @@ services:
       #     they belong with the containers that exit, beside the credential
       #     above. `manage.py zitadel_seed` is what changes an instance that
       #     already exists; these lines only ever make one.
-      ZITADEL_FIRSTINSTANCE_ORG_NAME: ${ZITADEL_ORG_NAME:-Pilecap}
+      #     The organisation and the service account are named after the
+      #     product, exactly as the root `compose.yaml` derives them:
+      #     `PRODUCT_NAME` is the one place the name is written (ADR
+      #     platform-1), and `ZITADEL_ORG_NAME` still wins when a deployment
+      #     needs the organisation to differ from the product's name. There is
+      #     NO fallback name: a deployment with no `PRODUCT_NAME` refuses to
+      #     start rather than be named after the template (principle 4).
+      ZITADEL_FIRSTINSTANCE_ORG_NAME: ${ZITADEL_ORG_NAME:-${PRODUCT_NAME:?PRODUCT_NAME is required — the product's name, written once (ADR platform-1); deploy/provision.sh env-file copies it from the root .env.example. A deployment is never silently named after the template}}
       ZITADEL_FIRSTINSTANCE_ORG_HUMAN_USERNAME: ${ZITADEL_ADMIN_USERNAME:?ZITADEL_ADMIN_USERNAME is required}
       ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORD: ${ZITADEL_ADMIN_PASSWORD:?ZITADEL_ADMIN_PASSWORD is required}
       ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORDCHANGEREQUIRED: false
       ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_USERNAME: ${ZITADEL_MACHINE_USERNAME:-djb-platform}
-      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_NAME: Pilecap platform service account
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_NAME: ${PRODUCT_NAME:?PRODUCT_NAME is required — the product's name, written once (ADR platform-1); deploy/provision.sh env-file copies it from the root .env.example. A deployment is never silently named after the template} platform service account
       ZITADEL_FIRSTINSTANCE_ORG_MACHINE_PAT_EXPIRATIONDATE: ${ZITADEL_MACHINE_PAT_EXPIRES_AT:-2099-01-01T00:00:00Z}
       ZITADEL_FIRSTINSTANCE_PATPATH: /zitadel/bootstrap/machine.pat
     volumes:
@@ -803,8 +826,10 @@ services:
     # guessed registry pulls somebody else's image and succeeds.
     # pin-exception: the tree-hash tag names this build, and `release.sh` resolves it
     # to the registry digest before any pull (ADR deploy-4 (d)).
-    image: ${DJB_IMAGE_REGISTRY:?DJB_IMAGE_REGISTRY is required — deploy/provision.sh env-file writes it; it is the repository prefix, '<account>.dkr.ecr.<region>.amazonaws.com/<namespace>' or 'local' on a laptop}/djb-web:${DJB_IMAGE_TAG:?DJB_IMAGE_TAG is required — deploy/provision.sh env-file writes it; provision.sh up reconciles it to this tree}
+    image: *image-web
     restart: unless-stopped
+    # A weight, never a cap: under CPU contention the worker drains before web serves (capacity.md § 9).
+    cpu_shares: 1024
     logging: *default-logging
     entrypoint: ["/deploy/entrypoint.sh"]
     command: ["uvicorn", "config.asgi:application", "--host", "0.0.0.0", "--port", "8000"]
@@ -816,6 +841,10 @@ services:
       DJB_SECRETS_SOURCE: ${DJB_SECRETS_SOURCE:?DJB_SECRETS_SOURCE is required — aws:<prefix> or file:<path>}
       DJANGO_SETTINGS_MODULE: config.settings.production
       DJB_SERVICE_NAME: web
+      # The peers uvicorn believes X-Forwarded-For from: this stack's own
+      # network, declared on the same value at the foot of this file, so the
+      # client address the throttles and the access log read is the client's.
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS}
     volumes:
       # Read-only: the belt, the entrypoint and the grant emitter are code the
       # container runs and may never rewrite.
@@ -869,8 +898,14 @@ services:
     # Pulled, never built — `web`'s paragraph above, same reason.
     # pin-exception: the tree-hash tag names this build, and `release.sh` resolves it
     # to the registry digest before any pull (ADR deploy-4 (d)).
-    image: ${DJB_IMAGE_REGISTRY:?DJB_IMAGE_REGISTRY is required — deploy/provision.sh env-file writes it; it is the repository prefix, '<account>.dkr.ecr.<region>.amazonaws.com/<namespace>' or 'local' on a laptop}/djb-worker:${DJB_IMAGE_TAG:?DJB_IMAGE_TAG is required — deploy/provision.sh env-file writes it; provision.sh up reconciles it to this tree}
+    image: *image-worker
     restart: unless-stopped
+    # One drainer per core it needs: the pool budget is web + this × worker (ADR config-1);
+    # `provision.sh env-file` writes the count the database class holds (deploy/pool_budget.py).
+    deploy:
+      replicas: ${DJB_WORKER_PROCESSES:-2}
+    # A weight per process, never a cap: the outbox's drainer outranks every other process on its box (capacity.md § 9).
+    cpu_shares: 2048
     logging: *default-logging
     entrypoint: ["/deploy/entrypoint.sh"]
     command: ["python", "-m", "apps.workflows.worker"]
@@ -886,6 +921,37 @@ services:
         condition: service_healthy
       temporal:
         condition: service_healthy
+
+  # --- The face ---------------------------------------------------------------
+  # The Next app, production build, standalone server (the Dockerfile's
+  # `frontend` target). Caddy hands it every path that is not a backend root
+  # (deploy/Caddyfile), so the browser meets one origin and the session cookie
+  # needs no CORS story, exactly as under `next dev`'s proxy.
+  frontend:
+    # Pulled, never built — `web`'s paragraph above, same reason.
+    # pin-exception: the tree-hash tag names this build, and `release.sh` resolves it
+    # to the registry digest before any pull (ADR deploy-4 (d)).
+    image: *image-frontend
+    restart: unless-stopped
+    # A weight, never a cap: below web and worker, which hold the request path and the drain.
+    cpu_shares: 512
+    logging: *default-logging
+    environment:
+      # The server-side surface ask goes straight to `web` with the browser's
+      # Host; the browser's own calls arrive at Caddy and never read this.
+      DJANGO_ORIGIN: http://web:8000
+    depends_on:
+      web:
+        condition: service_healthy
+    healthcheck:
+      # Liveness, like web's /healthz: the server answering at all. Any status
+      # under 500 is a server that is up — the face may draw no page at `/`.
+      test: ["CMD", "node", "-e",
+             "fetch('http://127.0.0.1:3000/').then(r => process.exit(r.status < 500 ? 0 : 1), () => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
 
   # --- The one-off door -------------------------------------------------------
   # NEVER `up`'d. This service exists so that `docker compose run` has a name to
@@ -904,7 +970,7 @@ services:
   # future command anybody types on a box — and a forgotten `-e` silently
   # reserves 20 slots again with nothing anywhere saying so. A service name is
   # ONE seam, and "no one-off runs as web" becomes a closed, greppable census
-  # (`deploy/tests/test_release.sh`, the compose-run census case) instead of a
+  # (`quality/tests/deploy/test_release.py`, the compose-run census case) instead of a
   # hand list somebody has to remember to extend.
   #
   # NO `depends_on`, and that is load-bearing rather than an omission. A one-off
@@ -925,7 +991,10 @@ services:
   oneoff:
     # pin-exception: the tree-hash tag names this build, and `release.sh` resolves it
     # to the registry digest before any pull (ADR deploy-4 (d)).
-    image: ${DJB_IMAGE_REGISTRY:?DJB_IMAGE_REGISTRY is required — deploy/provision.sh env-file writes it; it is the repository prefix, '<account>.dkr.ecr.<region>.amazonaws.com/<namespace>' or 'local' on a laptop}/djb-web:${DJB_IMAGE_TAG:?DJB_IMAGE_TAG is required — deploy/provision.sh env-file writes it; provision.sh up reconciles it to this tree}
+    # Spelled rather than aliased, from the same two variables the anchor above
+    # requires: `apps/core/tests/test_connection_pool.py` reads this block's own
+    # text for the image this door runs.
+    image: ${DJB_IMAGE_REGISTRY}/djb-web:${DJB_IMAGE_TAG}
     restart: "no"
     logging: *default-logging
     entrypoint: ["/deploy/entrypoint.sh"]
@@ -947,6 +1016,8 @@ services:
   caddy:
     image: caddy:2.10.2@sha256:c3d7ee5d2b11f9dc54f947f68a734c84e9c9666c92c88a7f30b9cba5da182adb
     restart: unless-stopped
+    # A weight, never a cap: below web and worker; its share is a TLS proxy's, measured near 2 %.
+    cpu_shares: 512
     logging: *default-logging
     ports:
       # 80 is open for ONE reason: Let's Encrypt HTTP-01 (the ratified choice,
@@ -957,7 +1028,13 @@ services:
       - "443:443"
       - "443:443/udp"
     environment:
-      SITE_ADDRESS: ${SITE_ADDRESS:?SITE_ADDRESS is required — e.g. staging.example.invalid}
+      # The product's site block answers at EVERY surface's name: the staff name
+      # (`SITE_ADDRESS`) and every other name `SURFACE_ADDRESSES` lists, as the
+      # one list `provision.sh surfaces` derives beside it. With no second
+      # surface the list is empty and this is `SITE_ADDRESS` alone — the render
+      # is byte-for-byte the one-name deployment. The key keeps its name so
+      # Caddy's `{$SITE_ADDRESS}` is the one placeholder for the product's names.
+      SITE_ADDRESS: ${SURFACE_SITE_ADDRESSES:-${SITE_ADDRESS:?SITE_ADDRESS is required — e.g. staging.example.invalid}}
       AUTH_ADDRESS: ${AUTH_ADDRESS:?AUTH_ADDRESS is required — e.g. auth.staging.example.invalid}
       O11Y_ADDRESS: ${O11Y_ADDRESS:?O11Y_ADDRESS is required — e.g. o11y.staging.example.invalid}
       # `internal` on a laptop (Caddy's own CA, no ACME, no port 80); an email
@@ -977,12 +1054,13 @@ services:
       - caddy_config:/config
     depends_on:
       - web
+      - frontend
       - zitadel
       - clickstack
 
   # --- The prober: the two alerts that cannot ride the sink -------------------
   # PRODUCTION FURNITURE, NOT AN OVERRIDE. This service was
-  # `deploy/observability/alerts/compose.probe.yaml` for exactly one rung, and
+  # a `compose.probe.yaml` in `deploy/observability/alerts/` for exactly one rung, and
   # that file said so in its own header: "the prober belongs to EVERY environment
   # that wants an outage alert, so the honest end state is that this service folds
   # into deploy/compose.yaml the next time its owner touches it." This is that
@@ -1041,6 +1119,17 @@ services:
     depends_on:
       - otel-collector
       - caddy
+
+# THE STACK'S NETWORK, ON A SUBNET THIS FILE DECLARES. Docker's choice of subnet
+# is a fact nobody could name, so there was no peer range to trust and uvicorn
+# believed no proxy: every request's address was Caddy's (N2345). The value is
+# the env file's, written by `provision.sh env-file` and read twice here — the
+# network and web's FORWARDED_ALLOW_IPS — so the two cannot disagree.
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${FORWARDED_ALLOW_IPS:?FORWARDED_ALLOW_IPS is required — deploy/provision.sh env-file writes it; it is this stack's network, the one peer range uvicorn trusts X-Forwarded-For from}
 
 volumes:
   db_data:

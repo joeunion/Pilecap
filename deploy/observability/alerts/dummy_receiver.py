@@ -114,7 +114,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
-    server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+    server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)  # noqa: S104 — a test double inside its container; the port map is the wall
     print(
         json.dumps({"event": "dummy.receiver.started", "port": PORT, "log": LOG_PATH}),
         flush=True,

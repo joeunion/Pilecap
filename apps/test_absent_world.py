@@ -16,7 +16,7 @@ has to import `apps.conftest`, which imports `apps.accounts` and
 the layer contract refuses by name (`pyproject.toml`, "The fixed layers hold")
 and which no exemption should be written for, because the refusal is correct.
 `apps/test_temporal_guard.py` and `apps/test_gate_liveness.py` are here for the
-same reason: `apps/conftest.py::_app_label` reads a nodeid at this level as
+same reason: `apps/testing/tier.py::_app_label` reads a nodeid at this level as
 belonging to no app, deliberately.
 
 **What is NOT asserted here, and is not an oversight.** The absent-app suite

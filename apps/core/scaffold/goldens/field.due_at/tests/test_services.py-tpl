@@ -1,0 +1,66 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "after", "text": "assert lines[0][\"widget_id\"] == str(widget.pk)"}
+DUE_AT = datetime(2026, 11, 2, 17, 0, tzinfo=UTC)
+LATER_DUE_AT = datetime(2026, 12, 1, 9, 30, tzinfo=UTC)
+DUE_AT_WIRE = "2026-11-02T17:00:00Z"
+
+
+def test_a_widget_is_created_with_its_due_at(tenant: Tenant, owner_actor: Actor) -> None:
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Due", due_at=DUE_AT)
+    widget.refresh_from_db()
+    assert widget.due_at == DUE_AT
+
+
+def test_due_at_is_changed_and_an_omitted_one_is_left_alone(
+    tenant: Tenant, owner_actor: Actor
+) -> None:
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Due", due_at=DUE_AT)
+    update_widget(tenant=tenant, actor=owner_actor, widget=widget, due_at=LATER_DUE_AT)
+    widget.refresh_from_db()
+    assert widget.due_at == LATER_DUE_AT
+
+    update_widget(tenant=tenant, actor=owner_actor, widget=widget, name="Renamed")
+    widget.refresh_from_db()
+    assert widget.due_at == LATER_DUE_AT
+
+
+def test_due_at_is_cleared_only_when_clearing_is_asked_for(
+    tenant: Tenant, owner_actor: Actor
+) -> None:
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Due", due_at=DUE_AT)
+    update_widget(tenant=tenant, actor=owner_actor, widget=widget, due_at=None)
+    widget.refresh_from_db()
+    assert widget.due_at == DUE_AT
+
+    update_widget(tenant=tenant, actor=owner_actor, widget=widget, clear_due_at=True)
+    widget.refresh_from_db()
+    assert widget.due_at is None
+
+
+def test_setting_and_clearing_due_at_at_once_is_refused(tenant: Tenant, owner_actor: Actor) -> None:
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Due", due_at=DUE_AT)
+    with pytest.raises(Invalid) as refused:
+        update_widget(
+            tenant=tenant, actor=owner_actor, widget=widget, due_at=LATER_DUE_AT, clear_due_at=True
+        )
+    assert "due_at" in refused.value.errors
+    widget.refresh_from_db()
+    assert widget.due_at == DUE_AT
+
+
+def test_the_updated_event_carries_due_at(
+    tenant: Tenant, owner_actor: Actor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    published: list[tuple[str, dict[str, Any]]] = []
+
+    def spy(name: str, *, tenant: Tenant, payload: dict[str, Any], actor: Any = None) -> None:
+        published.append((name, payload))
+
+    monkeypatch.setitem(bridge_registry, EMIT, spy)
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Due")
+    update_widget(tenant=tenant, actor=owner_actor, widget=widget, due_at=DUE_AT)
+
+    name, payload = published[-1]
+    assert name == WIDGET_UPDATED
+    assert payload["due_at"] == DUE_AT_WIRE
+
+

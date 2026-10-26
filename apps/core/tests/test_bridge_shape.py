@@ -130,25 +130,9 @@ def test_the_pin_would_catch_a_drifting_registrant() -> None:
 
 @pytest.mark.django_db
 def test_workflow_context_answers_with_three_things(tenant: Any) -> None:
-    """Tenant, user id, **hat** — and the hat is the one prose kept forgetting.
+    """`workflow_context()` answers tenant row, user id and hat — called for real, to pin arity.
 
-    Called for real rather than read off an annotation, so it pins the arity the
-    callers actually unpack:
-
-        tenant, user_id, org = workflow_context()
-
-    A caller written against the 2-tuple the module comment used to describe
-    would raise `ValueError: too many values to unpack` on the first activity
-    that ran. That is the failure this replaces.
-
-    **A principal is bound first, and that is new since P1 W4.** This used to
-    call with nothing bound and assert `(None, None, None)`, which was cheap and
-    needed no database. The registered accessor now *refuses* a run that stamped
-    no tenant rather than answering `None` — a missing tenant that travelled one
-    hop further became `for_tenant(None)`, which is empty rather than refused
-    (an earlier finding) — so calling it unbound no longer measures arity, it measures
-    the guard. Binding one real principal restores the measurement and pins one
-    thing more than before: the first element is the tenant row itself.
+    A principal is bound first: unbound, the accessor refuses, measuring the guard, not the arity.
     """
     from apps.workflows.context import reset_principal, set_principal
 

@@ -81,14 +81,14 @@ DOES NOT COVER — declared:
 
 from __future__ import annotations
 
-import importlib
-import importlib.util
 import re
 from dataclasses import dataclass, replace
 from datetime import date
 from typing import TYPE_CHECKING, Any
 
 from django.db import models
+
+from apps.core.reason_floor import MIN_REASON as MIN_REASON
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Iterator
@@ -137,12 +137,6 @@ class LifecycleKind(models.TextChoices):
 #: so the model that declares it, the readers below and house rule 31 all say
 #: the same word — the same discipline `APPEND_ONLY_ATTR` follows.
 LIFECYCLE_ATTR = "lifecycle"
-
-#: Long enough to force a clause, short enough that a real reason clears it.
-#: The same number and the same reasoning as `quality/gate.py::MIN_REASON` and
-#: `checks.py::_MIN_REACH_REASON`: an escape hatch nobody has to justify is an
-#: off switch, and a one-word `reason=` is that hatch.
-MIN_REASON = 12
 
 #: A dated trigger carries an ISO calendar date somewhere in it. The date is
 #: **when the decision was taken**, in the ADR grammar this repository already
@@ -400,23 +394,33 @@ def _third_party_registry() -> LifecycleRegistry:
     exposes no `register`, and naming the skip is cheaper than a reader
     wondering later whether the primitive declares anything about itself.
     """
-    from django.apps import apps as django_apps
+    from apps.core.discovery import imported
 
     registry = LifecycleRegistry()
-    for config in django_apps.get_app_configs():
-        if not config.name.startswith("apps."):
+    _declare_core_tables(registry)
+    for _, module in imported(LIFECYCLE_ATTR):
+        if module.__name__ == __name__:
             continue
-        module_name = f"{config.name}.{LIFECYCLE_ATTR}"
-        if module_name == __name__:
-            continue
-        if importlib.util.find_spec(module_name) is None:
-            continue
-        module = importlib.import_module(module_name)
         register = getattr(module, "register", None)
         if register is None:
             continue
         register(registry)
     return registry
+
+
+def _declare_core_tables(registry: LifecycleRegistry) -> None:
+    """Declare the third-party tables core owns; this module is the primitive, never discovered."""
+    from django.contrib.admin.models import LogEntry
+
+    registry.declare(
+        LogEntry,
+        Lifecycle(
+            kind=LifecycleKind.UNBOUNDED,
+            reason="the owner retains every admin log (2026-10-08)",
+            trigger="2026-10-08 — a retention period set for admin history, or erasure reaching it",
+        ),
+        source="apps/core/lifecycle.py",
+    )
 
 
 def third_party_lifecycles() -> dict[str, Lifecycle]:

@@ -1,0 +1,562 @@
+from __future__ import annotations
+
+import json
+from typing import Any
+from uuid import uuid4
+
+import pytest
+from django.test import Client
+from django.urls import reverse
+
+from apps.example.models import Widget
+from apps.example.services import (
+    create_widget,
+)
+from pilecap import Actor, AuditEntry
+from pilecap.accounts import User, issue_token
+from pilecap.tenancy import Membership, Tenant, add_membership, root_organization
+from pilecap.testing import (
+    MAX_LIMIT,
+    REQUEST_FIXED_QUERIES,
+    actor_for,
+    system_actor,
+)
+
+
+pytestmark = pytest.mark.django_db
+
+LIST_URL = "/api/v1/widgets/"
+JSON = "application/json"
+
+# The fixed request cost plus the page; measured flat at 5, 10 and 50 rows.
+LIST_QUERY_BUDGET = REQUEST_FIXED_QUERIES + 1
+
+
+def _body(response: Any) -> dict[str, Any]:
+    parsed: dict[str, Any] = json.loads(response.content)
+    return parsed
+
+
+def acting_in(user: User, tenant: Tenant) -> Actor:
+    """The same person, acting in a tenant they may not yet belong to."""
+    if not Membership.objects.filter(user=user, tenant=tenant).exists():
+        add_membership(user=user, tenant=tenant, actor=system_actor(tenant=tenant))
+    # The hat is the tenant's root: this helper is the flat case.
+    return actor_for(user=user, tenant=tenant, org=root_organization(tenant=tenant))
+
+
+def test_list_url_is_where_the_router_put_it() -> None:
+    assert reverse("api:widget-list") == LIST_URL
+
+
+#: Each other door the noun mounts, by its route name, and its path under the list URL.
+DOORS = {
+    "widget-create": "",
+    "widget-detail": "{id}/",
+    "widget-update": "{id}/",
+    "widget-delete": "{id}/",
+    "widget-archive": "{id}/archive/",
+    "widget-restore": "{id}/restore/",
+    "widget_history-list": "{id}/history/",
+}
+
+
+@pytest.mark.parametrize(("url_name", "tail"), DOORS.items())
+def test_every_door_is_where_the_router_put_it(url_name: str, tail: str) -> None:
+    """Each route reverses, by the name a client and rule 3 know it by, to the path tests call."""
+    widget_id = uuid4()
+    kwargs = {"widget_id": widget_id} if "{id}" in tail else {}
+    assert reverse(f"api:{url_name}", kwargs=kwargs) == LIST_URL + tail.format(id=widget_id)
+
+
+def test_anonymous_cannot_list(api: Client) -> None:
+    assert api.get(LIST_URL).status_code == 401
+
+
+def test_anonymous_cannot_create(api: Client) -> None:
+    response = api.post(LIST_URL, data=json.dumps({"name": "nope"}), content_type=JSON)
+    assert response.status_code == 401
+
+
+def test_authenticated_create_returns_201_and_owns_the_row(
+    api: Client, tenant: Tenant, owner: User
+) -> None:
+    api.force_login(owner)
+    response = api.post(
+        LIST_URL,
+        data=json.dumps({"name": "First widget", "notes": "hello"}),
+        content_type=JSON,
+    )
+    assert response.status_code == 201, response.content
+    body = _body(response)
+    assert body["name"] == "First widget"
+    assert body["owner_email"] == owner.email
+    widget = Widget.objects.get(pk=body["id"])
+    assert widget.owner_id == owner.pk
+    assert widget.tenant_id == tenant.pk
+    assert widget.notes == "hello"
+
+
+def test_the_list_is_paginated(
+    api: Client, tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    """The envelope, and the whole of it (ADR core-18)."""
+    for index in range(3):
+        create_widget(tenant=tenant, actor=owner_actor, name=f"Widget {index}")
+    api.force_login(owner)
+    response = api.get(LIST_URL)
+    assert response.status_code == 200
+    body = _body(response)
+    # `allowed_acts` is the LIST's own acts (`create` where the actor may).
+    assert set(body) == {"items", "has_more", "next_cursor", "count", "allowed_acts"}
+    assert body["has_more"] is False
+    assert body["next_cursor"] is None
+    assert body["count"] is None
+    assert len(body["items"]) == 3
+
+
+def test_the_count_is_null_until_it_is_asked_for(
+    api: Client, tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    """`null` is "not counted", which is a different fact from zero."""
+    for index in range(3):
+        create_widget(tenant=tenant, actor=owner_actor, name=f"Widget {index}")
+    api.force_login(owner)
+    assert _body(api.get(LIST_URL))["count"] is None
+    assert _body(api.get(LIST_URL, {"include_count": "true"}))["count"] == 3
+
+
+def test_the_limit_is_the_one_on_the_class(
+    api: Client, tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    for index in range(3):
+        create_widget(tenant=tenant, actor=owner_actor, name=f"Widget {index}")
+    api.force_login(owner)
+    body = _body(api.get(LIST_URL, {"limit": 2}))
+    assert len(body["items"]) == 2
+    assert body["has_more"] is True
+    assert body["next_cursor"] is not None
+
+
+def test_another_tenants_rows_are_absent_even_when_the_user_owns_them(
+    api: Client, tenant: Tenant, other_tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    mine = create_widget(tenant=tenant, actor=owner_actor, name="Mine")
+    theirs = create_widget(tenant=other_tenant, actor=acting_in(owner, other_tenant), name="Theirs")
+    api.force_login(owner)
+    body = _body(api.get(LIST_URL))
+    returned = {row["id"] for row in body["items"]}
+    assert returned == {str(mine.pk)}
+    assert str(theirs.pk) not in returned
+
+
+def test_the_header_switches_tenant(
+    api: Client, tenant: Tenant, other_tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    add_membership(user=owner, tenant=other_tenant, actor=system_actor(tenant=other_tenant))
+    create_widget(tenant=tenant, actor=owner_actor, name="Mine")
+    theirs = create_widget(tenant=other_tenant, actor=acting_in(owner, other_tenant), name="Theirs")
+    api.force_login(owner)
+    body = _body(api.get(LIST_URL, headers={"x-tenant": other_tenant.slug}))
+    assert {row["id"] for row in body["items"]} == {str(theirs.pk)}
+
+
+def test_a_user_with_no_membership_sees_nothing(
+    api: Client, tenant: Tenant, owner: User, nomad: User, owner_actor: Actor
+) -> None:
+    create_widget(tenant=tenant, actor=owner_actor, name="Not yours")
+    api.force_login(nomad)
+    response = api.get(LIST_URL)
+    # No membership resolves no tenant, so the door refuses before the selector.
+    assert response.status_code == 403, response.content
+    assert "Not yours" not in response.content.decode()
+
+
+def test_a_superuser_with_no_membership_sees_nothing(
+    api: Client, tenant: Tenant, owner: User, root: User, owner_actor: Actor
+) -> None:
+    create_widget(tenant=tenant, actor=owner_actor, name="Not yours either")
+    api.force_login(root)
+    response = api.get(LIST_URL)
+    # No superuser exemption: the refusal is the same one a nobody gets.
+    assert response.status_code == 403, response.content
+    assert "Not yours either" not in response.content.decode()
+
+
+def test_a_user_with_no_membership_cannot_create(api: Client, nomad: User) -> None:
+    api.force_login(nomad)
+    response = api.post(LIST_URL, data=json.dumps({"name": "Homeless"}), content_type=JSON)
+    assert response.status_code == 403
+    assert Widget.objects.count() == 0
+
+
+def test_detail_of_another_tenants_widget_is_a_404(
+    api: Client, other_tenant: Tenant, owner: User, stranger: User, stranger_actor: Actor
+) -> None:
+    theirs = create_widget(tenant=other_tenant, actor=stranger_actor, name="Theirs")
+    api.force_login(owner)
+    assert api.get(f"{LIST_URL}{theirs.pk}/").status_code == 404
+
+
+def test_update_goes_through_the_service(
+    api: Client, tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Before")
+    api.force_login(owner)
+    response = api.patch(
+        f"{LIST_URL}{widget.pk}/",
+        data=json.dumps({"name": "After", "version": widget.version}),
+        content_type=JSON,
+    )
+    assert response.status_code == 200, response.content
+    widget.refresh_from_db()
+    assert widget.name == "After"
+
+
+def test_a_duplicate_name_is_a_400_with_the_field_errors(
+    api: Client, tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    """The service raises `ValidationError`; the client must see JSON, not HTML."""
+    create_widget(tenant=tenant, actor=owner_actor, name="Only one")
+    api.force_login(owner)
+    response = api.post(LIST_URL, data=json.dumps({"name": "Only one"}), content_type=JSON)
+    assert response.status_code == 400, response.content
+    assert response.headers["content-type"].startswith(JSON)
+    body = _body(response)
+    assert body["detail"]
+    assert body["errors"]
+    assert Widget.objects.count() == 1
+
+
+def test_delete_removes_the_row(
+    api: Client, tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Doomed")
+    api.force_login(owner)
+    assert api.delete(f"{LIST_URL}{widget.pk}/").status_code == 204
+    assert Widget.objects.count() == 0
+
+
+def test_a_bearer_token_is_the_machine_door_into_the_same_rows(
+    api: Client, tenant: Tenant, other_tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    mine = create_widget(tenant=tenant, actor=owner_actor, name="Mine")
+    create_widget(tenant=other_tenant, actor=acting_in(owner, other_tenant), name="Theirs")
+    _, plaintext = issue_token(
+        user=owner, tenant=tenant, name="ci", actor=actor_for(user=owner, tenant=tenant)
+    )
+    body = _body(api.get(LIST_URL, headers={"authorization": f"Bearer {plaintext}"}))
+    assert {row["id"] for row in body["items"]} == {str(mine.pk)}
+
+
+def test_a_pinned_token_with_a_mismatched_tenant_header_is_refused(
+    api: Client, tenant: Tenant, other_tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    """The machine door refuses `X-Tenant`, exactly as the human one does."""
+    add_membership(user=owner, tenant=other_tenant, actor=system_actor(tenant=other_tenant))
+    create_widget(tenant=tenant, actor=owner_actor, name="Mine")
+    _, plaintext = issue_token(
+        user=owner, tenant=tenant, name="pinned", actor=actor_for(user=owner, tenant=tenant)
+    )
+    response = api.get(
+        LIST_URL,
+        headers={"authorization": f"Bearer {plaintext}", "x-tenant": other_tenant.slug},
+    )
+    assert response.status_code == 403, response.content
+    assert response.json()["code"] == "addressing_header_not_honoured"
+
+
+def test_a_session_with_a_tenant_header_it_does_not_belong_to_is_refused(
+    api: Client, tenant: Tenant, other_tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    """The same request on the human door: refused, and never the default's rows."""
+    create_widget(tenant=tenant, actor=owner_actor, name="Mine")
+    api.force_login(owner)
+    response = api.get(LIST_URL, headers={"x-tenant": other_tenant.slug})
+    assert response.status_code == 403, response.content
+    assert response.json()["code"] == "addressing_header_not_honoured"
+
+
+def test_a_bad_token_is_refused(api: Client, tenant: Tenant, owner: User) -> None:
+    assert api.get(LIST_URL, headers={"authorization": "Bearer nonsense"}).status_code == 401
+
+
+# The same budget at five rows and at fifty: no per-row field costs a query.
+@pytest.mark.parametrize("rows", [5, 10, 50])
+def test_list_query_count_does_not_grow_with_rows(
+    api: Client,
+    tenant: Tenant,
+    owner: User,
+    django_assert_num_queries: Any,
+    owner_actor: Actor,
+    rows: int,
+) -> None:
+    for index in range(rows):
+        create_widget(tenant=tenant, actor=owner_actor, name=f"Widget {index}")
+    api.force_login(owner)
+    with django_assert_num_queries(LIST_QUERY_BUDGET):
+        response = api.get(LIST_URL)
+    assert response.status_code == 200
+    assert len(_body(response)["items"]) == rows
+    assert all(item["allowed_acts"] for item in _body(response)["items"])
+
+
+def test_the_openapi_document_and_the_docs_page_are_served(api: Client) -> None:
+    schema = api.get("/api/v1/openapi.json")
+    assert schema.status_code == 200
+    assert "/api/v1/widgets/" in _body(schema)["paths"]
+    assert api.get("/api/v1/docs").status_code == 200
+
+
+def test_every_route_in_the_document_declares_security(api: Client) -> None:
+    from pilecap.testing import unauthenticated_operation_ids
+
+    allowed = unauthenticated_operation_ids()
+    document = _body(api.get("/api/v1/openapi.json"))
+    for path, methods in document["paths"].items():
+        for method, operation in methods.items():
+            if operation.get("operationId") in allowed:
+                continue
+            assert operation.get("security"), f"{method.upper()} {path} declares no auth"
+
+
+def test_the_document_declares_no_other_open_route(api: Client) -> None:
+    """An equality, so a second `auth=None` anywhere in the tree fails here."""
+    from pilecap.testing import unauthenticated_operation_ids
+
+    document = _body(api.get("/api/v1/openapi.json"))
+    open_routes = {
+        operation["operationId"]
+        for methods in document["paths"].values()
+        for operation in methods.values()
+        if not operation.get("security")
+    }
+    assert open_routes == unauthenticated_operation_ids()
+
+
+def test_an_admin_can_delete_another_members_widget(
+    api: Client, tenant: Tenant, owner_actor: Actor, admin_member: User
+) -> None:
+    theirs = create_widget(tenant=tenant, actor=owner_actor, name="Moderated")
+    api.force_login(admin_member)
+
+    assert api.delete(f"{LIST_URL}{theirs.pk}/").status_code == 204
+    assert not Widget.objects.filter(pk=theirs.pk).exists()
+
+
+def test_a_member_can_delete_their_own(api: Client, tenant: Tenant, member: User) -> None:
+    mine = create_widget(
+        tenant=tenant,
+        actor=actor_for(user=member, tenant=tenant, org=root_organization(tenant=tenant)),
+        name="Mine",
+    )
+    api.force_login(member)
+    assert api.delete(f"{LIST_URL}{mine.pk}/").status_code == 204
+
+
+def test_the_filter_narrows_by_name(
+    api: Client, tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    create_widget(tenant=tenant, actor=owner_actor, name="Blue widget")
+    create_widget(tenant=tenant, actor=owner_actor, name="Red widget")
+    api.force_login(owner)
+
+    body = _body(api.get(LIST_URL, {"name": "blue"}))
+    assert [row["name"] for row in body["items"]] == ["Blue widget"]
+    assert len(body["items"]) == 1
+
+
+def test_q_searches_the_fields_the_route_named(
+    api: Client, tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    create_widget(tenant=tenant, actor=owner_actor, name="Alpha", notes="about turbines")
+    create_widget(tenant=tenant, actor=owner_actor, name="Beta", notes="about kettles")
+    api.force_login(owner)
+
+    body = _body(api.get(LIST_URL, {"q": "turbines"}))
+    assert [row["name"] for row in body["items"]] == ["Alpha"]
+
+
+def test_ordering_is_an_allow_list_and_says_what_it_allows(
+    api: Client, tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    """`?ordering=` never reaches `.order_by()` unchecked: an unknown column is refused."""
+    create_widget(tenant=tenant, actor=owner_actor, name="Second")
+    create_widget(tenant=tenant, actor=owner_actor, name="First")
+    api.force_login(owner)
+
+    ascending = _body(api.get(LIST_URL, {"ordering": "name"}))
+    assert [row["name"] for row in ascending["items"]] == ["First", "Second"]
+
+    descending = _body(api.get(LIST_URL, {"ordering": "-name"}))
+    assert [row["name"] for row in descending["items"]] == ["Second", "First"]
+
+    refused = api.get(LIST_URL, {"ordering": "owner__password"})
+    assert refused.status_code == 400
+    body = _body(refused)
+    assert body["code"] == "invalid"
+    assert "name" in body["errors"]["ordering"][0]
+
+
+def test_the_default_order_is_newest_first(
+    api: Client, tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    create_widget(tenant=tenant, actor=owner_actor, name="Older")
+    newer = create_widget(tenant=tenant, actor=owner_actor, name="Newer")
+    api.force_login(owner)
+
+    body = _body(api.get(LIST_URL))
+    assert body["items"][0]["id"] == str(newer.pk)
+
+
+def test_due_date_orders_both_ways_with_the_undated_last(
+    api: Client, tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    """`?ordering=due_at` and `-due_at` sort by due date; undated widgets come last."""
+    from datetime import UTC, datetime
+
+    create_widget(tenant=tenant, actor=owner_actor, name="Undated")
+    for name, month in (("Middle", 11), ("Soonest", 10), ("Latest", 12)):
+        create_widget(
+            tenant=tenant,
+            actor=owner_actor,
+            name=name,
+            due_at=datetime(2026, month, 15, tzinfo=UTC),
+        )
+    api.force_login(owner)
+
+    def walked(ordering: str) -> list[str]:
+        names: list[str] = []
+        params: dict[str, Any] = {"ordering": ordering, "limit": 2}
+        while True:
+            page = _body(api.get(LIST_URL, params))
+            names += [row["name"] for row in page["items"]]
+            if not page["has_more"]:
+                return names
+            params["cursor"] = page["next_cursor"]
+
+    assert walked("due_at") == ["Soonest", "Middle", "Latest", "Undated"]
+    assert walked("-due_at") == ["Latest", "Middle", "Soonest", "Undated"]
+
+    refused = api.get(LIST_URL, {"ordering": "due"})
+    assert refused.status_code == 400
+    assert "due_at" in _body(refused)["errors"]["ordering"][0]
+
+
+def test_the_limit_has_a_ceiling(
+    api: Client, tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    """Without a ceiling, `?limit=` is a slower way to ask for everything."""
+    for index in range(5):
+        create_widget(tenant=tenant, actor=owner_actor, name=f"Widget {index}")
+    api.force_login(owner)
+
+    refused = api.get(LIST_URL, {"limit": 10_000})
+
+    assert refused.status_code == 400, refused.content
+    assert refused.json()["code"] == "invalid"
+    assert "limit" in refused.json()["errors"]
+    assert str(MAX_LIMIT) in refused.content.decode()
+
+    # And the ceiling itself still holds for a request that asks within it.
+    body = _body(api.get(LIST_URL, {"limit": MAX_LIMIT}))
+    assert len(body["items"]) == 5
+
+
+def test_the_list_url_carries_the_version(api: Client) -> None:
+    """A breaking change is a `v2` beside `v1`, which needs `v1` in the path."""
+    assert LIST_URL.startswith("/api/v1/")
+    assert reverse("api:widget-list") == LIST_URL
+
+
+# golden: field due_at begin
+DUE_AT_WIRE = "2026-11-02T17:00:00Z"
+LATER_DUE_AT_WIRE = "2026-12-01T09:30:00Z"
+
+
+def test_due_at_is_created_patched_and_cleared_over_rest(
+    api: Client, tenant: Tenant, owner: User
+) -> None:
+    api.force_login(owner)
+    created = api.post(
+        LIST_URL, data=json.dumps({"name": "Due", "due_at": DUE_AT_WIRE}), content_type=JSON
+    )
+    assert created.status_code == 201, created.content
+    body = _body(created)
+    assert body["due_at"] == DUE_AT_WIRE
+
+    changed = api.patch(
+        f"{LIST_URL}{body['id']}/",
+        data=json.dumps({"due_at": LATER_DUE_AT_WIRE, "version": body["version"]}),
+        content_type=JSON,
+    )
+    assert changed.status_code == 200, changed.content
+    assert _body(changed)["due_at"] == LATER_DUE_AT_WIRE
+
+    cleared = api.patch(
+        f"{LIST_URL}{body['id']}/",
+        data=json.dumps({"clear_due_at": True, "version": _body(changed)["version"]}),
+        content_type=JSON,
+    )
+    assert cleared.status_code == 200, cleared.content
+    assert _body(cleared)["due_at"] is None
+    assert Widget.objects.for_tenant(tenant).get(pk=body["id"]).due_at is None
+
+
+# golden: field due_at end
+
+
+def test_a_due_date_with_an_offset_is_answered_in_utc(
+    api: Client, tenant: Tenant, owner: User
+) -> None:
+    api.force_login(owner)
+    created = api.post(
+        LIST_URL, data=json.dumps({"name": "Due", "due_at": DUE_AT_WIRE}), content_type=JSON
+    )
+    body = _body(created)
+    changed = api.patch(
+        f"{LIST_URL}{body['id']}/",
+        data=json.dumps({"due_at": "2026-12-01T09:30:00+01:00", "version": body["version"]}),
+        content_type=JSON,
+    )
+    assert changed.status_code == 200, changed.content
+    assert _body(changed)["due_at"] == "2026-12-01T08:30:00Z"
+
+
+def test_the_list_filters_by_due_date_both_ways(
+    api: Client, tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    from datetime import UTC, datetime
+
+    early = create_widget(
+        tenant=tenant, actor=owner_actor, name="Early", due_at=datetime(2026, 10, 15, tzinfo=UTC)
+    )
+    late = create_widget(
+        tenant=tenant, actor=owner_actor, name="Late", due_at=datetime(2026, 12, 15, tzinfo=UTC)
+    )
+    create_widget(tenant=tenant, actor=owner_actor, name="Undated")
+    api.force_login(owner)
+
+    before = _body(api.get(LIST_URL, {"due_before": "2026-11-01T00:00:00Z"}))
+    assert [item["id"] for item in before["items"]] == [str(early.pk)]
+    after = _body(api.get(LIST_URL, {"due_after": "2026-11-01T00:00:00Z"}))
+    assert [item["id"] for item in after["items"]] == [str(late.pk)]
+
+
+@pytest.mark.parametrize("value", ["2026-11-02T17:00:00", "next tuesday"])
+def test_a_naive_or_malformed_due_date_is_refused_naming_the_field(
+    api: Client, tenant: Tenant, owner: User, value: str
+) -> None:
+    api.force_login(owner)
+    created = api.post(
+        LIST_URL, data=json.dumps({"name": "Due", "due_at": value}), content_type=JSON
+    )
+    assert created.status_code == 422, created.content
+    assert _body(created)["code"] == "invalid_body"
+    assert "due_at" in _body(created)["errors"]
+    assert not Widget.objects.for_tenant(tenant).exists()
+
+    listed = api.get(LIST_URL, {"due_before": value})
+    assert listed.status_code == 400, listed.content
+    assert _body(listed)["code"] == "invalid"
+    assert "due_before" in _body(listed)["errors"]

@@ -1,0 +1,312 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "end", "text": ""}
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from typing import Any
+
+import pytest
+from django.test import Client
+
+from apps.example.models import Widget, WidgetPolicy
+from apps.example.selectors import get_governing_widget_policy
+from apps.example.services import create_widget, create_widget_policy
+from pilecap import Actor, AuditEntry, NotFound
+from pilecap.accounts import User, create_user
+from pilecap.tenancy import (
+    Membership,
+    Organization,
+    Tenant,
+    add_membership,
+    create_organization,
+    root_organization,
+)
+from pilecap.testing import actor_for, system_actor
+
+
+
+pytestmark = pytest.mark.django_db
+
+LIST_URL = "/api/v1/widgets/"
+PASSWORD = "a-long-enough-password"  # noqa: S105 — a throwaway password a test user is made with  # pragma: allowlist secret
+
+
+def reading(tenant: Tenant | None, org: Any) -> Actor:
+    """The actor these scoping tests read as, now that reads are permissions."""
+    return system_actor(tenant, org if isinstance(org, Organization) else None)
+
+
+# --- The tree ----------------------------------------------------------------
+
+
+@dataclass
+class Network:
+    """One tenant's tree and the people in it, as one fixture value."""
+
+    tenant: Tenant
+    hq: Organization
+    seller_a: Organization
+    sub_a1: Organization
+    seller_b: Organization
+    owner: User
+    manager: User  # admin of seller_a
+    clerk: User  # member of sub_a1
+    both: User  # member of seller_a AND of sub_a1
+
+
+@pytest.fixture
+def network(tenant: Tenant, owner: User) -> Network:
+    hq = root_organization(tenant=tenant)
+    acting = actor_for(user=owner, tenant=tenant, org=hq)
+    seller_a = create_organization(
+        tenant=tenant, parent=hq, name="Seller A", slug="seller-a", actor=acting
+    )
+    seller_b = create_organization(
+        tenant=tenant, parent=hq, name="Seller B", slug="seller-b", actor=acting
+    )
+    sub_a1 = create_organization(
+        tenant=tenant, parent=seller_a, name="Sub A1", slug="sub-a1", actor=acting
+    )
+
+    manager = create_user(email="manager@example.com", password=PASSWORD)
+    add_membership(
+        user=manager,
+        tenant=tenant,
+        organization=seller_a,
+        is_default=True,
+        role=Membership.Role.ADMIN,
+        actor=system_actor(tenant=tenant),
+    )
+    clerk = create_user(email="clerk@example.com", password=PASSWORD)
+    add_membership(
+        user=clerk,
+        tenant=tenant,
+        organization=sub_a1,
+        is_default=True,
+        role=Membership.Role.MEMBER,
+        actor=system_actor(tenant=tenant),
+    )
+    both = create_user(email="both@example.com", password=PASSWORD)
+    add_membership(
+        user=both,
+        tenant=tenant,
+        organization=seller_a,
+        is_default=True,
+        role=Membership.Role.MEMBER,
+        actor=system_actor(tenant=tenant),
+    )
+    add_membership(
+        user=both,
+        tenant=tenant,
+        organization=sub_a1,
+        role=Membership.Role.MEMBER,
+        actor=system_actor(tenant=tenant),
+    )
+    return Network(
+        tenant=tenant,
+        hq=hq,
+        seller_a=seller_a,
+        sub_a1=sub_a1,
+        seller_b=seller_b,
+        owner=owner,
+        manager=manager,
+        clerk=clerk,
+        both=both,
+    )
+
+
+def hat(net: Network, user: User, org: Organization) -> Actor:
+    return actor_for(user=user, tenant=net.tenant, org=org)
+
+
+
+
+POLICIES_URL = f"{LIST_URL}policies/"
+GOVERNING_URL = f"{POLICIES_URL}governing/"
+
+
+def seed_policies(net: Network) -> dict[str, WidgetPolicy]:
+    """One policy at the root and one at Seller A. **Nothing at A1, on purpose.**"""
+    return {
+        "hq": create_widget_policy(
+            tenant=net.tenant, actor=hat(net, net.owner, net.hq), name="House rules"
+        ),
+        "a": create_widget_policy(
+            tenant=net.tenant, actor=hat(net, net.manager, net.seller_a), name="Seller A rules"
+        ),
+    }
+
+
+def test_the_nearest_policy_on_the_chain_is_the_one_that_governs(network: Network) -> None:
+    """Root -> A -> A1, and root -> B. A1 gets A's; B falls through to the root's."""
+    policies = seed_policies(network)
+
+    at_a1 = get_governing_widget_policy(
+        tenant=network.tenant, org=network.sub_a1, actor=reading(network.tenant, network.sub_a1)
+    )
+    assert at_a1.pk == policies["a"].pk, "A1 must resolve A's, not the root's — nearest wins"
+
+    at_b = get_governing_widget_policy(
+        tenant=network.tenant, org=network.seller_b, actor=reading(network.tenant, network.seller_b)
+    )
+    assert at_b.pk == policies["hq"].pk, "B has nothing of its own and nothing between it and HQ"
+
+    # And the two ends of the chain resolve themselves.
+    assert get_governing_widget_policy(
+        tenant=network.tenant, org=network.seller_a, actor=reading(network.tenant, network.seller_a)
+    ).pk == (policies["a"].pk)
+    assert get_governing_widget_policy(
+        tenant=network.tenant, org=network.hq, actor=reading(network.tenant, network.hq)
+    ).pk == (policies["hq"].pk)
+
+
+def test_resolution_fails_closed_with_no_hat_and_when_nothing_governs(network: Network) -> None:
+    """The two ways there is no answer, and both of them are `NotFound`."""
+    with pytest.raises(NotFound):
+        # A tree with no policies in it at all.
+        get_governing_widget_policy(
+            tenant=network.tenant, org=network.sub_a1, actor=reading(network.tenant, network.sub_a1)
+        )
+    seed_policies(network)
+    with pytest.raises(NotFound):
+        # An unresolved hat resolves no configuration rather than the root's.
+        get_governing_widget_policy(
+            tenant=network.tenant, org=None, actor=reading(network.tenant, None)
+        )
+
+
+def test_a_branch_never_lists_the_policy_that_governs_it(api: Client, network: Network) -> None:
+    """**The split, over the wire.** A1 resolves A's policy and cannot list it."""
+    policies = seed_policies(network)
+    api.force_login(network.clerk)  # a member of Sub A1 and of nowhere else
+
+    governing = api.get(GOVERNING_URL, headers={"x-org": "sub-a1"})
+    assert governing.status_code == 200, governing.content
+    resolved = json.loads(governing.content)
+    assert resolved["id"] == str(policies["a"].pk)
+    # And it says whose it is, which is how a client can tell it was inherited.
+    assert resolved["organization_slug"] == "seller-a"
+
+    listed = api.get(POLICIES_URL, headers={"x-org": "sub-a1"})
+    assert listed.status_code == 200, listed.content
+    body = json.loads(listed.content)
+    assert len(body["items"]) == 0, "A1 owns no policy; the one governing it is not A1's to list"
+    assert body["items"] == []
+
+
+def test_a_seller_lists_its_own_and_its_sub_sellers_policies(api: Client, network: Network) -> None:
+    """The list half, in the direction it *does* travel: down, like every list."""
+    seed_policies(network)
+    at_a1 = create_widget_policy(
+        tenant=network.tenant, actor=hat(network, network.manager, network.sub_a1), name="A1 rules"
+    )
+    api.force_login(network.manager)
+
+    body = json.loads(api.get(POLICIES_URL, headers={"x-org": "seller-a"}).content)
+    assert {item["name"] for item in body["items"]} == {"Seller A rules", "A1 rules"}
+    assert str(at_a1.pk) in {item["id"] for item in body["items"]}
+
+    # The root's policy is one level UP from A, and it is not in the list.
+    assert "House rules" not in {item["name"] for item in body["items"]}
+
+
+def test_setting_a_policy_needs_a_role_and_lands_on_the_acting_hat(
+    api: Client, network: Network
+) -> None:
+    """Config travels down, so a member may not write it — and it lands on the hat."""
+    api.force_login(network.clerk)  # a MEMBER of A1
+    refused = api.post(
+        POLICIES_URL,
+        data=json.dumps({"name": "Member's rules", "body": ""}),
+        content_type="application/json",
+        headers={"x-org": "sub-a1"},
+    )
+    assert refused.status_code == 403, refused.content
+    assert WidgetPolicy.objects.for_tenant(network.tenant).count() == 0
+
+    api.force_login(network.manager)  # an ADMIN of A, and therefore of A1
+    made = api.post(
+        POLICIES_URL,
+        data=json.dumps({"name": "Manager's rules", "body": ""}),
+        content_type="application/json",
+        headers={"x-org": "sub-a1"},
+    )
+    assert made.status_code == 201, made.content
+    assert json.loads(made.content)["organization_slug"] == "sub-a1"
+
+
+# --- Naming a policy: the link gate, and the rival's champion ------------------
+
+
+def test_a_branch_may_name_the_policy_its_parent_set(api: Client, network: Network) -> None:
+    """201. **The link gate, live**: A1 names A's policy, a row it cannot list."""
+    policies = seed_policies(network)
+    api.force_login(network.clerk)
+
+    response = api.post(
+        LIST_URL,
+        data=json.dumps(
+            {"name": "Under A's policy", "notes": "", "policy_id": str(policies["a"].pk)}
+        ),
+        content_type="application/json",
+        headers={"x-org": "sub-a1"},
+    )
+
+    assert response.status_code == 201, response.content
+    body = json.loads(response.content)
+    assert body["policy_id"] == str(policies["a"].pk)
+    assert body["organization_slug"] == "sub-a1"
+
+
+def test_naming_a_siblings_policy_is_a_404_with_remedies_and_writes_nothing(
+    api: Client, network: Network
+) -> None:
+    """**The rival's champion**, refused: B's policy, named from A1, is `not_found`."""
+    seed_policies(network)
+    at_b = create_widget_policy(
+        tenant=network.tenant, actor=hat(network, network.owner, network.seller_b), name="B rules"
+    )
+    api.force_login(network.clerk)
+
+    response = api.post(
+        LIST_URL,
+        data=json.dumps({"name": "Stolen", "notes": "", "policy_id": str(at_b.pk)}),
+        content_type="application/json",
+        headers={"x-org": "sub-a1"},
+    )
+
+    assert response.status_code == 404, response.content
+    body = json.loads(response.content)
+    assert {"detail", "code"} <= set(body), body
+    assert body["code"] == "not_found"
+    # `not_found` registered remedies: what the caller can DO.
+    assert body["remedies"], body
+
+    assert not Widget.objects.for_tenant(network.tenant).filter(name="Stolen").exists()
+
+
+def test_the_refused_naming_is_audited_as_an_error(network: Network) -> None:
+    """The **audited** fence, driven where audit rows come from: inside the service."""
+    at_b = create_widget_policy(
+        tenant=network.tenant, actor=hat(network, network.owner, network.seller_b), name="B rules"
+    )
+
+    with pytest.raises(NotFound):
+        create_widget(
+            tenant=network.tenant,
+            actor=hat(network, network.clerk, network.sub_a1),
+            name="Stolen",
+            policy=at_b,
+        )
+
+    assert not Widget.objects.for_tenant(network.tenant).filter(name="Stolen").exists()
+    entry = (
+        AuditEntry.objects.for_tenant(network.tenant)
+        .filter(action="example.create_widget", outcome=AuditEntry.Outcome.ERROR)
+        .first()
+    )
+    assert entry is not None, "a refusal nobody recorded is a refusal nobody can count"
+    assert entry.error_code == "not_found"
+    assert entry.acting_org_id == network.sub_a1.pk
+
+

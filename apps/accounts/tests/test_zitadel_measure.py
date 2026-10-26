@@ -32,7 +32,7 @@ import pytest
 from django.core.management import call_command
 from django.core.management.base import CommandError
 
-from apps.accounts import zitadel
+from apps.accounts import zitadel, zitadel_measure_kit
 from apps.accounts.management.commands import zitadel_measure
 from apps.accounts.tests.conftest import FakeMeasuredZitadel
 
@@ -235,7 +235,7 @@ def test_an_unreachable_instance_is_exit_two(
 
     monkeypatch.setattr(zitadel, "probe", refuse)
     monkeypatch.setattr(zitadel, "create_organization", refuse)
-    monkeypatch.setattr(zitadel, "swagger_document", refuse)
+    monkeypatch.setattr(zitadel_measure_kit, "swagger_document", refuse)
 
     code, printed = run()
 
@@ -685,7 +685,7 @@ def test_the_two_doors_naming_one_person_differently_is_a_differs(
     """**M12's defect, and it is the one the identity join cannot survive.**
 
     A build whose id_token `sub` stopped being the session's own
-    `factors.user.id` would leave `record_zitadel_identity` holding two
+    `factors.user.id` would leave `record_identity` holding two
     strings for one person: whoever used the hosted page first would meet
     *That identity is already linked to a different account* at this
     deployment's own form, and every test in the suite would stay green —
@@ -856,8 +856,11 @@ def test_create_organization_is_not_an_ensure_and_makes_a_second_one(
     already written a policy onto, and C3 and C4 both need one that has never
     been configured.
     """
+    # Two NAMES, because the pinned build refuses a second organisation of one
+    # name (`409 V3-DKcYh`, measured) and the fake answers as the build does:
+    # the property is a new org on every call, never a found one.
     first = zitadel.create_organization(name="pilecap-measure-throwaway-a")
-    second = zitadel.create_organization(name="pilecap-measure-throwaway-a")
+    second = zitadel.create_organization(name="pilecap-measure-throwaway-b")
     assert first.id != second.id
     assert first.created and second.created
 

@@ -34,10 +34,11 @@ from apps.accounts.models import User
 from apps.comms import services
 from apps.comms.models import Channel, ChannelPreference, Message, MessageTemplate, Recipient
 from apps.comms.tests.conftest import Branches, make_recipient, make_template
-from apps.comms.tests.test_mcp import context_for, tool
+from apps.comms.tests.test_mcp import tool
 from apps.core.actor import Actor, actor_for
 from apps.core.exceptions import NotFound, refusal_message, wire_refusal
 from apps.core.models import Organization
+from apps.core.tests.mcp_context import context_for
 
 pytestmark = pytest.mark.django_db
 

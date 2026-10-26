@@ -24,7 +24,7 @@ different rules is the shape of the incident nobody can reconstruct afterwards.
 
 A subclass that has no service for an action says so by returning `None`, and
 gets the ordinary Django behaviour with a comment saying why — **unless the
-model is one something guards** (tenant-scoped, or on `WALL_GUARDED`), in which
+model is one something guards** (tenant-scoped, or `wall_guarded`), in which
 case the missing wiring is a refusal rather than a quiet fallthrough
 (`refuse_unwired`). A subclass that wants a genuinely read-only table uses
 `ReadOnlyModelAdmin` below; a model that declared `append_only = True` gets no
@@ -51,26 +51,17 @@ from apps.core.exceptions import DomainError, refusal_message, wire_refusal
 from apps.core.models import (
     Invitation,
     Membership,
+    MembershipQuerySet,
     Organization,
     ScopedManager,
     ScopedQuerySet,
     Tenant,
     is_append_only,
     is_org_scoped,
+    is_wall_guarded,
 )
 
 Action = Literal["create", "update", "delete"]
-
-# Models whose writes a *rule* guards rather than the tenancy: the escalation
-# wall (`core.services._refuse_escalation`) for `Membership`, and the tree's own
-# services for `Organization`, whose `path` and `parent` house rule 24 refuses
-# anywhere else. Named here as a tuple rather than sniffed, because "is there a
-# rule about this model" is not a property of its fields — and a product that
-# grows another such model adds it here, in one place, with the reason.
-#
-# Tenant-scoped models are guarded too and are recognised from their manager;
-# see `is_guarded` below.
-WALL_GUARDED: tuple[type[Model], ...] = (Membership, Organization)
 
 # Where a refusal caught mid-request is remembered, so the hooks Django calls
 # *after* `save_model` can see that nothing happened. An attribute on the
@@ -85,7 +76,9 @@ def is_guarded(model: type[Model]) -> bool:
 
     Two populations, both read rather than remembered: anything the tenancy
     narrows (a `ScopedManager` is what `TenantScopedModel` installs), and the
-    rows a named rule guards (`WALL_GUARDED`). For those, Django's default
+    rows a named rule guards — a model that declared `wall_guarded = True` on
+    its own class (`core.models.is_wall_guarded`): `Membership` for the
+    escalation wall, `Organization` for the tree's own services. For those, Django's default
     `obj.save()` is not a lesser door — it is a *second* door with different
     rules, which is the shape a bare `obj.save()` here actually was.
 
@@ -93,7 +86,7 @@ def is_guarded(model: type[Model]) -> bool:
     `accounts.UserAdmin` returns `None` on purpose, because taking the add form
     over would mean taking password validation over with it.
     """
-    return isinstance(model._default_manager, ScopedManager) or issubclass(model, WALL_GUARDED)
+    return isinstance(model._default_manager, ScopedManager) or is_wall_guarded(model)
 
 
 class ServiceModelAdmin[M: Model](admin.ModelAdmin[M]):
@@ -186,10 +179,10 @@ class ServiceModelAdmin[M: Model](admin.ModelAdmin[M]):
     # `save_model`), so a refused write still leaves a row in
     # `/admin/.../history/`. Re-ordering Django's view is not this door's
     # refusal grammar, and the trail this product reasons from — `AuditEntry` —
-    # is correct. Nor is a *programming* error mapped: `refuse_unwired` raises
+    # is correct, and those rows are retained (`lifecycle._declare_core_tables`).
+    # Nor is a *programming* error mapped: `refuse_unwired` raises
     # `ImproperlyConfigured` and that still 500s, deliberately, because it is a
-    # message for whoever wrote the subclass rather than for whoever clicked
-    # Save.
+    # message for whoever wrote the subclass rather than for whoever clicked Save.
 
     def refusal(self, request: HttpRequest) -> DomainError | None:
         """The refusal this request already met, if it met one."""
@@ -245,7 +238,7 @@ class ServiceModelAdmin[M: Model](admin.ModelAdmin[M]):
         that would otherwise have been left out: `get_queryset` scopes the rows
         by tenant and hat, which answers *which rows* and has never answered
         *whether this kind at all*. Without this hook the changelist of a kind
-        the acting hat may not read renders as an EMPTY PAGE — the one refusal
+        the hat may not read renders as an EMPTY PAGE — the one refusal
         shape this system refuses everywhere else, because an empty list and a
         refusal are different facts and a support agent cannot tell them apart.
 
@@ -277,14 +270,21 @@ class ServiceModelAdmin[M: Model](admin.ModelAdmin[M]):
         button would be offering to break it. Overriding takes a deliberate
         subclass that says so, which is the whole point of making the default
         this way round.
+
+        No write without the read: Django renders a changelist through
+        either half, so a hat the read refuses is refused the change half too.
         """
         if is_append_only(self.model):
+            return False
+        if not self.has_view_permission(request, obj):
             return False
         return super().has_change_permission(request, obj)
 
     def has_delete_permission(self, request: HttpRequest, obj: M | None = None) -> bool:
-        """The other half. History that can be deleted is not history."""
+        """The other half. History that can be deleted is not history; nor deleted unread."""
         if is_append_only(self.model):
+            return False
+        if not self.has_view_permission(request, obj):
             return False
         return super().has_delete_permission(request, obj)
 
@@ -398,6 +398,56 @@ class TenantAdmin(ServiceModelAdmin[Tenant]):
     # "suspended" without the timestamp, the reason or the audit row — three
     # facts an incident review needs and a dropdown cannot supply.
     readonly_fields = ("id", "status", "suspended_at", "closed_at", "created_at", "updated_at")
+    actions = ("suspend_selected", "resume_selected", "close_selected")
+
+    def has_change_permission(self, request: HttpRequest, obj: Tenant | None = None) -> bool:
+        """The operator's door: staff permission, not the hat's read (the one exception).
+
+        The lifecycle services are operator acts bounded by the staff door, and a
+        suspended tenant resolves no hat, so asking the hat would leave nobody able
+        to resume it.
+        """
+        return admin.ModelAdmin.has_change_permission(self, request, obj)
+
+    def has_delete_permission(self, request: HttpRequest, obj: Tenant | None = None) -> bool:
+        """The other half of the same exception."""
+        return admin.ModelAdmin.has_delete_permission(self, request, obj)
+
+    @admin.action(description="Suspend the selected tenants", permissions=["change"])
+    def suspend_selected(self, request: HttpRequest, queryset: QuerySet[Tenant]) -> None:
+        """The operator's suspension door: `suspend_tenant`, once per selected tenant."""
+        from apps.core.services import suspend_tenant
+
+        self.apply_lifecycle(request, queryset, suspend_tenant, done="suspended")
+
+    @admin.action(description="Resume the selected tenants", permissions=["change"])
+    def resume_selected(self, request: HttpRequest, queryset: QuerySet[Tenant]) -> None:
+        """The operator's resumption door: `resume_tenant`, once per selected tenant."""
+        from apps.core.services import resume_tenant
+
+        self.apply_lifecycle(request, queryset, resume_tenant, done="resumed")
+
+    @admin.action(description="Close the selected tenants", permissions=["change"])
+    def close_selected(self, request: HttpRequest, queryset: QuerySet[Tenant]) -> None:
+        """The operator's closing door: `close_tenant`, once per selected tenant."""
+        from apps.core.services import close_tenant
+
+        self.apply_lifecycle(request, queryset, close_tenant, done="closed")
+
+    def apply_lifecycle(
+        self, request: HttpRequest, queryset: QuerySet[Tenant], service: Any, *, done: str
+    ) -> None:
+        """Call one lifecycle service per tenant as the staff actor; the first refusal stops."""
+        actor, _ = self.acting(request)
+        changed = 0
+        for tenant in queryset:
+            try:
+                service(tenant=tenant, actor=actor)
+            except DomainError as exc:
+                self.render_refusal(request, exc)
+                return
+            changed += 1
+        self.message_user(request, f"{changed} tenant(s) {done}.", level=messages.SUCCESS)
 
     def service_for(self, action: Action) -> Any | None:
         from apps.core.services import create_tenant
@@ -724,36 +774,27 @@ class MembershipAdmin(ServiceModelAdmin[Membership]):
     object_kwarg = "membership"
 
     def get_queryset(self, request: HttpRequest) -> QuerySet[Membership]:
-        """Narrowed to the acting tenant **explicitly**, because nothing else does it.
+        """Narrowed to the acting tenant through `Membership`'s own scope.
 
         `Membership` is a `BaseModel` and not a `TenantScopedModel` — it is the
-        row that *says* who belongs to a tenant, so it cannot be read through a
-        membership — which means it carries an ordinary manager and
-        `ServiceModelAdmin.get_queryset`'s scoped branch falls straight through
-        to Django's `all()`. The earlier lockdown walled the writes here and could
-        not wall this: previously any staff hat opening `/admin/core/membership/`
-        read every tenant's membership table, which is the one place "staff act
-        across tenants" survived the fix that removed it everywhere else.
-
-        The narrowing is `for_tenant`'s shape written out by hand, and the
-        fail-closed half is the point: **no acting tenant reads nothing**, not
-        everything, with no superuser exemption — `resolve_tenant` answers
-        `None` for a staff member with no membership and for one whose
-        `X-Tenant` names a tenant they do not belong to, and both of those are
-        people who should be looking at an empty table rather than at all of
-        them.
+        row that *says* who belongs to a tenant — so `ServiceModelAdmin`'s
+        scoped branch (which reads a `ScopedManager`) does not apply to it, and
+        before the narrowing any staff hat opening `/admin/core/membership/`
+        read every tenant's membership table. It reads through
+        `MembershipQuerySet.for_tenant` now, the manager house rule 8 can see,
+        and that manager's fail-closed half is the point: **no acting tenant
+        reads nothing**, not everything, with no superuser exemption —
+        `resolve_tenant` answers `None` for a staff member with no membership
+        and for one whose `X-Tenant` names a tenant they do not belong to.
 
         DOES NOT COVER — declared: the *organization* half. `Membership` is not
-        an `OrgScopedModel` (it is what defines the hats `visible_to` reads),
-        so a tenant admin still sees their whole tenant's memberships rather
-        than their subtree's. House rule 24's second half is about rows a part
+        an org-scoped row, so a tenant admin still sees their whole tenant's
+        memberships rather than their branch's: the hat narrows the rows a part
         of a tenant owns; who belongs to the tenant is the tenant's.
         """
-        rows = super().get_queryset(request).select_related("user", "tenant", "organization")
+        rows = cast(MembershipQuerySet, super().get_queryset(request))
         tenant = actor_from_request(request).tenant
-        if tenant is None:
-            return rows.none()
-        return rows.filter(tenant=tenant)
+        return rows.for_tenant(tenant).select_related("user", "tenant", "organization")
 
     def get_readonly_fields(
         self, request: HttpRequest, obj: Membership | None = None

@@ -1,0 +1,49 @@
+from typing import Any
+
+# golden: archive version move bulk history duplicate attach merge import begin
+from pilecap import Policy, may_archive
+
+
+# isort: split
+from pilecap import Actor, holds, is_member
+
+
+def can_create(actor: Actor, obj: Any = None) -> bool:
+    """Anyone in the tenant may create a widget; they own what they create."""
+    return is_member(actor)
+
+
+def owns(actor: Actor, obj: Any = None) -> bool:
+    """The row's creator, or an actor holding `organization.update` where the row lives."""
+    if obj is None:
+        return holds(actor, "organization.update")
+    if actor.user is not None and getattr(obj, "owner_id", None) == actor.user.pk:
+        return True
+    return may_archive(actor, obj)
+
+
+POLICIES: dict[str, Policy] = {
+    # golden: archive version move bulk history duplicate attach merge import end
+    "widget.create": can_create,
+    "widget.update": owns,
+    "widget.delete": owns,
+    "widget.archive": may_archive,
+    "widget.restore": may_archive,
+}
+
+
+DEFAULT_ROLES: dict[str, frozenset[str]] = {
+    "widget.create": frozenset({"member"}),
+    "widget.update": frozenset({"member"}),
+    "widget.delete": frozenset({"member"}),
+    "widget.archive": frozenset({"member"}),
+    "widget.restore": frozenset({"member"}),
+}
+
+
+ACTION_PROSE: dict[str, str] = {
+    # golden: archive version move bulk history duplicate attach merge import end
+    "widget.create": "You may not create widgets in this organization.",
+    "widget.update": "You may not change that widget.",
+    "widget.delete": "You may not delete that widget.",
+}

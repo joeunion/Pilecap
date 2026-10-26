@@ -1,10 +1,4 @@
-"""The move adoption's own test — copied with the adoption, and green on the copy.
-
-Every line is fenced `golden: move`: a move into a branch, the same node
-answering unchanged, a ledger line holding the widget where it is, and a member
-refused. Rows and ledger lines are made by hand — the noun's create and its
-ledger's recording are the product's own business.
-"""
+"""The move adoption's own test — copied with the adoption, and green on the copy."""
 
 # golden: move begin
 import json
@@ -13,11 +7,10 @@ from typing import Any
 import pytest
 from django.test import Client
 
-from apps.accounts.models import User
-from apps.core.actor import actor_for
-from apps.core.models import Organization, Tenant
-from apps.core.services import create_organization
 from apps.example.models import Widget, WidgetEntry
+from pilecap.accounts import User
+from pilecap.tenancy import Organization, Tenant, create_organization
+from pilecap.testing import actor_for
 
 pytestmark = pytest.mark.django_db
 

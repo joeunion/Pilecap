@@ -2,7 +2,7 @@
 
     python3 quality/runners/js_verb_table.py <root> [<root> …]
 
-THE CLOSED QUESTION: does `frontend/src/screens/verbs.ts`'s `VERB_TABLE` — the
+THE CLOSED QUESTION: does `frontend/src/kit/verbs.ts`'s `VERB_TABLE` — the
 one declaration every noun face draws its family acts from — equal the book's
 verb table row for row? The book's table is the fenced `verb-table` block in
 the pattern book (`docs/product/design/patterns.md`, §4), read through
@@ -41,7 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from quality import pattern_book  # noqa: E402
 from quality.runners import _source  # noqa: E402
 
-TABLE = "frontend/src/screens/verbs.ts"
+TABLE = "frontend/src/kit/verbs.ts"
 NONE = "—"
 FORMS = ("pressed", "busy", "state", "refused", "way back")
 COLUMNS = ("verb", "pressed", "busy", "state", "refused", "way back", "press", "order", "weight")

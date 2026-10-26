@@ -39,14 +39,18 @@ first the day they disagree.
 
 from __future__ import annotations
 
-import importlib
-import importlib.util
 from collections.abc import Iterable, Sequence
 from typing import Any
 
 from django.apps import apps as django_apps
 
-from apps.core.api.frozen_families import FROZEN_FAMILIES, SANCTIONED_RENAMES, Released
+from apps.core.api.frozen_families import (
+    FROZEN_FAMILIES,
+    SANCTIONED_RENAMES,
+    DeclaredBy,
+    Released,
+)
+from apps.core.discovery import declared
 from apps.core.exceptions import Forbidden, Invalid, Remedy, register_refusal
 
 __all__ = [
@@ -157,11 +161,10 @@ class InsufficientScope(Forbidden):
 def _tag_declarations_by_app() -> dict[str, dict[str, Any]]:
     """Every tag key any installed app declares beside its routers, by app label.
 
-    Discovery, the same shape `INSTALLED_APPS` and the mounts use: an app that
-    drops an `api.py` with a `TAGS` dict is in the population, and nothing is
-    edited to put it there. Deliberately its own walk rather than a call into
-    `config/api.py` — an app never imports `config`, and this module sits below
-    the one that does.
+    Discovery — `core.discovery.declared("api", "TAGS")`, the one walk: an app
+    that drops an `api.py` with a `TAGS` dict is in the population, and nothing
+    is edited to put it there. Never a call into `config/api.py` — an app never
+    imports `config`, and this module sits below the one that does.
 
     Kept grouped by app because two callers need the grouping and flattening it
     is the cheap direction: which families one app owns is the only honest way
@@ -170,17 +173,10 @@ def _tag_declarations_by_app() -> dict[str, dict[str, Any]]:
     words were the same word would be right about six apps and wrong about that
     one, silently.
     """
-    collected: dict[str, dict[str, Any]] = {}
-    for config in django_apps.get_app_configs():
-        if not config.name.startswith("apps."):
-            continue
-        module_name = f"{config.name}.api"
-        if importlib.util.find_spec(module_name) is None:
-            continue
-        declared = getattr(importlib.import_module(module_name), "TAGS", None)
-        if isinstance(declared, dict):
-            collected[str(config.label)] = {str(name): entry for name, entry in declared.items()}
-    return collected
+    return {
+        str(config.label): {str(name): entry for name, entry in tags.items()}
+        for config, tags in declared("api", "TAGS")
+    }
 
 
 def _tag_declarations() -> dict[str, Any]:
@@ -291,6 +287,11 @@ def family_freeze_findings(live: Sequence[str] | None = None) -> tuple[str, ...]
     findings: list[str] = []
     for family in FROZEN_FAMILIES:
         if family in present:
+            continue
+        # The declaring app is out of this deployment by the deployment's own
+        # choice: no door was ever going to answer the family here, and the
+        # freeze still holds the word for the day the app is switched back on.
+        if isinstance(family, DeclaredBy) and not django_apps.is_installed(f"apps.{family.app}"):
             continue
         findings.append(
             f"the family key {family!r} is frozen and this deployment no longer "
@@ -532,55 +533,30 @@ def effective_scopes(
 ) -> list[str] | None:
     """Which of the scopes asked for this person could actually use today.
 
-    **Why a mint door answers this at all.** Somebody setting an agent up asks
-    for the reach they think the job needs, and a scope their own role cannot
-    back is dead weight: the token carries it, the role underneath refuses
-    anyway, and the first anybody hears of it is a refusal in production
-    hours later on a call nobody is watching. Saying so at the mint is the
-    cheapest moment there is.
-
-    **What it is derived from, said plainly, because it is a guide and not a
-    promise.** What this person holds in the token's tenant, at the hat —
-    `core.authz.effective_permissions`, which is the one derivation of "what
-    may this person do here" and reads all three layers: the role their
-    membership names, this tenant's own deltas on it, and their own grants. If
-    every key they hold is a read, the write half of what they asked for is
-    dead weight and the echo says so. One granted write key anywhere — a
-    tenant's custom role, one `allow` grant — and the write scopes stand.
-
-    It used to read a ROLE and compare it against a rank, which could not see a
-    grant at all: somebody given exactly one write capability was told their
-    write scopes were dead, and they were not.
-
-    **The declaration, not the transition** (`compat=False`). A key a role
-    holds today only because the app that owns it has not been swept yet is a
-    capability its own predicate still narrows — and an echo is a claim about
-    what a credential can back, so it is made from what the roles and the rows
-    actually say. Reading the transitional set here would promise a member the
-    write half of every family with an un-swept predicate in it.
-
-    So a write scope missing from this list means *most* of that family will
-    refuse; it does not mean all of it will, because a policy is free to let a
-    member act on their own records and several do. The reverse never happens —
-    a scope in this list is one the data layer admits, and a policy can still
-    refuse an individual call for a reason about the row rather than about the
-    person.
-
-    `None` in, `None` out: a token with no ceiling asked for nothing in
-    particular, so there is nothing to answer about.
+    A write scope stands only when a held write key's kind is owned by an app declaring its family.
     """
     if scopes is None:
         return None
-    from apps.core.authz import effective_permissions, vocabulary
+    from apps.core.authz import effective_permissions, kind_registry, vocabulary
 
     # What was ASKED FOR, plus what asking for it carried: a write scope brings
     # its family's read, and the echo is where somebody sees that rather than
     # having to know it. Explicitness lives at the mint; the wire just answers.
     granted = sorted(granted_scopes(scopes))
-    held = effective_permissions(user, tenant, org, compat=False)
+    held = effective_permissions(user, tenant, org)
     if not held:
         return []
-    words = vocabulary()
-    if any(not words[action].is_read for action in held if action in words):
-        return granted
-    return [scope for scope in granted if (parse_scope(scope) or ("", WRITE))[1] == READ]
+    words, kinds = vocabulary(), kind_registry()
+    backed = {
+        family
+        for action in held
+        if action in words
+        and not words[action].is_read
+        and (model := kinds.get(action.split(".", 1)[0])) is not None
+        for family in families_of_app(model._meta.app_label)
+    }
+    return [
+        scope
+        for scope in granted
+        if (parsed := parse_scope(scope)) is not None and (parsed[1] == READ or parsed[0] in backed)
+    ]

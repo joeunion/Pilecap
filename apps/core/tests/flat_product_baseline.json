@@ -1,607 +1,1112 @@
 {
-  "_": "DERIVED, never typed. Every cell is `allows(actor, key, obj=None)` on a FLAT product: one tenant, one node, no Role, RolePermission or Grant row, one person per role. The test re-runs the same census on this tree and asserts equality; a moved answer prints (key, role, before, after).",
-  "_baseline": "e85a5057",
+  "_": "DERIVED, never typed. Every cell is `allows(actor, key, obj=None)` on a FLAT product: one tenant, one node, no Role, RolePermission or Grant row, one person per role; `objects` asks the same keys of the rows an app's `tests/authz_objects.py` provides. The test re-runs the same census on this tree and asserts equality; a moved answer prints (key, role, before, after).",
+  "_baseline": "68b1b8c0",
   "_command": "uv run python manage.py shell -c \"from apps.core.tests.permissions_world import write_flat_product_baseline as w; w('apps/core/tests/flat_product_baseline.json')\"",
   "answers": {
     "api_token.read": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "audit_entry.read": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "channel_preference.read": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "channel_preference.update": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "connection.create": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "connection.read": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "connection.receive_webhook": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "connection.revoke": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "connection.update": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "delivery.read": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "delivery.replay": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "delivery_policy.create": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "delivery_policy.read": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "delivery_policy.retire": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "deployment.configure": {
       "admin": false,
+      "customer": false,
       "member": false,
       "owner": false
     },
     "device.create": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "device.read": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "device.retire": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "djb_import.apply": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "djb_import.cancel": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "djb_import.create": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "djb_import.read": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "djb_note.archive": {
       "admin": false,
+      "customer": false,
       "member": false,
       "owner": false
     },
     "djb_note.create": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "djb_note.read": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "djb_note.restore": {
       "admin": false,
+      "customer": false,
       "member": false,
       "owner": false
     },
     "djb_note.update": {
       "admin": false,
+      "customer": false,
       "member": false,
       "owner": false
     },
     "djb_tag.archive": {
       "admin": false,
+      "customer": false,
       "member": false,
       "owner": false
     },
     "djb_tag.create": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "djb_tag.read": {
       "admin": true,
+      "customer": true,
       "member": true,
       "owner": true
     },
     "djb_tag.restore": {
       "admin": false,
+      "customer": false,
       "member": false,
       "owner": false
     },
     "djb_tag.update": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "djb_tag_link.create": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "djb_tag_link.delete": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "djb_tag_link.read": {
       "admin": true,
+      "customer": true,
       "member": true,
       "owner": true
     },
     "djb_tag_link.update": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "endpoint.create": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "endpoint.deactivate": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "endpoint.issue_secret": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "endpoint.read": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "endpoint.resume": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "endpoint.update": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "event.read": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "export.build": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "export.create": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "export.read": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "file.archive": {
       "admin": false,
+      "customer": false,
       "member": false,
       "owner": false
     },
     "file.create": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "file.read": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "file.replace": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "file.restore": {
       "admin": false,
+      "customer": false,
       "member": false,
       "owner": false
     },
+    "first_admin_vouch.read": {
+      "admin": true,
+      "customer": false,
+      "member": true,
+      "owner": true
+    },
     "grant.read": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "idempotency_record.read": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "identity_branding.read": {
       "admin": true,
+      "customer": false,
+      "member": true,
+      "owner": true
+    },
+    "identity_home.read": {
+      "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "inbound_webhook.read": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "invitation.create": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "invitation.read": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "invitation.revoke": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "membership.create": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "membership.delete": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "membership.read": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "membership.update": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "message.cancel": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "message.read": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "message.record_status": {
       "admin": false,
+      "customer": false,
       "member": false,
       "owner": false
     },
     "message.send": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "message_engagement.create": {
       "admin": false,
+      "customer": false,
       "member": false,
       "owner": false
     },
     "message_engagement.read": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "message_template.create": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "message_template.read": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "message_template.retire": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "organization.create": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "organization.move": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "organization.read": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "organization.update": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "outbox.read": {
       "admin": true,
+      "customer": false,
       "member": true,
+      "owner": true
+    },
+    "portal_request.read": {
+      "admin": true,
+      "customer": true,
+      "member": true,
+      "owner": true
+    },
+    "portal_request.submit": {
+      "admin": true,
+      "customer": true,
+      "member": false,
       "owner": true
     },
     "recipient.archive": {
       "admin": false,
+      "customer": false,
       "member": false,
       "owner": false
     },
     "recipient.create": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "recipient.read": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "recipient.restore": {
       "admin": false,
+      "customer": false,
       "member": false,
       "owner": false
     },
     "recipient.update": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "role.read": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "sso_connection.create": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "sso_connection.disable": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "sso_connection.read": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "sso_connection.update": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "sso_domain.read": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "sso_domain.verify": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "sso_identity.create": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "sso_identity.read": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "suppression_surge.create": {
       "admin": false,
+      "customer": false,
       "member": false,
       "owner": false
     },
     "suppression_surge.read": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "tenant.read": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "tenant.update": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "usage_entry.read": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "user.deactivate": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "user.erase": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "user.read": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "user.unlink": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "widget.approve": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "widget.archive": {
       "admin": false,
+      "customer": false,
       "member": false,
       "owner": false
     },
     "widget.create": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "widget.delete": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "widget.merge": {
       "admin": false,
+      "customer": false,
       "member": false,
       "owner": false
     },
     "widget.move": {
       "admin": false,
+      "customer": false,
       "member": false,
       "owner": false
     },
     "widget.onboard": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "widget.read": {
       "admin": true,
+      "customer": true,
       "member": true,
+      "owner": true
+    },
+    "widget.remind": {
+      "admin": true,
+      "customer": false,
+      "member": false,
       "owner": true
     },
     "widget.restore": {
       "admin": false,
+      "customer": false,
       "member": false,
       "owner": false
     },
     "widget.update": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "widget_entry.read": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "widget_entry.record": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "widget_policy.archive": {
       "admin": false,
+      "customer": false,
       "member": false,
       "owner": false
     },
     "widget_policy.create": {
       "admin": true,
+      "customer": false,
       "member": false,
       "owner": true
     },
     "widget_policy.read": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "widget_policy.restore": {
       "admin": false,
+      "customer": false,
       "member": false,
       "owner": false
     },
     "workflow_run.cancel": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "workflow_run.read": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "workflow_run.replay": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     },
     "workflow_run.signal": {
       "admin": true,
+      "customer": false,
       "member": true,
       "owner": true
     }
   },
+  "objects": {
+    "connection.create": {
+      "admin": {
+        "row": true
+      },
+      "customer": {
+        "row": false
+      },
+      "member": {
+        "row": false
+      },
+      "owner": {
+        "row": true
+      }
+    },
+    "connection.read": {
+      "admin": {
+        "row": true
+      },
+      "customer": {
+        "row": false
+      },
+      "member": {
+        "row": true
+      },
+      "owner": {
+        "row": true
+      }
+    },
+    "connection.receive_webhook": {
+      "admin": {
+        "row": true
+      },
+      "customer": {
+        "row": false
+      },
+      "member": {
+        "row": false
+      },
+      "owner": {
+        "row": true
+      }
+    },
+    "connection.revoke": {
+      "admin": {
+        "row": true
+      },
+      "customer": {
+        "row": false
+      },
+      "member": {
+        "row": false
+      },
+      "owner": {
+        "row": true
+      }
+    },
+    "connection.update": {
+      "admin": {
+        "row": true
+      },
+      "customer": {
+        "row": false
+      },
+      "member": {
+        "row": false
+      },
+      "owner": {
+        "row": true
+      }
+    },
+    "export.build": {
+      "admin": {
+        "organization": true,
+        "tenant": true
+      },
+      "customer": {
+        "organization": false,
+        "tenant": false
+      },
+      "member": {
+        "organization": false,
+        "tenant": false
+      },
+      "owner": {
+        "organization": true,
+        "tenant": true
+      }
+    },
+    "export.create": {
+      "admin": {
+        "organization": true,
+        "tenant": true
+      },
+      "customer": {
+        "organization": false,
+        "tenant": false
+      },
+      "member": {
+        "organization": true,
+        "tenant": false
+      },
+      "owner": {
+        "organization": true,
+        "tenant": true
+      }
+    },
+    "export.read": {
+      "admin": {
+        "organization": true,
+        "tenant": true
+      },
+      "customer": {
+        "organization": false,
+        "tenant": false
+      },
+      "member": {
+        "organization": true,
+        "tenant": true
+      },
+      "owner": {
+        "organization": true,
+        "tenant": true
+      }
+    },
+    "file.archive": {
+      "admin": {
+        "row": true
+      },
+      "customer": {
+        "row": false
+      },
+      "member": {
+        "row": false
+      },
+      "owner": {
+        "row": true
+      }
+    },
+    "file.create": {
+      "admin": {
+        "row": true
+      },
+      "customer": {
+        "row": false
+      },
+      "member": {
+        "row": true
+      },
+      "owner": {
+        "row": true
+      }
+    },
+    "file.read": {
+      "admin": {
+        "row": true
+      },
+      "customer": {
+        "row": false
+      },
+      "member": {
+        "row": true
+      },
+      "owner": {
+        "row": true
+      }
+    },
+    "file.replace": {
+      "admin": {
+        "row": true
+      },
+      "customer": {
+        "row": false
+      },
+      "member": {
+        "row": true
+      },
+      "owner": {
+        "row": true
+      }
+    },
+    "file.restore": {
+      "admin": {
+        "row": true
+      },
+      "customer": {
+        "row": false
+      },
+      "member": {
+        "row": false
+      },
+      "owner": {
+        "row": true
+      }
+    },
+    "widget.approve": {
+      "admin": {
+        "row": true
+      },
+      "customer": {
+        "row": false
+      },
+      "member": {
+        "row": false
+      },
+      "owner": {
+        "row": true
+      }
+    },
+    "widget.archive": {
+      "admin": {
+        "row": true
+      },
+      "customer": {
+        "row": false
+      },
+      "member": {
+        "row": false
+      },
+      "owner": {
+        "row": true
+      }
+    },
+    "widget.create": {
+      "admin": {
+        "row": true
+      },
+      "customer": {
+        "row": false
+      },
+      "member": {
+        "row": true
+      },
+      "owner": {
+        "row": true
+      }
+    },
+    "widget.delete": {
+      "admin": {
+        "row": true
+      },
+      "customer": {
+        "row": false
+      },
+      "member": {
+        "row": false
+      },
+      "owner": {
+        "row": true
+      }
+    },
+    "widget.merge": {
+      "admin": {
+        "row": true
+      },
+      "customer": {
+        "row": false
+      },
+      "member": {
+        "row": false
+      },
+      "owner": {
+        "row": true
+      }
+    },
+    "widget.move": {
+      "admin": {
+        "row": true
+      },
+      "customer": {
+        "row": false
+      },
+      "member": {
+        "row": false
+      },
+      "owner": {
+        "row": true
+      }
+    },
+    "widget.onboard": {
+      "admin": {
+        "row": true
+      },
+      "customer": {
+        "row": false
+      },
+      "member": {
+        "row": false
+      },
+      "owner": {
+        "row": true
+      }
+    },
+    "widget.read": {
+      "admin": {
+        "row": true
+      },
+      "customer": {
+        "row": true
+      },
+      "member": {
+        "row": true
+      },
+      "owner": {
+        "row": true
+      }
+    },
+    "widget.remind": {
+      "admin": {
+        "row": true
+      },
+      "customer": {
+        "row": false
+      },
+      "member": {
+        "row": false
+      },
+      "owner": {
+        "row": true
+      }
+    },
+    "widget.restore": {
+      "admin": {
+        "row": true
+      },
+      "customer": {
+        "row": false
+      },
+      "member": {
+        "row": false
+      },
+      "owner": {
+        "row": true
+      }
+    },
+    "widget.update": {
+      "admin": {
+        "row": true
+      },
+      "customer": {
+        "row": false
+      },
+      "member": {
+        "row": false
+      },
+      "owner": {
+        "row": true
+      }
+    }
+  },
+  "residue": {
+    "admin": [],
+    "customer": [],
+    "member": []
+  },
   "roles": [
     "owner",
     "admin",
-    "member"
+    "member",
+    "customer"
   ]
 }

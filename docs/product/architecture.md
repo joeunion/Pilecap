@@ -41,20 +41,20 @@ it is not a port of one.** The product ledgers ship as skeletons.
 | Database | **PostgreSQL**, always — including tests and every worktree. Never SQLite, even locally: the Postgres-specific fields, constraints and query behaviour are part of the contract. |
 | Containers | `compose.yaml` with **Postgres, Redis (channel layer + cache), and the Temporal dev server**; the app and the worker run on the host against them. |
 | API layer | **django-ninja, Pydantic v2 schemas. Decided.** One contract language across every door: the same schema is the REST response, the MCP tool output, the webhook body and the socket payload. Every route declares `auth=`; every list uses `@paginate`; OpenAPI at `/api/v1/docs` (the API is mounted under `/api/v1/`; `config/urls.py` owns the version segment). DRF was the earlier default and lost once the door set (MCP, webhooks, sockets) made a second schema system inevitable. |
-| Auth & identity | **Zitadel is THE identity system — B, all at once ("we're fresh, let's do it right so we pay the cost once"; supersedes the earlier app-is-its-own-IdP approach).** Self-hosted Zitadel (Apache-2.0) in compose from day zero, its config **as code, driven through our services via its management API — the Zitadel console is NOT a door**: an identity-config change that did not go through our audited services did not legitimately happen (house-rule-shaped invariant). Browser login: the app is an OIDC relying party against Zitadel (allauth reduced to RP plumbing). **Workforce**: Google federated through Zitadel, domain-restricted. **Customers**: per-org external IdPs (Okta, Entra, SAML/OIDC) — `SsoConnection` survives as the audited config-of-record whose services re-point from allauth internals to Zitadel's API; home-realm discovery, enforced-SSO, domain claiming, JIT membership keep their A9 wire-proven properties, re-proven against the new engine. **MCP**: OAuth 2.1 with Zitadel as the authorization server; tokens exchanged into the org-bound principal; DCR/consent are Zitadel's. **SCIM**: Zitadel's, maturity verified at the first customer demand (WorkOS stays the named fallback if it falls short). The suite-IdP end-state arrives at day zero instead of at the second product. A fresh clone's `setup.sh` seeds Zitadel — a deliberate DX rung, not an accident. An IdP answers *who*; `Membership`/roles/policies/audit stay ours, unmoved. **Amended 2026-09-15 (owner, DESIGN-I decision A, on P20's evidence: a 21-minute first admin on the hosted page):** ADR ident-4 reads "Zitadel holds every credential and decides what is required; OUR page renders" — the hosted page stops being the front door; lane I-A's sign-in remedies and A1's join at sign-in are the first instances. |
+| Auth & identity | **Zitadel is THE identity system — B, all at once ("we're fresh, let's do it right so we pay the cost once"; supersedes the earlier app-is-its-own-IdP approach).** Self-hosted Zitadel (Apache-2.0) in compose from day zero, its config **as code, driven through our services via its management API — the Zitadel console is NOT a door**: an identity-config change that did not go through our audited services did not legitimately happen (house-rule-shaped invariant). Browser login: the app is an OIDC relying party against Zitadel (allauth reduced to RP plumbing). **Workforce**: Google federated through Zitadel, domain-restricted. **Customers**: per-org external IdPs (Okta, Entra, SAML/OIDC) — `SsoConnection` survives as the audited config-of-record whose services re-point from allauth internals to Zitadel's API; home-realm discovery, enforced-SSO, domain claiming, JIT membership keep their A9 wire-proven properties, re-proven against the new engine. **MCP**: OAuth 2.1 with Zitadel as the authorization server; tokens exchanged into the org-bound principal; DCR/consent are Zitadel's. **SCIM**: Zitadel's, maturity verified at the first customer demand (WorkOS stays the named fallback if it falls short). The suite-IdP end-state arrives at day zero instead of at the second product. A fresh clone's `setup.sh` seeds Zitadel — a deliberate DX rung, not an accident. An IdP answers *who*; `Membership`/roles/policies/audit stay ours, unmoved. **Amended 2026-09-15 (owner, DESIGN-I decision A, on P20's evidence: a 21-minute first admin on the hosted page):** ADR ident-4 reads "Zitadel holds every credential and decides what is required; OUR page renders" — the hosted page stops being the front door; lane I-A's sign-in remedies and A1's join at sign-in are the first instances. **Amended 2026-09-30 (owner, identity option B — ADR ident-13):** "Customers: per-org external IdPs" now means a realm per tenant — every tenant signs in at an organisation of its own at Zitadel, made when the tenant is (`EnsureTenantIdentityHomeWorkflow`, recorded on `accounts.IdentityHome`), the platform's one project granted to it, with its own login policy and providers; the deployment's existing organisation is the **staff realm**; a tenant's `enforced` is its realm's login policy. A person is one `User` holding one subject per realm through the identity join (`SsoIdentity` rows with no connection), which replaced `User.zitadel_sub`. The per-tenant operations go through a port we own, `apps/accounts/realm.py::IdentityRealm`, with Zitadel its first adapter (`apps/accounts/realms/zitadel.py`); the deployment-level bootstrap (the seed, the audit, the sign-in seam) stays in `apps/accounts/zitadel.py` and its commands. |
 | Custom user model | **Set on day zero**, before the first migration, and boring: `AbstractBaseUser` + `PermissionsMixin`, email as the identifier, no product fields. Own the table; do not design the user. House rule: `auth.User` is never imported; `get_user_model()` / `settings.AUTH_USER_MODEL` only. |
 | Base model | Every concrete model inherits `core.models.BaseModel` (**UUIDv7** pk — time-sortable — `created_at`, `updated_at`). House rule. |
 | Business logic | **Explicit `services.py` for writes and `selectors.py` for reads, per app. Decided.** Services own writes; routes and schemas are thin; models carry invariants and derived properties, not workflows. **No business logic in signals** — signals are where agents hide logic. House rule. |
 | Tenancy | **Shape: shared schema + tenant FK, read through a scoped manager, enforced by a house rule. ON by default; a product opts out. Decided.** The template ships `core.Tenant`, `core.Membership` (user × tenant), the abstract `TenantScopedModel(BaseModel)` with a `tenant` FK, a `ScopedQuerySet.for_tenant(tenant)` manager, and `TenantMiddleware` that resolves `request.tenant` from the user's membership (default membership; an `X-Tenant: <slug>` header may switch to another tenant the user belongs to; no membership → `request.tenant = None` and every scoped read returns nothing — **fails closed, no superuser exemption**). The example app inherits `TenantScopedModel`; every read in views and services is `Model.objects.for_tenant(request.tenant)`; house rule 8 is **enabled** and refuses a bare `.objects` on a scoped model outside the manager. **Opting out** (a genuinely single-tenant product) is recorded in the product's `architecture.md`: models inherit `BaseModel` instead, the middleware is removed, rule 8 is set `enabled: false` with the reason. Schema-per-tenant (django-tenants) is **not** a template option: a product may adopt it only under heavy consideration and only when it is an actual business requirement (e.g. a compliance demand for database-level isolation), recorded with the requirement named. Rationale: the base, the resolver and the rule are the part that is painful to retrofit; shipping them on means the leak-shaped code is refused from the first model. |
 | Hierarchy | **A template primitive, on from the start ("this framework needs to support hierarchies efficiently and securely from the start").** Per-tenant `Organization` tree (materialized path, fixed-width segments, indexed prefix scans — no recursion, no tree walks on the read path); **every tenant gets a root node automatically**, so a flat product is a depth-one tree and pays nothing. `Membership` = person × tenant × org × role; `OrgScopedModel(TenantScopedModel)` for networked records; reads are `.for_tenant(t).visible_to(actor)` — **visibility flows down only, fails closed, no exemptions** (upward/sideways inheritance only as an explicit policy with a named reason). Roles inherit down (effective role = best role on the record's ancestor chain, computed over the actor's own memberships). Acting hat via `X-Org`, revalidated per request. **No grant above your own effective role or outside your subtree** (the escalation wall). Re-parenting is a service + workflow, audited, ancestor-admin of both ends only. Aggregates go through the same scope. House rule 24 enforces `visible_to` on org-scoped reads by AST, with canaries. Audit and workflow context carry the acting org. |
 | Frontend | **Opinionated default — Next.js/React/TypeScript consuming the GENERATED OpenAPI client. Owner-ratified 2026-09-02, superseding "bring your own"** (which had drifted false against the tree: `frontend/` ships Next 16.3.3/React 19.2.8 since the P16 SCAFFOLD merge, `fe-conventions` is written at those pins, rules 51–53 enforce the layer — the register said none while main shipped one; the drift was caught by the owner's own question). The halves meet ONLY at the OpenAPI document (P16 strategy pillar 1): doors serve it, the client is generated never hand-typed, the byte-pin makes drift loud; the backend never imports or assumes the client. **Bring-your-own remains legal as a recorded product divergence** in the product's own architecture.md — at the cost of the scaffold, fe-conventions and rules 51–53's enforcement, which that product replaces or forgoes. Rejected: keeping "bring your own" settled with `frontend/` demoted to a non-normative example (weakens the JS rules' standing on every product that takes the default); reversing the frontend package (the ratified P16 strategy's frontend half, built and verified). |
-| Background work & workflows | **Temporal, from day zero. Decided.** Durable execution for everything that must survive a restart or wait: webhook delivery with backoff, integration syncs, multi-step processes that wait for a human or a signal, schedules. **Activities** call services; **workflow code is deterministic** — no ORM, no I/O, no clock, no randomness inside a workflow function (house rule 9). Local: the Temporal dev server in `compose.yaml`; a `worker` process beside the web process. Production: Temporal Cloud by default, self-hosted as the recorded alternative. **There is no Celery, no beat, no `django.tasks` backend** — Temporal is the one engine for tasks, retries, schedules and workflows. |
+| Background work & workflows | **Temporal, from day zero. Decided.** Durable execution for everything that must survive a restart or wait: webhook delivery with backoff, integration syncs, multi-step processes that wait for a human or a signal, schedules. **Activities** call services; **workflow code is deterministic** — a workflow module imports `pilecap.determinism` (and its app's `types.py`), never a clock, randomness or I/O; the ORM, `pilecap`'s root and the apps are the activities' (house rule 9). Local: the Temporal dev server in `compose.yaml`; a `worker` process beside the web process. Production: Temporal Cloud by default, self-hosted as the recorded alternative. **There is no Celery, no beat, no `django.tasks` backend** — Temporal is the one engine for tasks, retries, schedules and workflows. |
 | Server | **ASGI by default** (`uvicorn`), because sockets and async endpoints are day-zero. The CRUD core stays on the sync ORM; async where an endpoint is I/O-bound. |
-| Sockets | **Django Channels** with the Redis channel layer; one authenticated consumer; services emit events that the realtime bridge pushes. **The hierarchy reaches this door (ADR realtime-2):** the socket used to push every fanned event to one group per tenant while REST read the same rows through `visible_to`, so a branch-B seller's socket received branch-A's rows — two doors, one question, two answers. Now `Event` carries the **row's** organization (ADR realtime-2a: it rides the `EventOut` envelope, the one body both the webhook and socket doors are handed, so the fan-out narrows on a field it can see and the spine's bridge signature never changed); an org-bearing event is pushed to `org_group(tenant, org)` and **only** an org-less one to the bare tenant group; and a consumer joins its hat's **subtree** org groups at connect — the socket's half of house rule 24, narrowing *subscriptions* where REST narrows rows, downward-only and failing closed on an unresolved hat. A flat product is a depth-one tree whose root hat joins three constant groups, so the depth-one property is preserved. Every consumer also joins `user_group(user_id)` **FIRST, before either of its reads** (R4 F3 — a narrowing that commits while `connect` is still resolving would otherwise kick into a group the connection has not joined, and the kick is lost), and the bridge name **`realtime.kick`** (shape `KicksUser`) closes that group's sockets — connect-time-only auth is right for a channel that stays open for hours and wrong the moment a token is revoked, so revocation and erasure reach the connection instead of the connection eventually noticing. **Clause (d) has a second primitive: `realtime.kick_tenant`** (shape `KicksTenant`), a `KICK_TYPE` frame on `tenant_group`, because a tenant that is suspended or closed is not a fact about one person — `suspend_tenant` and `close_tenant` register it through `core.services.close_tenant_sockets_on_commit`, and before they did, a darkened tenant was refused at the next handshake and nowhere else while every live socket went on hearing (R4 F2). A **resume** kicks nobody: a widening takes nothing away, which is `kick_if_reads_narrowed`'s asymmetry one level up. **The channel is declaredly lossy and the seam is poll-on-reconnect** (`apps/realtime/bridge.py`'s docstring says it in full): no replay buffer, no cursor, none planned — a reconnecting client re-reads the REST list it cares about and treats a frame as a hint that something changed, and a hat switched mid-connection applies on reconnect. Rejected: **ancestor-chain publish** (cheaper joins, but the fan-out cost rides every emit including the socketless majority, where subtree-join cost rides only connected sockets) — RECORDED, with M4's measured join count at the 1,200-org hat as the trigger to revisit; a `visible_to` query per push (a DB read per event per connection — the N+1 the harness exists to refuse); connect-time-only auth with shorter tokens (narrows the window, closes nothing). |
+| Sockets | **Django Channels** with the Redis channel layer; one authenticated consumer; services emit events that the realtime bridge pushes. (ADR realtime-2) |
 | MCP | The official Python MCP SDK mounted on the ASGI app at `/mcp` (Streamable HTTP). Tools are thin over services; token auth bound to user + tenant. The machine door — same services as REST; a disagreement between doors is a finding. |
 | Webhooks & events | `apps/events`: services `emit()` domain events → an **outbox** row → a Temporal workflow fans out: signed outbound webhook deliveries (HMAC, retries, dead-letter) and realtime pushes. Inbound webhooks are verified, stored and handed to a workflow — never processed inline. |
 | External connections | `apps/connections`: per-tenant `Connection` (provider, **encrypted credentials** — Fernet, key from env — status), an `httpx` client factory (timeouts, retries, idempotency keys), the OAuth-callback pattern, one inbound-webhook receiver. Providers are product work. |
-| Communications | **A template platform app (`apps/comms`) — every product needs it and uses it; it must be easy and consistent; what changes is the provider behind it. Decided.** One door: `comms.send(*, recipient, template, context, channel, tenant, actor)` — nothing else in a product sends anything (house-rule-shaped: the only legal sender). Behind it: a **channel-provider registry** (email built in via the mail path + django-anymail at the ESP edge; SMS/Slack/push as `connections` providers a product enables — swapping a provider is config + a connection, never a code path change). `Message` (per-attempt log: channel, provider id, status queued→sent→delivered→bounced, correlation ids), `MessageTemplate` (per-tenant, versioned, variables schema-validated), `ChannelPreference` + consent (category opt-outs — transactional vs marketing, quiet hours, suppression) **enforced inside `send()`, so no campaign or feature can bypass it**. A `Recipient` concept for people who are not Users (contacts). Delivery, retries and fallback ("push, then email if unread") are Temporal workflows; provider status webhooks arrive through `connections`/`events` and become `comms.message.*` events. **Novu is the recorded escalation** for marketing-grade journeys/digests/inbox UI, as a product divergence with the requirement named — never the default. **The wall is not a weapon (ADR comms-9, amending comms-8):** a bounce carries a `BounceKind` and only a **hard** one suppresses — `complained` and `rejected` are hard by their event type, an unclassified bounce is hard by the conservative default, and a soft bounce is recorded and acts on nothing; **Amended: complaints are consent news, not delivery news — they suppress without transitioning the message; the soft branch is provider-dependent and declared per adapter.** `complained` still normalises onto `bounced` at the adapter, because *stop mailing this address* is what one suppression rule has to read, but it carries `ProviderStatus.is_complaint` out with it and `record_delivery_status` forks on that above every transition guard: the recipient is suppressed through the same `suppress_recipient`, the fact is announced as `comms.message.complained`, and `Message.status` is left exactly where the provider left it — a complaint by definition follows a delivery, and the collapsed set could only say so by writing `bounced` onto a row that had arrived (`complained@resend.dev` was refused with `Conflict("That message is delivered and can no longer be bounced.")` and suppressed nobody). The settled-row guard itself is untouched: a *bounce* after delivery is still refused. **No column** — the fact is carried by the suppression, the audit row and the event; a `complained_at` waits for a product that must list complaints per message without reading the audit trail, and until then a flood made only of complaints does not open a surge (the tripwire counts the bounce population); the provider message id is **never echoed into the mail we compose**, because it is the key a status webhook suppresses an address against and a forwarded receipt was therefore a weapon; and a **mass-suppression tripwire** (25 addresses per connection per trailing hour) emits `comms.suppression.surged` / `.recovered` on the **transitions only** — the announce-on-transition ruling's first application — without ever halting suppression, since a tripwire that disabled the wall would be the better attack. **A temporal lever delays; only a permanent one kills (ADR comms-10):** at the transport edge the consent recheck forks by the *kind* of lever that refused — suppression and withdrawn consent are facts about the person, so the message dies and the run closes **promptly**, through the finish seam and with no 72h `STATUS_WAIT` behind it (a `WorkflowRun` reading `running` for three days about a message refused in milliseconds was the ledger lying by laziness); quiet hours is a fact about the *clock*, so the run **sleeps to the recipient-local window-open on Temporal's timer and then re-runs the FULL wall** before handing anything over — the deferral is a road back to the wall, not around it, so a suppression landing during the sleep refuses at the second judgement. The deferral is a **designed delay and not a degraded state**: no announcement event, deliberately. Rejected: kill-and-re-enqueue (duplicates the row and restarts the policy), a poller over deferred messages (the run already exists and can wait — anything that waits is a workflow), keeping the 72h wait for refusals. Revisit when deferral volume makes the sleeping-run population itself a cost, at which point one scheduled release workflow per window, as data. **A drop is a judgement, and it says which one (ADR comms-13; decomposed as "comms-10", a number the temporal-lever ruling above already holds — same ADR, next free number):** the status vocabulary on the template-HMAC path is **anymail's normalised shape and nothing else**, because with no Anymail ESP configured there is no translation to read a vendor's raw body with — `{"event_type": …, "message_id": …}` is the door's contract there, and a raw `{"type": "email.bounced", …}` is a language that deployment cannot read. The three ways a status body can produce no status are three findings for three different people, and each now carries **its own log name and its own remedy**: `comms.status.ignored` fires **only** for an event that was read and understood as non-terminal and always prints the word it read (the door working, the run still waiting); `comms.status.untranslatable_body` for a body carrying no vocabulary this deployment can read, naming both ways out — post the normalised event, or set `EMAIL_BACKEND` to an Anymail ESP — which is a **deployment** fault; `comms.status.no_message_id` for a terminal event naming no handle to join on, which is a **provider** fault. One name over three causes is exactly the shape a nameless drop used to take: `ignored` with an empty `event_type` claimed a judgement nobody had made, the message stayed `sent` forever, and the field test spent its first two days on the worker. **The account of a drop is the adapter's, like the status itself** — `ExplainsStatusDrops` is an *optional second protocol* beside `ChannelProvider`, so a product transport that never grows it still never produces a nameless drop (the door falls back to what it can read for itself, and that fallback is driven by a test rather than hoped for). And `scripts/mail_demo.py` **speaks the contract it drives**: it already asked which signature scheme the stack arms, it now asks the same question of the *body* — normalised on `hmac`, raw ESP on `svix` — and leg 4's failure names both indistinguishable causes (read-and-dropped, with the log names to grep; or never-processed) instead of blaming the worker first. Rejected: guessing the ESP from the connection slug (the provider is `EMAIL_BACKEND` and nothing else — comms-12); refusing an unreadable body with 4xx (verify→store→202 is settled in comms-3, and a 4xx would make somebody else's malformed payload our door's problem); valving the comms doorless trio here (ADO-8 — a valve without the paired `quality/rules.yaml` tighten kills rule 42's canary at the merged tree, the a0da0bd class, and the coordinated close is a residual for a rung allowed both files). Revisit when a product's relay cannot normalise: it implements `normalize_status` and `explain_status_drop` on its own adapter, which is what both protocols sit on the seam for. |
+| Communications | **A template platform app (`apps/comms`) — every product needs it and uses it; it must be easy and consistent; what changes is the provider behind it. Decided.** One door: `comms.send(*, recipient, template, context, channel, tenant, actor)` — nothing else in a product sends anything (house-rule-shaped: the only legal sender). Behind it: a **channel-provider registry** (email built in via the mail path + django-anymail at the ESP edge; SMS/Slack/push as `connections` providers a product enables — swapping a provider is config + a connection, never a code path change). `Message` (per-attempt log: channel, provider id, status queued→sent→delivered→bounced, correlation ids), `MessageTemplate` (per-tenant, versioned, variables schema-validated), `ChannelPreference` + consent (category opt-outs — transactional vs marketing, quiet hours, suppression) **enforced inside `send()`, so no campaign or feature can bypass it**. A `Recipient` concept for people who are not Users (contacts). Delivery, retries and fallback ("push, then email if unread") are Temporal workflows; provider status webhooks arrive through `connections`/`events` and become `comms.message.*` events. **Novu is the recorded escalation** for marketing-grade journeys/digests/inbox UI, as a product divergence with the requirement named — never the default. (ADR comms-9; ADR comms-10; ADR comms-13) |
 | Typing | `mypy --strict` + django-stubs, as a blocking gate leg. |
 | Hosting | **A product decision, not a template ruling ("leave the hosting decisions to the app builder").** The template ships everything a hosting choice needs and nothing that presumes one: Docker images (web + worker), `/healthz` + `/readyz`, CI, compose for local, `.env.example` as the config manifest, expand/contract migrations. Standing guidance a product starts from, not rules: two stateless containers need no Kubernetes (K8s is an escalation, not a default); prefer managed backing services (Postgres, Redis, Temporal Cloud and ClickHouse Cloud — BAAs already in place); each product records its runtime, IaC flavor and region shape in its own `architecture.md`. **Secrets (standing default): AWS Secrets Manager** (SSM Parameter Store for non-secret config), injected as env vars by the runtime (ECS `secrets:` block or equivalent) — the app reads env only, so the vault is invisible to code; stage and prod are the same mechanism with different ARNs; CI holds no long-lived cloud secrets (OIDC role assumption; test env keeps the published dev values production refuses). Escalations, dated: Vault/OpenBao for multi-cloud or dynamic DB credentials; Doppler-class for Render-tier hosting. |
 | Settings | A `settings/` package split by environment; `manage.py check --deploy` clean with warnings treated as failures. |
@@ -87,870 +87,11 @@ Every product has the same doors and they all meet in one place:
 
 - **REST** (`apps/<x>/api.py`, ninja routers, discovered and mounted by `config/api.py` at `/api/<label>/`, or at `/api/<PREFIX>/` when the module names `PREFIX`),
 - **MCP** (`apps/<x>/mcp.py`, tools discovered and mounted at `/mcp`),
-- **Sockets** (`apps/realtime`, one consumer per tenant group),
+- **Sockets** (`apps/realtime`, one consumer joining the tenant, org-subtree and user groups the bridge's `tenant_group` / `org_group` / `user_group` build — ADR realtime-2, `76c8a7e0b`),
 - **Webhooks in/out** (`apps/events`, `apps/connections`),
 - **Workflows** (`apps/<x>/workflows.py` + `activities.py`, discovered by the worker).
 
-**Every door calls services; services own writes and `emit()` events; workflows carry anything that must wait or retry.** **Upward calls invert through the bridge**: when a lower layer needs a higher one (`core.mail` starting a workflow; a `core` service emitting an event), it calls `core.bridge.get("<name>")` — a runtime registry that higher apps fill from `AppConfig.ready()` (`workflows.start_on_commit`, `events.emit`, `realtime.push`). An upward *import*, even function-local, is a violation (the one `core.mail → apps.workflows` exception recorded in pyproject is temporary and dies when the bridge lands in rung A3). Absent registration = the bridge raises in production settings and no-ops with a log in local/test — a template without the platform apps still runs. Registration is by **discovery, never by editing `config/` or `pyproject.toml`**: `INSTALLED_APPS` is derived from `apps/*/apps.py`; a new app drops an `api.py`, `mcp.py`, `workflows.py`, `activities.py`, `consumers.py` and the mounts find it; an app declares what it may import on its own `AppConfig` (`depends_on`) and house rule 7 enforces it, with import-linter keeping only the fixed layer contract (`core` ← `accounts` ← platform ← domain). That is what lets one agent per app run in parallel without touching a shared file. (Ruled after an early alignment review found registration was hand-listed.)
-
-**ADR workflows-6 · the run ledger gets a read door, and the actor's own runs replay.**
-*Context*: the run ledger was reachable only from admin/shell; "the
-actor's own runs" was unanswerable because `WorkflowRun` recorded no starter.
-*Decision*: `started_by` (nullable FK User, `SET_NULL` — the ledger outlives
-its people) written by `record_run` off the user `start_workflow_on_commit`
-already threads; list/get `for_tenant`, policy-gated (`workflowrun.read`),
-the list defaulting to `mine=true`; **`start_replay`** (the service verb is
-`start` — `replay` is not in the lexicon and the wave may not edit it; INT's
-re-pin adds `replay` and the rename back is one commit) resets a FAILED run
-the actor started to its first workflow task — Temporal re-executes the
-recorded input, which rule 9's determinism is what makes legal; same
-deterministic id (rule 18); dispatched `on_commit` robust; history expiry
-decided from the row's clock (`HISTORY_RETENTION`, a module constant —
-promote to a setting when a deployment's namespace retention differs from
-the default); signal/retry stay operator (the ruling). *Rejected*: replay as
-re-invoke-the-origin-door (the client may no longer know the input; the
-ledger is the thing that knows), storing run inputs in the row (two truths),
-backfilling `started_by` (a guess wearing a fact — empty means unknown).
-*Trigger to revisit*: history-retention shorter than the product's replay
-expectations.
-
-**ADR workflows-7 · a run its owner started, its owner may stop —
-and the ledger's third word is witnessed, never asserted.**
-*Context*: The run ledger could show you your work and re-run it when it
-failed, and had no way to stop one that was running away — the only cancel in
-the product was the Temporal CLI, which is not a door. And `WorkflowRun.Status`
-had two closing words, so a run somebody deliberately stopped read, months
-later, exactly like one that broke; the reconciler lumped Temporal's own
-`CANCELED` into `FAILED` for want of anywhere else to put it.
-*Decision*: **`cancel_run`** — `POST /api/v1/runs/{run_id}/cancel/` plus the
-MCP twin over `contract_of` — with `start_replay`'s four walls in
-`start_replay`'s order: tenant (`for_tenant` → `NotFound`), membership
-(`require(actor, "workflow_run.cancel", run)`, a named `policies.py` predicate),
-ownership (`started_by` null or not the actor's → `NotFound`, never
-`Forbidden`, the existence-oracle argument), state (non-RUNNING → `Conflict`
-naming the status). The Temporal cancel is dispatched on
-`transaction.on_commit(..., robust=True)`, the fifth registration in the tree's
-survey. **`Status` gains `CANCELLED`** (one expand-only, choices-only
-migration) and **the service stamps no row field at all**: a cancellation is a
-*request*, so the door answers with the row as it is — still `running` — and
-the contract sentence tells the caller to poll. The row closes as `cancelled`
-only when somebody witnessed it, and there are exactly two witnesses:
-`workflows._finish`, which now catches a server-originated cancellation
-(`asyncio.shield` around the mark, because a cancelled workflow's own task is
-already cancelled; `workflow.cancellation_reason()` to tell that from an inner
-scope losing a race), and `activities.reconcile_runs`, whose `CLOSED_AS` maps
-`CANCELED → cancelled`. A cancelled run does not replay: `start_replay` refuses
-it with a `Conflict` of its own naming the status, because a deliberate stop is
-not a failure. Audited as `workflows.cancel_run` per door; **no event** — there
-is no consumer, and the trigger is recorded rather than the topic shipped.
-*Rejected*: operator-wide cancel (ADR workflows-6's ruling stands — signal and
-retry-tuning stay operator-only, and cancel is the actor's own for the same
-reason replay is); a synchronous row close at the door (the ledger would assert
-an outcome because somebody asked for one, and a workflow that ignored the
-cancel and completed would leave a `cancelled` row over a `completed` history);
-a `workflows.run.cancelled` event (nothing subscribes; the trigger is the first
-subscriber). *Trigger to revisit*: the first stuck run whose owner has left the
-tenant — the own-run wall means no admin can clear it, which is deliberate
-today and is the thing that will make somebody want an operator door.
-
-**ADR ident-6 · erasure and deactivation get doors.**
-*Context*: `erase_user` and `deactivate_user` were built, tested and
-audited, and only a shell reached either — `erase_user` was one of the four
-names in accounts' house-rule-42 census, which is the rule's complaint said
-about the two most consequential acts in the product. *Decision*: self-serve
-(`/users/me/…`) and admin-initiated (`/users/{user_id}/…`) doors over the
-EXISTING services, on REST and MCP; **who may erase or deactivate whom is
-`policies.py`'s** — `themselves_or_administers_the_whole_tenant`: the person
-themselves, or an `admin` or better at the tenant's **root**, the wall stated
-in code (C7) and never in a door. `deactivate_user` gained `actor` and
-`tenant` — additions, not replacements — because a service that resolves no
-actor authorizes nothing and a service that declares no `tenant` is not
-audited, so the door could not have been given the wall without breaking C7
-from the door side. A broader completeness sweep of the same census remains a separate, unchanged
-effort. *Rejected*: waiting for that sweep (doors are ratified now; the
-contract does not change when the sweep deepens); erase-by-DELETE on
-a user resource (erasure is a service act with an audit row, not a REST
-cascade); `me/` twins on MCP (a second pair whose only difference is an
-omitted argument is a second place for an agent to guess wrong).
-*Trigger to revisit*: the completeness sweep landing — re-run this ADR's door
-tests byte-unchanged.
-
-**ADR api-1 · the OpenAPI document is the contract, complete.**
-*Context*: the owner read staging's Swagger and ruled the API documentation
-standard a prerequisite before any product code lands. A census — measured
-before enforced — found 51 of 51 summaries were
-prettified function names, 11 routes carried no description at all, not one
-route documented a header or a refusal, not one of 57 schemas carried an
-example, there was no `tags` section and no overview — and all 36 MCP twins
-described their capability in words of their own. Five cycles of code review had
-read every one of those routes. *Decision*: every route carries a summary and a
-description **derived from the same docstring its MCP twin renders**, so the
-doors cannot drift; every tag carries a description declared by the app that owns
-it; `X-Tenant`, `X-Org`, `Idempotency-Key` and `Idempotent-Replayed` are
-documented once as parameters, with the hierarchy explained; every route's error
-responses **enumerate the refusal codes it can raise, with the registry's own
-fact and remedy text** (`introspect`'s refusals section is the source); every
-schema carries an example; an overview — auth flow, token minting, the MCP
-door's address, versioning — opens the document; and the TS client regenerates
-clean. It is applied **once and derived**, in `apps/core/api/docs.py` and
-`config/api.py`, so a route born in any app carries the whole standard with it.
-House rule 41 is the census that keeps it true, ceiling zero, pinned at birth.
-*Rejected*: summaries-only (an earlier quick fix the owner superseded);
-per-door doc strings (the drift rule 17 exists to refuse, one surface over);
-hand-written `summary=`/`description=`/example arguments per route (51 places for
-the annotation and the behaviour to part company); doc coverage as review-only
-(51 routes and five cycles of review missed it — a census is what holds).
-*Trigger to revisit*: a client generator the TS one cannot serve.
-
-*Amended* — **the bar for what goes above the divider**. The
-contract half speaks **to the caller, about the wire, in plain language**: what
-the operation does, what to send, what comes back, what each refusal means and
-what to do about it, written for a developer who has never seen this codebase.
-The test is one sentence: **if a stranger with an API key cannot act on it, it
-goes below the divider.** Never above it: internal function names, queue-row
-numbers, fix history, module comparisons, or house idiom ("the house list
-shape", "doors", "the machine door"). Four of those symptoms are *shapes* and
-are therefore gated — `N\d+`, an underscore-prefixed identifier, `@service`,
-`manage.py` — and the rest is review's, declared as such in rule 41's
-`does_not_cover`. The same bar reaches **runtime refusal prose**: `authz.require`
-answers with the app's declared `ACTION_PROSE` sentence, never with the internal
-action name.
-
-*Amended* — **the contract reads like Stripe's**. The
-mechanism was right and the output was not: because `summary` was the
-docstring's opening sentence, the rendered navigation was a column of sentences,
-some carrying literal `**`. Four elements, all derived, nothing hand-annotated:
-**(1) a title is not a sentence.** The docstring's first line is a nav-safe
-title — a short noun or verb phrase, no Markdown, no full stop, at most **60
-characters** (`docs.TITLE_MAX_LENGTH`, `rules.yaml`'s `title_max_length`, and
-this paragraph, which agree by review). It becomes `summary`; the paragraph
-below it becomes `description`, and the title is not repeated there. The MCP
-twin renders the whole contract half, title line included, so the doors still
-cannot drift. **(2) Real examples.** A field declares its own realistic value
-with `core.schemas.example(...)`, which the synthesiser prefers over the
-shape-grade value it would otherwise derive; the persona arc's schemas were
-declared and the rest is a **ratchet** rather than a retroactive fail, so a new
-field must declare and an old one may be improved at leisure. **(3) Guides and
-reference are separate layers.** The overview is a short shelf of `##` guides —
-quickstart, authentication, tenants and organizations, pages and filters,
-idempotency, errors, events, versioning — each a concept read once and linked by
-anchor, above a reference that stays per-operation. `/llms.txt` demotes those
-headings by one when it embeds them. **(4) Tags are named for humans.** `TAGS`
-maps a wire name to `Tag(display, description)`; `display` reaches the document
-as `x-displayName` and no URL, label or client namespace moves.
-**(5) One operation, one section.** An operation carries **exactly one tag**,
-and a tag with no operations is deleted rather than left as an empty heading. A
-renderer lists an operation under every tag it carries, and ninja *accumulates*
-a nested router's tags onto everything beneath it — so `accounts`' mount tag
-over three tagged child routers printed all eleven of that app's operations
-twice, once in their real section and once under an umbrella that was a copy of
-the other three. Gated; the orphan-tag half is a test, and rule 41 says which is
-which.
-*Also rejected here*: a hand-written `summary=` per route to get titles (the
-same second copy this ADR rejected at birth); a title derived by prettifying the
-function name (the earlier, replaced approach); examples as a fixtures file beside
-the schemas (a second copy of the shape, which is what `add_examples` exists to
-avoid); renaming tags to make them readable (it would move every route's
-namespace in every generated client to change a label); keeping an umbrella tag
-and asking renderers not to duplicate (a document that needs a renderer's
-cooperation to be readable is a document with a second contract).
-
-*What the sweep to this bar is, in one line, because a product will do it
-again*: **write the caller's sentence, then check it against the service — and
-where the service is ambiguous, drive the wire.** Applied across 86 operations
-it found six defects in prose five cycles of review had read, and two of them
-this time were provable only by calling the endpoint: a duplicate slug
-documented as `409 conflict` that is a `400 invalid`, and a last-owner
-protection documented into existence that does not exist. Every operation now
-closes with the same block — the refusal codes with their status and what the
-caller does about each — because a caller who has read one operation should not
-have to learn a second grammar to read the next.
-
-**ADR api-2 · resource-first URLs — the first path segment names a
-resource, never an app.** *Context*: the owner's ruling (design-agreements.md) —
-an app label in a path is **internal taxonomy on the
-wire**, the URL twin of the sidebar-tag finding, and it asks every caller to
-learn which module of ours happens to serve a thing in order to type it and then
-ignore it. A census — measured before enforced —
-found 43 of 66 mounted paths under an app label that was not a resource, and 5
-paths with no trailing slash. *Decision*: **`PREFIX = ""` for the four platform
-groups** (`core`, `comms`, `events`, `workflows`) — each of their routers already
-carried its resource as the first segment inside itself, so the flatten is four
-lines and not fifty; **three renames, resolving by better names rather than by
-prefixes** — `policies` → **`delivery-policies`** (`policies` alone says nothing
-on a wire that also has authorization policies), `endpoints` →
-**`webhook-endpoints`** (likewise beside OAuth endpoints), `catalogue` →
-**`event-types`** (a catalogue is a document, this is a collection, and
-`event_type` is the noun its own `url_name` stem already used); **the five
-slashless routes gain the slash** (`auth/realm` and the four user actions) —
-one convention, no exceptions; **`me/` stays** and action verbs stay POST
-subresources. **`url_name`s do not move, anywhere**: they are internal joins —
-rule 17 derives the expected MCP tool names from them, rule 3's route-test
-clause greps them, and the frozen nets pin them — so **tool names do not change
-when paths do** and door parity survives by construction. Enforced by **house
-rule 32**, whose two populations are both closed (app labels off the app
-registry, paths off the live mount) with **one valve**,
-`scope.allowed_label_paths`: a label with its reason, seeded with
-`connections`, because A1 names an app as the plural of its aggregate and a
-domain app's label legitimately **coincides** with its best resource name. The
-valve declares the coincidence instead of refusing it, and the refusal keeps
-catching the leak class — `core`, `comms`, `events` and `workflows` are
-infrastructure names and never resources. *Rejected*: dual-registration
-transition windows (two operations per route in the contract, parity noise —
-pre-T0 there is no client to transition); keeping the prefixes with redirect
-aliases (the leak persists in the document, and a redirect is dual-serving with
-extra steps); renaming the MCP tools to match (nothing derives a tool name from
-a path and no consumer exists — recorded residual, trigger: the first external
-MCP consumer confused by the noun mismatch). This is a **breaking URL change on
-v1**, which E5 normally forbids; the license is the empty consumer register and
-the ruling's own sentence — *after the first external consumer this is a
-versioning event*. *Trigger to revisit*: that first external consumer.
-
-**ADR events-4 · the spine gets a door, and the signing key is said
-once.** *(Paths amended by ADR api-2: the endpoints door is at
-`/api/v1/webhook-endpoints/` and the catalogue at `/api/v1/event-types/`; the
-shape below is otherwise unchanged.)* *Context*: an owner-ruled prerequisite — the event spine had an
-outbox, signed deliveries, retries and dead-lettering from the start and **no
-door**: endpoints were managed from the admin and the shell, so nobody outside
-this tree could subscribe to anything. *Decision*: endpoints CRUD at
-`/api/v1/events/` with MCP twins — **create returns the secret exactly once**,
-generated by the server, and `WebhookEndpointOut` (what get, list, update, pause
-and resume answer) has **no secret field at all**, so it is a schema with nowhere
-to put one rather than a filter somebody remembered; a new
-`issue_endpoint_secret` service in the same shape for rotation, which is a
-replacement with no overlap window (the old key stops verifying at the next
-delivery, which is what rotation is *for* when the old key has leaked); pause and
-resume through `deactivate_endpoint`/`resume_endpoint` rather than a settable
-`is_active`, so the audit trail names the act; deliveries and dead letters
-listed, with `attempts` as the lineage on one row per (endpoint, event); and
-dead-letter replay through the existing `enqueue_dispatch` path (ADR events-3's
-machinery), which re-runs the whole event's fan-out and is why `X-Event-Id` is on
-every delivery. **The catalogue is DERIVED** from the installed apps'
-`events.py` declarations — rule 16's population, the same registry `emit`
-validates against — so a subscriber picks from what exists, and the census test
-pins the door's answer to that population. *Rejected*: a hand-listed catalogue
-(wrong the morning after the next app declares an event, and
-nothing fails); secret re-read behind a permission (a secret that can be read
-again is a secret that leaks twice); per-endpoint delivery replay as a new
-workflow (the resume path exists); an endpoint DELETE (`Delivery.endpoint` is
-`PROTECT` — deleting the endpoint would quietly take the record of what was sent
-to it); a door onto `emit` (a caller who could name a name and a payload could
-publish anything to every subscriber the tenant has, signed with the tenant's own
-key — it carries the `# door:` reason instead). *Naming, amended at build*: the
-service is `issue_endpoint_secret` and not `rotate_endpoint_secret` because
-`rotate` is not in rule 16's declared service lexicon and editing `quality/**`
-is off-limits to a rung that owns no territory there; `issue` is declared, is what minting a credential is
-called elsewhere in this tree, and the "the old one dies now" half is carried by
-the docstring and the tests. *Trigger to revisit*: subscriber-defined event
-filters, or a subscriber asking for per-event payload schemas in the catalogue
-(recorded, not built).
-
-**ADR connections-1 · RESERVED, ruled in code, never written here
-(bookkeeping).** The number is cited in code and its ruling lives
-in those docstrings, not in this file: `apps/events/receivers.py` (the module
-docstring — "the source is a row" — and the narrowed receiver at `:66`, `:113`,
-`:243`), `apps/connections/services.py` (`:82`, `:268`, `:438` — the delivery-id
-headers and the narrowing that lets the probe offer the row),
-`apps/connections/models.py` (`:173`, `:190`), the migration
-`apps/connections/migrations/0002_inboundwebhook_delivery_id_and_more.py`, and
-the tests `apps/connections/tests/test_api.py` (`:424`, `:564`),
-`apps/connections/tests/test_discovery.py:170` and
-`apps/events/tests/test_receivers.py:9`. Nothing is reconstructed here — read
-those docstrings for the ruling. **The number is reserved**: no future ADR in
-the `connections` run may take `connections-1`, which is why `connections-2` was
-the next free number when D4 landed.
-
-**ADR connections-2 · the inbound door gets the freshness half, and
-it is the scheme we already send.** *Context*: the one
-signature-verified inbound receiver (`apps/connections/api.py`) checked an HMAC
-over the body bytes and nothing else, so a delivery captured off the wire
-verified for as long as the connection's secret lived; `scripts/mail_demo.py`
-leg 6 reported the replay question `n/a` because there was nothing in the scheme
-to answer it with. An earlier ruling had already closed exactly this on the way *out*
-(`X-Signature-V2`, a signed timestamp and a window), which left this door as the
-half of the round trip with no clock. *Decision*: the door verifies **the same
-exact envelope the outbound signer uses** — `X-Signature-V2: t=<unix seconds>,sha256=<hex HMAC-SHA256
-over "<t>.<body>">`, keyed on `connection.webhook_secret` — and **does not
-re-implement it**: the tolerance (`SIGNATURE_V2_TOLERANCE`), the element grammar
-(`parse_signature_v2`) and the comparison (`signature_v2_matches`) are
-`apps.events.receivers`', so one implementation decides for a product that
-points this template's webhooks at this template's receiver. **Expand without
-downgrade**: a sender that only knows `X-Signature` is untouched, but when
-`X-Signature-V2` is present it is the *only* header consulted — a correct
-`X-Signature` beside a stale or forged `X-Signature-V2` is refused, because a
-scheme a sender can be stepped down from buys nothing (the replayer would simply
-drop the header carrying the window). The wire refusal is **unchanged** —
-`401 "Invalid signature."`, with digest, staleness, secret and existence all
-withheld — and the route's docstring is where an honest sender learns the
-grammar, which scheme wins, and the window in minutes (pinned to the constant by
-a test). The empty-secret fail-closed clause covers the new scheme, stated in
-this door rather than borrowed from over the border. *How the constant is
-reached*: a **runtime lookup through the app registry**
-(`connections.services._events_attr`), never an import. `import-linter` holds the
-platform apps independent of one another, `apps/connections/apps.py` promises
-this app keeps working in a tree where `apps/events` never landed, and
-`test_nothing_in_this_app_imports_apps_events` enforces both by AST — so the
-dispatch brief's "import the constant" is not available, and copying it was the
-one thing the brief ruled out. The header *name* is the single literal (a door
-cannot ask "is this header present" without one) and a test pins it to the
-signer's own constant. *Rejected*: **a per-connection tolerance flag** (a knob
-nobody has needed is a knob somebody sets to a year the first time they see a
-stale-delivery log line; the promotion trigger is already recorded on the
-constant); **a local tolerance constant in `connections`** (two five-minute
-numbers agree the day the second is typed and disagree six months later inside
-somebody's verifier — the drift this design exists to prevent); **a nonce or
-delivery-id cache as the replay control** (it makes replay a storage problem
-with a retention window and an eviction policy, refuses nothing older than the
-cache, and the `(connection, delivery_id)` dedup we already have is a
-*provider's* claim about identity, not a proof of freshness); **fixing it in
-`apps/comms`' provider-verifier registry** (that seam is for schemes a *vendor*
-decided — an ESP signs the way its vendor signs — and this scheme is ours, so
-putting it there would make the house scheme optional and per-provider);
-**a static import of `apps.events.receivers`** (above). *Trigger to revisit*:
-the contraction of `X-Signature` on this door — dated **2027-02-24** in a comment
-beside the v1 branch, or earlier at the first of (a) every provider a product
-here receives from sending `X-Signature-V2`, and (b) `scripts/mail_demo.py`
-moving off v1, which this ADR deliberately does not touch (follow-on: the
-demo's leg 6 gains the replay assertion when it signs v2). *Numbering*:
-`connections-2` is the next free number — `connections-1` is cited in
-`apps/connections/services.py`, `apps/events/receivers.py` and the connections
-tests but was never written into this file, and that gap is left as a hand-up
-rather than renumbered here. *(Hand-up closed by the bookkeeping
-entry above: the number is reserved and its ruling is cited to the docstrings
-that hold it. Nothing renumbered.)*
-
-**ADR ident-7 · scoped API tokens: the credential carries a
-ceiling, and the ceiling is derived.** *Context*: the owner's ruling
-(design-agreements.md): the platform's
-posture is bring-your-own-agent through `/mcp`, so tokens are handed to
-third-party agent runtimes as ordinary practice — and today an `ApiToken`
-carries the full power of its person. An early persona walkthrough minted exactly such a token and
-drove the whole arc on it, which is the practice the ruling names.
-*Decision*, in seven parts. **(1) Two filters, never two truths.** A token's
-`scopes` are a CEILING checked at the doors; the person's `Membership.role`
-and each app's `policies.py` keep deciding underneath, untouched. Effective
-capability is the intersection: the ceiling can never grant — a token scoped
-`core:write` held by a `member` is still refused by the escalation wall, and
-the wall's refusal is the one the caller sees (rule 29's spirit at the
-credential layer: nothing a token holds exceeds its person, by construction,
-because ∩ never widens). Scopes are read in exactly two seams — the REST door
-plumbing and the MCP mount — and **nowhere below**: a service, selector or
-policy that consults `token.scopes` is the second permission system this ADR
-exists to refuse (the quality batch's rule, id PM-assigned, closes the class).
-**(2) The vocabulary is derived, never enumerated.** A scope is
-`<family>:<verb-class>`. The family population is the discovered `TAGS` keys —
-the same discovery that already builds `INSTALLED_APPS`, the mounts and the
-OpenAPI tags section — so a product that adds an app with a tagged router
-gets its scopes for free, no registry edited. The verb classes are exactly
-two, `read` and `write`. Per REST operation the derivation is total and
-unambiguous by machinery that already exists: every operation carries exactly
-one tag (the one-tag-per-operation gate clause is what makes this a
-function, not a relation) and its method classifies it (GET/HEAD → `read`,
-everything else → `write`). Per MCP tool: the tool's REST twin's scope, off
-the same introspect registries rule 17 already diffs; a tool with a recorded
-parity exemption classifies its own `<nouns>.<verb>` name against the two
-declared grammars (selector `get`/`list` → `read`; rule 16's service-verb
-lexicon → `write`); a tool or route whose scope cannot be derived is a
-finding, never a fallback. **No per-route annotation exists** — there is
-nothing to annotate and therefore nothing to drift. **(3) The tag key is now
-wire vocabulary.** It sits under the renamable display name exactly as D10
-prescribes — immutable key, renamable label — and renaming a key after launch is
-a credential-breaking change of the same class as renaming a URL (the
-versioning argument). **(4) Enforcement at the doors, both, before the
-service runs.** REST: one check in the door plumbing (`config/api.py`'s
-territory), after the token resolves and before the view — never in a route.
-MCP: inside `core.mcp.tool_call`, the one contextmanager every tool already
-enters. The refusal is a NEW registered code, `insufficient_scope`, E9's
-grammar at import: the fact names the missing scope in a plain sentence, the
-structured remedies name the mint door, and `wire_refusal` composes the one
-body both doors send — byte-identical, rule 17's spirit. **An out-of-scope
-tool refuses when called and never disappears from `tools/list`** (GitHub's
-shape, not Stripe's): the list is the agent's map and each entry's rendered
-description carries its derived required scope, so a narrow agent can still
-tell its human "mint me `widgets:write` and I can do this" — hiding would
-amputate the remedy channel and stand up a second enforcement point that can
-disagree with the call-time check; and tool existence is public in
-`llms.txt`, so there is no existence oracle to protect (the not-found
-collapse protects rows, not the catalogue). Sockets: the bearer socket narrows **per frame** in the bridge — a frame is pushed only if
-the ceiling holds `read` on some family of the app that declared the event
-(the event name's `<app>` segment, a declared population), the kick group
-untouched because a kick is an instruction to hang up, never a payload.
-**(5) Compat and the default.** `ApiToken.scopes` lands expand-only (rule
-22): a nullable JSON list where **NULL means unscoped** — the full power of
-the person, the grandfathered meaning of every pre-scopes row, forever
-(expand-only cannot rewrite the meaning of existing rows; revocation is the
-remedy for an old broad token). An **empty list is refused at mint** — a
-token that can do nothing is a mistake, not a ceiling. For NEW mints the
-recommendation — **flagged for owner ratification, with the alternatives
-below** — is *required-explicit*: the mint doors (`POST /api/v1/tokens/` and
-`manage.py issue_token --scope`) take a scope list with **no default**, and
-`*` is the explicit spelling of "no ceiling", so a full-power token is a
-choice somebody made out loud. This breaks the mint route's request shape,
-a deliberate early break — the only cheap moment — and is
-recorded as the E5 exception it is. **(6) Orthogonality, stated.** The tenant
-pin (`ApiToken.tenant`), the `X-Org` hat, `visible_to`, `may_be_named` and
-the policies are all untouched: pins and hats narrow *which rows*, scopes
-narrow *which capability families*, roles and policies decide *whether the
-person may* — three narrowings that compose by intersection and never
-substitute for each other. Minting is not bounded by role on purpose:
-evaluating "which families may this role reach" at mint time would be the
-second truth, drifting from the live role the moment it changes — a ceiling
-wider than the grant is harmless because the grant still decides. **(7) The
-docs are derived** (rule 41's machinery): every operation's published
-description carries its required scope, the mint operation documents the
-vocabulary off the same discovery, and `llms.txt` tells an agent which
-scopes to request per family — zero hand annotations anywhere. *Rejected*:
-**policies.py action names as the vocabulary** (a second permission system by
-construction — a scope `invoice.void` beside a policy `invoice.void` will be
-assumed equivalent and will drift; and reads mostly have no action name, so
-half the surface would derive nothing); **service names / rule 42's census**
-(internal vocabulary on the wire — the plain-language ruling forbids it; a
-service rename becomes a credential break); **per-operation scopes** (the
-vocabulary scales with the route count, agents must request dozens, and a
-new route lands outside every existing ceiling — family×verb keeps route
-growth additive, E5's own shape); **app-label families** (the exact same
-finding: internal taxonomy on the wire); **a third `admin` class** (not
-derivable — hand classification of which writes are "admin" is the
-enumeration this ADR forbids; the privileged surface is already its own
-family where it matters, and the role underneath is the real guard);
-**hiding out-of-scope tools** (Stripe's shape — see part 4); **default-full
-minting** (the path of least resistance re-arms the exact hazard the ruling
-names); **default-narrow minting** (some hand-chosen "safe" subset nobody
-stated — a default that grants anything is worse than a refusal that demands
-a choice); **mint-time role bounding** (part 6). *Trigger to revisit*: the
-MCP OAuth 2.1 upgrade (the vocabulary survives as OAuth scopes; the
-transport changes); a product wanting per-object grants (that is
-roles/policies territory, never scopes); noun-level socket narrowing when
-one app's families diverge in sensitivity.
-
-**ADR ident-8 · 2026-09-07 · the sign-in posture is deployment
-configuration, materialised through the one identity door.** *Context*: the
-hosted login shipped with self-registration allowed, no lockout and public
-organisation creation open on every environment (measured live before the
-rung: `allowRegister: true`, no `maxPasswordAttempts`, `GET
-/admin/v1/restrictions` = `{}`, `/ui/login/register/org` serving a working
-form), against ADR ident-4's rejection of open signup. *Decision*: three
-settings read from the environment (`ZITADEL_ALLOW_SELF_REGISTRATION`,
-`ZITADEL_ALLOW_PUBLIC_ORG_REGISTRATION`, `ZITADEL_MAX_PASSWORD_ATTEMPTS` —
-the NIST SP 800-63B ceiling, a product tightens it), materialised by
-`zitadel_seed` through full-body `ensure_*` writers on the admin API and
-reconciled by `zitadel_audit` (drift is exit 1 naming the remedy); the compose
-`DEFAULTINSTANCE_*` keys carry the same values for a fresh instance and are
-the belt, never the mechanism — they apply at instance creation only, and the
-belt may be tighter than the mechanism but never looser. Every writer declares
-the resource's full field set beside itself, read from the running build's
-API document, and a census test refuses a body that is a strict subset (the
-convention that closed the two partial writers that already existed: the
-label policy, five fields short, and the OIDC provider's `usePkce`).
-*Rejected*: an intent row plus workflow kind (a runtime door for a value no
-runtime persona holds — cost without a reader); compose keys alone (every
-existing instance stays open). *Measured at landing*: the instance-level write
-closes every org without a policy of its own, which is every org a fresh
-clone creates; on the shared laptop instance the org's own login policy had
-already been closed by a sibling product, so the door that visibly moved was
-public org registration, 200 → 404. *The org-level half, settled 2026-09-07*:
-`zitadel_seed` reconciles the credential's own org's login policy **only where
-that org has a policy of its own** (`isDefault` absent on the management `GET`)
-and leaves an inheriting org inheriting, because creating one would fork a
-value into two owners and make every later instance-level change silently not
-apply here (first principles 9); `zitadel_audit` judges that org's
-`allowRegister` where it is the org's own and defers to the instance verdict
-where it is not, so one console edit is one disagreement. Measured on the pinned
-build: `PUT /management/v1/policies/login` on an org with no policy of its own
-answers `404 Org-M0sif`, so the branch is the API's own shape and not a
-preference; and on the shared instance the org's `allowRegister` alone decided
-whether `/ui/login/register` served a working registration form or an error
-page. *Trigger to revisit*: the first product that wants per-tenant
-registration or lockout policy — then the row shape, with the audit comparing
-against the row.
-
-**ADR ident-9 · 2026-09-07 · the first identity has a door of its own, and it
-shuts behind itself.** *Context*: with self-registration closed (ADR ident-8) a
-deployment without a workforce IdP has no way to its first identity but the
-Zitadel console or the `FirstInstance` admin — measured from zero on a sibling
-product at twenty-one minutes, every step of it read off somebody else's admin
-UI; and `bootstrap_tenant` needs a `User` that only a first sign-in can mint.
-*Decision*: `manage.py zitadel_first_admin --email <address>` mints a
-credential-less Zitadel human and an invitation code through the existing
-`accounts/zitadel.py` writers (`ensure_invited_user`, `create_invite_code`,
-`invite_url` — no new writer) and prints the hosted set-password link and the
-two steps after it: sign in at the product so the adapter mints the `User`, then
-`bootstrap_tenant --email`. It writes no row of ours and no audit entry —
-nothing of ours changed, and the birth certificate stays `bootstrap_tenant`'s
-audited write (ADR core-17). **It refuses once any tenant exists**, so
-`core.services.invite_member` through REST and MCP is the only invitation path
-from the first member on; it also refuses an unconfigured platform, a loopback
-`PUBLIC_BASE_URL` outside DEBUG (the printed steps would be a dead end), and a
-`--email` that is not an address. The code is printed once and is in no log line
-and no row (`returnCode`, never `sendCode`: house rule 25 gives the product one
-sender and Zitadel is not it), the precedent being the client secret
-`--rotate-web-secret` prints. A federated deployment needs no command: first
-sign-in through the workforce IdP, then `bootstrap_tenant`. *Rejected*: the
-product's invitation workflow at zero (it needs a tenant, an actor, a running
-worker and a mail path before the first human exists, and lands on the same
-undriven hosted last mile); `bootstrap_tenant` creating the Zitadel human
-(`core` may not import `accounts.zitadel` — house rules 7 and 27); a
-dev-user-shaped account with a password we choose (a credential we transport —
-`ensure_human_user`'s own docstring says why not); documenting the console path
-only (the wall stays); an option on `zitadel_seed` (that runs on every
-`setup.sh`, and a once-on-purpose act with a credential on stdout is its own
-command); a `--force` on the tenant-exists refusal (the product has an
-invitation door; a force flag is a second one). *Trigger to revisit*: the first
-product that federates at birth and never runs this command — then it is
-deleted, not kept; or the hosted invite page becomes driveable headlessly, at
-which point the command's printed steps can be verified by machine instead of
-by a person once.
-
-**ADR ident-10 · 2026-09-15 · a domain claim routes nothing until verified.**
-*Context*: R2 (the sign-in surface review) F1 — any tenant admin claimed any
-domain and the platform sign-in routed on it: a lockout (a person elsewhere
-refused by a foreign claim) and an absorption (a stranger landed in the
-claimant), both confirmed over the wire. *Decision*: `SsoDomain.verified_at`,
-set only by `verify_sso_domain` (an operator's audited act through
-`manage.py verify_sso_domain`, permission `sso_domain.verify`); `for_domain`
-honours verified rows only; a claim reserves the name unverified; public mail
-providers are refused at the door by a declared knob
-(`SSO_REFUSED_MAIL_DOMAINS`) whose list is a courtesy, not the wall.
-*Rejected*: DNS TXT verification now (a resolver dependency and a workflow for
-a population of zero — the trigger is the first product wanting tenant
-self-serve, at which point the same service is the seam the activity calls); a
-backfill marking existing claims verified (grandfathers the hole). *Trigger to
-revisit*: that self-serve product; or a second verification road, which is
-refused as a second writer.
-
-**ADR ident-12 · 2026-09-19 · every Zitadel session the sign-in seam opens,
-it closes — except the one a client is about to spend.**
-*Context*: two things made this an ADR of ours rather than a comment. First,
-the rule itself has been cited in this tree as "ADR ident-10" since rung A3 —
-`apps/accounts/signin.py`, `apps/accounts/zitadel.py`, `apps/accounts/views.py`
-and `apps/accounts/tests/conftest.py`, eight comment lines — but **ident-10
-here is the domain-claim ADR**; the session rule is the CONSUMER's ident-10,
-which design I-A §J5 cited with the qualifier and the code dropped. Those
-eight citations should read ident-12 and do not yet (A11's territory reached
-one of the four files; the correction is booked, not done). This ADR is
-**ident-12 and not ident-11** for a second reason worth a line: house rule 57
-cites "ADR ident-11" and no ADR of that number is written anywhere in this
-file — a dangling citation older than this ADR, booked with the eight above. Second, rung A8
-found a case where the rule cannot hold. *Decision*: `apps.accounts.signin`
-opens a Session API session per ceremony and closes it at EVERY exit — the
-refusals, the outages, the person's *Never mind*, and a second `begin` over a
-ceremony already in flight — so a half-authenticated session is never left on
-the identity platform for a person who did not finish. `_forget` is the one
-place that closes, and every road leaves through it.
-
-**SIGNED by the owner 2026-09-19 ("sign all three", recorded by the PM).** *The amendment*: on the Mode A
-road (design C-10), a ceremony that FINALIZED an OIDC auth request leaves its
-session open to the platform's own lifetime. *Which principle bends*:
-principle 18 (least privilege, minimum necessary lifetime) and this ADR's own
-rule. *Why the default is insufficient*: MEASURED on v4.17.1, 2026-09-19 — the
-finalize answers a callback URL carrying a code, the CLIENT spends that code
-afterwards on its own connection, and Zitadel validates the session the code
-was minted against at that moment. With the session closed on our way out the
-exchange answers `400 invalid_request "Errors.Session.Terminated"`, so the
-person is signed in nowhere and the app that sent them gets an error, after a
-sign-in that is perfect from both ends. *Alternatives*: close the session and
-have our server exchange the code (a second token road, and the client's own
-PKCE verifier is not ours to hold); delay the close behind a timer (a thread
-or a workflow for a ten-minute object on somebody else's server, and the
-client's timing is not knowable); keep it and accept the risk, which is this.
-*The risk*: an authenticated session exists at the identity platform that
-nothing of ours will close. *The mitigation, and why the risk is small*: the
-session TOKEN is the only handle on it and never leaves the process — the
-ceremony holding it is deleted in the same call — and M7 measured that the
-browser is left holding a device cookie and no session, so a second authorize
-with `prompt=none` answers the sign-in page rather than a code. The session
-expires on the instance's own clock. *Reversal*: one argument to `_forget`;
-`test_a_finalized_session_is_left_for_the_client_to_spend` and
-`test_every_other_road_still_closes_its_session` are the pair that would flip
-together. *Trigger to revisit*: a Zitadel build that validates the session at
-FINALIZE time instead of at exchange time (the measurement kit's M3 is the
-line that would notice), or a deployment whose session lifetime is long
-enough that an unclosed one is worth an operator's attention.
-
-**ADR accounts-1 · the invitation provisions the person; there is
-no signup door.** *Context*: an early from-zero persona walkthrough had one step with no door at
-all. `/accounts/signup/` 404s, the login page rendered a heading
-and nothing under it, `bootstrap_tenant`'s advice told an operator to run
-`seed` — which makes a tenant and so destroys that command's own precondition —
-and the field test ended up at `createsuperuser`: no service, no audit row, no
-tenant. The invitation email, meanwhile, carried no link anybody could act on;
-it pointed at that formless login and offered a signup that does not exist. It
-worked for scripts, because the API hands the token back to the *inviter*, and
-was a dead end for every invited human. Rule 42 could not see any of it: it
-walks `@service` definitions outward to doors, and **a job with no service is
-an absence, not a doorless service** — the census read accounts at zero while
-the product had no way to create a person (that blind spot is now declared in
-rule 42's `does_not_cover`). *Decision*: **no standalone create-account; the
-invitation is the door.** `core.services.invite_member` writes its row and, on
-commit, starts `ProvisionInvitedPersonWorkflow` under a deterministic id keyed
-on the invitation's primary key. Its first activity makes the person real in
-the identity platform through the rule-27 door — Zitadel's v2 `AddHumanUser`
-with **no password**, search-then-create idempotent, then `CreateInviteCode`
-with `returnCode` — and its second activity is the existing generic
-`send_email`, so the message still travels rule 25's one allow-listed sender
-and Zitadel mails nobody. The email's primary link is the credential-setting
-page, whose shape was measured by fetching it against the pinned build rather
-than read off a doc page. A person who already signs in here gets the
-sign-in branch instead, because `CreateInviteCode` refuses an initialized user
-and that refusal is an ordinary outcome, not a fault. Membership is still ours:
-`accounts.adapter.accept_pending_invitations` matches our row at sign-in.
-*The tension, named rather than waved past*: **the invite code crosses Temporal
-history**, inside the link, for as long as retention says — and `core.mail`'s
-own docstring has always said the invitation carries no credential *because* a
-bearer token in a payload is a bearer token in history. That reasoning stands
-and this is genuinely different in kind: our token authenticates a person to
-everything they can reach, for its whole life, silently. The invite code is
-single-use, short-lived (three days, measured off Zitadel's own secret
-generator, which is also the number the email states), superseded the moment
-another is issued, and it opens exactly one screen — the one where somebody
-with no password chooses one. It reads nothing and grants no membership. The
-rule it does not license: our own credentials still never enter a payload.
-*Rejected*: **`sendCode`** and letting Zitadel mail the invitation (a second
-sender that knows nothing of consent, quiet hours or suppression — rule 25
-bypassed, and wording no test of ours can read); **open signup / Zitadel hosted
-registration** (a product may turn it on as *its* choice; the platform will not
-ship a door that creates people nobody invited); **a `zitadel_user_id` column
-on `Invitation`** (idempotency is search-then-create against the identity
-platform, which is the authority — a column would be a second copy of its
-answer and a migration this ADR does not need); **rewiring delivery to
-`comms.send()` here** (the substance the queue row asked for is that
-*we* deliver and Zitadel does not, and that is kept; the `core.mail` →
-`comms.send` rewire is ADR comms-2's named follow-on and keeps its own row, so
-the rule-25 ratchet stands unchanged at one rather than moving under a rung
-that is not about it). *Trigger to revisit*: Zitadel routing `/v2beta` or
-moving the login UI off `/ui/login/user/invite` (both are pinned facts here,
-measured, and `zitadel_audit` is the tripwire); a product that wants open
-registration; the comms rewire landing, which is when the delivery half of this
-ADR is restated in comms' terms.
-
-**ADR core-20 · a grant comes from where you sent it: an
-invitation records its landing node.** *Context*: the owner's ruling —
-"Agree — comes from where you sent it. Don't elevate out of context."
-`Invitation` carried no organization at all, so `invite_member` asked both its
-authority questions at `root_organization(tenant)` and `accept_invitation`
-landed the membership at the root, whatever hat the inviter was wearing. That
-was wrong in two directions at once, and a direct measurement against the
-tree — rather than argument — showed both: an owner acting under a branch's hat had a grant
-land at the ROOT — reaching further than the context it was sent from, with
-nothing in the request saying so — and a branch admin, who administers a branch
-and nothing above it, was refused outright ("You may not invite people into this
-tenant", from a `require` at a root they hold nothing on) and so could not
-invite anybody into their own branch. One defect, not two: the landing node was
-a constant where it should have been the context. `add_membership` with
-`organization` omitted had the identical shape one door over. *Decision*:
-`Invitation` is an `OrgScopedModel`; `organization` is the **landing node** —
-the acting hat at grant time — written on the row. Every authority question is
-asked AT that node: issue (`require(actor, "invitation.create", where)` and
-`_refuse_escalation(organization=where)`), supersede, revoke (`may_be_named`
-then `require(..., invitation.organization)`), and the reads, which chain
-`.visible_to(org)` like every other org-scoped read. The accepted membership
-lands exactly there. **An omitted placement is the ACTING HAT and never the
-root**, through `_landing_node(...)` — the one seam BOTH grant doors ask, so
-`add_membership` and `invite_member` cannot come to mean two things one service
-apart; the root survives only where there is nobody acting (`create_tenant`,
-`seed`, `accept_invitation`'s own call), because a tenant's first membership is
-the whole tenant by definition. Pending uniqueness is per `(tenant,
-organization, email)`: two branches may each have a live offer out to one
-person, because they are offers of two places, and the tenant-wide form let one
-branch silently withdraw another's. **No refusal on any of these paths names a
-branch** — the accept conflict names the tenant — because telling not-there from
-not-yours apart is how a caller maps a subtree they hold nothing on. The
-property that makes the whole change safe, in one sentence: **a caller can only
-ever be surprised narrower**; the landing node is always at or below the hat and
-there is no input that widens it. A flat product (hat == root) is byte-identical
-and that is asserted, not claimed. The migration is expand/contract in rule 22's
-order and reversible at every step — constraint off, column nullable, backfill,
-required, per-node constraint — and its backfill is a reading of history rather
-than a default: every existing row predates placement and already MEANT the
-root, so the root is what those rows are written down as. *Rejected*:
-**docs-only honesty** (write down that invitations land at the root and call the
-surprise documented — the branch admin still cannot invite into their own
-branch, and the elevation is still silent); **root-as-default** (an omitted
-placement going on meaning the root, which is the elevation itself wearing a
-name); **org-in-the-accept-payload** (letting the accepter say where they land —
-the placement is not theirs to choose, it was decided by whoever invited them
-and bounded by what *they* could reach, and a field a caller can send is a field
-an impersonation shape can send; accept stays session-only, ADR core-16
-unchanged). *Trigger to revisit*: a product that needs an invitation to land
-somewhere the inviter could not reach (a delegated-onboarding shape, refused by
-construction today — the way in is a service that names the granter's own
-ceiling, never a wider default); the granter-lost-role-before-accept window
-becoming a real complaint rather than a declared one (it stays open by design —
-refusing at accept hands the invitee a refusal they cannot act on, and it is the
-same window `add_membership` already has); or a tenant deep enough that "one
-pending offer per address per node" starts reading as a duplicate-invitation bug
-rather than as two offers of two places.
-
-**ADR core-21 · the addressing-header law: a header that was SENT
-and cannot be honoured refuses; an OMITTED header falls back.** *Context*: the lead's ruling. `X-Tenant` and `X-Org` are **addressing** headers —
-they say WHERE a caller is acting, where `Authorization` says WHO — and the
-platform said three different things about one unhonourable value. The document
-promised every authenticated route that "a tenant you hold no membership in
-reads as empty rather than as forbidden"; the token-mint route promised a pinned
-token "can only ever act in that tenant, whatever `X-Tenant` a later request
-sends"; and the wire answered **401 `unauthenticated`** — "we could not tell who
-is making this request" — over a live, unrevoked token belonging to a real
-active user, `200 []` for an unpinned one, and the ROOT bill
-for an `X-Org` that was sent empty (curl's `X-Org;` form). Three answers to
-one question, and the 401's fact was simply false, which E9's grammar refuses.
-*Decision*: **the pin promise's substance wins, generalized as the direction
-already ruled for `X-Org` and driven green across six hat shapes.** A
-SENT addressing header that cannot be honoured for this credential is refused —
-authenticated, **then** refused, with the registered code
-`addressing_header_not_honoured` at 403. An OMITTED header still falls back to
-the default membership, untouched, so a well-behaved client sees no change.
-**Sent means sent, empty included**: `""` and whitespace are values a caller put
-on the request, not an absence, and the trim-and-lower boundary is declared in
-the header's own published description. **Foreign, nonexistent and unreachable
-are one byte-identical answer** — the refusal fires because the slug is not one
-this credential can act in, never because of what exists, and it names the
-header and never the slug, so it is no oracle over the estate. Not-there ≡
-not-yours governs resource identifiers; a caller's own addressing header is the
-caller's assertion, and refusing it leaks nothing they did not assert. *Where it
-lives*: `core.middleware.addressing_refusal` — one function, asked by every
-door, after resolution and before anything is read. `resolve_tenant` and
-`resolve_org` stay resolution and answer `None`; `authenticate_token` answers WHO
-and returns a pinned token's own tenant whatever was asked for, because a door
-cannot say "authenticated, then refused" about a credential that failed. The
-REST seam is the `_run_checks` wrap that already holds the token ceiling, the
-MCP seam is `TokenAuthMiddleware`, and **both compose the same body through
-`wire_refusal`**, so the two doors cannot come to disagree. The socket doors
-refuse by closing the handshake (`CLOSE_NO_TENANT`), because a websocket
-handshake has no body to carry a refusal in. **Zero per-app door edits**: the
-population is every authenticated operation, derived, and the published
-`x-refusal-codes` follows the same `authenticated` fact the two header
-parameters do. *Rejected*: **empty-read** (the other direction — it would reopen
-what was already closed and keep the misconfiguration-masking class this platform refuses); **the quiet pin** (a pinned token silently answered as its pin, which is
-"somebody else's data under a different name" with extra steps); **two codes,
-one per header** (the failure is one failure and a client would write the
-handler twice; which header is in `detail`, the half that varies per request);
-**echoing the sent slug in the body** (harmless in itself, since it is the
-caller's own assertion, but it would make the foreign and the nonexistent
-refusal two different bodies and lose the anti-oracle pin); **a per-app guard**
-(what `apps/usage` had, and it stripped before it checked — exactly the
-defect one app's copy of a platform law produces). *Trigger to revisit*: a door
-that must accept an addressing header it cannot honour (none is known); or a
-product whose clients genuinely cannot stop sending a stale header, which is a
-migration conversation and not a change to the law.
-
-**ADR platform-lifecycle-1 · 2026-08-24 · machinery durability follows the
-identity's declared lifetime class.** *Context*: the owner's escalation of
-2026-08-24 — a second strike on the same leak, asking for "an elegant,
-comprehensive solution instead of band aids". The diagnosis is not a missing
-reaper: it is a **lifetime-class mismatch minted at creation**. A Temporal
-Schedule is infinitely durable by construction, and every worker keys one to an
-identity that is ephemeral by construction — the checkout-path hash inside the
-task queue name (`scripts/db.sh`). Durable object, mortal identity, and the
-census on the owner's machine measured what that produces: **36 orphaned
-schedules and 134 stranded executions** pointed at queues no worker has polled
-for weeks. The decisive observation is that each of those schedules only ever
-delivered work while its checkout's worker was alive anyway — so in a
-checkout-derived environment the durability buys nothing except the leak, while
-in a real deployment it buys catch-up across a deploy gap and a missed run that
-is a fact rather than a silence. *Decision*, in four parts. **(1) The class is
-declared, never derived.** One setting,
-`TEMPORAL_MACHINERY_LIFETIME: "deployment" | "process"`: `deployment` is the
-current code path bit-for-bit (durable Schedules the server owns) and is what
-`config/settings/production.py` declares; `process` creates **no Schedule object
-ever**, and is what `local` and `test` declare. In `process` mode the live
-worker starts the same sweeps itself — once at startup, which is the catch-up
-run, and then on each declaration's existing cadence for as long as it lives —
-under the existing deterministic ids, with `TERMINATE_EXISTING` superseding a
-stale open run rather than failing or skipping; and worker startup **deletes
-this checkout's own** previously-created durable schedules, only `NOT_FOUND`
-swallowed and every real deletion logged (`drop_legacy_purge_schedule`'s
-reasoning, generalised). Environment is distinguished by declaration and never
-by name: there is no branch test, no checkout-name test, no worktree heuristic,
-and the seam is scanned for one. **(2) The declaration is data.** An app's
-`SCHEDULES` entry is a `core.schedules.ScheduleDeclaration` — an id builder and
-a `Schedule` value — and one generic engine (`apps/workflows/client.py`)
-consumes it: apps declare *what*, the engine decides *how*, and both classes
-read the workflow, its argument, its id and its cadence off the one declared
-value so they cannot drift. **(3) The destroy half is a registry** (house rule
-20's declared-population logic applied to machinery): every class declares name,
-identity grammar, enumerate, liveness evidence, destroy and a warm-cache flag,
-behind one entry point with the four-verdict grammar promoted frame-wide from
-`db_sweep.sh` — live / IN USE / FOREIGN / REFUSED — and one shared live-checkout
-enumerator. An enumerated instance matching the identity grammar that no
-declared class claims is **exit 2**: could-not-judge outranks a pass, so
-machinery class N+1 fails the day it first exists. **(4) The gate leg is
-own-tree only.** The full gate gains a post-suite census over the instances *this
-checkout* created; the machine-wide census stays out of the gate and in the PM's
-standing pre-wave reap. *Rejected*: **worker-shutdown deletion** (SIGKILL, OOM
-and a laptop lid leak it entirely — and in production it would delete a peer
-instance's schedules, which is a worse failure than the one it fixes);
-**TTLs on schedules** (age is not liveness — a reaper wearing create's clothing,
-and it would reap a healthy deployment's quiet sweep); **one shared dev queue**
-(the cross-checkout hijack class, re-armed: the last worker to start silently
-owns everybody's sweeps); **reap-harder-with-durable-everywhere** (the band-aid
-at strike three — a third reaper for a class of object that should not have been
-created); **machine-wide red gates** (my verdict coupled to your corpse; FOREIGN
-requires an operator by design, and a gate reddened by somebody else's garbage
-trains people to override the gate). *Trigger to revisit*: the first
-`deployment`-class environment whose queue identities become **per-instance**
-(a per-pod suffix, a blue/green pair) — that deployment's identities are
-ephemeral and its declaration should change with them; or the
-unrecognised-shape exit 2 firing, which means a machinery class exists that
-nobody declared.
-
-**ADR platform-extension-1 · a product extends the system layer by DECLARING
-beside it, never by editing it.** *SIGNED by the owner 2026-09-22 (proposed 2026-09-21 — the owner chose this
-shape; the signature lands at CLOSE.)* *Context*: the first
-consumer's fold of v2.1.0 cost 94 merge conflicts, 21 of them inside
-`scripts/ quality/ .github/`, and twelve commits whose entire content was
-re-applying local edits to template-owned files; the worst was silent in the
-wrong direction — an 1800-line template file fast-forwarded byte-identical and
-took 1826 product lines with it, with no conflict to read. Every one of those
-edits was a product-owned CONCERN with no seam to land in. *Decision*: every
-extensible template directory has a `local/` sibling the template's own reader
-discovers and the template NEVER ships (`publish.sh` § R0, which refuses a
-tracked `**/local/**` or `*.local.md` at exit 2) —
-`scripts/local/{legs,drives,fold.d,lifecycle.d,hooks}/`, `quality/local/`, and
-a `.local.md` sibling beside a template document that carries a per-product
-list. A declaration carries a versioned header; ABSENT is byte-identical
-behaviour and MALFORMED is exit 2, never a quiet skip. The per-path ownership
-classes land in `docs/product/build-contract.md` § Ownership, and an edit to a
-template-owned path is a divergence `scripts/divergence_census.sh` refuses
-unless the product's own `architecture.md` names it. *Rejected*: a
-`pyproject.toml` registry of legs (a shared file no rung may edit, and the
-declaration would live away from the thing it declares) · fork-and-rebase
-doctrine (it re-pays the conflicts every release, grows with the product's age,
-and git's worst case here was the SILENT one) · a `ci.local.yml` (not a GitHub
-primitive; a second workflow file is already conflict-free) · a sourced
-`check.local.sh` that may redefine functions (a judge, not an instrument —
-check-v1's law) · a `template_sync.sh` now (its trigger, three products, has
-not fired). *Trigger to revisit*: a second product's fold shows a seam these
-six miss, or three products exist.
-*AS BUILT 2026-09-21*: house rule 60 carries the decision in three
-canary classes, and the fenced `drawers` block in
-`docs/product/build-contract.md` is its ONE reader. **(a)** a product edit in a
-template-owned path → `scripts/divergence_census.sh`'s exit-1 finding, by path.
-**(b)** the table against the tree: a drawer the template's own code opens with
-no row, a row whose reader is not here, a row whose case its drive does not
-define — each a finding at every gate, the population of drawers DERIVED from
-the `local/` paths the code spells rather than typed beside the table. **(c)**
-at `--selftest`, one planted item per drawer, run through the drive case the
-row names (`--case`, the seam every drive under `scripts/tests/` now carries),
-so a reader that opens its drawer and ignores what is in it is exit 2 naming
-the drawer and the reader. A `held` row reserves a name for a rung that has not
-landed and is printed as held; it becomes a finding the day a template-owned
-file opens it.
-
-**ADR platform-lifecycle-2 · one mechanism, one rung, two apps.**
-*Context*: the fix changes the `SCHEDULES` seam in `apps/workflows` (which owns the
-engine) and in `apps/events` (which is its only other declaring client), and the
-schema discipline's default is one app per rung. *Decision*: the exception is
-taken deliberately and recorded here — it is **one mechanism**, `apps.workflows`
-owns it and `apps.events` is its declaring client, and the two halves are a
-single seam whose two sides cannot be typed independently (the shape lives in
-`apps/core/schedules.py`, below both, because `import-linter` holds the platform
-apps independent of one another). Migrations: zero, so the collision the
-discipline exists to prevent is not in play. *Rejected*: **two rungs**, which
-would carry the declaration shape in prose across the gap between them and land
-a tree in which one app declares against a seam the other has not built yet.
-*Trigger to revisit*: a third schedule-declaring app — at which point the seam is
-established vocabulary and a change to it is an ordinary one-app rung.
-
+**Every door calls services; services own writes and `emit()` events; workflows carry anything that must wait or retry.** **Upward calls invert through the bridge**: when a lower layer needs a higher one (`core.mail` starting a workflow; a `core` service emitting an event), it calls `core.bridge.get("<name>")` — a runtime registry that higher apps fill from `AppConfig.ready()` (`workflows.start_on_commit`, `events.emit`, `realtime.push`). An upward *import*, even function-local, is a violation, and none is excepted: `core.mail`'s import of `apps.workflows` went when the bridge landed (`e63d336eb`, rung A3). Absent registration = the bridge raises in production settings and no-ops with a log in local/test — a template without the platform apps still runs. Registration is by **discovery, never by editing `config/` or `pyproject.toml`**: `INSTALLED_APPS` is derived from `apps/*/apps.py`; a new app drops an `api.py`, `mcp.py`, `workflows.py`, `activities.py`, `consumers.py` and the mounts find it; an app declares what it may import on its own `AppConfig` (`depends_on`) and house rule 7 enforces it, with import-linter keeping only the fixed layer contract (`core` ← `accounts` ← `workflows` | `events` | `connections` | `realtime`, pyproject's `layers`); every other app's fence is house rule 7 alone. That is what lets one agent per app run in parallel without touching a shared file. (Ruled after an early alignment review found registration was hand-listed.)
 
 ## Service architecture — the architect's rules
 
@@ -961,10 +102,6 @@ Boundaries: an app is one domain noun and its aggregate; dependency direction is
 Authorization — **both layers, with a clear division**: the door authenticates and resolves the tenant; the service authorizes, object-level, via `core.authz.require(actor, action, obj)`, and every scoped read asks in its selector. **The vocabulary is one shape, `<kind>.<verb>`**: every first-party model is a kind (`authz_kind`, derived from the class name, overridable), every kind carries `create/read/update/delete` by derivation, every other verb is a status transition or compound act declared on a kind in its app's `ACTION_PROSE` with its sentence, and one reserved verb, `tenant.own`, belongs to ownership. **Three layers, one owner each**: `owner`, the one platform role, IS the vocabulary; every other role is declared in an app's `roles.py` with a pattern collection (`apps/core/roles.py` ships `admin` and `member` and is the one product-editable file in `core`); a tenant's data is `core.Role` (custom roles), `core.RolePermission` (include/exclude deltas and custom collections, keyed by role key), `core.Grant` (one person's `allow` or `withhold`, withhold winning). `Membership.role` names a role by key and inherits downward as memberships do. `require` evaluates at the node the object names, answers no to anything outside the vocabulary, and composes `holds AND predicate`. **Nobody hands out what they do not hold and nobody takes back what they do not hold**; the root always keeps one un-withheld owner. Rule 13 proves a service asks for the kind it writes; rule 54 proves the vocabulary derives, the rows name it, and the reads ask.
 
 API contract: `/api/v1/` from day one (`NinjaAPI(version="1")`); additive changes only — a breaking change is a `v2` router beside `v1`, declared by the lead; every list `@paginate` (**cursor**: `?cursor=` and `?limit=` ≤ 200, envelope `{items, has_more, next_cursor, count}`, `count` computed only for `?include_count=true` — ADR core-18, owner-ratified, which retired `page`/`page_size` outright on the licence of the empty consumer register), filters via a `FilterSchema`, `ordering=` from a per-route allow-list, `q=` for search, errors `{detail, code, errors?}` from the single mapper, UUIDs in paths; one schema per shape shared across the doors; an `Out` never exposes another tenant's identifiers.
-
-**The index under that contract — ADR core-11 · context:** `BaseModel` shipped `created_at db_index=True` behind `ordering = ["-created_at"]`, so every concrete model in the tree inherited an index over the whole deployment's timeline while every supported read is tenant-scoped; under `LIMIT` the planner walked that index backwards and discarded other tenants' rows one at a time (an earlier measurement found 102,300 foreign rows examined per page at production-real scale, and 255,000 on `AuditEntry`). ADR core-18 made this *more* load-bearing, not less: the cursor seam extends every ordering with the pk, so a default page's total ordering is `created_at DESC, id ASC` and the signed keyset **is** that tuple — the ordering stopped being a display contract and became the coordinate system every cursor names a position in. **Decision:** `BaseModel` drops the bare index; `TenantScopedModel` declares `models.Index(fields=["tenant", "-created_at"], name="%(class)s_recency")` **once**, in its abstract `Meta`, inherited by `OrgScopedModel`; house rule 37 censuses every concrete scoped model for it, which is what closes Django's `Meta.indexes` shadowing hole (a concrete `indexes` list silently drops the inherited one); a `BaseModel`-only model decides per model and carries a named reader or an explicit none. **Rejected:** the three-column `(tenant, -created_at, id)` — it would serve the total ordering exactly and remove an Incremental Sort, but pays 16 bytes/row forever to sort timestamp groups that are almost always size 1, and does **not** make the keyset continuation sargable, because Django's expanded `_after` OR (`created_at < k OR (created_at = k AND id > k2)`) is the binding constraint and not the column set; `(tenant, organization, -created_at)` on the org-scoped half — killed twice over, since it was proven that no index moves the narrow-hat plan while recency ordering stands, and an org column in the middle breaks the tenant-wide walk for the root hat, which is the only hat a flat product has (architect rule A5: a flat product pays nothing); keeping both indexes (measured: the bare one buys only wrong plans and a per-insert write); per-app opt-in (the default is where the next model gets made). **Trigger to revisit:** a measured read that needs deployment-wide recency; a measured Incremental Sort cost at seeded scale, or a bulk-import path that stamps equal timestamps — either buys the third column then.
-
-**ADR core-12 · unchanged · context:** no index fixes a narrow hat's recency-ordered page while that ordering stands — the lever is `eqjoinsel` over a join against a unique column that can carry no MCV correction (proven three ways), not an access path. **Decision:** the bound is **declared** in `docs/product/scale-envelope.md` with a per-hat rows-examined budget; the one live candidate — hat-scoped pagination, the subtree org-id `ANY` form, off-root only, COUNT first, with its own `(organization, -created_at)` index — is measured by a dedicated rung before any production code lands, and dies by measurement rather than by argument. CORE-11 deliberately did **not** smuggle it in: no index without a proven reader (house rule 30, pointed the other way). **Rejected:** extended statistics (per-table only; a unique join key never carries the MCVs `eqjoinsel` would need), planner hints (unshipped extension; pins plan shape in app code; harms the root hat to help the wide one), changing the list ordering (PM-refused — it is the product contract), keyset pagination as the fix (ADR core-18 landed it and it does not change page one's rows-examined; there is still no measured deep-page finding), denormalizing the org path onto scoped rows (cannot serve range **and** order from one btree, and makes `move_organization` O(subtree rows)). **Trigger to revisit:** Postgres cross-table statistics, or a measured product complaint that outruns the declared budget.
 
 Concurrency: read-modify-write under `select_for_update` inside the service; no version column by default. Idempotency: `Idempotency-Key` on every write route (stored response replayed, tenant-scoped) and idempotent activities.
 
@@ -980,325 +117,28 @@ Concurrency: read-modify-write under `select_for_update` inside the service; no 
 - **Audit trail, on by default:** `core.audit.AuditEntry(TenantScopedModel)` written by `@service` on every write — actor (`actor_user`, `actor_token`, `actor_kind` = human|agent|system), action (service name), object type + id, **door** (rest|mcp|socket|workflow|webhook|admin|shell), outcome, redacted input per `LOG_KEYS`, plus the three ids above. Append-only. Archival is a dated residual with a trigger in the product's queue. The column-by-column contract — which AU-3 content element each column answers, the actor semantics per door, the enumerated legitimate absences — is **ADR core-22** below.
 - Convention (not gate): tests reference the criterion they prove, `@pytest.mark.criterion("C3")`.
 
-**ADR core-22 · the audit row contract: NIST SP 800-53 AU-3 read
-onto `AuditEntry`'s existing columns.** *Context*: the compliance reviewer is a
-persona the BAAs make real, and an early probe found the trail
-answering them by accident of service signature — `actor_user_id` None on every
-row, mint rows missing `object_id`, failed calls naming no credential; every
-column present, no contract saying what a conforming row is. The contract
-vocabulary is **NIST SP 800-53 AU-3, "content of audit records"** — the
-standards grounding owner-ratified directly ("agreed with your
-recommendation"). AU-3's content elements are questions this table already has
-columns for, so the standard is adopted as a **reading discipline, not a
-migration: no new column is required**, and AUDIT-2's plumbing changes what the
-existing columns are *handed*, never what they are. (Rules read against:
-G2/G3 — the columns being contracted; D8/rule 20 — append-only grounds the
-no-backfill ruling; E9 — the `error_code` vocabulary; 16 — the `action`
-vocabulary.) The model is `apps/core/audit.py`; the one writer is the
-`@service` decorator (`apps/core/service.py`); the mapping:
-
-| AU-3 content element | `AuditEntry` column(s) | the reading |
-|---|---|---|
-| **type of event** | `action` | `<app label>.<service>`, built by the decorator from the function itself — the `@service` population IS the event vocabulary (rule 16's verb grammar), never a free string at a call site |
-| **when** | `created_at` | UTC (`USE_TZ`), written once (`auto_now_add` on an append-only row); the recorded moment is itself a protected fact (an idempotent re-call never moves it) |
-| **where** | `door` + `tenant` + `acting_org` | `door` ∈ rest·mcp·socket·workflow·webhook·admin·shell, bound into context by the door and read from nowhere else; `tenant` places the row's population — NULL is the declared platform population, ADR core-8 (b), never a loosening; `acting_org` is the hat the door resolved: which part of the tenant the call acted *as* |
-| **source** | `request_id` · `session_id` · `correlation_id` · `causation_id` · `trace_id` | `correlation_id` minted at the door and never below (G2); `causation_id` the immediate parent; the join keys that survive restarts and days, riding the workflow headers and the Temporal memo |
-| **outcome** | `outcome` + `error_code` | `ok`/`error`; on error the **registered** refusal code — E9's registry is the vocabulary, so every code on a row resolves in `introspect`'s refusals section |
-| **identity of associated individuals, subjects, objects** | `actor_user` · `actor_token` · `actor_kind` — and `object_type` + `object_id` + `input` | who acted (the actor half; semantics per door below) and what was acted on (the object half; `input` redacted per `LOG_KEYS`) |
-
-*Actor semantics per door — and there are THREE kinds, closed.* A **session**
-call (REST session auth; the admin) is `human`: `actor_user` set, `actor_token`
-None — a person clicked. A **bearer** call (REST or MCP; sockets when the
-bearer path lands) is `agent`: `actor_user` AND `actor_token` set —
-`actor_from_request`'s own doctrine, quoted: "the person authorised the machine
-once, months ago, and 'a human clicked this' is not true of it." A
-**workflow, schedule or shell** call is `system`: `actor_user` None
-**honestly** — `system_actor`'s docstring is the text: "attributing an
-overnight reconciliation to whoever happened to trigger the process last week
-is how an audit trail becomes fiction." **Ruled: there is no fourth
-"workflow" kind.** The `door` column already carries workflow-ness, and the
-run rides `correlation_id`/`causation_id`; a fourth kind would split the
-`system` population in two for no reader's benefit.
-
-*The legitimate absences* — enumerated so a reviewer meeting a gap knows
-whether it is the contract or a defect (five at authoring; absence 1
-generalized and self-reports added, absorbing the AUDIT-2b rulings; the conditional admin placeholder that briefly stood as (vi) resolved
-**removed** the same day — the L3 check found the seam present, so no absence
-ever existed there; AUDIT-3-PRE):
-
-1. **The population altitude.** A sweep acts on a population, not a row,
-   and its one audit row is a **declared shape**, never a degenerate one:
-   `object_type` = the swept model's label, `object_id` NULL — a blank label
-   on a sweep's row is a violation, not a tolerated default (L6). **The
-   count's home is the typed `Swept` result and the structured log line in
-   the sink (G1) — deliberately NOT the row** (ruled at AUDIT-3-PRE):
-   `input` is by contract the service's redacted *arguments* and the seam
-   never sees a return value; a count without the row ids verifies nothing
-   — the ids were ceded at this altitude on purpose — so putting it on the
-   row would buy an unverifiable number at the price of either a
-   one-row-class column on an append-only table or a second seam
-   convention. Trigger to revisit: a compliance ask that requires the count
-   from the trail alone — then the expand-only column, never a second
-   valve. `accounts.erase_user` is the founding member: an
-   erasure sweeps the person's credentials in one `.update(revoked_at=...)`
-   and those deaths are audited as the one erasure row, the correct altitude
-   for the action somebody took — "erase this person" — so the per-row
-   absence is the contract, not a miss. The sweep services are allow-listed
-   **by name** with this ground — today's census:
-   `connections.purge_inbound_webhooks`, `events.purge_dispatched_outbox`,
-   `events.purge_deliveries`, `exports.purge_exports`,
-   `files.purge_pending_versions`, `workflows.purge_finished_runs` —
-   and the membership AUDIT-3's rule checks is the list in `rules.yaml`,
-   never this prose.
-2. **Workflow-driven writes.** A service called from an activity records
-   `kind=system`, `actor_user` None. The human cause is upstream at the door
-   that started the run, and it is *reachable*, not restated: the causation
-   chain joins the system row to the door row where the person is. This
-   absence, like 1 and 6, is a **by-name census, never a shape** — the
-   members take no `actor` kwarg at all, because machine work has no actor
-   to take, and each carries its `# authz: machine-work` valve, held to it
-   by AUDIT-2c's MACHINE_WORK census. Today's census (the rule-49 birth
-   condition's find, 2026-08-26): `accounts.ensure_membership`,
-   `events.enqueue_dispatch`, `events.close_outbox`,
-   `events.record_delivery_attempt`, `events.dead_letter_delivery`,
-   `workflows.record_run`, `workflows.finish_run` — and the membership the
-   rule checks is the list in `rules.yaml`, never this prose.
-3. **Platform-token actions.** A credential pinned to no workspace writes
-   rows with `tenant` NULL — the declared platform population (ADR core-8
-   (b), which this contract cites as the ground and now re-homes the
-   citation of). Those rows are absent from every tenant's trail **by
-   construction** — `for_tenant` can never see them — and the platform
-   question is asked with the platform's own word, `for_platform()`.
-4. **The shell door's person.** A management command's row is `door=shell,
-   kind=system`, `actor_user` None — and that row IS the contract, not a
-   defect: the box's own access audit (ssh) owns *who held the shell*, and
-   this table does not duplicate an authority it cannot verify. What the row
-   does owe — the door, the tenant acted on — AUDIT-2 threads explicitly
-   (`system_actor(tenant=…)`), so the shape is deliberate, never defaulted.
-5. **The pre-contract population, declared with its date and NO backfill.**
-   Every row written before 2026-08-26 predates this contract — including
-   the six live-stage revocation rows with `actor_*` None, and every
-   credential death before the revoke ruling below, which was never recorded at all.
-   None of it is backfilled, and the ground is structural, not
-   preferential: `AuditEntry` is append-only (rule 20; the model's own
-   `save()` refuses a second write), and **a backfill is an UPDATE on a
-   ledger — forbidden by the very rule that makes the table evidence.** A
-   trail whose gaps are dated and declared is evidence; a trail somebody
-   helpfully completed is not.
-6. **Self-reports.** A service whose subject is the platform's own state —
-   the `announce_*` members — names no object: **empty object fields ARE the
-   contract**, because there is no row the announcement is about; the
-   announcement itself is the fact (L8). Allow-listed
-   by name, membership post-L8-check — today's census:
-   `example.announce_widget_onboarded`, `search.announce_degraded`,
-   `search.announce_recovered` — and AUDIT-3's rule reads the checked list,
-   never this prose.
-
-*Outcome semantics — a refusal is filed as claimed (L11, KEEP as
-capability).* A refused call's row (`outcome=error`) records the claim **as
-the caller claimed it** — that is the capability, not a leak: "what did my
-people *attempt*" is a question the compliance reviewer owns, and a trail
-that drops refused attempts cannot answer it. No oracle opens: the pk in
-`input` is the caller's own bytes returned to the trail, and E9's
-`not_found` doctrine already refuses existence confirmation on the wire. Two
-pins: the `error_code` on a refusal is the **registered** code, never prose;
-and a refusal row carries **no object** — `object_type`/`object_id` stay
-empty, because nothing was acted on.
-
-*Two rulings this contract cites where they live, rather than restating.*
-The **object convention** (L7) is owned by `core.service._object_of`'s own
-docstring — the declared chain is `audit_object` → the first `models.Model`
-in a tuple or dataclass result → nothing, and attribute-reading is ruled NOT
-the rejected reshaping (the four typed sweep results covered with zero edits
-to the types); this ADR points at the seam and renders no second copy. The
-**escalation wall's exemption re-key** (L1): the wall's spelling moves from
-actor-is-None to `kind == system` — an exemption becomes a named, audited
-altitude — one sentence here, cited to the wall's own docstring once
-AUDIT-2c lands it.
-
-*SIEM export is a derived mapping, computed at export time from these rows —
-never a storage shape.* A product that acquires a SIEM obligation writes an
-exporter that walks `AuditEntry` and emits one OCSF event per row: `action` →
-the activity / API operation of the OCSF activity class the product selects,
-`created_at` → `time`, the actor columns → `actor.user` / `actor.session`,
-`door` → the metadata provenance, `outcome` + `error_code` →
-`status`/`status_id`, the correlation ids → `metadata.correlation_uid`. The
-columns above carry everything such an export needs, so the mapping is a pure
-function of the rows and can be written the day it is owed. **CADF and
-OCSF-as-storage are rejected, with the ground the owner ratified verbatim
-(2026-08-26): this is an internal table under rule 20, not a SIEM feed, and a
-storage redesign buys a vocabulary nothing here reads.**
-
-*Provenance, and the id this absorbs.* The revoke ruling
-was first published under a sub-label appended to core-8's id — colliding
-with core-8's own **(a)** entry (an early finding). **The decision
-moves here**: this ADR is its home, the ruling stands unchanged in substance
-(moved from `cycles/2026-08-25-cycle-p10-the-true-envelope.md` §MICRO-1's ADR
-line, the id rewritten to this one — the only edit), a cross-reference stands
-at core-8, and the retired rendering must reach zero in `apps/` and in this
-file — **a census by grep, never a site list** (misses P8 #1); archived cycle
-files are exempt as history, not guidance. The docstring sweep is AUDIT-2's.
-The absorbed ruling: *context*: `revoke_token` was exempted from the audit
-population by core-8's declares-tenant rule; a trail recording credential
-births and not deaths · *decision*: revoke declares `tenant`
-(required), call sites pass `token.tenant`, the service refuses a mismatch;
-null-tenant deaths join the platform population beside their births;
-already-revoked is an idempotent no-op · *rejected*: the standing
-asymmetry (fails the trail's purpose), a defaulted tenant (core-8's own
-sync_workforce lesson), Conflict on re-revoke (DELETE is idempotent by HTTP
-law; the moment is the fact being protected) · *trigger to revisit*: a second
-credential-shaped model wanting the same birth/death pairing.
-
-*Rejected*: **a fourth "workflow" actor kind** (the `door` column carries it;
-a split `system` population serves no reader); **a backfill of the
-pre-contract population** (an UPDATE on an append-only ledger — structurally
-illegal under rule 20, absence 5's ground); **CADF** (a vocabulary nothing
-here reads, adopted into storage); **OCSF as the storage shape** (the same
-ground — the internal table is rule 20's, the SIEM shape is an export's);
-**new columns** (every AU-3 element already lands on an existing column — a
-contract that can be met by reading discipline must not be met by schema).
-*Trigger to revisit*: the first product with a SIEM export obligation (the
-export paragraph becomes a rung), or a compliance ask AU-3 cannot answer from
-these columns. *Blind spot, resolved then
-narrowed (AUDIT-3-PRE)*: the L3 check found the admin actor seam
-**present** — `ServiceModelAdmin.acting()` (`apps/core/admin.py`) builds the
-actor from the request and the door stamps `admin` by path — so the
-conditional absence that briefly stood in the list above was removed; no
-absence ever existed there. What remains declared, narrowed to what the
-check actually saw: the seam is only as good as each `call_service` that
-uses it. `TenantAdmin.call_service` was found **dropping the actor for
-`create_tenant`** — and the rider's fix found the hole deeper than the drop:
-`create_tenant` itself was **laundering every caller's identity as
-`system_actor`** before the wall ever saw it — the row said the product
-acted when a person had. It now takes a required `actor` and forwards it
-(AUDIT-3's rider, proven with a failing test written first: an admin-created tenant's row carries the staff
-member, `door=admin`), so the admin-seam assertion above is true **without a
-counter-example**. And the operator trio (`suspend_tenant` /
-`resume_tenant` / `close_tenant`) is reachable from **no door today**: its
-`# door:` valve names manage.py and the admin, neither of which exists —
-building the operator surface is booked separately, and the valve's stale claim is
-corrected in that work.
-
-**ADR core-23 · the refusal registry carries the per-code facts; the replay
-boundary is derived from it.** *Context*: `CODE_STATUS` and
-the idempotency replay split both needed a per-code fact the refusal registry
-already almost carried — and the registry was the only place a new code is
-*discovered* rather than appended. *Decision*: `register_refusal` gains
-`status=` — **optional, not required**, for three live reasons: rule 47's two
-canaries would exit-2 at import if a status were demanded of them;
-`invalid_arguments` is a MACHINE-door code with no HTTP status to declare; and
-absence-is-a-declaration keeps the drop path reachable. `CODE_STATUS` and
-`envelope_codes()` are derived off the registry, and the one-line status joins
-each existing registration at its declaring site across apps. The replay
-boundary is `boundary == "door"` — **boundary-as-door is doctrine, not
-convenience**: a door refusal (bad credential, addressing header, CSRF, rate
-limit) is decided in *front* of every service, on material the body
-fingerprint does not name, and it ran nothing — the key was never spent.
-Remembering one poisons the key for its whole TTL: the client that fixed its
-credential and retried got the stale refusal back with `Idempotent-Replayed:
-true` and could never reach its write — the exact poisoned-key class, and the 429
-rate-limit second instance found in-rung. The door set is the only set
-coherent with the middleware's own key-reuse arm, and it is a **closed
-question over a discoverable population** — a code registered
-`boundary="door"` next month joins by being registered and by nothing else.
-*Rejected*: a second code→status registry in `config/api.py` (the append tax
-re-created one file over); an envelope column on `IdempotencyRecord` (schema
-with no reader; the 5xx drop-the-claim arm already exists); a hand list of
-envelope codes (the set is open; the checklist forbids it); the plan's
-original *fingerprint framing* of the boundary — the R2 builder found
-`invalid_body`/`method_not_allowed` differ between the two framings, which is
-this ADR's own revisit-trigger firing in-rung; the ruled `boundary=="door"`
-derivation was implemented and ratified. *Deliberate residual*: a domain `403
-forbidden` for an actor promoted between two calls still replays — a policy
-decision is a decision about this fingerprinted request, made below the
-doors; a client that wants the new answer says so with a new key. *Trigger to
-revisit*: a code whose replay class differs from its boundary. Long forms:
-`apps/core/idempotency.py` (module docstring + `REPLAYABLE_BELOW`),
-`apps/core/exceptions.py` (`status` grammar + `envelope_codes`).
-
-**ADR core-24 · one predicate answers "does this route answer the cursor
-envelope", and every instrument reads it.** *Context*: three
-instruments answered "is this route paginated?" for themselves off two
-different private ninja attributes — rule 3's census, the docs derivation and
-`introspect` — and all three were wrong about the same three direct-cursor
-routes, because every marker they read says "`@paginate` was applied", not
-what a caller experiences. The failure that matters is not the wrong column:
-it is that fixing one leaves two blind — three private re-derivations of one
-fact drift apart silently and nothing fails when they do. *Decision*: one
-predicate in `apps/core/api/pagination.py`, beside the envelope it is about,
-reads the RESPONSE MODEL; the census, the docs derivation and `introspect`
-all read it — sever it and all three go red at once
-(`apps/core/tests/test_pagination_seam.py` plants and proves this).
-*Rejected*: fixing `introspect` alone (leaves rule 3 and the docs blind — the
-carried criterion's exact ban); declaring the blind spot in three places
-(three declarations of one fact drift). *Trigger to revisit*: a fourth reader
-appears.
-
-**ADR core-25 · the permission vocabulary is one shape, computed from the
-model registry, never stored.** *Context*: an administrator could not give
-one person one capability below `admin` without a deploy or a fourth role,
-and the action names the three role checks composed with were free-floating
-strings — a key could name anything, nothing could census them, and no
-instrument could say what permissions a deployment had. *Decision*: one
-vocabulary shape `<kind>.<verb>` — kinds and the four CRUD verbs **derived**
-from the model registry at import (`authz_kind` on the model is the immutable
-key under a renamable class name; `authz_kind_of` puts an owned `CASCADE`
-child under its aggregate's kind; `authz_kind = None` plus a reason opts a
-table out), other verbs **declared** on a kind in the owning app's
-`ACTION_PROSE` as one line with its sentence, one **reserved** ownership verb
-`tenant.own` that no pattern matches; three layers with one owner each —
-`owner` IS the vocabulary, product-declared roles live in `apps/<x>/roles.py`
-with pattern collections, tenant data is custom roles, deltas and grants both
-ways; `require` composes holds AND predicate at the node the object names; one
-hand-out / take-back rule replaces rank; rule 13 proves a service asks for the
-kind it writes. Nothing is materialised as rows — Django derives four
-permissions per model at `migrate` and this derives four per kind at import,
-because a table of permission names is a second owner of a fact the code
-already holds, and it goes stale the moment a product adds a model.
-*Rejected*: three platform built-in roles; free-floating action names; a
-`<app>.<model>.<verb>` three-part key (no collision exists, and one tomorrow is
-an import refusal resolved by an explicit `authz_kind` rather than a longer key
-for everybody); additive rank-bundles; person × action access lists; a
-`Permission` table synced from code; a parallel custom-role table; a rules
-engine; allow-only grants; snapshot collections; a foreign key from
-`Membership` to a role declaration; per-node role sets resolved through
-`governing()` (a tree walk per `require`). *Buy, rejected with the two exits
-recorded*: `contrib.auth` + guardian, django-rules, pycasbin, Oso, Cerbos,
-Topaz, Zitadel authorizations, SpiceDB, Keto, Auth0 FGA and WorkOS each
-contradict either the derived vocabulary or one owner of the membership graph;
-**Permify is AGPL-3.0 and house rule 23's licence leg refuses it outright**.
-*Trigger to revisit*: **OpenFGA, self-hosted**, when a product needs a
-relationship graph beyond the organization path — it would replace the data
-half of resolution and keep the vocabulary; **AWS Verified Permissions**, when
-a product is AWS-native and wants the decision out of process under a business
-associate agreement. Either exit is taken behind `require`, which is the one
-function every door already asks. Also revisit at the first product whose
-tenants need *conditions* on a grant — time-boxed, approval-gated, "under
-$1k" — which is a predicate over data and wants a check registry, not a wider
-vocabulary; and at a product measuring O(people) withholds where a per-node
-role set would be O(1).
-
 ## The platform the template ships
 
 | Area | Ruling |
 |---|---|
 | Invitations & tenant lifecycle | `core.services.invite_member(email, tenant, role)` → the invited address's first sign-in at the identity platform joins the membership, through `accounts.adapter` (ADR ident-4); `create_tenant / suspend_tenant / close_tenant` as services. **First identity** (ADR ident-9) — a federated deployment: first sign-in through the workforce IdP, then `manage.py bootstrap_tenant --email`; a password-only deployment: `manage.py zitadel_first_admin --email`, open the link it prints and set a password, sign in, then `bootstrap_tenant --email`. `zitadel_first_admin` refuses once any tenant exists, so `invite_member` is the only invitation path from the first member on. |
 | Email | Django email backend called **from a workflow activity** (retries); **Mailpit** in compose for dev; a provider via `connections` in production. |
-| Rate limiting | ninja throttling per token and per tenant, defaults in settings; MCP tools share the same limiter. **ADR core-19 · context:** 429 was documented but no response header let a client back off before hitting it, and the throttle knows the numbers · **decision:** the `X-RateLimit-*` triple (`X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset` as delta-seconds, matching `Retry-After`'s unit — no clock-skew ambiguity), stamped by the one middleware from what the throttle recorded on the request; the headers report the **binding** bucket (least remaining/limit ratio of the credential and tenant buckets) without naming it — which bucket binds is capacity information about the tenant's other credentials · **rejected:** the IETF RateLimit draft (`draft-ietf-httpapi-ratelimit-headers` — still a draft whose field names have churned across revisions; pinning it risks going stale as the draft churns, and adopting the RFC names once published is additive: stamp both through a window), per-bucket header pairs (a client can act on one number), headers on the MCP door (tools speak the refusal grammar; no HTTP header surface) · **trigger to revisit:** the draft becomes an RFC. |
+| Rate limiting | ninja throttling per token and per tenant, defaults in settings; MCP tools share the same limiter. (ADR core-19) |
 | CORS / CSRF / CSP | `django-cors-headers` with an env allow-list; session auth + CSRF for a same-site front end, token auth for everything else; `django-csp` in production settings. |
 | MCP auth | Bearer tokens now; the MCP OAuth 2.1 flow is the recorded upgrade when a third-party client must connect. Sockets gain the same bearer path (N5). |
 | File storage | `django-storages`, local default, S3 by env; tenant-prefixed keys; presigned URLs; uploads through a service. The local S3 stand-in is MinIO's last public release, served from the owner's ECR Public mirror by digest and linux/arm64 only, because MinIO archived the project and withdrew every public image (2026-09-24) — `compose.yaml` beside the pin says how CI runs and pulls it. |
-| Tenant settings & flags | `Tenant.settings` JSON (schema-validated) + `core.flags.is_enabled(tenant, name)`; no third-party flag service. |
+| Tenant settings & flags | `Tenant.settings` JSON + `core.flags.is_enabled(tenant, name)`; no third-party flag service. `core.services.update_tenant_settings` merges `values` key by key (a `null` removes a key) and validates only `timezone`; **the keys and their values are NOT schema-validated — a declared gap**: no per-key schema registry exists, so a product that needs typed settings declares the schema in its own service before writing. |
 | Events | `v` on every payload; outbox retained; `manage.py replay_events`. |
 | Erasure & retention | `accounts.services.erase_user`; audit/outbox archival recorded as dated residuals with triggers. |
 | Seed, backup, restore | `manage.py seed` (dev data; the method still drives from zero); `scripts/backup.sh`, `scripts/restore_drill.sh` so the restore tripwire has something to fire. |
 | Runtime | `Dockerfile` (web + worker targets); `/healthz` (liveness) and `/readyz` (db, redis, temporal); whitenoise for admin/docs static. |
-| Database connections | **ADR config-1 · context:** under ASGI each `sync_to_async` thread owns a `DatabaseWrapper` whose connection closes only at the end of a request that thread served, so `CONN_MAX_AGE=60` pinned ~43 persistent connections against ≤4 active — flat across the ladder, unreclaimed 90s after the load stopped — on an instance with `max_connections=79` shared with Temporal and Zitadel; concurrency 1 was already at the slot wall · **decision:** Django 5.2's native psycopg pool (`DATABASES["default"]["OPTIONS"]["pool"]`), settings-only plus the `psycopg[pool]` extra, `CONN_MAX_AGE=0` derived rather than read whenever the pool is on, per-process `max_size` derived from `DJB_SERVICE_NAME` (web 20 / worker 8) and sized against the counted neighbour budget recorded beside the values in `deploy/env.staging.example` · **rejected:** PgBouncer transaction pooling — it forbids server-side cursors, and `.iterator()` is how exports stream chunked JSONL, how search rebuilds walk the corpus and how the workflow sweeps walk tenants, so `DISABLE_SERVER_SIDE_CURSORS` would silently turn every keyset stream into a full buffer; plus a container of surface (image, TLS on both legs, an auth story fighting the per-checkout derived database) that a ≤4-active demand cannot justify. Bare `CONN_MAX_AGE=0` with no pool — it pays a fork plus a TLS handshake per request on a *burstable* instance's CPU — measured at 71.8% of it — and it caps nothing: 32 asgiref threads under burst still open 32 slots · **trigger to revisit:** replicas × processes × `max_size` no longer fitting inside `max_connections` − neighbours − operator headroom — at which point PgBouncer is the next escalation and the `.iterator()` cost above is the bill to plan for · **the tree is the authority:** `config/settings/base.py`, "Connection reuse", carries the same argument beside the values, and `apps/core/tests/test_connection_pool.py` drives real threads against a real Postgres and fails with the measured held count on any tree that assembles no pool. |
+| Database connections | ADR config-1 |
 | CI | **GitHub Actions** runs `./scripts/check.sh` (full) on every PR, against this repository's own `compose.yaml` (`docker compose up -d --wait db redis temporal`), not hand-built service containers — half the gate reaches Postgres and Temporal through `docker compose exec`, so CI runs the gate and CI provides the environment the gate assumes (`.github/workflows/ci.yml` is the authority and names what it excludes). The gate is the only CI. |
 | Contracts & DX | Pydantic schemas per socket message type, listed by `introspect`; `scripts/gen_client.sh` (openapi-typescript) optional; `.editorconfig`. |
 | i18n | English only by default (`USE_I18N=False`); `Tenant.timezone`/`locale` present for display; a product turns i18n on as a recorded decision. |
-| The product's name | **ADR platform-1 · context:** the repository was renamed to `example.invalid` and the old name was still a literal in seven places — settings, two compose env defaults, `.env.example`, the devcontainer's display name, the README heading — so a product renamed by editing each surface it happened to find, and Zitadel had already materialised the ones it missed · **decision:** ONE canonical env-backed setting, `PRODUCT_NAME` in `config/settings/base.py` (default `"Pilecap"` — the template's own name, so a fresh clone is honest about being the template), and every surface that *shows* or *materialises* a name derives from it: `ZITADEL_PROJECT_NAME` defaults to it, and `compose.yaml` interpolates `${PRODUCT_NAME:-Pilecap}` into the first instance's org name and its service account's display name. A product sets it once in `.env` · **rejected:** hardcoding the name per surface (what was there — every rename is a survey, and the surface you miss is the one a console shows a customer six months later); deriving it from the directory or the git remote (a worktree and a fork are different directories with the same product) · **exception, deliberate:** `compose.yaml`'s `name: djangobootstrap` does NOT derive — it is infrastructure identity, containers and volumes key on it, and changing it orphans a running stack and its data. Neither do the Zitadel *logins* (`ZITADEL_ADMIN_USERNAME`, `ZITADEL_DEV_USER_EMAIL`, `ZITADEL_MACHINE_USERNAME`): they are account identifiers already created, and renaming one is a migration, not a setting · **renaming an instance that already materialised the old name:** teardown + fresh bootstrap (drop the `zitadel` database and the `zitadel_bootstrap` volume, re-run `./scripts/setup.sh`), which re-materialises from these defaults and doubles as the from-zero rebuild test — NOT a rename against the management API. `zitadel_seed` finds-or-creates by name (`accounts.zitadel.ensure_project`), so a changed name on a live instance makes a SECOND project with fresh client ids while `.env`'s `ZITADEL_CLIENT_ID` still points at the old one (owner ruling) · **not covered:** `README.md`'s heading and `.devcontainer/devcontainer.json`'s `name` are text no variable reaches, so a product edits those two by hand; each now says so at the line · **amended 2026-08-26 (owner ruling):** the identity a stranger reads becomes **Pilecap**, so the default value above moves from the template's former name to `"Pilecap"` — the *mechanism* is untouched and is exactly how that rename executed (one setting, derived surfaces, two hand-edited lines). The infrastructure namespace stays: the compose project name quoted in the deliberate exception above, the `DJB_` environment prefix and the `djb_` database prefix are covered by this row's own deliberate exception, because renaming them orphans running stacks and their data, staging included. This supersedes the earlier census recommendation to keep the former name (its leak argument was put to the owner verbatim and overruled) · **wire identifiers are not display identity:** the MCP `serverInfo` name (`config/mcp.py`) and the outbound `User-Agent` tokens (`apps/connections/client.py`, `apps/accounts/zitadel.py`) were renamed as lowercase **literals** and do NOT derive from `PRODUCT_NAME` — a display name may legally carry spaces and mixed case, and a wire token derived from one is malformed the day a product sets it · **trigger to revisit:** a third surface needing the name at *runtime* (an admin site header, an email from-name) — then it reads `settings.PRODUCT_NAME`, and this row is where that is already decided. Read *display* surface there: the wire-identifier clause above is the boundary that trigger stops at. |
+| The product's name | ADR platform-1 |
 | Template updates | `TEMPLATE_VERSION` + `CHANGELOG.md`; a release is ONE squashed child commit cut by `scripts/publish.sh --release` and tagged, and **products merge the tag** — never cherry-pick — adjudicating what the merge deletes against their local patches (owner ruling 2026-08-30, cycle P17; supersedes the earlier cherry-pick line; root re-cut permanently retired). Trigger unchanged: three products exist → revisit sync tooling. |
+| The SDK's version | ADR sdk-1 |
 | Left to products | Specific providers, SSO/SAML/SCIM, search beyond Postgres FTS, notifications beyond email, admin theming, PgBouncer, Temporal self-hosting, multi-region. |
 
 ## The gate
@@ -1361,7 +201,7 @@ faster than a sharded pair; the wall lever is that box's instance class and
 one pass was green AND the acceptance box's two-pass wall exceeds the sharded
 two-pass wall by more than one whole pass at the N in use — restore
 `--passes 2` in `bank_boxes_plan` (one line) and the field becomes an ignored
-extra. *Trigger to revisit:* the first bank at N ≥ 7 where the composed wall
+extra. trigger to revisit: the first bank at N ≥ 7 where the composed wall
 is the acceptance box by more than 60 s — then the proof box's size is the
 next rung, not this ADR.
 
@@ -1369,9 +209,10 @@ next rung, not this ADR.
 principle bends:* gate-1's own "two passes on one machine" a second time, and
 this ADR's 2026-09-18 amendment's "the row is not written until the proof is
 in": on the **CI road** (`pm_push.sh --pr` → the pull request's run →
-`--ci-verdict` → a plain push honoured), the sharded `pytest-x2` unit runs
+GitHub's merge → `--ci-verdict` banks the merged tree; a push to main is
+refused, MQ-2), the sharded `pytest-x2` unit runs
 **one** pass and **no acceptance box runs at all** — the whole-suite two-pass
-leak proof under one seed is **the nightly's** (`.github/workflows/nightly-proof.yml`,
+leak proof under one seed is **the nightly's** (`nightly-proof.yml` (the template's own self-proof: R14 trims it from a product),
 `pm_push.sh --proof`, one runner, unsharded, a record `gate_nightly_read`
 reads), and the teeth move to the production deploy, which refuses without a
 green nightly no older than 24 h. *Why the default is insufficient now:* the
@@ -1393,7 +234,7 @@ nightly's record; a box bank keeps `--leak-proof acceptance` as its default
 and the 2026-09-18 amendment's rule for it (a one-pass row with no proof is not
 honoured) stands unchanged. *Reversal:* set the deploy-prod job to require
 the acceptance form, or restore an acceptance box to the PR workflow (one job,
-`ci.yml`); the nightly keeps running either way. *Trigger to revisit:* the
+`ci.yml`); the nightly keeps running either way. trigger to revisit: the
 first red nightly on a tree a green PR run pushed to main — then the class is
 live at CI scale and the question is whether the PR run buys the proof back.
 
@@ -1418,10 +259,45 @@ so rule 5's cheap `assertNumQueries` pins inherit the harness's certification
 without the gate ever seeding a million rows. Rejected: wall-clock budgets
 (normalized was worse than raw), seeding the full spec inside the gate
 (minutes per run, paid by every rung forever), synthetic benchmarks (pgbench
-measures Postgres, not our queries), CI-machine normalization. Revisit when a
+measures Postgres, not our queries), CI-machine normalization. trigger to revisit: a
 real deployment doubles past any declared axis, or when a hot path stays
 query-count-flat while its plan shape degrades in a way EXPLAIN assertions
 miss.
+
+**A request opens no transaction; every write's boundary is its `@service`**
+(ADR perf-2, 2026-10-21 — SIGNED by the owner 2026-10-22). *Context:* under
+`ATOMIC_REQUESTS = True` every web request was one transaction from its first
+statement (the bearer-token read) to the view's return — the throttle's Redis
+round trip, every selector, the presign, `write_audit` and the response
+serialisation all sat inside `BEGIN … COMMIT`, so every non-database call in a
+request was an `idle in transaction` session, and the load lockup's capture
+read three of them parked on `SAVEPOINT` with the row locks queued behind
+(the acceptable-tier options memo, § 7 the lockup). That is engineering
+principle 8 violated by construction, and the outer transaction protected
+nothing: `@service` already opens the write's own `transaction.atomic()`
+(`apps/core/service.py`), the bulk seam opens its own around a batch
+(`apps/core/bulk.py`), and the MCP door has always run under no request
+transaction while the door-pair tests hold both doors to one answer.
+*Decision:* `ATOMIC_REQUESTS = False` (`config/settings/base.py`); a write's
+boundary is the `@service` it calls (rule 13 keeps every public write one), and
+a route reaches at most one service boundary —
+`quality/tests/test_one_service_per_route.py` censuses every mounted route,
+counting call sites, with a seam that opens its own atomic counted as one. The
+health views keep `non_atomic_requests` as a no-op belt. *Rejected:* keeping
+`ATOMIC_REQUESTS` for the single snapshot a route that reads through a selector
+and then writes through a service gets between the two (E8 already has the
+service re-read its row under `select_for_update`, so the exposure is a
+`not_found` race, not a lost write); per-view `non_atomic_requests` on the hot
+routes (a second way to say one thing, and every new route born on the wrong
+side of it). *Cost:* a request's reads no longer share one snapshot, and
+assertNumQueries pins that counted the request's own savepoint pair drop by
+two. trigger to revisit: a route found reaching two service boundaries that
+must commit together, or a lost-write class the census cannot see (a product
+door calling services through a helper outside its module, the admin's own
+changelist actions). *Reversal:* one line in `base.py` and the pins back up by
+two.
+
+*Owner's signature:* Joe (owner), 2026-10-22 — the ruling of 2026-10-21 13:5x ("`ATOMIC_REQUESTS` off by signed ADR") and "go ahead" on 2026-10-22, landed by the PM in the owner's words, dated; the PM's text argues, the owner approves (principle 20).
 
 **The gate refuses degradation** (ADR gate-2). Context: rule 5 pinned
 list endpoints only; the platform's hottest reads (org resolution, subtree
@@ -1457,7 +333,7 @@ other rules by landing order. Rejected: wall-clock thresholds in the gate,
 EXPLAIN cost-number budgets (planner estimates are version- and
 stats-dependent — not machine-invariant), running the full harness in the
 gate (perf-1's rejection), a rule over "any slow query" (an open set no
-closed question can scope — the registry IS the closed question). Revisit at
+closed question can scope — the registry IS the closed question). trigger to revisit:
 the next meta-review's durability triggers, or when a registry entry's
 sargability passes while the harness shows the planner refusing the index at
 scale (then the entry gains a harness-tier pin and the blind spot narrows).
@@ -1480,455 +356,21 @@ and at push) and, when a form does die, by the per-rule self-test floors that
 name the rule instead of moving a total nobody reads. Rejected:
 arming the selftest in post-merge; a "selftest-lite" that plants a sample (a
 sampled canary corpus is a corpus with a hole somebody has to remember).
-Revisit when a dead canary is traced to a merge and the delay to push
+trigger to revisit: a dead canary is traced to a merge and the delay to push
 actually cost work, or when the selftest's wall time falls below ~10s.
 
-**ADR gate-5 · SIGNED by the owner 2026-09-22 · rule ids are two namespaces.** *Proposed 2026-09-21
-(P21, team D, rung D1). The owner chose option A in the rule-id ruling of
-2026-09-21; the signature that turns this line into "Accepted" is the PM's
-ritual at the cycle's CLOSE.* *Context:* house-rule ids were one integer
-sequence the template and a product both appended to; a fold merged duplicate
-ids and fixture dirs (`canary/54` = theirs + ours), exit 2 at the product's
-first gate, renumbered by hand each release. *Decision:* only the
-template mints integers; a product declares `rule_id_namespace: <ns>` once and
-its rules are `<ns>-<n>` in id, fixture dir, valve and check tag; the engine
-refuses any other shape and any fixture file no entry claims. *Rejected:* an
-integer range (unrefusable), allocation at publish (renumbers the product), a
-second file alone (no grammar, a moved rule still collides). *Trigger:* a
-product with two namespaces.
-
-*Amended (rung X3, 2026-09-21): the two keys' HOME is
-`quality/local/rules.yaml`, the product's drawer, and the engine refuses either
-of them in the template-owned `quality/rules.yaml` with the line that names the
-move.* D1 wrote them into `quality/rules.yaml` because the drawer did not exist
-yet; a declaration in a file a fold overwrites is a declaration that disappears
-at the next release, which is the same failure the namespace itself exists to
-end, one file up. Everything else about gate-5 is unchanged — the grammar, the
-four spellings, the refusals and the residence split.
-
-*As built (rung D1), the two places the decision above needed one more
-sentence, both recorded rather than implied:* **(a)** a shape wall alone cannot
-refuse a product that types a bare integer — an integer is the template's legal
-shape and nothing else on the tree says which integers the template minted — so
-the declaration is two keys, `rule_id_namespace: <ns>` beside
-`template_rule_ids_through: <n>` (in `quality/local/rules.yaml`, per the
-amendment above), the second being the highest integer the
-folded template release had minted. It is `quality/partition.yaml`'s and
-`FROZEN_FAMILIES`' pattern (a record of the past, in a diff a human reads), the
-template never carries it, and the template's self-test prints the number a
-product should record on every run. **(b)** the residence census counts TEMPLATE
-ids only (D4), so `selftest_residence_backlog` stays a template fact a product
-folds and never retypes, and a product's own rules are counted against zero.
-
-**ADR gate-6 · SIGNED by the owner 2026-09-22 · an unmeasured class says how to be recorded.**
-*Proposed 2026-09-21 (P21, team D, the ratchet rung). The owner chose option B in the
-ratchet ruling of 2026-09-21; the signature that turns this line into
-"Accepted" is the PM's ritual at the cycle's CLOSE.* *Context:* per-app ratchet
-classes name only the template's apps; a product's app had no class and the
-hook was unpassable until the product reverse-engineered the grammar.
-*Decision:* an app outside the partition with no recorded class is unmeasured —
-a violation that prints the exact `ratchets:` line, `recorded-at <sha> [fold]`,
-down-only afterwards; partition apps stay zero by absence; ratcheted rules
-carry `remedies:` that `--explain` prints. *Rejected:* self-recording (no
-hand), note-only (green-because-unrecorded), a template-wide zero for products
-(the hook stays unpassable). *Trigger:* F's overlay file.
-
-*Amended (rung X3F, 2026-09-21): the line the unmeasured finding prints is
-pasted into `quality/local/rules.yaml` — the product's drawer (P21 EP2) —
-under its top-level `ratchets:`, keyed `"<rule id>": {<class>: <n>}`, and every
-note that offers a human a number to commit names whichever of the two files
-that class's count actually lives in. The decision's `quality/rules.yaml` is
-template-owned and a fold overwrites it.* *And the decision's "ratcheted rules
-carry `remedies:`" is, as built, rules 54 and 55 only: nine other ratcheted
-rules carry none, `--explain` prints the key where it exists, and widening the
-population is a rung of its own rather than a sentence here.*
-
-*As built (rung D3), the three places the decision above needed one more
-sentence, each recorded rather than implied:* **(a)** a ratchet class is
-app-keyed only when the FINDINGS say so — every finding in the class sits under
-`apps/<label>/` for the label its key opens with — because `nonconforming` and
-`secrets` are class names and a predicate reading the key alone would offer to
-record an app nobody has (`unmeasured_app`, `quality/gate.py`); the plan's own
-blind spot, that 54's `nonconforming` gets no unmeasured form, is this
-derivation's price and is kept. **(b)** an entry recorded at `0` is a
-MEASUREMENT and takes the ordinary path; only an ABSENT key is unmeasured, so
-the engine reads the recorded key set and not `get(klass, 0)`. **(c)** the
-partition is read through `quality/partition.py`, and a lockfile that will not
-read shuts the branch rather than emptying the app list — an empty partition
-would make every app on the tree a product's and turn one missing file into a
-refusal storm; it is exit 2 on its own line instead.
-
-*As built (rung HOTFIX-DRAWER-1, 2026-09-22), the fourth sentence, from the
-first consumer's fold: a drawer class on a TEMPLATE rule may name a FINDING
-CLASS that rule declares under its own `ratchets:`, as well as an app of the
-product's. The decision read every class as app-keyed because every ratcheted
-rule it was written against was; rules 50–53 ratchet per finding class
-(`literal`, `api-reach`, `barrel`, `consumed-undeclared`), which is not an app
-and never will be, so a product with a real backlog in one was refused with a
-sentence about `apps/literal/`. Those rules now declare their classes at `0` —
-a measurement, per (b) — and the drawer's number is **added** to the template's
-rather than substituted for it, so a product can record its own backlog without
-being able to erase a template ceiling from a file the template never reads;
-where the template records `0` the sum is the drawer's number and the two
-readings coincide. A name that is neither an app nor a declared class is
-refused with the sentence it always had, now carrying the list of the classes
-that rule does declare.*
-
-*As built (P24 FE-2, and the fix that followed its first train): **a recorded
-class above its count is a violation, not a note.** Before it, the self-test
-read every rule's canaries with `ratchets=False` and the ratchet leg forged
-only one rule's shape, so a number recorded above a class's count was a note
-for every rule. The ratchet leg's one reader, `ratchet_headroom`, now judges
-every recorded row of every rule that declares `ratchets:` against the tree's
-count — on the template's own shape only: a row above its count is a red
-carried by the rule's own line and trailer (exit 1, since a tree disagreeing
-with its own declaration is a judged red and not a dead instrument), at-count
-and at-zero are silent; on any other shape — a declared base, a world — it
-judges nothing and prints one line naming the shape and why, because a
-template row above a product's count is the fold's business and the live
-scan's note already names the number; a shape the census cannot read is
-could-not-look, never a silent skip. The forged forms follow the same
-decision: a raised row named once on the template's shape, a raised row on a
-remote base or a world not named, and a skip that does not name its shape
-refused.*
-
-**ADR core-26 · `core` says what happened, through the bridge.** *Accepted
-2026-09-15 (P20, P4).* *Context*: `core` emitted no events at all. It sits
-BELOW `apps/events` in the layer contract (rule 7), so it may not import the app
-that owns the outbox — and the six most consequential writes in the platform
-(a role made, renamed, deleted; a role's collection edited; a permission handed
-to or taken from one person) were therefore invisible to every webhook
-subscriber and every socket, while a widget creation was not. *Decision*:
-`apps/core/events.py` declares `core.role.created`, `core.role.updated`,
-`core.role.deleted`, `core.membership.updated`, `core.grant.created`,
-`core.grant.deleted` — names only, house rule 16's grammar, the noun being the
-authorization KIND the row belongs to — and `services.py` publishes each one
-through `bridge.get(bridge.EMIT)` **inside the transaction of the write it
-describes** (principle 8; the relay is outside it). Payload v1 is flat:
-`tenant_id` always, `organization_id` wherever the row belongs to one part of
-the tenant (rule 38), then the fact — `role_key`, or `membership_id` +
-`permission` + `effect`. *Rejected*: importing `apps.events` from `core` (rule
-7 — and the spine apps are removable, so a checkout stripped back to `core` must
-still run); emitting from the door (rule 10); shipping the hand-out family with
-no events at all (rule 42's class — a write nobody can subscribe to). *The one
-collision, named*: `services.KICK_MEMBERSHIP_REVOKED` is the string
-`"core.membership.revoked"` — a channel-layer close reason, read by
-`apps/realtime` and by nobody else. The two vocabularies share a prefix because
-they are about the same rows; no name appears in both, nothing reads both, and
-`apps/core/events.py`'s docstring is where that is written down. *Trigger to
-revisit*: the first `core.membership.*` event beyond `updated` — a creation or a
-revocation published as an event rather than only kicked — at which point the
-two lists are close enough together that one of them is renamed.
-
-**ADR core-27 · a read is a permission.** *Accepted 2026-09-15 (P20, Phase R).*
-*Context*: through v2.0 a `<kind>.read` key was free to any membership in the
-tenant — `allows` step 3 short-circuited it and `visible_to` was the whole read
-gate. That answered "which rows" and never "whether this kind at all", so a
-role could say nothing about what a person may see, a custom role could not be
-narrowed to a subject area, and a `withhold` had no effect on a read.
-*Decision*: a `<kind>.read` resolves through the same three layers as every
-other key — `owner` holds it (the vocabulary), `admin` holds it (`*`), `member`
-holds it (`*.read`), a custom role holds what its collection names, an `allow`
-grant adds it and a `withhold` subtracts it. **The check lives in the selector,
-once** (§C6), and every door pays it: a `list_` asks at the acting hat
-(`obj=None` → `where_of`) before it builds the queryset; a `get_` asks after
-the scoped fetch with `obj=row`. **`visible_to`/`for_tenant` still decide WHICH
-rows and `require` decides WHETHER this kind, here** (rule 24, BVB-4) — a
-selector never filters rows by permission. A `system` actor passes at step 1.
-*The grammar* (§C8): outside your subtree → `not_found` (the scoped fetch,
-unchanged) · inside it without the key → `forbidden` with
-`refusal_sentence("<kind>.read")` · a list without the key → `forbidden`,
-because a list has no row to hide. Reach before capability. *Consequences*: a
-membership with **no role reads nothing**; a **custom role reads nothing until
-its collection names reads**, so the role services accept `"*.read"` as a
-pattern and expand it at write time; **the socket narrows per HAT, not per
-org** — a connection's read set is the read half of `effective_permissions` at
-the acting hat, computed once at connect and checked per frame (a per-org set
-would disagree with the REST list, which rule 46 forbids); a write that shrinks
-somebody's read set at any node they hold a membership on closes their sockets
-on commit (`core.permissions.narrowed`), a widening kicks nobody; the token
-echo drops the read half when no read is held; `READ_VERBS` and `is_read()`
-remain as deprecated shims read by nothing until v3.0; **a tenant-wide kind — one
-whose model names no organization — is READ at the acting hat and WRITTEN at the
-root** (PR5.5, 2026-09-17), which is the v2.1 stopgap and is declared as one: it
-makes this door agree with the socket, the search and the admin today, every such
-site wears a dated `hat-scoped` valve that house rule 55 counts, and universal
-homing replaces it in v2.2 by giving those kinds a home (the universal-homing
-proposal, 2026-09-17 — every record homed at a node). *A flat product observes
-nothing* — the 288-cell census in `apps/core/tests/flat_product_baseline.json`
-is the proof, and 0 write cells moved when it was re-derived. *Trigger to
-revisit*: the first product that wants per-FAMILY read precision in the token
-echo, or the first family-shaped withhold.
-
-**ADR core-28 · a template migration is grafted onto the product's leaf by a
-command, never by hand.** *SIGNED by the owner 2026-09-22 (proposed 2026-09-21 (P21, team D, decision D2 —
-the owner chose option A; the signature at CLOSE).)* *Context*: a product that
-added migrations to `core`/`accounts` met each release's numbered ancestors
-twice — a leaf fork and, after one fold, ancestors it had renamed — and
-reparented by hand under `django-linear-migrations`' refusal.
-`rebase_migration` moves exactly ONE migration and cannot see a chain or a
-renamed ancestor at all. *Decision*: `manage.py fold_migrations <app>` grafts
-the arriving chain from the `max_migration.txt` conflict onto the product's
-leaf, resolving a renamed ancestor by stem suffix, refusing an applied
-migration or an ambiguous stem; template files stay Django-native; stems are
-unique per app by test; a new product is advised to extend template apps from
-its own. It subclasses `rebase_migration`'s `Command` rather than replacing it
-(principle 2), and the library internals that makes it hold are declared in
-house rule 44's `linear_migrations_internals_we_hold`. The direction is the
-INVERSE of the library's: `rebase_migration` moves yours onto theirs, the fold
-moves theirs onto yours, so the markers are read positionally and the library's
-merge-time swap is undone. *Rejected*: named-ancestor spelling in template
-migration files (non-native, regenerated away by `makemigrations`, and no fix
-for the leaf fork); forbidding product migrations in template apps
-(unadoptable by the consumer that exists — it already holds `core` 0018–0023).
-*The cross-app gap, declared rather than closed*: a dependency from ANOTHER
-app onto a migration the fold renumbered — `("accounts", "0008_identity_branding")`
-written in `apps/comms/migrations/…` while the fold made it
-`0010_identity_branding` — is left exactly as written. Stem resolution runs
-only within the app being folded, because a stem is unique per app and nothing
-here is entitled to edit another app's files; Django's own loader then raises
-`NodeNotFoundError` naming both ends at the next `migrate` or `manage.py
-check`. **Loud, and never wrong** — which is why it is a declared gap and not a
-silent one: the operator folds the other app too, or repoints that one
-dependency by hand. Closing it (a tree-wide pass that rewrites cross-app
-tuples) is queued in `queue.md`, not decided here.
-*Reversible*: `git checkout -- <app>/migrations && git clean -f
-<app>/migrations` undoes a run (principle 6) — **both halves**, because a
-rename leaves the new filename as an UNTRACKED file, so a checkout alone
-restores the old chain and leaves the grafted copies beside it — and
-`--dry-run` prints the plan before anything moves.
-*Refused, not attempted*: a stopped `git rebase`. Under one, HEAD is the
-upstream and `MERGE_HEAD` does not exist, so the library's merge-time swap does
-not happen and this command's un-swap does not either; the two inversions
-cancel and the fold would renumber the PRODUCT's chain onto the template's
-leaf, silently. `REBASE_HEAD` is read before the markers are, and the command
-exits 2 saying so. *Trigger to revisit*: a squashed
-template migration (house rule 6's gap), or a product that wants the fold to
-run across every app at once rather than one app at a time.
-
-**ADR verbs-1 · every verb a noun needs is a mechanism it adopts, and the
-gate refuses the noun until it has the road.** *Accepted 2026-09-27 (P24,
-the noun-verb family; the owner: "let's do them all").* *Context*: the
-consumer built archive by hand across twelve apps — two fields, a migration, a
-service pair, two routes, two tools, an `Out`, a `?show=`, twenty-odd tests —
-and learned two rules late; move, import and merge were each invented per
-noun. The template's own first adoption by hand (WATCH-P24) reached green
-inside the app in ten minutes and never green as a whole: a new refusal code
-reds a table in `apps/core` a product may not edit. *Decision*: **one seam in
-`core`** — `core.verbs` (the declared markers per model, `allowed_acts(actor,
-row)` as the server's answer per row, `resolve_subject`), `core.blockers` (a
-closed walk over each app's `<verb>_blockers.py`), the refusal grammar with
-`wire_extra`, and a road table (`ROADS`) house rule 74 reads: a noun that
-declares a marker and lacks the marker's routes, keys, `Out` shape or
-parameter is refused at `manage.py check --tag djb`, never at the door. **Every
-member ships the same shape** — a mixin or a seam, the keyword-only service
-pair, both doors (rule 17 derives the twin), the face's road from the pattern
-book, a house rule with a canary, and a golden example on the scaffold noun a
-product copies (`# golden: <verb> begin|end`; the golden-copy drive copies,
-relocates, checks and drops it). *Rejected*: per-noun hand builds (the bill
-above, per app); a version on every update door (the settled row — a version
-column is a per-product decision; `Versioned` is opt-in and derived from
-`updated_at`); real FKs for attachments (½ session per noun and cannot mean
-"anything" — the subject is polymorphic and resolved at every write).
-*Consequences*: `apps/core` grows the family's seams once (the frozen-core
-reason stated per commit); a product's own refusal codes must be admitted by
-their declaration, not by the template's typed table (the second core
-batch's); the
-face census and the verb runners (rules 76–80) are the family's instruments.
-*Trigger to revisit*: the first product noun that needs a verb the family's
-shape cannot express without a second seam.
-
-**ADR archive-1 · a noun leaves the book one way, and the consumer's build is
-adopted where it can be.** *Accepted 2026-09-27 (P24 B-CORE-1).* *Context*:
-the consumer's `Archivable` — fields `archived_at`/`archived_by`, the manager
-hiding archived rows in `for_tenant()` with `.including_archived()` and
-`.archived_only()` as the only widenings, `ArchivedOut`, blockers by discovery,
-`@refuses_system` predicates and their rule — was built, driven and folded on
-a real product; the comms and files apps here carried two hand-built halves
-of the same idea that disagreed (no restore, no event, a `?archived=` bool).
-*Decision*: the consumer's mechanism, names kept, lifted into `core` as the
-family's first member: archived rows are hidden by the manager and never
-purged; `archive`/`restore` are a service pair that emits inside the
-transaction and refuses with `archive_blocked`/`restore_blocked`/`archived`
-(409, each naming its remedy); a system actor is refused by the predicate
-(`may_archive` asks `organization.update` at the node — rule 54 (c)'s form,
-the consumer's `may_administer` semantics — because the default roles offer
-every predicate-bearing key back, so asking `<kind>.archive` narrows nothing);
-`Archivable` and `append_only` are disjoint (rule 75); the two hand-built
-halves become the mixin in the same cycle (COMMS-A, FILES-A). *Consequences*:
-`?archived=` becomes `?show=` (a 400 naming `show` — a loud break the merge
-note carries at a MINOR, the owner's ruling); `for_tenant`'s hide is invisible
-to raw SQL and `_base_manager` reads (declared); a custom role holding
-`organization.update` can archive (declared cost). *Trigger to revisit*: a
-product that needs a purge (a data-safety act the family does not carry) or an
-archive that must not hide by default.
-
-**ADR verbs-2 · an event payload never carries a per-viewer field.** *Accepted
-2026-09-28 (P24 LEAD-W3 R1; built by B-CORE-3 under the owner's principle-20
-sanction, recorded in its commit).* *Context*: `allowed_acts` is a property of
-(row, viewer) — the vocabulary answers it per hat, and an event has no viewer.
-The family's first adopter put it on the `Out` and so into the outbox, and its
-verifier read the archiver's `["restore"]` in `archived` and the owner's five
-acts in `created`, broadcast to every member: a permission fact about one
-person published to the tenant, wrong for every other reader. The second
-adopter left it off for byte-equality with the outbox — a door disagreement,
-which is a finding. *Decision*: `allowed_acts` lives on the two viewer doors
-(REST and MCP, which rule 17 keeps equal) through `ActsOut`, the page-level
-`ActsPage` and `with_allowed_acts`; `Event.payload` is the `Out` minus
-`core.schemas.PER_VIEWER_FIELDS` (derived from `ActsOut`, never typed), built
-by `event_payload()`, which strips at any depth; and
-`apps/events/services.py::emit` refuses a payload carrying a per-viewer key at
-any depth, naming the path. **The refusal on the spine is the owner's
-principle-20 exception**: the spine is the one chokepoint through which every
-adopter's payload passes, a source rule cannot see into a dict a service
-dumped, and the alternative was per-engineer memory in every adopter — so a
-core rung was sanctioned one edit outside its territory. The webhook body and
-the socket frame carry the envelope; a frame is a signal to re-read, never a
-decision. The four-door measure, restated: for one viewer REST equals MCP; for
-any viewer `event_payload(REST)` equals `Event.payload`; a second viewer
-differs only in the per-viewer fields — `assert_four_doors` is the assertion
-every adopter's wire test calls, and it held only when driven through a second
-viewer (one person pressing both doors cannot see the difference). *Rejected*:
-the emitter's own acts in the payload (the broadcast above, and a wire break
-for every subscriber to undo); acts on an envelope beside a pure `Out` (the
-detail route has no envelope, so every detail door re-wraps — a break across
-five apps); `allowed_acts: list | None` with `null` meaning nobody asked (a
-subscriber cannot tell `null` from "you may do nothing", every `Out` widens,
-and the measure still needs the amendment). *Reversal cost*: stripping now and
-carrying later is additive — a key appears and no subscriber breaks; the other
-direction breaks every subscriber that read the key. *Trigger to revisit*: a
-subscriber that needs a viewer's acts in a broadcast — which is a
-per-subscriber door, not an event.
-
-**ADR merge-1 · the repointer contract, and the loser as a tombstone.**
-*Accepted 2026-09-28 (P24 LEAD-W3 R15 over the owner's tombstone ruling of
-2026-09-27; B-CORE-3's conformance test measures it over every attach owner;
-R-SEAMS-W5 closed the two seams its first consumer found).* *Context*: three
-attach owners implemented `Repointer` in one wave with three readings of its
-count — one counted three, moved two and collapsed one — and the seam's first
-mergeable consumer found a repointer that refused a noun without attachments,
-and a survivor whose delete surfaced the database's protect as `conflict`.
-*Decision*: **one contract, asserted once across every declared repointer**
-(`apps/core/tests/test_repointer_conformance.py`): `count(*, tenant, loser)`
-answers the rows that will LEAVE the loser — moved or collapsed — and
-`repoint(*, tenant, actor, loser, survivor)` the rows that left; the safety
-re-resolves both rows for the actor (`may_be_named`, `resolve_subject`), so
-an unreachable loser or survivor is `NotFound` with nothing moved; one
-`<app>.<noun>.moved` per moved row and the owner's own leaving event for a
-collapse (a duplicate link folds onto the survivor's and emits its `deleted`);
-`updated_at` stamped on every re-pointed row (rule 76's form now, so a later
-`Versioned` adoption changes nothing); a repointer for a kind the noun does
-not take is a no-op counted zero on every owner, so a mergeable noun without
-attachments merges. **The loser survives as a tombstone**: `Mergeable` requires
-`Archivable` and carries `merged_into` (a self-FK, `PROTECT`) — the merging
-person archives the loser, its reads answer 200 read-only with `merged_into`,
-its writes refuse `merged` (409) naming the survivor's door, a chain is
-compressed in the merge transaction so a loser is never two hops from its
-survivor, the survivor's aggregate reads that must include kept children widen
-with `Mergeable.lineage(survivor)`, and every foreign key into the noun is
-either re-pointed by its owning app's `merge_repointers.py` or declared kept on
-the loser in `merge_keeps` with its reason (an append-only ledger stays where
-it was written — rule 20) — rule 74's merge clause is that closed question over
-`_meta.related_objects`. Deleting a survivor that still carries merged losers
-refuses `merge_survivor` (409, both doors byte for byte, naming the noun's
-archive), where the protect surfaced as the wrong word. The dry run
-(`<noun>_merge-detail`, `?into=`) answers the sentence, the repoints by title
-and count, and the blockers, and writes nothing; the apply takes both versions
-where the noun is `Versioned`; locks are taken in pk order. **One `.moved`
-outbox row per moved attachment is kept** (the owner's question, answered
-KEEP): one event per merge carrying counts would leave an attachment's own
-webhook subscribers deaf to the repoint. *Rejected*: `count` answering
-`(moved, collapsed)` exactly (the honest split, but a signature change on a
-seam three merged apps already implement — reopened when a receipt needs the
-split); count equals moved (unknowable without the survivor); a separate
-redirect table (a second owner of a fact the loser row already carries,
-principle 9); a 3xx on the loser's detail (a client follows it silently and
-then writes to a row it did not name, and the MCP door has no redirect); an
-unmerge road (the merge is admin-only and confirmed on the face precisely
-because it is not undone, principle 6); a cross-noun merge. *Trigger to
-revisit*: a merge measured past the request budget, which becomes an
-import-shaped run; a receipt that needs moved and collapsed told apart.
-
-**ADR duplicate-1 · a duplicate is a create, filled before its one save, and
-its key constraint is the model's own.** *Accepted 2026-09-28 (P24 — the
-worked example's step-zero finding, ruled 16:59 and landed under a narrow core
-sanction; R-SEAMS-W5 for the constraint).* *Context*: the seam's first consumer
-could not use it — `duplicate_row` built the copy, set `copies` and saved once
-before the service could set anything, so a `resets` field that is NOT NULL
-(the owner) and a unique constraint over copied fields (the name per owner)
-were each a 500, and the planted stencil the seam was measured against carried
-neither; then a `Duplicable` noun declaring `Meta.constraints` could not
-migrate from scratch, because the key field's render made `CreateModel` create
-the constraint and the autodetector's `AddConstraint` failed on it — the worked
-example migrated only because its table already existed. *Decision*:
-`Duplicable` (`duplicated_from`, a self-FK that nulls when the source goes —
-lineage is a courtesy, not a claim — and `duplicate_key`) with
-`Duplicate(copies=…, resets=…)` closed over every concrete editable field
-(rule 74's duplicate clause); `duplicate_row(..., fill=)` takes a value for
-every key named in `resets`, refuses `TypeError` for one missing, and sets them
-on the copy before its one save; the copy's `full_clean()` runs under
-`as_invalid()` before the save, so a clash is `invalid` naming the field and
-never a 500; a duplicate IS a create — `<kind>.create` at the acting hat (ADR
-core-20's placement) plus `<kind>.read` on the source — so it lands at the
-presser's hat, owned by the presser, named as a copy, with the source's
-ledger left behind and its tags carried by the noun's own service calling the
-tags app's service inside its transaction; and **the key constraint is the
-model's own**, declared in its `Meta`, checked by the field rather than
-conjured by its render, and a duplicable noun that forgets the declaration
-fails `core.E001` before it can migrate. *Rejected*: a core hook for copying
-attachments (one consumer, principle 11); a `duplicate_blocked` code (a copy's
-refusals are `forbidden` and `invalid`); copying append-only children (a ledger
-is the source's history, not the copy's) or notes and files; a plant without
-the example's shape (the criteria finding — a seam is measured against the
-shape its first consumer has). *Trigger to revisit*: a product noun whose copy
-must carry an attachment kind other than tags.
-
-**ADR attach-1 · the landing law: an attachment lands at its subject's
-organization, and a tenant-wide subject lands it at the acting hat.**
-*Accepted 2026-09-28 (P24 LEAD-W3 R6, over the owner's polymorphic ruling of
-2026-09-27; the tags app moved to it; B-CORE-3's attach conformance measures
-every owner).* *Context*: attachments are polymorphic `(subject_kind,
-subject_id)` across three platform owners — notes, tags and the files app's
-stored file — resolved and authorized at every write; the first two owners
-disagreed on where a row lands for a tenant-wide subject: notes at the
-subject's node, tags at the tenant root, which only root hats can read.
-*Decision*: an attachment lands at its subject's organization; for a
-tenant-wide subject (a `TenantScopedModel`, such as a tag) it lands at the
-acting hat — down-only visibility decides it, because a branch author must be
-able to read back what they wrote, and rule 55's root-only writes govern the
-tenant-wide ROW, never the org-scoped link. The subject is resolved by
-`core.verbs.resolve_subject` (the kind registry, `for_tenant(t).including_archived()`,
-`visible_to`, `may_be_named`), and attachments are read only through their
-subject (`?subject=<kind>:<id>`, which resolves the subject first), so a
-dangling pointer is unreachable, never wrong. **The noun declares
-`attachments = ("notes", "files", "tags")` inside its golden fence**, so a
-product copies the declaration with the noun and the adopters' test plants —
-additive, never replacing — become no-ops the day it lands; a kind the subject
-does not declare is refused naming `subject`; a noun that lists tags answers
-`tags` on its detail (rule 74's attach clause; the detail door only, to spare
-a per-row query on lists). **Each owner ships `tests/attach_specimen.py::attach`**,
-the hook core's conformance test imports, so the law is measured once across
-every owner rather than asserted per app. *Rejected*: root landing (the reason
-above); real foreign keys per noun (half a session per noun, and a link table
-cannot mean "anything"); a conformance test per owner (three readings of one
-law). *Declared and booked*: the tenant-wide one-per-pair constraint against
-per-hat landing (a second branch pressing a word already on a tenant-wide
-subject answers `conflict` with no row and no event), and a merge re-landing
-links at the merging actor's hat. *Trigger to revisit*: universal homing —
-when the tenant-wide class dissolves, the second clause goes with it.
-
-**ADR mounts-1 · the platform's REST mounts, router tags and scope families
-carry the `djb_` namespace, and no path or tag key is served by two apps (rule
-83).** *Accepted 2026-09-29.* The three platform apps mount at
-`/api/v1/djb_notes/`, `/api/v1/djb_tags/` and `/api/v1/djb_tag_links/`,
-`/api/v1/djb_imports/`, under the router tags (the scope families)
-`djb_notes`, `djb_tags`, `djb_imports`; the attachment kinds stay `notes`,
-`tags`, `files`. *Rejected*: keeping the resource words on the platform's
-mounts (a product's own noun mounts there first and answers first, silently —
-measured on django-ninja 1.6.3); a hyphenated namespace (a second spelling of
-the word every label, kind, table and family spells with an underscore).
-*Trigger to reopen*: a product that must reach the platform's notes at
-`/notes/` — that is a proxy in its own tree, never a template change.
+**The proof from zero does not run at merge either** (the owner's decision of 2026-10-24).
+What bends: the SDK program's
+proof from zero (`proof-from-zero.yml` (the template's own self-proof: R14 trims it from a product)) is kept as a nightly and a release-time guarantee instead
+of a per-merge one — the `workflow_run` trigger is gone, the 07:53Z schedule proves every tree no
+run proved, and `publish.sh --release` dispatches the proof on its source and tags nothing until
+the record is green (`quality/djb/rituals/publish.py::Publish.proof`). Why: ≈ 25 runner-minutes
+per merged pull request bought a scaffold red known within the hour rather than by the morning,
+which nobody reads before the morning, while the tree a product clones is a tag's, proven before
+it exists. Rejected: keeping the per-merge proof; proving only on `quality/sdk` or scaffold paths
+(the ritual's input list is the honest closure and most platform merges are in it). Trigger to
+revisit: one scaffold red found by the nightly that a merge-time proof would have caught before a
+product cloned it reopens this.
 
 ### Enforcement design ("fold it in")
 
@@ -1942,7 +384,7 @@ into mechanism does. Four mechanisms, strongest first:
    introspect's REST and MCP registries**, canonical app file-shape, scoped
    models without write policies. Run on every `manage.py` call and as a gate
    leg.
-2. **AST checks** (`quality/checks.py`) — undecorated/positional services,
+2. **AST checks** (`quality/checks/`) — undecorated/positional services,
    missing `authz.require` on scoped writes, writes in selectors, querysets
    returned from services, `.save()`/`.delete()`/`objects.create` in doors,
    HTTP vocabulary below the door layer, rule-9 determinism, `emit()` outside
@@ -1967,6 +409,15 @@ gate is deterministic on a tree; model judgement lives in the loop's review
 stages, made cheaper by `scripts/review_pack.sh`, which emits per-rule diff
 slices (touched services, new routes with their tests, migration ops) for the
 reviewer.
+
+**The standing section's held number.** Rule 84's frozen `exit2_helper` is
+held, never zero, at the v2.5.0 tag and printed as `exit2_helper: 8 (declared:
+G8, 2.6 — provision.sh 3 · entrypoint.sh 1 · setup.sh 2 · db.sh 1 ·
+gate_ledger.sh 1)`, measured on 70f7537d (`python -m quality.gate --backlog`),
+where `gate_ledger.sh` 1 still stands and leaves with its file (`loop_tier.sh`'s
+1 left at d10e8cc9, GF-9a); the owner deferred G8, the shell bootstrap family, to
+2.6 (v2-5-0-yardstick, 2026-10-01).
+`scripts.coordinate` is 0 (rule 89's frozen `coordinate` class).
 
 **Two doctrines from an earlier system's near-miss.** (1) Every
 check is phrased as a **closed question over a discoverable population**
@@ -1996,14 +447,14 @@ rule, and the declared blind spots are the surveyor's rotation map.
 8. Every scoped model is read through its scoped manager (`.objects.for_tenant(...)`); a bare `.objects` on a scoped model in api, services, selectors, activities, tools, consumers, admin or config is a violation. On by default; a product that opts out of tenancy disables it with the reason recorded.
 9. Workflow code is deterministic: no ORM, no `httpx`/network, no clock, no randomness imported or called inside a `workflows.py`; all of it lives in activities.
 10. Every door calls services: MCP tools, socket consumers, API routes, activities, webhook receivers and admin import services/selectors/schemas — never `models` for writes, never `.save()`/`.delete()` directly.
-11. Every app has the canonical shape: `models · services · selectors · schemas · api · mcp · workflows + activities · consumers · events · policies · admin · tests`; a different file name for the same job (`utils`, `helpers`, `logic`, `managers` holding business rules) is a violation.
+11. Every app has the canonical shape: `models · services · selectors · schemas · api · mcp · workflows + activities · consumers · events · policies · admin · tests`; a different file name for the same job (`utils`, `helpers`, `logic`, `managers` holding business rules) is a violation. `services` may be a package `services/` re-exported whole by its `__init__`; the engine reads both forms (B1; signed by the owner 2026-10-04 — rejected: splitting core into apps; trigger: a second app asking).
 12. Reads and writes are separate: `selectors.py` never writes; `services.py` never returns a queryset for display.
 13. Every function in `services.py` is decorated `@service` (keyword-only, typed, `tenant`/`actor` for tenant-owned writes, returns an object or dataclass — never `dict`/`None` for a write) and calls `authz.require(actor, action, obj)` before a write to a scoped model (or carries `# authz: <reason>`). A door that contains permission logic is the same violation from the other side. **And a service that asks asks about what it WRITES**: every kind its body writes — resolved by AST through the model registry's `authz_kind` / `authz_kind_of` / `snake_case(ClassName)` — is a kind it required, or the write line carries `# authz-kind: <reason>`; and every key it requires is one the vocabulary holds, written as a literal or a module-level string constant, or the ask carries `# authz-key: <reason>`. A `require` proves only that somebody asked something — `create_widget` guarded by `widget_policy.create` is a perfectly shaped service that authorizes the wrong noun, and every other layer reads as green over it. The mismatch count is a per-app ratchet each Phase-W sweep drives to zero; a service that asks for nothing at all stays the `# authz:` clause's subject, said in the rule's `does_not_cover` rather than left to be inferred from silence.
 14. Services raise `core.exceptions.*`; `HttpError`/`Http404`/status codes never appear in `services.py`/`selectors.py`; the one mapper lives in `config/api.py`.
 15. Models: `on_delete` explicit (`PROTECT` default; `CASCADE` only for owned children; `SET_NULL` with a reason comment); invariants in `Meta.constraints`; no business logic in `save()`; `TextChoices` for enumerations; **no `FloatField` on money/quantity/rate** (Decimal 19,4 + ISO-4217 currency); `DateTimeField`s end `_at`, `DateField`s `_on`; no `is_deleted` booleans (`archived_at` if a product needs it). **And a secret-shaped field is encrypted at rest**: a field named `secret`, `token`, `password`, `credentials`, `signing_key`, `api_key`, `private_key`, `access_token`, `refresh_token`, `client_secret` — or any of those as a suffix — is an `EncryptedCharField`/`EncryptedJSONField`, or is allow-listed in `quality/rules.yaml` with the reason. A database dump, a replica, a backup and a traceback are four ways a plaintext credential leaves, and one field sitting in the clear beside encrypted neighbours is never a decision somebody made — it is one nobody noticed. A name ending `_hash` is a digest, not a recoverable secret, and is out of the population by construction: encrypting it would protect nothing and would break the unique lookup that authenticates every request.
 16. Naming: apps plural nouns; models singular; services are verbs; selectors `get_`/`list_`/`_for_tenant`; events `<app>.<noun>.<past-verb>` declared in the app's `events.py`; schemas `XIn`/`XOut`; booleans `is_`/`has_`.
 17. Door parity: a capability on REST is on MCP unless exempted in `rules.yaml` with the reason (introspect registries diffed).
-18. Workflow ids are deterministic (`<tenant>:<app>:<noun>:<key>`, via `workflow_id()` — or `platform:<app>:<noun>:<key>` for a run the deployment owns rather than a tenant); **neither starter has a default for `id`** — it is required, keyword, on both `start_workflow` and `start_workflow_on_commit`, because a default turned every caller who forgot it into a caller with no idempotency at all. A four-segment constant bound to a name is the same id as the literal and reads as one; an alias on the import (`as begin_run`) does not make a random id invisible; and the platform module that *defines* the starters is excluded from the callsite scan and pinned instead — the gate asserts the two signatures still ask for the id.
+18. Workflow ids are deterministic (`<tenant>:<app>:<noun>:<key>`, via `workflow_id()` — or `platform:<app>:<noun>:<key>` for a run the deployment owns rather than a tenant); **neither starter has a default for `id`** — it is required, keyword, on both `start_workflow` and `start_workflow_on_commit`, because a default turned every caller who forgot it into a caller with no idempotency at all. A four-segment constant bound to a name is the same id as the literal and reads as one; an alias on the import (`as begin_run`) does not make a random id invisible; and the platform module that *defines* the starters is excluded from the callsite scan and pinned instead — the gate asserts the two signatures still ask for the id. A schedule-started run's prefix spelled `system:` (a module-level `*PREFIX` in an app's `activities.py`) is the counted class `system-prefix`, down-only until the purge factory's one prefix takes it to zero.
 19. Observability: every log line is structured through `core.log` (no `print`, no bare `logging.getLogger`, no f-string/`%` in a log call); only `core/observability.py` configures OTel/logging; no PII keys outside the app's `LOG_KEYS` allow-list.
 20. Traceability: every door binds context (`request_id`, `session_id`, `tenant_id`, `user_id`, `correlation_id`, `causation_id`, `trace_id`) before calling a service; `correlation_id` is never minted below a door. **Append-only is a declared population, not a name** (ADR core-6): a model that declared `append_only = True` may have rows created and nothing anywhere may update or delete one — no `.delete()`, `.update()` or `.bulk_update()` outside the model's own declaring module. `AuditEntry` is the first member; the gate reads the population off the declarations (`core.models.append_only_models`), so a product's witnessed fact or accrual ledger is covered the moment it declares itself, with no edit to `quality/rules.yaml`.
 21. Admin: every `ModelAdmin` inherits `core.admin.ServiceModelAdmin` (writes through services, scoped models filtered by acting tenant, `door=admin` in audit); a raw `ModelAdmin` on a scoped model is a violation.
@@ -2012,8 +463,8 @@ rule, and the declared blind spots are the surveyor's rotation map.
 24. Every read of an `OrgScopedModel` in a door, service or selector chains `.visible_to(actor)` after `.for_tenant(...)`; a bare tenant-scoped read of an org-scoped model is a violation. **Or `.governing(org)`** — upward *config* resolution, never upward *visibility* (ADR core-3) — and that half is fenced in the same breath: `.governing(...)` is legal only on a model that declared `InheritedDownward`, and a call on an unmarked model is a violation here for the same reason it is a `TypeError` there. Grants above the granter's effective role, or outside their subtree, are refused in the membership service. Re-parenting outside its service is a violation.
 25. **`comms.send()` is the only legal sender.** No module under `apps/` imports `django.core.mail` or `apps.core.mail` outside the allow-list in `quality/rules.yaml` — `apps/comms/**` (the transport itself), `apps/core/mail.py` (the platform mailer), `apps/workflows/activities.py` (that mailer's I/O edge) and tests. Consent, quiet hours and suppression are enforced *inside* `send()`, so a feature that reaches for a mail module reaches around all three. The one standing caller — `core.services.invite_member` — is ratcheted at 1 and named for a follow-on rung (ADR comms-2), not exempted.
 26. **A service names nothing the actor could not have reached** (ADR core-4). A `@service` that writes an org-scoped row and takes a parameter annotated with an org-scoped model passes it through `core.authz.may_be_named(actor, obj)` — refusing when it is False — or carries `# reach: <reason>` on the parameter. Tenancy cannot catch a reference into a branch the actor holds no membership over, because the row *is* in the tenant; the policy cannot, because the policy is about the verb. The annotation is the declaration the gate reads: which kwargs are FK targets is an open set, and an annotation naming a model in the tree is the closed half of it. Gate-tier and **ratcheted over a measured backlog** (measured before enforced, per app); every `# reach:` is counted and printed, and a bare one is itself a violation.
-27. **One door to the identity platform** (ADR ident-2). Identity configuration is written through our audited services onto our rows, and *materialised* in Zitadel by `apply_identity_config` — **the row is the intent, Zitadel is the materialisation, and the console is a window, not a door**. The enforceable half: no module outside `apps/accounts/zitadel.py` names the `ZITADEL_PAT` setting (`config/settings/` excepted — it is where the environment is read), and nothing outside the `quality/rules.yaml` allow-list imports that module at all, except through the rule's own `# rule-27:` valve: the allow-list is the activity, where a management failure is a Temporal retry, plus the `zitadel_*` commands that are the shell door (`python -m quality.gate --explain 27` prints which, and the count moves without this file changing), and `manage.py zitadel_reconcile` is the one VALVED importer — its reason says it takes `configured()` and `ZitadelError` and writes nothing at all (`apps/accounts/management/commands/zitadel_reconcile.py:198-204`). A service that reached the management API would put external I/O inside its transaction, and a Zitadel hiccup would roll back a legitimate row (C2). The honest half, declared rather than implied: **a check cannot see Zitadel's own console**, so `manage.py zitadel_audit` — read-only, changes nothing — is the runtime tripwire, and `manage.py zitadel_reconcile` asks the services to close what that audit reports, by hand, as a deploy step, with `--dry-run` and the 0/1/2 exits shaped for one. What is deliberately not built is a SCHEDULED run of the reconciler, and that command's own docstring names the trigger for building one (ADR ident-2 amended, below): a drift found in production that nobody in this deployment caused.
-28. **Workflows close their runs** (ADR workflows-5). A start writes a `WorkflowRun` row saying `running` — that row is the product's own answer to "what is happening", the one a selector, an admin page or a reconciler can actually read, because nothing here queries Temporal from a selector. So every class in an app's discovered `WORKFLOWS` list either reaches its app's finish seam from `@workflow.run` — **last**, after the work, so a failure after the mark cannot leave a `completed` row for a failed run — or **declares `owns_no_run = True`**, which is the schedule-started population: nobody asked for it through a service and no row exists to close. Two seams are live and both are right (`apps/workflows/workflows.py`'s module-level `_finish(work)` wrapper; the domain apps' `self._finish(status=, error=)` method), so the gate asks for a *reference* to a `_finish`-named seam rather than one call shape. Measured before enforced, and ratcheted over what the measurement found. Declared blind spot: the scanner sees the reference, not the path — whether the seam is reached on every branch, and whether an `owns_no_run` declaration is true, are review's and W4's reconciler's.
+27. **One door to the identity platform** (ADR ident-2). Identity configuration is written through our audited services onto our rows, and *materialised* in Zitadel by `apply_identity_config` — **the row is the intent, Zitadel is the materialisation, and the console is a window, not a door**. The enforceable half: no module outside `apps/accounts/zitadel.py` names the `ZITADEL_PAT` setting (`config/settings/` excepted — it is where the environment is read), and nothing outside the `quality/rules.yaml` allow-list imports that module at all, except through the rule's own `# rule-27:` valve: the allow-list is the activity, where a management failure is a Temporal retry, plus the `zitadel_*` commands that are the shell door (`python -m quality.gate --explain 27` prints which, and the count moves without this file changing), plus the identity realm port's Zitadel adapter `apps/accounts/realms/zitadel.py` (ADR ident-13), whose callers are the ones the list already admits — an activity or a `zitadel_*` command asking `realms.current()` — so its management calls run under a retry policy or at the shell, never inside a transaction; one more caller asks it for a pure read and makes no call at all — `apps/accounts/selectors.py::get_platform_login_url`, building a sign-in URL from `authorize_params`; and `manage.py zitadel_reconcile` is the one VALVED importer — its reason says it takes `configured()` and `ZitadelError` and writes nothing at all (`apps/accounts/management/commands/zitadel_reconcile.py:198-204`). A service that reached the management API would put external I/O inside its transaction, and a Zitadel hiccup would roll back a legitimate row (C2). The honest half, declared rather than implied: **a check cannot see Zitadel's own console**, so `manage.py zitadel_audit` — read-only, changes nothing — is the runtime tripwire, and `manage.py zitadel_reconcile` asks the services to close what that audit reports, by hand, as a deploy step, with `--dry-run` and the 0/1/2 exits shaped for one. What is deliberately not built is a SCHEDULED run of the reconciler, and that command's own docstring names the trigger for building one (ADR ident-2 amended, below): a drift found in production that nobody in this deployment caused.
+28. **Workflows close their runs** (ADR workflows-5). A start writes a `WorkflowRun` row saying `running` — that row is the product's own answer to "what is happening", the one a selector, an admin page or a reconciler can actually read, because nothing here queries Temporal from a selector. So every class in an app's discovered `WORKFLOWS` list either reaches its app's finish seam from `@workflow.run` — **last**, after the work, so a failure after the mark cannot leave a `completed` row for a failed run — or **declares `owns_no_run = True`**, which is the schedule-started population: nobody asked for it through a service and no row exists to close. Two seams are live and both are right (the workflow seam module's `run_to_finish(work)` / `finish_run(status=)`, `apps/core/determinism.py`; the domain apps' `self._finish(status=, error=)` method), so the gate asks for a *reference* to a seam rather than one call shape — and a seam is a name the check DERIVES (a function reaching the finish activity, transitively), never a suffix. Measured before enforced, and ratcheted over what the measurement found. Declared blind spot: the scanner sees the reference, not the path — whether the seam is reached on every branch, and whether an `owns_no_run` declaration is true, are review's and W4's reconciler's.
 29. **A role is never granted above the granter**. A `@service` that takes a role-shaped parameter (`role`, `default_role`, `*_role`) and puts it into a role position — a `role=` keyword on a call, or an assignment to a `.role` attribute — calls the escalation wall (`core.services._refuse_escalation`, or `accounts.services._refuse_role_above_the_configurer`, which wraps it) in the same body, or carries `# role-bound: <reason>`, counted and printed exactly as `# reach:` is. **Nobody grants above themselves**, and neither tenancy nor the policy catches a breach: the row *is* in the tenant, and the policy is about the verb, not about the relationship between the role being granted and the granter's own effective one. The honest exception is a path with no granter at all — an identity provider asserted an identity — where the wall short-circuits by design and the ceiling lives where a person actually acted. Measured before enforced. Declared blind spot: the population is name-shaped, so a role smuggled under another name is invisible; the named trigger for tightening is the day role parameters are annotated `Membership.Role` instead of `str`.
 30. **A retry clock that nothing reads is a promise nobody keeps** (ADR events-3). A `DateTimeField` matching the retry-clock grammar (`next_attempt_at`, `*_retry_at`, `retry_after_*`) must be **read** by production code outside its own declaring module and outside tests — a filter lookup, an `order_by`, a `values`/`only`, an `F()`. A write is not a read and a docstring is not a read, which is the whole rule: `Outbox.next_attempt_at` was written, indexed over `(status, next_attempt_at)` and documented in three modules while **nothing in production ever queried it**, so a row whose dispatch died held its promise for ever and only a human running `manage.py replay_events` could ever find it. The column was not broken; it was unread, and unread looks exactly like working. Measured before enforced. Declared blind spot: the grammar is the closed half (a fourth spelling of "try later" is outside it), and the rule sees that a reader exists, not that it is reachable.
 31. **Every model declares how its data dies** (ADR core-13). Every concrete model in the registry carries a `Lifecycle` declaration — `purged` (with a dotted `purged_by` callable that a `SCHEDULES` `ScheduleDeclaration` chain must actually reach, walked off the registry never guessed from AST), `bounded`, `unbounded`-with-reason, or `append_only`-with-dated-trigger — declared in the owning app's discovered `apps/<x>/lifecycle.py`. Undeclared models are ratcheted per Django `app_label` (measured 32 at birth; measured before enforced) and may only shrink. The tooth: a `purged` declaration whose sweeper no schedule reaches is refused as the poller-that-was-never-built — rule 30's shape, one layer up. Declared blind spots: purge-filter correctness, reason quality, runtime schedule liveness, a reference walk depth-bounded at 2.
@@ -2027,7 +478,7 @@ reason: Zitadel's fence is about a **credential** and a transaction boundary,
 this one is about a **wall**. An external index that does not carry the tenant
 walls is a probing oracle — type a word, learn whether somebody else's row
 contains it — and the walls are injected by exactly one function
-(`apps/search/selectors.py::search`, which resolves the tenant and the acting
+(`apps/search/selectors.py::get_search_page`, which resolves the tenant and the acting
 hat's visible organization ids in Postgres per request and hands the engine ids
 it did not choose). That sentence is only true while there is exactly one way to
 reach the engine. And the leak has **no failure mode**: a second client answers
@@ -2425,7 +876,7 @@ proxies — bounded by rule 48's population (`apps/*/api.py`, `mcp.py`,
 `consumers.py` may not call it; the canary is a door calling it) — that canary
 is the files owner's next rider. *Reversal:* delete the one function and the
 paragraph; the import member then needs the presigned road and its own
-amendment. *Trigger to revisit:* a second server-side consumer of bytes (a
+amendment. trigger to revisit: a second server-side consumer of bytes (a
 document renderer, a virus scan) — then the seam's stream is the pattern, not
 the exception.
 
@@ -2435,7 +886,10 @@ the evidence for the numbered-list consistency check the queue carries).
 Every `@service` in the audited population — every one whose signature
 declares a keyword-only tenant — declares `actor: Actor` AND `tenant`, both
 required and never defaulted, or its dotted name is on the enumerated-absence
-list in `quality/rules.yaml` with its ADR core-22 absence number and ground.
+list in `quality/rules.yaml` with its ADR core-22 absence number and ground —
+or it is a sweep `core.schedules.daily_purge` reaches with the factory's
+declared signature, absence 1 by construction and on no list (ADR core-22,
+amended 2026-10-03).
 A nullable annotation conforms; a default does not. An allow-list entry
 naming no `@service` in the tree is a ghost and fires the list's own
 consistency half.
@@ -2534,18 +988,19 @@ blind spots: a read through a related manager (`connection.domains.filter(...)`)
 and raw SQL; and whether the one router honours `verified_at`, which is
 `test_domain_claims.py`'s and not a shape any check can see.
 
-57. **One writer of the identity join** (ADR ident-11). The join is
-keyed on the subject, not the address. `User.zitadel_sub` is written by
-`record_zitadel_identity` and cleared by `unlink_zitadel_identity`, both
-`@service` and both audited; `sociallogin.connect(` lives in the adapter, after
-the writer has answered. Reads are out of the population by construction — and
-pinned there by a negative, because a rule that fenced reads would be a rule
-against using the column it protects. A second writer is how a join between two
+57. **One writer of the identity join** (ADR ident-13 — the join keyed
+`(realm, subject)`). The join is keyed on the subject, not the address: an
+`SsoIdentity` row with no connection, one per realm a person holds a subject
+in, is written by `record_identity` and cleared by `unlink_zitadel_identity`,
+both `@service` and both audited; `sociallogin.connect(` lives in the adapter,
+after the writer has answered. Reads are out of the population by construction —
+and pinned there by a negative, because a rule that fenced reads would be a rule
+against using the rows it protects. A second writer is how a join between two
 identity systems comes to disagree with itself, and the disagreement is an
 account takeover with an extra step. Declared blind spot: a write that precedes
 a refusal is a census (`test_refusals_write_nothing.py`), not a shape; so are
-`setattr`, a `User(...)` constructed with `zitadel_sub=`, and `SocialAccount.uid`,
-which is allauth's own column.
+`setattr`, `bulk_create`, a join row built through another name than
+`SsoIdentity`, and `SocialAccount.uid`, which is allauth's own column.
 
 58. **Socket join discipline: nobody names their own group, and nobody mounts
 an open socket** (R4 F1; ADR realtime-2's "nobody names their own group" made
@@ -2555,7 +1010,7 @@ directly or through a name the same scope bound to one; and every entry in a
 module-level `websocket_urlpatterns` wraps its application in `token_auth(...)`
 and names a consumer extending `TenantEventsConsumer`. The sentence was a
 convention for ONE consumer and the review proved what that was worth: a planted
-`apps/example/consumers.py` doing `group_add(f"tenant.{query['tenant']}")` and
+`consumers.py` in `apps/example/` doing `group_add(f"tenant.{query['tenant']}")` and
 `accept()`, mounted bare, is discovered by `config/asgi.py` exactly as the real
 one is, accepts with **no credential**, and hears that tenant's events — while
 rule 36 read only the `group_send` (push) side and rule 46 was answered by one
@@ -2630,12 +1085,16 @@ the raise and adding a draft command (the write still rolls back, and it is a
 second walker); defaulting an undecided noun to `None` (that is F5's defect —
 a `None` kind is delivered to every connection in the tenant); a management
 command walking the emit sites (`quality.checks` reached from `apps/`, which
-`apps/core/tests/test_roles_are_keys.py` rules against). *Trigger to revisit:*
+`apps/core/tests/test_roles_are_keys.py` rules against). trigger to revisit:
 the first product that ships an undecided noun past a red gate — sockets silent
 for it, `events.emit.kind_undecided` in the logs and nobody reading them.
 *Reversible:* restore the raise in
 `_refuse_a_branch_that_disagrees_with_the_name` and disable class 3; the two
 proven refusals and every other behaviour are untouched by either direction.
+*The fourth class (2026-10-02), `needless-kind-map`:* an `EVENT_KINDS` entry
+whose noun is itself an authorization kind is never read — `kind_of_event` asks
+the kinds first — so it is a dead decision that reads like a live one; counted,
+recorded at the measured count and down-only, the line deleted by its app.
 
 60. **A template-owned file carries no product edits** (ADR
 platform-extension-1, and `build-contract.md` § Ownership is the per-path
@@ -2822,7 +1281,7 @@ dismiss word reached through a reference whose key is not named for it
 dismiss is the primitive's own test.
 
 71. **The route table names every page** (P23 B-FE-B; the book's § 0).
-`frontend/src/screens/routes.ts` carries exactly one row for every route a
+`frontend/src/kit/routes.ts` carries exactly one row for every route a
 `page.*` file under `frontend/src/app/` draws (route groups `(…)`, parallel
 slots `@…` and intercepting segments dropped; dynamic segments kept verbatim),
 no row for a route no page draws, and every row carries `path`, `job`,
@@ -2968,15 +1427,19 @@ singularising.
 (P24 FE-2; the design's grammar — five seats, one ordered verb table, an act
 drawn iff the verb is in the row's `allowed_acts`, absent never disabled).
 Under `frontend/src/`: (a) no string-literal `data-act="<verb>"` outside
-`frontend/src/screens/verbs.ts`; (b) no permission key `"<noun>.<verb>"` — an
+`frontend/src/kit/verbs.ts`; (b) no permission key `"<noun>.<verb>"` — an
 object-less ask — outside the generated client; (c) no one-press verb (one the
 same face undoes in one press, whose table row opens no sheet) inside the
 dialog primitive as its word, and merge's foot act asked for only in a module
 that draws the dialog primitive; (d) no `order:` or `*-reverse` direction in a
 stylesheet rule whose selector names `[data-seat`; (e) every width media query
-(and `matchMedia` string) is `(width <= 40rem)` or its complement
-`(width > 40rem)` — the book's one breakpoint in range syntax — or the one
-other value a product's drawer records in a fenced `breakpoints` block. Runner
+(and `matchMedia` string) is in range syntax, `(width <op> <length>)` with
+`<op>` one of `<=`, `<`, `>=`, `>` and the length in rem, px or em (the book's
+pair `(width <= 40rem)` / `(width > 40rem)` is the recommended form), naming
+the book's one breakpoint or one of the values a product's drawer records in a
+fenced `breakpoints` block, one per line, each with its reason — a legacy
+`min-`/`max-` query is refused for its FORM and an undeclared width for its
+VALUE. Runner
 `quality/runners/js_verb_acts.py`; ratchet classes `hand-act`,
 `objectless-ask`, `leaving-in-dialog`, `merge-outside-confirm`,
 `seat-reordered`, `breakpoint`, each `0`; valve `# rule-78:`, and a finding in
@@ -3014,7 +1477,7 @@ wire noun; a synonym in another language or inflected (*Deleting*); the lists
 are the design grammar's, per verb, and grow by visible diff.
 
 80. **The verb table equals the book's** (P24 FE-2; the pattern book § 4's
-fenced `verb-table` block is the one declaration). `frontend/src/screens/verbs.ts`'s
+fenced `verb-table` block is the one declaration). `frontend/src/kit/verbs.ts`'s
 `VERB_TABLE` equals the pattern book's verb table (the fenced `verb-table`
 block in `docs/product/design/patterns.md`, or a product's whole table in its
 drawer's block, which then stands for the book's) row for row: the same verbs
@@ -3087,7 +1550,12 @@ system check, `djb.E083`: every mounted path pattern (parameter names erased,
 since `/x/{a}/` and `/x/{b}/` are one Django pattern) is bound by one api
 module, and every tag key is declared (`TAGS`) or carried (an operation's
 tags) by one app — both populations off the live mount and the tag discovery
-the scope census reads, never a hand list. It reads paths and never prefixes:
+the scope census reads, never a hand list — and two clauses more, for the two
+names the key does not hold (2026-09-30): no display title is carried by the
+tag keys of two apps, and no schema class name is defined by two modules (the
+classes off every bound operation's request and response models — two classes
+of one name leave the document one component, describing the other app's
+routes). It reads paths and never prefixes:
 seven routers share the root prefix and answer side by side. No valve — one of
 the two takes a word of its own, and the finding names both. Declared blind
 spots: a literal segment shadowed by another router's parameter segment
@@ -3098,15 +1566,241 @@ apps not yet installed together — before a merge, the fold's collision census
 reads the mounts and tags as text, and after it this check reads the
 assembled tree.
 
+84. **One road per job: a job named by a marker is named by one marker, and a
+copied shape is a counted class** (2026-09-29; ADR roads-1). An AST-and-text
+rule in `quality/checks/` (`check: road_uniqueness`), scope kinds `py` and
+`sh` and `js`, no Django id: every `@road("<job>", …)` / `ROAD = road(…)` in
+importable Python, every `# road: <job> — …` line in shell and every `// road:
+<job> — …` line above an exported TypeScript definition under `frontend/src/`
+is a marker; two markers
+naming one job on one tree are refused, the finding naming both and the remedy
+the first — unless exactly one carries the rule's valve `<comment> rule-84:
+<reason>` on the line above it (the product's declared second road, counted in
+the standing section and printed by `manage.py roads` as `kept`). The same
+check counts the unregistered copies by FORM as ratchet classes
+(`private_twin`, `exit2_helper`, `discovery_loop`, `reason_literal`,
+`hand_url`), recorded at the measured count and down-only (ADR gate-6);
+`exit2_helper` is held at the tag with its trigger — `declared: G8, 2.6` (the
+owner's deferral, v2-5-0-yardstick, 2026-10-01). Declared blind spots: a job
+nobody marked; a road assembled at runtime; a helper that is neither marked nor
+one of the counted shapes; two jobs spelled two ways; a marker on an object
+that does not do the job; a TypeScript road that is not an exported function,
+const or class; a road under a root the walk does not name.
+**The shell libraries that stay are G8's (deferred to v2.6 by the owner).** A
+wrapper library dies only when `python -m quality.djb.scope consumers <lib>`
+prints `code=0`; the seven with code consumers left stay, their surviving
+bodies counted by name in GF-9a's report (the build's archive of record, R8):
+`gate_ledger.sh` 140 · `gate_refuse.sh` 19 · `gate_lease.sh` 19 ·
+`docs_legs.sh` 12 · `archaeology_lib.sh` 9 · `fe_gate.sh` 8 ·
+`secrets_scan.sh` 4; `bash_only.sh` (the interpreter guard, no bodies) and
+`scripts/tests/drive_preamble.sh` with its drive (the drive drawer's product
+drives source it) stay beside them. Trigger to revisit: G8, v2.6.
+
+85. **Every surface declaration is a closed question over the tree — its families declared tags, its roles declared keys (each on one declared surface), its acts verbs of the permission vocabulary or family roads, its screens route-table rows — and every host in `SURFACE_HOSTS` names a declared surface; a door on a host that does not expose it answers `surface_does_not_expose`; every absolute URL the system builds goes through `core.surfaces.absolute_url` with the surface of the role it is for; an undeclared product is one total staff surface** (`djb.E085`, `apps/core/checks.py::check_surfaces`; the flat-baseline pin holds the undeclared shape byte-identical; rule 84's `hand_url` class counts the bypasses).
+
+86. **A door composes no refusal body of its own** (2026-10-02; the refusal
+grammar of `core.exceptions`, one composer at both doors). An AST rule in
+`quality/checks/` (`check: doors_compose_no_body`): no `HttpError(` and no
+`JsonResponse(` call in an `apps/<x>/api.py` or a module of an `apps/<x>/api/`
+package, and no `ToolError(` handed a literal sentence in an `apps/<x>/mcp.py`
+— a door raises the registered class and `wire_refusal` writes the one body
+both doors send. Why: a hand-composed refusal is a second grammar with no code
+to branch on, no remedy and a sentence only one door says. The valve is the
+generic `# rule-86: <reason>`. Counted per app as `<app>.door-literal`,
+recorded at the measured count and down-only. Declared blind spots: a body
+composed through a helper defined in another module; a `ToolError` handed a
+variable; a refusal returned as another response class.
+
+87. **An event's payload goes through the helper** (2026-10-02; house rule 59's
+sibling). An AST rule (`check: event_payloads_through_the_helper`): every
+`emit(..., payload=...)` in an `apps/<x>/services.py` passes
+`core.schemas.event_payload(...)` — directly, through a same-module function
+whose every return is that call, or through a name the enclosing function binds
+only to those. Why: the helper is the one place that drops the per-viewer
+fields at any depth; a hand `model_dump`, an `exclude=` or a dict literal is a
+payload nobody keeps equal to the wire. The valve is `# payload: <reason>`, for
+an event with no `Out` to carry. Counted per app as `<app>.hand-payload`,
+recorded at the measured count and down-only. Declared blind spots: one hop
+and no further (a helper in another module reads as a hand payload — the loud
+direction); an emit outside `services.py`; an emit routed through `core.bridge`;
+whether the `Out` is the route's.
+
+88. **One discovery walk** (2026-10-02; ADR roads-1's `discover` road). An AST
+rule (`check: one_discovery_walk`): no production module under `apps/` or
+`config/` calls `importlib.util.find_spec(` or `import_module(f"apps.…")`
+outside the discovery road (`apps/core/discovery.py`) and the two readers the
+rule's `scope.allow` names with their reasons (the settings' static derivation
+of `INSTALLED_APPS`; the scaffolder's question about a label not yet
+installed). Why: every reader of "which installed app ships this module" must
+agree which apps are installed and what a missing module means. The valve is
+the generic `# rule-88: <reason>`. Counted per app as `<app>.own-walk`,
+recorded at the measured count and down-only. Declared blind spots: a walk
+spelled another way (`pkgutil`, `__import__`, a path glob); tests and the
+conftest, which walk on purpose.
+
+89. **No plan coordinate in the code** (2026-10-02). A text rule
+(`check: no_plan_coordinates`, kinds `py`, `sh`, `js`): no line under `apps/`,
+`quality/`, `scripts/` or `frontend/src/` carries a word of the plans' id
+families — a queue row, a defects or roads rung, a survey item or surfaces
+rung, a surfaces section, a cycle, a wave's rung, a face rung, a batch rung, a
+hygiene item, a race finding, a verifier's finding, a review's high finding —
+read as a whole word, never as a variable, a path segment, a shell
+declaration, a linter's `noqa:` code or on a `does-not-cover:` line. Why: a coordinate names a document the code does not ship with,
+and goes stale the day the plan is archived; a comment says why, never who
+asked. The grammar's own readers (the queue instruments, the dated-trigger
+census) are exemptions with their reasons; the valve is `<comment>
+coordinate: <reason>` for a line whose id is its subject. Counted per owner as
+`<owner>.coordinate`, recorded at the measured count and down to zero by the
+tag. Declared blind spots: an id outside the families (a cycle-local tag, a
+review prefix, a measurement id); a coordinate split across lines; anything
+outside the four roots.
+
+90. **The loop key's excluded paths are derived** (2026-10-02; design (B),
+condition 2). A text rule (`check: loop_key_exclusions_are_derived`): the
+paths the `--loop` verdict's key leaves out — the prose no leg reads — are
+computed by `quality/loop_key.py::prose_paths` from what the legs' modules
+QUOTE, over the docs-only decider's own candidate list and its `names, never
+reads:` grammar (both read from `scripts/gate_ledger.sh`, never retyped);
+nothing in `scripts/**` or `quality/**` may type such a list under a name
+carrying PROSE, LOOP_KEY or KEY_EXCLU, and a `names, never reads:` line must
+name a path its module quotes. A quote is also left out of the reads when its
+module — a file directly under `scripts/` that a `static` leg runs as `<module>
+--check` — declares the path `measured at the commit:`. The pre-commit hook's
+docs-only admission derives those modules from this census and runs each on the
+staged bytes; the leg stays in `--fast`. A declaration that names a path its
+module does not quote, or sits in a module no `static` leg runs, is a finding
+(signed 2026-10-04). Why: a verdict reused across a prose-only
+commit is the reuse the ledger exists for, and a typed exclusion is the one
+way a stale verdict could be honoured after a leg quietly started reading a
+file. The false direction is a wasted re-measure, never a false hit — except
+for a path declared `measured at the commit:`, where a commit that skipped the
+hook can be reused across until the next `--fast` (the post-merge hook, the
+merge's gate, the bank's `static` readers, the PR's run); the stale claim is
+bounded to that one leg's verdict. Declared
+blind spots: a path a leg reaches by computation, glob or directory walk; a
+typed list under another name or built at run time; a `derived-tree-paths`
+declaration — the belt for those is main's own loop and the train.
+
+91. **A comment is the contract line** (the owner's comment doctrine). An AST
+rule (`check: comment_doctrine`): a docstring or a `#` block is one line; a
+further line is an invariant the code cannot express or a why-not, one each;
+a decision is cited by id, and a citation-only line, a single `why-not` line,
+a `does-not-cover:` line and a marker comment are free. Counted per member in four classes —
+`docstring-tail`, `module-tail`, `block-tail`, `narrative` (the rule's phrase
+list) — over every app, the modules directly under `apps/`, `config/`,
+`quality/`, `scripts/`, `deploy/` and `pilecap/`; recorded at the measured count and
+down-only. **The per-member floors of rules 86–89 and 91 live with the
+member** (ADR gate-6's classes): an app's in its `AppConfig.ratchet_floors`
+keyed `<rule>.<class>`, read statically by the engine; the platform's other
+members' in `quality/ratchet_floors.yaml`; a template app with no declaration
+is exit 2, and `rules.yaml` keeps the rule and its classes, never a member's
+number. Why: fourteen lanes lowering adjacent rows of one shared block is a
+conflict per merge; a number in the member's own file is edited by the one
+lane that owns it. Declared blind spots: the published route description
+(rule 41) is counted past its summary line; an invariant in prose is counted
+as a tail; narration the phrase list does not spell; the one free why-not is
+read per line, so two in one docstring are both free.
+
+92. **Every on-commit registration is a declared seam**. An AST rule (`check:
+on_commit_seams`): every `transaction.on_commit(` call — and the bare
+`on_commit(` a module imports from `django.db.transaction` — in a production
+module under `apps/` sits inside a function carrying rule 84's `@road(...)`
+marker, which every caller then goes through; any other site is a finding
+unless it carries `# rule-92: <reason>`. Counted as `undeclared_seam`,
+recorded at the measured count and down-only. Why: a hook registered on
+commit runs after the write and outside its transaction, so whether it is
+`robust` and what it may cancel behind it is a decision, and a security seam
+with two registration sites (the socket kick) is a copy waiting to drift.
+Declared blind spots: a registration through an alias or a wrapper (the
+wrapper's one site is read, its callers are not); whether a seam is `robust`;
+test modules.
+
+93. **A field that names a person is declared `personal`**. An AST rule
+(`check: personal_fields_declared`, ADR core-30's census): every field an
+`*Out` class in an `apps/<x>/schemas.py` declares in its own body whose name
+the detector lexicon reads as a person's — its last word `email` or `phone`; a
+name ending `_name` or `handle` outside a closed exemption list (`tenant_name`,
+`organization_name`, `role_name`, `tag_name`, `app_name`, `file_name`,
+`event_name`, `host_name`, `template_name`, `label`, each with its reason in
+the entry); a bare `name` on a class whose noun is a person
+(`lexicon.person_nouns`) — carries `personal(...)` in its default or a
+`not-personal` valve with its reason, on the field's line or above it, counted
+as `declared`. Frozen at zero from birth: no backlog class, a finding is a
+violation. Why: the strip and `emit`'s refusal act only on what is marked, so
+an unmarked person's field is a leak nobody sees. Declared blind spots: a
+person under an unlisted name (`handle` alone, `username`, `surname` — review's,
+until the lexicon grows the word by a visible diff); the payload half is the
+tests' (`apps/core/tests`, `apps/events/tests`); a hand payload under the
+`payload` valve and an `event_payload(...)` re-wrapped into a plain dict are
+never judged by `emit`; a field declared outside an `*Out` class's own body;
+free text.
+
+94. **A product diff pays no platform member**. A derived census (`check:
+product_diff_pays_no_platform_member`, read from `python -m quality.djb.scope
+product-census`): every product path — a non-platform app's file, `frontend/`,
+or a derived file (`scope.PRODUCT_DERIVED`), plus a probe per shape under
+`apps/zzz_canary/` — forces nothing, and outside `frontend/` selects only the
+gate test modules whose own declaration owns it (a narrowed `drives` or census
+`population=` glob, a map row, itself); the loop lane runs neither the selftest
+unit nor supply-chain whole. What a diff pays anyway is printed, never
+asserted, as `tax: <N> min in <M> member(s) the diff did not own` on the
+`--loop` banner and CI's lane. Why: a product builder's change should cost the
+product's own tests, and a harness glob that swallowed every app made each one
+pay the platform's. Declared blind spots: `frontend/`'s whole-tree readers
+(priced, not refused); a platform module a product test imports; a narrow glob
+is owned by every path it names; `apps/core`'s per-app tables.
+
+95. **A product commit to the platform or the stack carries its sanction** (`check: system_layer_commits_carry_their_sanction`): on a tree that declares `rule_id_namespace:`, the pre-commit hook refuses a platform path (template-owned, through `divergence.rules_for`) and admits a stack path (`pyproject.toml`, `uv.lock`, `compose.yaml`, `.env.example`, and any `compose.*.yaml` override — derived from the shared set) only under a typed `DJB_LAYER_SANCTION`, which the commit-msg hook records as a `Layer-Sanction:` trailer; the rule names every commit since the base that touched either with no trailer and no fold subject, and every such uncommitted path. Why: a product builder's territory is `apps/`, `frontend/` and their derived files, and the platform arrives by release fold. Declared blind spots: merges; whether the reason is good; edits outside git; the history half's canary is a drive.
+
+96. **A product app imports the SDK only** (`check: product_apps_import_the_sdk_only`): a module under a non-platform app (one `quality/partition.yaml` does not name) — and, on the template, under `apps/example*` — imports `pilecap.*`, its own package, another non-platform app, Django, the stdlib and third-party packages, never `apps.<platform-app>`; each hit names the `pilecap` module that carries the name, and a name the facade lacks prints the same-day valve `# rule-96: pilecap lacks <name> — <job>`, whose counted line is the product's platform-feedback row. Why: the SDK is the one declared import edge, so a product never touches the platform's modules and a move behind the facade never reaches it. Declared blind spots: string and dynamic imports (rule 88's class); copied code (rule 84's); migrations.
+
+97. **The SDK's surface is ratcheted** (`check: sdk_surface_is_ratcheted`): `quality/sdk_surface.json` — derived by `python -m quality.sdk --surface` from every `pilecap` export (kind, source, parameter names and defaults; a model base's per-field `deconstruct()` and Meta digests), the facade's `DEPRECATED` tables and the kit's `surface.json` names — is the tree's, and every name the previous release's surface holds is still exported with a signature every old call binds to, or leaves through a `DEPRECATED` entry served one minor release; on a product's tree the rule prints that the promise is the template's and skips. Why: the SDK's major is the template's (ADR sdk-1), so a name a product imports never vanishes between two releases with nothing printed. Declared blind spots: behaviour under an unchanged signature; a class's methods; TypeScript props; an unfetched tag reads as the first release; the history half's canary is a pytest world.
+
+98. **The harness fits its budget** (the owner's harness size budgets). A file
+rule (`check: harness_budget`): `CLAUDE.md` ≤ 150 lines, each skill's `SKILL.md`
+≤ 300, each agent definition ≤ 120 — the owner's targets; a file over its
+target is counted by its lines over, and the always-loaded set (the guide, the
+skills its header names, every frontmatter) by estimated tokens; both recorded
+in `quality/ratchet_floors.yaml` and down-only. `--explain 98` prints each
+file beside its target and ceiling, and the duplication census — a statement
+restated in more than one file, reported, not refused. Why: the comment
+doctrine holds code to its contract line and nothing held the harness's own
+prose. Declared blind spots: a skill's `references/`; the ledgers; a
+restatement in other words.
+
+## App map
+
+What ships, one row per `apps/*/apps.py`: its `depends_on` (house rule 7's ceiling), the door files
+it carries, and its side of `quality/partition.yaml`. The block is derived (ADR docs-1) —
+`python3 -m quality.docs_derived --write` regenerates it and the `dangling-docs` leg refuses it
+stale; routes, tools, workflows and events are `manage.py introspect`'s. The sections below carry
+each family's mechanism, never a row. A lead's app-map delta — the apps a cycle adds, before any
+code — is written in the cycle's plan as `| app | noun (aggregate) | depends_on | doors exposed |
+workflows owned | events emitted / consumed |` rows (django-architect's criteria set); the block
+carries the app from the commit that adds its `apps.py`.
+
+<!-- derived: app-map -->
+| app | depends_on | door files | partition |
+|---|---|---|---|
+| `accounts` | `core` | `api.py` · `mcp.py` · `workflows.py` | platform |
+| `comms` | `core`, `accounts`, `events`, `workflows`, `connections` | `api.py` · `mcp.py` · `workflows.py` | platform |
+| `connections` | `core`, `accounts`, `events` | `api.py` · `workflows.py` | platform |
+| `core` | — | `mcp.py` · `workflows.py` | platform |
+| `djb_imports` | `core`, `accounts`, `events`, `workflows`, `files` | `api.py` · `mcp.py` · `workflows.py` | platform |
+| `djb_notes` | `core`, `accounts`, `events` | `api.py` · `mcp.py` | platform |
+| `djb_tags` | `core`, `accounts`, `events` | `api.py` · `mcp.py` | platform |
+| `events` | `core`, `accounts`, `workflows` | `api.py` · `mcp.py` · `receivers.py` · `workflows.py` | platform |
+| `example` | `core`, `accounts`, `workflows`, `search`, `djb_tags` | `api.py` · `mcp.py` · `workflows.py` | platform · worked example |
+| `example_portal` | `core`, `accounts`, `events`, `example` | `api.py` · `mcp.py` | platform · worked example |
+| `exports` | `core`, `accounts`, `events`, `files`, `workflows` | `api.py` · `mcp.py` · `workflows.py` | platform |
+| `files` | `core`, `accounts`, `events`, `usage`, `workflows` | `api.py` · `mcp.py` · `workflows.py` | platform |
+| `realtime` | `core`, `accounts` | `api.py` · `consumers.py` | platform |
+| `search` | `core`, `accounts`, `events` | `api.py` · `mcp.py` · `workflows.py` | platform |
+| `usage` | `core`, `accounts`, `events` | `api.py` · `mcp.py` | platform |
+| `workflows` | `core`, `accounts` | `api.py` · `mcp.py` · `workflows.py` | platform |
+<!-- /derived -->
+
 ## App map — data portability
-
-One app, shipped rather than planned, and its row is here rather than in the
-ingredients table below because that table is the P6–P7 **delta**: this one is
-on main.
-
-| app | noun (aggregate) | depends_on | doors exposed | workflows owned | events emitted / consumed |
-|---|---|---|---|---|---|
-| `exports` | `Export` | `core, accounts, events, workflows` | REST `/api/v1/exports/` (list · create · retrieve · download) · MCP `list_exports` / `get_export` / `create_export` / `download_export` | `ExportTenantDataWorkflow`, `PurgeExportsWorkflow` | emits `exports.export.requested/.completed/.failed` |
 
 **A tenant can take its data and leave.** The mechanism, in the order a reader
 needs it:
@@ -3151,29 +1845,21 @@ needs it:
   because ADO-4's retention argument is about a payload that stays inside the
   deployment and an archive is a file that leaves.
 
-**Trigger to revisit — ING-1's landing**: the storage seam re-points onto the
-files app, presign posture inherits files-2's TTLs, the tenant-prefixed key
-convention is promoted from this app's local decision to the platform files
-seam, and the artifact reference may migrate onto the files app's blob model.
+**The storage seam is the files app's** (since `4d9703933`): the archive is filed by
+`files.services.store_stream`, addressed by `files.storage.version_key`, signed for by
+`files.storage.presign_get` under the files seam's TTL, and referenced by one
+`files.FileVersion`.
 
 ## App map — the noun-verb family's platform apps (P24; the lead's section)
 
-Three apps shipped with the family, and their rows are here rather than in the
-ingredients table below for the same reason the export's is: they are on
-main. Read off `manage.py introspect` and each app's `apps.py`, not planned.
-Their labels, tables, index names and authorization kinds carry the
+Three apps shipped with the family — `djb_notes`, `djb_tags` and `djb_imports`, rows in the map
+above. Their labels, tables, index names and authorization kinds carry the
 template's own `djb_` prefix so that a product's app or model of the same noun
 never collides with them — and with the kinds, the url_names, the policy keys
 and the MCP tool names derived from them (`djb_note-archive`, `djb_note.create`,
 `archive_djb_note`). Their REST mounts and scope families carry the prefix
 too (`/api/v1/djb_notes/`, `djb_notes:read` — ADR mounts-1); the attachment
 words (`notes`, `tags`, `files`) are the generic words and do not move.
-
-| app | noun (aggregate) | depends_on | doors exposed | workflows owned | events emitted / consumed |
-|---|---|---|---|---|---|
-| `djb_notes` | `Note` (org-scoped, `Archivable`; a polymorphic subject) | `core, accounts, events` | REST `/api/v1/djb_notes/` (list `?subject=<kind>:<id>` · create · retrieve · update · archive · restore) · MCP `list_djb_notes` / `get_djb_note` / `create_djb_note` / `update_djb_note` / `archive_djb_note` / `restore_djb_note` | none | emits `djb_notes.note.created/.updated/.archived/.restored/.moved` |
-| `djb_tags` | `Tag` (tenant-scoped, `Archivable`) + `TagLink` (org-scoped at the subject's node; `(tag, subject)` unique) | `core, accounts, events` | REST `/api/v1/djb_tags/` (list · create · retrieve · rename · archive · restore) and `/api/v1/djb_tag_links/` (list `?subject=` · create · delete) · MCP `list_djb_tags` / `get_djb_tag` / `create_djb_tag` / `rename_djb_tag` / `archive_djb_tag` / `restore_djb_tag` / `list_djb_tag_links` / `create_djb_tag_link` / `delete_djb_tag_link` | none | emits `djb_tags.tag.created/.renamed/.archived/.restored`, `djb_tags.tag_link.created/.deleted/.moved` |
-| `djb_imports` | `Import` (+ `ImportRow`, bounded by cascade) | `core, accounts, events, workflows, files` | REST `/api/v1/djb_imports/` (list · create · retrieve · apply · cancel · rows `?outcome=`) · MCP `list_djb_imports` / `get_djb_import` / `create_djb_import` / `apply_djb_import` / `cancel_djb_import` / `list_djb_import_rows` | `ValidateImportWorkflow`, `ApplyImportWorkflow`, `PurgeImportsWorkflow` | emits `djb_imports.import.staged/.previewed/.applied/.failed` |
 
 **The three are the family's owners, not nouns of their own.** The mechanism,
 in the order a reader needs it:
@@ -3189,7 +1875,8 @@ in the order a reader needs it:
   noun declares `attachments` and the three generic doors serve it.
 - **A tag is a tenant-wide word, its link is a placed fact.** Only root
   administrators coin, rename or archive a word (rule 55; reads at the acting
-  hat under a dated valve until universal homing lands); a link is org-scoped
+  hat under a dated valve, the stopgap every tenant-wide kind carries while the
+  hierarchy gives none of them a home); a link is org-scoped
   and lands by the law above; `create_tag_link` is idempotent and a lost race
   on a tenant-wide subject answers `conflict` with no row.
 - **Import is one platform door, never a per-noun upload.** A noun's app
@@ -3216,815 +1903,70 @@ in the order a reader needs it:
   budget rows, and rules 42/54's ratchet class — are the django-architect
   skill's "adding an app" list, each assigned to its file's owner in the wave.
 
-## App map — the ingredients (P6–P7 delta; the lead's section, 2026-08-23)
+**The roads index is `core`'s, and it is a reader, not a noun** (ADR roads-1): `manage.py roads` /
+`roads <job>` / `roads --json`, a reader beside `introspect` with no model and no migration.
 
-The template's own apps are described in prose above; this table is the
-app-map delta the ingredients add (ADRs in `adrs-ingredients.md`; the
-cycle plan is `cycles/2026-08-2X-cycle-p6-p7-the-ingredients.md`). One row
-per app; a rung's brief carries its delta to this table.
+## App map — surfaces and identity option B (P26; the lead's section)
 
-| app | noun (aggregate) | depends_on | doors exposed | workflows owned | events emitted / consumed |
-|---|---|---|---|---|---|
-| `usage` | `UsageEntry` (append-only) | `core, accounts, events` | REST `/api/v1/usage/` (read) · MCP `usage.report` — **U2**; **no write door, ever** | none | emits `usage.threshold.crossed` |
-| `files` | `StoredFile` (+ `FileVersion`) | `core, accounts` today (**F1**) → `+ events, workflows, usage` at F2 | REST `/api/v1/files/` · MCP `files.*` — **F3** | `FinalizeUpload`, `SweepPendingUploads` — **F2/F4** | emits `files.file.stored`, `files.file.archived` |
-| `search` | **none — the app owns no table** | `core, accounts` (R-a) → `+ events, workflows` (R-b) | REST `/api/v1/search/` · MCP `search_query` | `ReconcileSearchIndexes` (the declaration-digest startup reconcile) | consumes each `Searchable`'s declared `refresh_on` names (R-b); emits `search.engine.degraded/.recovered` (R-d) |
-| `completions` | `Completion` (+ `Prompt`) | `core, accounts, workflows, usage` | REST `/api/v1/completions/` · MCP `completions.*` | `RunCompletion` | emits `completions.completion.succeeded/.failed` |
-| `comms` (grows) | `Message` (+ `MessageEngagement`, `Device`) | unchanged | existing + engagement read; SMS/PUSH channels | existing | emits `comms.message.opened/.clicked` |
+**One product, several audiences, one set of records** (ADR surfaces-1,
+ADR ident-13, ADR example_portal-1, house rule 85): two apps grow and one is added, read off
+`manage.py introspect`, each app's `apps.py`, `surfaces.py` and `roles.py`. The roads the bullets
+name are printed by `manage.py roads <job>` — `resolve_surface`, `request_host`, `absolute_url`,
+`surface_for_role` — and are not restated here.
 
-ADR lines for the cross-app arrows live in `adrs-ingredients.md` (usage-1,
-files-2, search-2, comms-9, the ING-3 ADR); the one shared seam is
+- **`core`** — no new noun — `AuditEntry` gains `surface` beside `door` (one expand-only leaf, default `staff`), `Actor` gains `surface`; the declaration `apps/core/surfaces.py` (`Surface`, `ALL`, the implicit total `staff`) is a seam, not a noun · **+ `GET /api/v1/surface/`** (`config.api.surface_view`; unauthenticated, rule 3's allow-list — the face's boot question) · every door resolves the request's surface before its tenant and refuses an unexposed family `surface_does_not_expose`, an unbound host `surface_unknown_host` (both 404) · the URL seam every link the system sends is built by
+- **`accounts`** — + `IdentityHome` (tenant 1:1: the realm id and `pending`/`own_org`; one tenant-less row is the staff realm) · `SsoIdentity` widens into the identity join (`realm`, `issuer`; `connection` and `tenant` nullable) · `User.zitadel_sub` retired, the column kept with no reader until a later release drops it · the port `realm.py::IdentityRealm` and its Zitadel adapter `realms/zitadel.py` · REST/MCP unchanged in shape but for `SsoConnectionOut.sync_state` and `409 enforced_without_provider` · shell: `zitadel_seed` (the staff realm, the project check, every surface's browser callback), `zitadel_audit` (a realm section, `n of n tenants homed`; `--tenant`), `zitadel_reconcile` (homes a tenant with no realm) · workflow + `EnsureTenantIdentityHomeWorkflow` · emits `accounts.identity_home.created`
+- **`example_portal`** — `PortalRequest` (org-scoped at the customer's hat; kind `portal_request`; names its `Widget` by `PROTECT`) · REST `/api/v1/portal-requests/` (list · submit · retrieve) · MCP `list_portal_requests` / `get_portal_request` / `submit_portal_request` · **declares the `customer` surface** (`surfaces.py`: families `widgets` and `portal_requests`, acts `read`, role `customer`, tenant rule `membership`, screens `/widgets`, `/widgets/[id]`, `/requests`, `/requests/[id]`) and the `customer` role (`roles.py`) · its face is `frontend/src/screens/customer/` + `frontend/src/app/(customer)/` · emits `example_portal.portal_request.submitted`, `example_portal.portal_request.moved`
+
+**What a surface adds** is a clause on its owning app's bullet: the app that
+OWNS a surface names it with its declaration's fields, as the portal's bullet
+does; an app whose families a surface exposes names nothing (the `widgets`
+family is `example`'s). *[2026-09-30, the
+screen set:]* the customer face's screens are the four above, as the route
+table carries them (`frontend/src/kit/routes.ts`); the design's draft named
+`/example/widgets`, which collided with the staff face's worked pages.
+
+## App map — the ingredients (P6–P7; the lead's section, 2026-08-23)
+
+The ingredients are `usage`, `files` and `search`, and `comms` grew SMS, push and engagement reads;
+their rows are in the map above and their long-form design record is `adrs-ingredients.md`.
+
+The cross-app arrows are ADRs usage-1, files-2, search-2 and comms-9; the one shared seam is
 `usage.services.record_usage`, landed first (P6 wave 0).
 
 ### The ADR home
 
-**This file is the canonical home of every ADR.** It is the truth table's
-"what was decided, and why — settled", and it ships in the publication
-manifest while `cycles/` is trimmed — an ADR living only in a cycle plan is
-a DRAFT until its line lands here, and would otherwise be lost at publish.
-`adrs-ingredients.md` ships too and stays the ingredients' long-form record;
-its ids are canonical because the file is in the ship-list, not because it
-is a second home — a new ADR lands HERE. The index is derived, never
-hand-built: the `ADR <app>-<n>` grammar is greppable in this file. **The
-census criterion (PUB-1):** every ADR id cited in any ship-list file
-resolves inside this file or `adrs-ingredients.md`; a citation resolving
-only into `cycles/` is a defect by this ruling.
-
-The three ids that resolved only in `cycles/` at the ruling, moved here
-verbatim (provenance noted per entry; the source plans keep their copies as
-history — this file governs):
-
-- **ADR core-7 (Measured)** *(an earlier draft of this decision named
-  `Measured`/`MeasuredBasis` in prose — the importable symbols are
-  `MeasuredOut`/`MeasuredBasisOut`, rule 16's suffix)* · context: the basis contract ("a number the UI never
-  computes") was honored over a hundred times in an earlier consuming
-  product by convention; the
-  architect's diff-guard argument won at the panel · decision: generic
-  `Measured` schema in `apps/core/schemas.py` — `value: Decimal`,
-  `basis: MeasuredBasis(formula: str, inputs: dict[str, Decimal])` —
-  plus conventions/architect entries; **enforcement at criteria-tier,
-  honestly**: "any endpoint returning a computed aggregate" is an open set
-  no closed question can scope (doctrine 1), so the lead's checklist gains
-  the line and the blind spot is declared, not disguised as a rule ·
-  rejected: an AST rule recognizing "computed aggregates" (walked past
-  without malice — the sibling's six-times lesson) · trigger: a closed
-  population emerges (e.g. a declared `*Stats` schema suffix convention)
-  → revisit as a rule.
-- **ADR ident-3 (the ApiToken join — the subsumption decision)** · context: MCP OAuth 2.1 subsumes the panel's ApiToken-org rung;
-  does ApiToken survive? · decision: **ApiToken survives, for first-party
-  machine callers** (seed, `issue_token`, field tests, CI probes); OAuth
-  2.1 is the third-party door (assistants, DCR clients). Justification:
-  retiring it would put a browser consent dance inside `manage.py seed`
-  and every existing wire test — the exact DX the deferral logic
-  protects — while costing nothing to keep (one authenticator in an
-  ordered list). **Org and tenant binding stay request-time for both
-  credentials**: the token (either kind) contributes WHO; tenant resolves
-  from memberships/pin + `X-Tenant`, the hat from `X-Org` through
-  `resolve_org`, revalidated per request from rows — an issue-time org
-  claim would go stale against the tree the way the platform's doctrine
-  exists to prevent · rejected: retiring ApiToken now, org-in-token
-  claims · trigger to retire: Zitadel service-user PATs reach
-  `issue_token`-grade DX (one command, no browser) → a named retirement
-  rung.
-- **ADR example-3 (drop the WidgetOut aliases)** *(Widget gains
-  `owner_email`/`organization_slug` model properties, and the parity
-  test's key-set is exact)* · context: a
-  REST-vs-MCP body divergence traced to serializer aliases · decision:
-  drop WidgetOut aliases (comms precedent: model properties); the parity
-  test compares WIRE shapes (REST `response.json()` vs MCP
-  `structuredContent`). Stated break: MCP clients on dotted keys —
-  accepted; REST is the contract (E1) · rejected: keeping the aliases
-  with a translation layer (a second contract language) · trigger to
-  revisit: none — superseded only by a v2 contract decision.
-
-**Moving decisions out of trimmed history.** A later census found 29 more ids
-whose only decision text lived in trim-listed cycle plans — every ship-list
-citation of them would dangle at publish. The same rule as the three above:
-each moves here with its provenance named; the source plans keep their
-copies as history — this file governs. Where a plan interleaved the decision
-with cycle narrative, the provenance line says *excerpted* and the decision
-text is carried faithfully, never paraphrased. **Four ids were assigned
-twice** (core-8, core-9, ident-5 by P0 and P2/P5; deploy-1 by P4 and the P5
-standard-then-doors plan): live citations exist for *both* meanings of each,
-so both decisions are recorded under the shared id with the collision noted,
-rather than renumbered under citations this file does not own. One id
-(events-1) has no decision text anywhere in the repo or its history — its
-entry below is an erratum, not a decision. gate-4 is not below: it is ADR
-gate-3 (§ the gate's own section, above), which records that it was drafted
-as "ADR gate-4".
-
-- **ADR comms-1 (comms' dependency arrows)** *(the decision text below was
-  interleaved with an app-map row, quoted verbatim)* ·
-  decision, verbatim: "depends_on declared now incl. connections; bridge
-  rejected (comms sits above the spine; direct import is legal)." The
-  app-map row it annotates: comms · Message (+Recipient, MessageTemplate,
-  ChannelPreference) · depends_on core,accounts,events,workflows,connections.
-- **ADR comms-3 (status webhooks ride connections' receiver)** · status webhooks ride connections' receiver; rejected:
-  comms `auth=None` route (2nd rule-3 entry), mounting anymail views
-  (vendor door), polling. Revisit: first ESP whose signature isn't
-  HMAC-over-body → provider protocol grows `verify()`.
-- **ADR comms-4 (the seam is produced and consumed together)** · the app
-  owns `comms/**` AND the ~40-line connections seam
-  (registry + `_hand_off` branch) — seam produced+consumed together (I+).
-  Revisit: a second registering app.
-- **ADR comms-5 (the delivery-status wait lands in comms-a)** · wait in comms-a (else every signal
-  Conflicts on a finished run — the seam untestable). No-policy send ≡
-  one-step policy `escalate_when=none`. The settled-decisions half: after
-  sent, `wait_condition` on a delivery_status signal, STATUS_WAIT=72h
-  (named guess), completes either way; comms-b generalizes the same wait
-  into the step loop.
-- **ADR comms-6 (channel kinds ship, vendors are config)** ·
-  Channel.SLACK → Channel.CHAT ("chat") — kinds ship, vendors are config.
-  Revisit: two chat vendors with different consent semantics.
-- **ADR comms-7 (consent re-checks per escalation step)** ·
-  consent RE-CHECKS per escalation step — send_step runs the full wall at
-  that step's send time; a suppressed step writes its suppressed Message
-  and the interpreter proceeds without waiting. Rejected: snapshot at entry
-  (mid-chain revocation overridden), consent in the workflow (rules 9/10).
-  Revisit trigger: quiet-hours scheduling (defer-until-window) — named
-  deferral.
-- **ADR comms-11 (SES at the edge the wall already built)** *(narrowed, not
-  reopened, by ADR comms-12 below — its decision sentence
-  "SES via anymail" became "anymail is the seam"; its rejected list and
-  trigger stand)* · context: the Email row says
-  provider-in-production via the ESP edge; anymail is already the
-  normalization layer (providers.py reads anymail's EventType/RejectReason;
-  comms-9's hard/soft fork keys off it); example.invalid's warm-up clock is
-  running; the wall's round-trip (bounce → suppress, hard-only) is proven
-  so far against fixtures, never against a real provider · decision: SES
-  via `django-anymail[amazon-ses]` (boto3 — the one new dependency); domain
-  identity `example.invalid`, Easy DKIM, SPF on MAIL FROM `mail.example.invalid`,
-  DMARC `p=none` at first observation moving to `p=quarantine` when reports
-  are clean (the runbook owns the promotion; the warm-up doctrine: low
-  volume, real engagement first); bounce/complaint events via SNS HTTPS
-  subscription into the app's existing status-webhook door (the exact seam —
-  anymail's tracking view or the connections
-  receiver — confirmed at measure-first; SNS signature verification required either
-  way); sandbox proves the round-trip with SES simulator addresses before
-  production access lands · rejected: SES SMTP relay (no tracking webhooks
-  — the wall goes blind), a third-party ESP (a second vendor signup per
-  clone against the AWS standing posture), skipping DMARC until a product
-  ships (the warm-up clock is the point of doing this now) · trigger to
-  revisit: first product with marketing-volume sending (dedicated IP /
-  MAIL FROM per product), or SES production access refused (escalate to
-  owner with the case).
-- **ADR comms-12 (anymail is the seam; the provider is the product's)**
-  · context: comms-11 chose SES
-  because the template would operate its own sender; the owner ruled the
-  template never carries production traffic and a first consuming product
-  already sends through Resend, verified for its own domain; the wall reads anymail's
-  normalized events (`providers.py:368-400`), which are provider-agnostic
-  by construction · decision: the template proves the mechanism
-  `comms.send()` → anymail → a real provider → the bounce event back
-  through the real receiver, once, against Resend; no provider SDK is
-  added (boto3 not added); the provider a product uses is the product's
-  setting (`EMAIL_BACKEND`), documented in the runbook as one line per
-  supported anymail backend · rejected: SES for the template (an
-  account-level review clock and a second vendor the first product will
-  not use), a provider-abstraction layer of our own (anymail IS it),
-  mail-body PHI enforcement (owner correction: not the platform's concern
-  — refused as a rule, a canary or a design-agreement line) · trigger to
-  revisit: a product whose provider anymail does not support, or a product
-  that needs a BAA its provider will not sign (then that product chooses
-  SES and its clocks start).
-- **ADR core-8 — TWO decisions share this id**; both stand, both cited in
-  the tree, recorded here together rather than renumbered.
-  **(a) emit-side datetime normalization** · context: ninja
-  renders datetimes through `NinjaJSONEncoder`/`DjangoJSONEncoder`
-  (milliseconds); `emit()` stores pydantic's `model_dump(mode="json")`
-  (microseconds) — same instant, two strings, template-wide · decision:
-  **emit-side normalization**: `emit()` round-trips its payload through
-  the exact encoder class the REST door renders with, so `Event.payload`
-  == the REST body byte-for-byte and E3's sentence ("webhook clients see
-  what a REST client sees") becomes literally true; REST bytes unchanged ·
-  rejected: a microsecond renderer in `config/api.py` (changes every
-  datetime on the wire; "REST is the contract" — ADR example-3's own
-  precedent — and re-pins its byte-identical proofs), per-call-site
-  truncation (open set; the next emitter forgets) · trigger: a consumer
-  needing sub-millisecond precision → a versioned payload.
-  **(b) AuditEntry's platform population** · context: `@service` writes
-  the audit row only when
-  `tenant is not None` (`apps/core/service.py:229`), so every
-  platform-scoped action — a tenantless erasure, the workforce identity
-  sync, and other platform-scoped actions besides — is *logged, not audited*: the one
-  compliance-shaped trail has a hole exactly where the compliance actions
-  are · decision: **mirror ADR workflows-3, shape for shape** —
-  `AuditEntry.tenant` becomes nullable (ONE expand migration, the cycle's
-  only leaf), **null is a declared population, not a loosening**:
-  `for_tenant(...)` keeps failing closed and can never see a platform row
-  (every tenant door — admin changelist included — is unchanged by
-  construction), `for_platform()` on the manager is the one read path
-  (same name, same docstring posture as `WorkflowRun`'s), the `@service`
-  decorator becomes the population's one writer (`tenant` kwarg present,
-  value None), and `append_only` covers the null rows exactly as before —
-  rule 20 unchanged, rule 8 gains its 7th standing platform-population
-  override, recorded · rejected: **a sentinel platform tenant**
-  (workflows-3's own rejection, and rows of other models would accrete
-  onto it), **a separate PlatformAuditEntry model** (two trails; every
-  incident reconstruction must union them forever), **status quo** (an
-  erasure's revocation with no audit row is the same hole in a different
-  place) · trigger to revisit: a third model needs a platform population
-  → workflows-3's own trigger fires and the shape generalizes or becomes
-  a base. *(The AuditEntry platform-partial index — `condition=Q(tenant__
-  isnull=True)`, never a bare tenant-blind index — is this ADR's shape, as
-  measured and recorded.)*
-  **There is no third sub-label on this id.** A later revoke ruling that
-  briefly wore one — colliding with **(a)** above — lives at **ADR
-  core-22**, which absorbed and renamed it.
-- **ADR core-9 — TWO decisions share this id**; both stand, both cited.
-  **(a) `ordered_by` keeps the selector's ordering as tie-breakers**
-  · context: `ordered_by` calls `.order_by(wanted)`, which
-  **replaces** the queryset's ordering — any door promising a secondary
-  sort silently loses it (`list_templates` does; the stale apology comment
-  sits at `apps/comms/api.py:296-300`) · decision: `ordered_by` re-applies
-  the incoming queryset's existing ordering as tie-breakers after the
-  requested field (dropping only a duplicate of the requested field
-  itself), so a selector's promise survives the door · rejected:
-  allow-list entries as field-tuples (pushes the fix to every route),
-  documenting the loss (a promise a client cannot see is broken is not a
-  contract) · trigger: a route that must deliberately replace ordering →
-  an explicit `replace=True` parameter, then.
-  **(b) `PLATFORM_CONTEXT` crosses on the bridge** · context:
-  `platform_context()` is the declared accessor a
-  platform-run activity may use, but `apps/workflows` sits above
-  `apps/accounts`, so a builder working below that layer could not reach
-  it and reported rather than smuggled — today the two platform kinds in
-  `apps/accounts/activities.py` simply *skip* context resolution,
-  asserting nothing; and the `"platform"` segment is now stated three
-  times (`workflows/services.py:111` the owner, `core/services.py` and
-  `accounts/services.py:723` the pinned repeats) — the queue row's named
-  trigger for the bridge constant, fired · decision: the bridge gains
-  `PLATFORM_CONTEXT = "workflows.platform_context"` with a
-  `ReadsPlatformContext` shape in `SHAPES`; `apps/workflows` registers
-  `platform_context` from `ready()` beside its existing names; the
-  accounts platform kinds resolve scope through
-  `bridge.get(bridge.PLATFORM_CONTEXT)()` and the loud contract travels
-  with it — a platform kind invoked under tenant-stamped headers fails
-  loudly instead of proceeding cross-scoped. The two segment *constants*
-  stay where they are: the bridge carries callables with shapes, not
-  values, and both repeats are already pinned against the owner by named
-  tests (`test_move_matrix.py`, `test_federation.py`) — a pinned repeat
-  is a contract, an unpinned import path is a wish · rejected: importing
-  `apps.workflows.context` from accounts (the layer violation the bridge
-  exists to invert), a fourth restatement of the behavior locally in
-  accounts (the drift this ADR exists to stop), putting the segment string
-  itself on the bridge (a constant is not a callable; the SHAPES contract
-  has no meaning for it) · trigger to revisit: a second app below the
-  platform needs platform scope → the key is already there; nothing to
-  decide.
-- **ADR core-10 (the org tree's one human door)** *(the recommendation
-  was PM-ratified at plan review)* · context: no door reaches `move_organization` — the
-  three-move grammar is service-only by deliberate omission
-  (`OrganizationAdmin` pins `parent` read-only *against form edits*,
-  correctly, since a form write would bypass the wall and the durable
-  run); moving one required hand-driving it through a shell, proven twice ·
-  decision (RECOMMENDED — PM ratifies at plan review): **an admin
-  action** — `move_to_new_parent` on `OrganizationAdmin`, an intermediate
-  form whose target-parent choices are `.for_tenant`-scoped, calling
-  `move_organization` and rendering refusals through the same
-  `wire_refusal`/`messages.error` composer already in place; the read-only
-  `parent` field stays read-only (the action is the door; the form field
-  is not); the admin door carries no rule-17 parity obligation, so no
-  REST/MCP surface is built for a product that does not exist · rejected:
-  **ratify service-only** (leaves the one tree-reshaping primitive
-  shell-only for every future support human; refusal grammar built for exactly this door goes unexercised by any
-  user-initiated write), **a REST endpoint** (rule 17 drags an MCP twin; tenant-facing
-  tree management is a product decision — the standing not-yet-real list
-  says shop it) · trigger to revisit: the first product whose tenant
-  admins reshape their own tree → the REST door then, with its parity
-  twin, as that product's rung.
-- **ADR core-14 (the append-only runtime belt)** · context: an
-  instance-`.save()` tamper on an append-only member drove clean through
-  the full gate — rule 20's AST half
-  cannot see a bound-name save, and P4's DB grant protects production
-  only · decision: `BaseModel`'s `save()`/`delete()` refuse the
-  update/delete path for any model in the declared append-only population
-  (`AppendOnlyViolation`), population-driven off `APPEND_ONLY_ATTR` at
-  zero per-model cost; rule 20's static half learns bound-name instance
-  saves (Q1); three belts stated honestly: static (gate) + runtime (this)
-  + DB grant (P4, production) · rejected: a per-model mixin (re-opens ADR
-  core-6's MRO churn for a property the declaration already carries),
-  queryset-level `.update()` interception in the manager (rule 20's
-  static half + the DB grant already cover the bulk path; a fourth belt
-  at the queryset layer buys marginal coverage for real manager
-  complexity — the declared residue) · trigger to revisit: a measured
-  bulk-path tamper the two remaining belts miss.
-- **ADR core-17 (first-tenant bootstrap)** · context: no runbook step
-  creates the first tenant on a real
-  environment; seed --force is forbidden there by design (the first
-  environment was bootstrapped by hand); an earlier disproof left a
-  residue to pin · decision: manage.py
-  bootstrap_tenant — a @service-backed command minting exactly one tenant
-  + root org + one owner membership for a named workforce email; refuses
-  if ANY tenant exists; audits door=shell with tenant=the created tenant
-  (the birth certificate); create_tenant stays unaudited ·
-  rejected: auditing into the platform population (the row is about a
-  tenant that now exists), relaxing seed for production (seed is dev data
-  by contract), a web-based first-run wizard (a door with no
-  authenticated caller yet — the shell is the honest door at zero) ·
-  trigger to revisit: multi-tenant-at-birth products.
-- **ADR deploy-1 — TWO decisions share this id**; both stand, both cited
-  (`deploy/compose.yaml` cites both meanings on one file).
-  **(a) the environment shape** · context: the Deployability pillar needs a real
-  environment; the Hosting row ships everything a choice needs and
-  presumes none; the ratified band is ~$40–90/mo, teardown-friendly, and
-  every self-hostable organ was ruled self-host (ClickStack explicitly;
-  Zitadel in the same breath) · decision: one EC2 Graviton box per
-  environment running a production compose (web, worker, Caddy TLS,
-  Temporal, Zitadel, Redis, otel-collector, ClickStack) + RDS Postgres +
-  S3 + Secrets Manager; provision/teardown as plain `aws` CLI scripts in
-  `deploy/`; the template's own environments run self-hosted Temporal
-  (the Hosting row's recorded alternative, ratified as a
-  divergence from "Cloud by default") · rejected: ECS Fargate + ALB + ACM
-  (~$50/mo dearer before the first container, splits the compose into
-  task definitions, and teardown-friendly it is not), Kubernetes (the
-  row's own words: an escalation, not a default), Postgres-in-compose for
-  the environments (forfeits the managed-snapshot half of the backup
-  posture B1 drills), an IaC framework (a toolchain tax at one box per
-  env; the runbook must be performable by a stranger with aws-cli and
-  ssh) · trigger to revisit: a second standing environment, a real
-  product's traffic, or the box's memory headroom measured under 20% at
-  V1.
-  **(b) the Postgres major pinned at 18** · context:
-  RDS runs 18.3, every pinned client 16.10, pg_dump refuses
-  cross-major, and provision.sh lets AWS's default decide · decision: the
-  template targets Postgres 18 (the reasoning: the live instance is
-  the fact on the ground; client moves are cheap; pg_dump 18 reads 16
-  worlds; EOL runway) — compose.yaml postgres:18, deploy/compose.yaml
-  postgres:18.6 (latest 18.x minor), provision.sh --engine-version 18 +
-  --auto-minor-version-upgrade · rejected: pin 16.10 + rebuild RDS
-  (owner-approval infra act to buy a shorter-lived major), no pin (the
-  finding itself) · trigger to revisit: a stack component
-  (Zitadel/Temporal) refusing 18 — the rung's own stop-and-report.
-- **ADR deploy-2 (names under one env-backed domain)** · context: the domain ruling makes one
-  domain the platform's own surface — rehearsals, warm-up, the production issuer —
-  with per-product subdomains later; a real deployment's chosen `.dev` domain is
-  HSTS-preloaded, so every name is HTTPS from birth (the shipped default,
-  `example.invalid`, is deliberately unresolvable) · decision: the environments-contract table
-  in the plan — `<env>.example.invalid` for the app, `auth.` and `o11y.`
-  prefixes per env, Temporal UI unexposed, SES identity on the apex with
-  MAIL FROM `mail.example.invalid` · rejected: per-service apex names
-  (`staging-auth.example.invalid` — flat namespace ages badly), a separate
-  zone per env (two zones to keep consistent, $6/yr of nothing),
-  exposing the Temporal UI behind auth (one more door to wall; the
-  tunnel is the wall) · trigger to revisit: T0's product names land, or
-  a second standing environment.
-- **ADR deploy-3 (secrets are generated, materialized, and refused)**
-  · context: the standing default is Secrets Manager
-  injected as env — the app reads env only; guards.py refuses published
-  SECRET_KEY / Fernet values but declares its boundary: DATABASE_PASSWORD
-  unfenced and four compose-only values it structurally cannot see,
-  with the belt assigned to "the first production deploy" · decision: (a) secrets generated by script straight into Secrets
-  Manager, per-env prefix, no human in the path; (b)
-  `deploy/entrypoint.sh` materializes them to the container env at start;
-  (c) production refuses the published DB password by value (S1 —
-  guards.py gains the check, the same shape as its siblings); (d)
-  `deploy/assert_not_published.sh` refuses the four compose-only
-  published values at deploy time, where they ARE in hand — the boundary
-  paragraph's own assignment, discharged; (e) D8's belt: the app's DB
-  role is revoked UPDATE/DELETE on the `append_only` population, emitted
-  from the declarations (`deploy/grants.sql.py`), applied as a release
-  step beside migrations · rejected: refusing compose-only values in
-  guards.py (a gate standing in an open field — its own words), SSM-only
-  (posture over pennies; the standing default names Secrets Manager for
-  secrets), baking secrets into images (a registry is a backup someone
-  forgets), Vault/OpenBao (the recorded escalation, unfired) · trigger to
-  revisit: multi-cloud, dynamic DB credentials, or the first
-  secret-rotation requirement with a deadline.
-- **ADR deploy-3a (one JSON secret per environment)** · context: the cost
-  table priced "~8 secrets × $0.40"; `provision.sh secrets-put` stores
-  one JSON object under `<namespace>/<env>/env` · decision: one secret per
-  environment, the manifest's names as keys; the cost table's Secrets
-  Manager line becomes **~$0.40/mo** · rejected: one secret per value
-  (eight fetches at start, eight rotations to coordinate, the same blast
-  radius — the box's role reads the prefix either way) · trigger to
-  revisit: per-value rotation with different cadences, or a second
-  consumer that may read one value and not the rest.
-- **ADR deploy-3b (`DATABASE_URL` empty; `PGSSLMODE=require`)** ·
-  context: a URL wins over the parts (`base.py`), and a
-  URL carrying no TLS parameter silently downgrades RDS to plain TCP ·
-  decision: the manifest leaves `DATABASE_URL` empty and sets libpq's
-  own `PGSSLMODE=require`, which every consumer (Django, `pg_dump`,
-  `psql`) honors without a code path · rejected: `?sslmode=require` on
-  the URL (only Django reads it; the backup script would not) · trigger:
-  a second database consumer that does not speak libpq.
-- **ADR deploy-3d (the belt at the deployment)** — the id
-  `deploy/assert_not_published.sh`'s own header uses for clause
-  (d) of ADR deploy-3 above; no separate ADR entry was ever written in
-  any plan — the id names that clause. The clause, verbatim from deploy-3:
-  "`deploy/assert_not_published.sh` refuses the four compose-only
-  published values at deploy time, where they ARE in hand — the boundary
-  paragraph's own assignment, discharged." The four:
-  ZITADEL_MASTERKEY · ZITADEL_DATABASE_PASSWORD · POSTGRES_PASSWORD ·
-  ZITADEL_ADMIN_PASSWORD (the script's header is the mechanism's own
-  record).
-- **ADR deploy-4 (2026-08-31) — build once, promote by digest** ·
-  context: **one tree was built three times.** CI built `web` and `worker`
-  single-arch, tagged them locally, checked the `USER` line, and let both die
-  with the runner — so nothing CI built ever reached a box, and "CI-tested
-  image" was a phrase with no referent. `deploy/compose.yaml` carried a
-  `build:`, and runbook step 33 built the same tree a **third** time, arm64, on
-  the Graviton box: the slowest and least debuggable machine in the system, at
-  the moment of a deploy. Three builds of "the same" tree is three chances to
-  differ — a base image that moved, a transient mirror, a wheel rebuilt — and
-  nothing anywhere could say whether the amd64 thing CI proved and the arm64
-  thing the box ran were the same software. · decision: **(a)** the image for a
-  tree is built **once**, in CI's images job, `linux/amd64` **and**
-  `linux/arm64` in one manifest, pushed to a registry under the derived tree tag
-  `tree-<12hex>`; **(b)** that job runs `needs: gate` — a registry tag is a
-  promotable artefact and `release.sh` will deploy anything the registry has, so
-  an ungated tree must have no tag; **(c)** `deploy/compose.yaml` declares no
-  `build:` anywhere and every app image is `${DJB_IMAGE_REGISTRY}/djb-<service>:
-  ${DJB_IMAGE_TAG}`, both required and neither defaulted; **(d)** `release.sh`
-  resolves the tag to an immutable **digest** before its first act — a tag the
-  registry lacks is exit 2 naming the reference, a registry/pin disagreement is
-  exit 1 naming both — and pins the released digest into the box's `TREE` marker
-  **after** act 6's recreate; **(e)** `TREE`'s grammar becomes line-oriented
-  (line 1 the tag, later lines `<key> <value>`) so it can carry that pin, which
-  a legacy one-line marker still satisfies; **(f)** **promotion staging→prod is
-  neither a re-tag nor a rebuild** — both environments point `DJB_IMAGE_TAG` at
-  the same tree, resolve the same digest, and run the same bytes. · rejected:
-  **moving environment tags (`:staging`, `:prod`)** — the industry-default shape,
-  and it makes "which image is prod running" unanswerable *from the box*, which
-  is the exact class of lie the `TREE` mechanism was built to remove; **keeping
-  the box build as a fallback for a registry outage** — a fallback that only
-  runs on the worst day is a path nothing exercises, and it re-opens the
-  divergence the whole ruling closes (the honest trade is stated instead: the
-  registry is now a deploy-time dependency, named in `docs/runbooks/deploy.md`
-  step 33); **pushing from the laptop** — then the deployed artefact's
-  provenance is a person's machine; **content-addressed tags only, no tree tag**
-  — a digest a human cannot derive from a checkout makes every runbook step a
-  copy-paste of an opaque string. · triggers, and both are cheap to notice:
-  **base-image drift between releases** — two trees a month apart resolve
-  different base layers and nothing here compares them, so the first product
-  that needs reproducible builds re-opens this with a pinned base digest; and
-  **a second architecture or a second registry** (a product deploying to
-  something other than one ECR account) — `DJB_IMAGE_REGISTRY` is one prefix
-  today and that is deliberate, not permanent.
-- **ADR deploy-4a — SIGNED by the owner 2026-09-19 ("sign all three", recorded by the PM).** The text below is
-  the amendment as the engineering lead wrote it, copied here unchanged for the
-  owner to sign; nothing in it is settled until they do, and the builder who
-  copied it may not flip this line. *"ADR deploy-4a (2026-09-19, owner) — the
-  image is built by the acceptance box of the on-box bank, from the banked
-  tree, after the composed verdict row is written and before the boxes go down;
-  CI's `images` job keeps `needs: verdict` and skips a tag the registry already
-  holds. Which principle: 6 (reversible — the skip is one step; delete it and
-  CI builds again) and 7 (the critical path: a stage deploy no longer waits on
-  a second full gate on GitHub runners). Why the default is insufficient: the
-  CI build sits behind a 30-40 min gate re-run nobody here measures, so
-  `pushed → staged ≤ 5 min` is unreachable while it stands. Alternatives: a CI
-  job without `needs: verdict` (rejected — an ungated tag is a red tree one
-  command from prod, deploy-4 (b)); building on the stage box (rejected in
-  deploy-4). Risk: a box with push credentials — mitigated by the OIDC-shaped
-  least-privilege role scoped to two repositories and the namespace tag, and
-  the invariant that the build starts only after `gate_ledger_record` returned
-  0 for the same tree. Reversal: remove the bank step and the skip; CI builds
-  as before. Temporary or permanent: permanent, reviewed at the first
-  registry/verdict disagreement (the trigger: `image-digest` present for a tree
-  with no `full` row)."* · **one thing the signature also decides, surfaced by
-  the build and not in the text above:** what the bank pushes is what the box
-  can build natively — `linux/arm64` on a Graviton verifier box, measured at 39
-  s a service, where deploy-4 (a) says one manifest carrying `linux/amd64` AND
-  `linux/arm64`. Building both on the box means QEMU emulation for the half the
-  box is not, which is the cost deploy-4a exists to remove; skipping CI's job
-  for a bank-built tag therefore leaves that tree's tag single-architecture.
-  Every machine this template deploys to today is arm64, so nothing is
-  currently broken by it — but it is a narrowing of (a) and it is the owner's
-  to accept, refuse, or spend the emulation on.
-- **ADR events-1 — ERRATUM, not a decision.** This id is cited exactly
-  once, in a fan-out totals note reading "the fan-out's total
-  `1 + endpoints_for(t) x 5` — grows with subscribers — ADR events-1's
-  fan-out shape", and **no ADR with this id was ever written**: not in
-  `cycles/`, not in `archive/`, not anywhere in the repository's git
-  history. The shape the citation points at is real and is the events
-  spine's built dispatch design — one relay start plus one delivery
-  activity per endpoint, in parallel, each with its own retry
-  (`apps/events/workflows.py`; the machinery ADR events-3 and ADR
-  events-4 describe). Recorded here as an erratum so the citation
-  resolves to the truth about itself; no decision text is invented, and
-  a future ADR wanting this number should take the next free one
-  instead.
-- **ADR events-2 (purge schedules namespaced by task queue)** ·
-  purge schedule id + workflow id namespaced by task
-  queue (`events-purge-expired:<queue>`, `system:events:purge:<queue>`);
-  ensure_purge_schedule deletes the legacy global id when present
-  (idempotent, logged). Revisit: a deployment wanting one purge across
-  queues.
-- **ADR ident-1 (Zitadel topology)** · context:
-  compose ships one `postgres:16`; Zitadel needs Postgres · decision:
-  one pinned Zitadel container + a dedicated `zitadel` **database on our
-  existing Postgres service** (created by an init step, isolated by
-  database not by instance), masterkey and first-instance config by env,
-  and a **FirstInstance machine user whose PAT lands on a shared
-  volume/env** — the credential our provider service authenticates the
-  management API with · rejected: a second Postgres container (second
-  stateful service, port pair, backup story for nothing), Zitadel Cloud
-  for dev (the loop must run on a laptop, V3's lesson generalized),
-  CockroachDB (Zitadel's other backend; heavier for zero gain) · trigger:
-  production deployment → its own managed Postgres, recorded then.
-- **ADR ident-2, amended (2026-08-30) — the console's own surfaces
-  are observed, not reconciled** · context: `zitadel_audit` compared what
-  our *rows* declare, so two classes of configuration no product manages
-  through services — the org's **login policy** and the instance's **SMTP
-  sender** — sat entirely inside rule 27's declared blind spot. Both were
-  changed on the shared development instance by a sibling product and the
-  audit still printed "Zitadel agrees with every row." · decision: **read
-  them, print them, judge neither.** `zitadel.login_policy()` and
-  `zitadel.smtp_configuration()` are GETs in the reads section;
-  `zitadel_audit` prints an `observed` section that adds nothing to the
-  drift count and cannot move the exit status, and the residual — what a
-  clean verdict does *not* cover — now prints **beside the verdict** on
-  every run under both verdicts, rather than living in a module docstring
-  only a maintainer reads · rejected: **full intent-row machinery** (rule
-  27's whole materialisation path — rows, services, an activity — built to
-  guard drift only one actor can cause, and that actor is a person in a
-  console we would still not be fencing: shop-the-price), and **a report
-  line only** (names the blind spot without narrowing it, leaving the two
-  changed surfaces invisible to the person reading the report) · trigger:
-  **the first product that manages login policy or SMTP through services**
-  — at that point an intent row exists, the comparison becomes possible,
-  and these two move from observed to reconciled.
-- **ADR ident-2, amended (2026-09-17) — the reconciler is BUILT; its
-  trigger fired, and the trigger that is still open is SCHEDULING it** ·
-  the original declined an auto-repairing reconciler and named its
-  trigger, *first observed drift or first production deploy*: both
-  happened (a one-field console edit to this deployment's own browser
-  application lands a person on raw JSON at the identity platform and
-  neither the audit nor the seed noticed; a one-way sync locked an owner
-  out of the sibling product for a morning) · decision:
-  **`manage.py zitadel_reconcile`** — a second command, not a flag on the
-  audit, reading through the audit's own section functions (one read, not
-  two), asking only services (the management call stays in the activity,
-  house rules 10 and 27), `--dry-run`, exit 0/1/2, and an **ownership
-  table in its docstring** naming every identity fact's authority, copy,
-  settlement, staleness and repair kind (principle 9); the SMTP sender's
-  OWNER is named and counted beside the audit's verdict, still judged by
-  nothing · rejected: a `--repair` flag on `zitadel_audit` (a writing path
-  inside the one command a deploy step trusts to change nothing) and a
-  **Temporal Schedule** around the reconciler · trigger, still open:
-  **a drift found in production that nobody in this deployment caused** —
-  the command prints that sentence on every run.
-- **ADR ident-5 — TWO decisions share this id**; both stand, both cited.
-  **(a) test posture for Zitadel** · the settled decision: test posture
-  for Zitadel mirrors the posture already settled for Temporal (ADR
-  ident-5): the suite, `--loop` and CI never dial
-  Zitadel — `config/settings/test.py` points the issuer at a
-  must-not-dial address and the RP/JWT paths are proven against an
-  in-process stub issuer (signed JWTs, real JWKS shape); only a
-  dedicated verification pass drives the real container, and CI stays
-  Zitadel-free. Rejected: suite requiring Zitadel up (every gate run
-  leaking state into a shared service), mocking at
-  the allauth layer (proves our config, not the protocol — the stub
-  issuer signs real JWTs so JWKS/audience/expiry paths execute) ·
-  trigger: first product CI needing a live-identity e2e leg.
-  **(b) what erasure erases, and what survives with reasons** ·
-  context: PII was found surviving `erase_user`
-  in four tables; the docstring claims completeness it does not have ·
-  decision: the sweep extends to allauth `EmailAddress` (rows deleted),
-  allauth `SocialAccount` (rows deleted — the identity link is revoked
-  Zitadel-side already), `SsoIdentity.email` (redacted to the
-  `erased+<uuid>@invalid` form), `Invitation.email` (voided + redacted
-  through `core.redact_invitations` — a platform-wide sweep keyed on the
-  email, `system`-actor shaped, `# reach:` declared); retained
-  populations each carry a written reason: `zitadel_sub` (the
-  cross-tenant subject-collision fence — an opaque identifier, not
-  contact data; verified against the A9 collision
-  tests, stopping and reporting if the truth differs), memberships and
-  `AuditEntry` (the docstring's own audit-trail argument),
-  `Event`/`Outbox` payloads (declared not rewritten, by ruling) ·
-  rejected: deleting allauth rows by cascade from User deletion (the row
-  stays — settled), event-payload rewriting (the same ruling) · trigger to
-  revisit: the first compliance ask (which also triggers the
-  Event/Outbox archival residual).
-- **ADR obs-2 (the sink is live, and it speaks)** · context: the
-  Observability pillar's pending cell names this pass; the compose
-  already ships otel-collector + ClickStack behind
-  `--profile observability`; `core/observability.py` is the one
-  configuration point; the announce-on-transition ruling gives P4 the
-  ALERTING rung consuming degradation events, with hard deps explicitly
-  outages (/readyz), not events · decision: staging runs the same
-  collector→ClickStack pair as compose does locally, endpoint set by
-  env; dashboards/saved searches/alert definitions live in
-  `deploy/observability/` as exported config-as-code; alerts are
-  ClickStack-native over the sink — the closed alert census: (1) each
-  declared transition-event pair (today exactly
-  `comms.suppression.surged`/`.recovered`), alert opens on surged,
-  closes on recovered — the 1:1 the transitions-only design bought; (2)
-  a /readyz probe from the collector's healthcheck receiver (or blackbox
-  equivalent in the compose) alerting on N consecutive failures;
-  delivery to the owner's Slack webhook; the escalation path documented
-  in `docs/runbooks/alerts.md` (who, what they read first, re-ping
-  cadence) · rejected: alerting through comms itself (comms is a product
-  organ under test — the monitor must not share the patient's failure
-  domains; the ruling's "comms can route it" stays open for products,
-  with the spine events already there), CloudWatch as a second sink (G1:
-  a second sink is where the reconstructing query dies; CloudWatch keeps
-  only what AWS emits for free), per-request alerts (the ruling forbids
-  them — transitions only), a new house rule for "every circuit alerts"
-  (the second-circuit extraction is the ruling's own named trigger; not
-  yet) · trigger to revisit: the second runtime circuit lands (extract
-  the shared primitive, then consider the rule), or telemetry volume
-  outgrows the container (ClickHouse Cloud w/ BAA, the documented
-  scale-up). **Amended (the PM's ruling, recorded by the lead), appended
-  to the decision sentence:** "Alert lifecycle, corrected: ClickStack
-  alerts are windowed counts with
-  auto-resolve — they cannot close on an event. So an alert **opens on
-  the degradation event** appearing in the sink and **auto-resolves
-  after N quiet windows** (N a declared constant in the definition,
-  stated in `alerts.md`); the **recovery event is its own notification**
-  (one message, the 1:1 the transitions-only design bought, delivered as
-  a second alert rather than a close). Two non-event alerts stand beside
-  the event pairs: the /readyz probe and the deaf-sink probe, both on
-  the prober's own POST because neither can ride the sink. The census
-  derivation names the event half by AST and the probe half explicitly."
-- **ADR platform-partition-1 (the three cross-app moves the platform
-  partition needed)** · at the freeze ·
-  **the design and the authority is
-  `docs/product/partition-closure.md`**, which ships; this entry is its
-  ADR line per the ADR-home rule above, and records only the three
-  decisions that reach across apps. · **context:** the partition skips
-  the platform's pytest suite under a banked verdict whose key still
-  matches everything that suite reads. A driven audit planted a product
-  app (`apps/orders/` with a `TAGS` dict) and found **a false red on
-  three in-closure tests** — not a stale green but a red a clone cannot
-  clear without editing platform files, so the closure hash moves on the
-  product's first door and the dividend dies there. The shape is
-  general: a platform test that needs a per-member fact about a
-  discovered population, sourcing that fact from a central in-closure
-  file. · **decision, three moves** — (a) **D1**, the freeze census
-  leaves the closure: `FROZEN_FAMILIES` and `SANCTIONED_RENAMES` move
-  from `apps/core/api/scopes.py` into `apps/core/api/frozen_families.py`,
-  re-exported unchanged, and that one file is the closure's **one
-  enumerated exclusion** — it re-enters the skip key through the
-  discovery digest's `scope_families` section, so a product's append is
-  an out-of-closure edit that still buys an honest re-run; (b) **D2**,
-  the two-planes guide's plane assignments move from `docs.py` prose
-  onto each family's own `Tag` (`plane`, `plane_note`), and the guide
-  renders from the registry — the property the platform already claims
-  for the vocabulary, extended to its documentation; (c) **D4**, the
-  exports census's hand-pinned assertions scope their quantifier to the
-  lockfile's apps (`quality/partition.yaml`), because "pinned" was
-  always a property of THIS TREE; the derived-side assertions stay
-  global, since a product model must join the archive census and does.
-  · **the generalized rule, cited into the architect's checklist:** a
-  platform test that needs a per-member fact about a discovered
-  population sources it from **the member's own declaration**, never
-  from a central in-closure file; a central ledger products must append
-  to either lives out-of-closure as a data module that re-enters the key
-  through the digest, or the assertion scopes its quantifier to the
-  lockfile population. · **rejected:** a `platform = True` marker on
-  `AppConfig` (puts the boundary in code the product owns — the
-  partition would skip on the product's own say-so); per-app freeze
-  ledgers (a vanished app deletes its own memory, and the census exists
-  to outlive what it remembers); leaving the plane in prose and widening
-  the census test (it would stop asserting the thing it exists to
-  assert). · **trigger to revisit:** a second exclusion is wanted — that
-  is a design change to `partition-closure.md` §3, not an edit to the
-  lockfile.
-- **ADR workflows-2 (duplicate start → idempotent-return)** ·
-  duplicate start → idempotent-return (docstring wins):
-  existing RUNNING row + matching type returns the row, client start
-  attempted, WorkflowAlreadyStartedError swallowed (also heals
-  row-without-run); type mismatch on live id → Conflict; terminal row →
-  Conflict. Revisit: re-run-after-completion = a new key, ruled then.
-- **ADR workflows-3 (WorkflowRun scoping)** *(moved
-  verbatim from
-  `cycles/2026-08-22-cycle-p1-workflows-pay-their-debts.md` §ADRs)* ·
-  2026-08-22 · context: `WorkflowRun` is tenant-required, so
-  deployment-wide work has no ledger — erasure of a person with no
-  tenant *skips identity revocation* and logs
-  `accounts.identity.not_revoked` (a real hole pinned by test), and
-  workforce identity sync borrows a tenant to get a row · decision:
-  **`WorkflowRun` is the platform-wide run ledger** — `tenant` becomes
-  nullable (an abstract-base field override; ONE expand migration,
-  riding W1's leaf), and **null is a declared population, not a
-  loosening**: a platform run's workflow id carries `PLATFORM_SEGMENT`
-  (`"platform"`) as its first segment, `check_workflow_id` requires that
-  segment iff `tenant is None`, `for_tenant(...)` keeps failing closed
-  (it can never see a platform row, so every tenant door — REST, MCP,
-  admin via `ServiceModelAdmin.get_queryset` — is unchanged by
-  construction), and `for_platform()` is the one read path for the null
-  population. `create_tenant` refuses the slug `"platform"`,
-  because `SlugField` would otherwise mint a tenant whose runs collide
-  with the platform's — the segment must be un-mintable, and a guard at
-  tenant creation is the closed question that makes it so · rejected:
-  **a system tenant** (a synthetic member of a real population is a lie
-  every future query over tenants — billing, counts, admin lists, loops
-  — must remember to exclude; and rows of *other* models would accrete
-  onto it), **status quo + named gaps** (this is an erasure-compliance
-  hole; naming it does not deactivate the Zitadel account) · trigger to
-  revisit: a second model needs a platform population → decide then
-  whether the nullable-with-declared-population shape generalizes or a
-  platform scope becomes a first-class base.
-- **ADR workflows-4 (intent digests)** · context: a deterministic id
-  makes a retry ask for the
-  *same* run — but `record_run` returns the existing row and
-  `_start_recorded` swallows `WorkflowAlreadyStartedError`, so a caller
-  asking for the same id **with different work** is silently answered
-  with somebody else's run and its new intent is dropped · decision: `WorkflowRun.input_digest` (sha256 hex over the
-  run's `arg`, serialized through Temporal's own default payload
-  converter so the bytes are the bytes the run would carry), computed
-  **inside both starters** — never by callers — and passed to
-  `record_run`, whose answer becomes a 2×2: *live + same type + same
-  digest* → the existing row (the retry/heal, unchanged) · *live +
-  different type or different digest* → `Conflict` (the honest 409 — a
-  different intent under a live id is a second job, not a retry) ·
-  *finished + same digest* → `Conflict` (re-running completed work is a
-  decision about a new key; unchanged) · *finished + different digest* →
-  **supersede**: the row re-opens (status RUNNING, new digest, cleared
-  `run_id`/`finished_at`/`error`, new `started_at`) and Temporal's
-  default id-reuse policy starts a fresh execution — which is the
-  interlock the brief names: once the `_finish` wrappers close move
-  runs, a completed move must not fossilize the node's id forever ·
-  rejected: per-caller digest parameters (optional grammar that misses
-  the exact shape needed), digest-in-the-id-segment (two different-parent
-  moves would get two *ids* and run concurrently over one subtree — the
-  id must serialize and the digest must refuse), refusing *finished +
-  different digest* too (fossilizes every re-move; the row is
-  visibility, not an append-only ledger — it declares no `append_only`
-  and supersession is its honest lifecycle) · trigger to revisit: a
-  workflow whose `arg` is legitimately non-canonicalizable through the
-  payload converter.
-- **ADR workflows-8 (2026-09-23) — a cancelled synchronous activity runs
-  to its end, and a stopping worker waits for it** ·
-  context: Temporal cancels a sync, threaded activity by raising
-  `CancelledError` into its thread (`_ThreadExceptionRaiser`, armed per
-  definition unless `no_thread_cancel_exception` is set), and `Worker`
-  defaults `graceful_shutdown_timeout` to zero, so every worker stop — a
-  SIGTERM, every `async with build_worker(...)` exit in a test — cancelled
-  in-flight activities at once; a consumer measured the exception landing
-  inside `importlib`'s module lock and hanging an xdist worker for good ·
-  decision: every sync `@activity.defn` declares
-  `no_thread_cancel_exception=True` (every activity here is idempotent and
-  bounded by its `start_to_close_timeout`, so a cancelled one runs to its
-  bounded end instead of dying mid-transaction), enforced by a pytest census
-  over `discovered_activities()` in `apps/workflows/tests/` that names any
-  sync activity without it — a product's own included, since the population
-  is discovery; and `build_worker` passes `graceful_shutdown_timeout =
-  worker_graceful_shutdown()`, DERIVED as the longest attempt bound any
-  discovered workflow's call sites declare (`apps/workflows/client.py`), never
-  typed. **One change owned by app `workflows` carries the keyword into the nine
-  sibling apps' `activities.py` as a mechanical one-keyword change per
-  decorator — no import added, no schema, no migration** (the alternative,
-  ten rungs, would freeze every app for a keyword) · rejected: caching the
-  two "never cached, deliberately" readers (`apps/events/events.py`,
-  `apps/core/authz.py`) — removes one `find_spec` site and leaves the class
-  (any import inside any sync activity); a worker-level switch — Temporal has
-  none, the flag is per definition; a house rule — the census covers the
-  population this cycle · trigger to revisit: a sync activity that must be
-  interruptible mid-attempt (it would heartbeat and check cancellation
-  itself), or a deployment whose process stop grace is shorter than the
-  derived window.
-- **ADR realtime-3 (door parity for sockets is a test per door pair, not
-  a wider rule 17)** · context: rule 17 diffs two *registries* (routes vs tools)
-  and proves existence; its own `does_not_cover` says "socket and
-  webhook parity (the spine pushes the same envelope by construction)" —
-  This is a socket disagreeing with itself across two credentials, a
-  *behavioral* parity failure inside one consumer, which no registry
-  diff can see even for REST↔MCP (the same `does_not_cover` says so for
-  shape) · decision: rule 17's subject stays REST↔MCP; socket parity is
-  a **parity test per door pair** in the owning app's tests — session
-  socket vs bearer socket on one org-scoped emit, and the
-  existing REST-vs-MCP parity test in `example` is the shape's
-  precedent; rule 17's `does_not_cover` is amended (one line, granted — this ADR does not edit `quality/**`)
-  to stop claiming "by construction" and to name the test · rejected:
-  growing rule 17's subject to sockets (there is one consumer and no
-  second registry to diff against — a rule with nothing to count is an
-  unbound floor by construction, exit 2 forever or a hand list); a new
-  rule over "every ASGI middleware that sets `scope['user']` also sets
-  `scope['org']`" (two sites today, one of them the fix — a rule born
-  with a population of two and a canary that is the bug it just fixed;
-  the trigger to revisit is the third site) · trigger to revisit: a
-  second consumer, or a third credential path (the OAuth 2.1 socket
-  bearer named in architect H), either of which makes a registry diff
-  meaningful.
+`docs/product/adrs/` is the home of every ADR, one file per id (`<app>-<n>.md`, the id is the
+filename), and a new ADR lands there; `adrs-ingredients.md` keeps the ingredients' design record and
+no ADR (moved by `cdd8315e7`); this file is the current state — the stack, the doors, the gate and
+the house rules in force.
 
 **How bytes come back out is the ratified either/or, applied rather than re-decided**: the files seam always signs — `bucket_name()` refuses a deployment that has named no bucket, so a files object only ever exists where a signing backend is configured — so `download_url` is filled by `presign_get` and a `/download` door over a files object may 302 to it. No `get_stream` ships and none is owed; a backend that cannot sign is an ADR-level change, not a fallback. The bucket a checkout uses is written into `.env` by `scripts/setup.sh` (via `manage.py ensure_bucket`), so `/readyz` carries its `storage` member on a laptop.
 
-**`search`, as at the app-map delta (R-a) — three corrections to its own row above.** (a)
+**`search` — three facts its map row does not carry.** (a)
 **There is no `SearchDocument` model and there will not be one**: the documents
 live in Meilisearch, which is a derived view of Postgres and never a source of
 record, and the tsvector column the degradation engine reads belongs to the
 *adopting* app's model with that app's own migration (R-e). A central projection
 table would be the shadow authorization copy ADR search-1 rejected and search-2
-did not reinstate — so `apps/search/migrations/` does not exist, on purpose, and
-house rule 31 has nothing to declare here. (b) `depends_on` is `core, accounts`
-until the spine tap lands: nothing in this app emits or subscribes yet, and an
-app declaring a dependency it does not use is a dependency nobody can later
-remove. (c) The workflow is the **declaration-digest startup reconcile** rather
+did not reinstate — so `search` has no `migrations/` directory, on purpose, and
+house rule 31 has nothing to declare here. (b) `depends_on` gained `events` when
+the spine tap landed (`2b7caaa2e`, R-b): the app subscribes to each `Searchable`'s `refresh_on`
+names and emits `search.engine.degraded/.recovered`. (c) The workflow is the **declaration-digest startup reconcile** rather
 than a per-tenant reindex (the owner's ruling of 2026-08-24, `design-agreements.md`,
 "Search materializes from its declarations"): each kind's index stores the digest
 of the declaration that built it, every worker boot compares them per kind, and
 missing-or-different rebuilds through one deterministic, serial, atomically
 swapped run while a match does provably nothing. `manage.py search_reindex`
 (R-c) is demoted to the manual backstop by that, exactly as the Zitadel console
-was. What else landed in R-a: the chokepoint (`selectors.search`, one Postgres
+was. What else landed in R-a: the chokepoint (`search.selectors.get_search_page`, RENAME's name for `selectors.search`, one Postgres
 query for the visible-org-id list, per-kind filter shapes, fail-closed on both an
 absent tenant and an unresolved hat), the fenced engine (house rule 33), both
 doors under the cursor envelope with `SearchPage.engine` on the wire, and the
 door-pair parity test — **R-a is where `DOOR_PAIR` is declared**, not R-e,
 because the two doors are born here.
 
-**`usage`, as at the app-map delta (U1) — the seam is real, not a stub.** `depends_on` gains
+**`usage` — the seam is real, not a stub.** `depends_on` carries
 `events`, correcting the ADR's own map: usage-1's app-map row was written before
 its § "Events / workflow split" ruled `usage.threshold.crossed` IN (owner,
 2026-08-22), and an app that emits imports `emit`. What landed: `UsageEntry` born
@@ -4038,16 +1980,14 @@ re-add; and the crossing check, which issues **zero** aggregate queries for a
 tenant with no thresholds configured. U2 adds the two read doors on top of
 `selectors.get_usage` and changes nothing here.
 
-**`files`, as at the app-map delta (F1) — the models and the seam, and the row above was
-wrong.** Three corrections, all of them to make this table agree with ADR
-files-2's own § "Events / workflow split", which post-dates the row: the sweep is
+**`files` — the models and the seam.** Two facts from ADR files-2's own § "Events / workflow
+split": the sweep is
 `SweepPendingUploads` and not `SweepAbandoned`; the events are
 `files.file.stored` and `files.file.archived` and not the four-name
 created/version_added/archived/purged set (the ADR rejects a
 `version_superseded`-shaped event outright — promotion rides `stored`'s payload —
-and `purged` cannot be emitted by a purge that v1 excludes); and `depends_on` is
-**two apps today**, because a dependency declared before anything imports it is a
-permission nobody asked for and house rule 7 reads that tuple as a ceiling.
+and `purged` cannot be emitted by a purge that v1 excludes). `depends_on` grew past `core, accounts`
+as each import landed (`1d97bc305`, F2), because house rule 7 reads that tuple as a ceiling.
 What landed: `StoredFile` + `FileVersion` per the ADR's two-model aggregate, both
 born lifecycle-declared (UNBOUNDED with the honest archive-is-soft residual, and
 BOUNDED off the CASCADE, read from the field); `derive_org_from = "file"` so a
@@ -4061,7 +2001,7 @@ proven against the compose MinIO. **The bucket derives per checkout** by the
 checkout's own path hash) and per pytest-xdist worker, so two worktrees sharing
 one MinIO never meet. **Key grammar**: F1's `version_key` —
 keys carry primary keys and a version ordinal, never a renamable slug or a
-user-supplied filename. (The old `apps/core/storage.py` was superseded by this
+user-supplied filename. (The core app's old `storage.py` was superseded by this
 grammar and deleted whole, after exports re-pointed onto
 `store_stream`; rule 48 is the deletion's enforceable form.)
 
@@ -4142,9 +2082,12 @@ own architecture decision.
    source-of-truth log). These hit the recorded escalations immediately,
    which means the defaults were wrong for that product on day one.
 6. **Things too small for the method** — prototypes, throwaway scripts,
-   static sites, single-user tools. Twenty-six house rules and an audit
-   trail are overhead until there is a team whose mistakes they catch and a
-   customer whose trust they earn.
+   static sites, single-user tools. The house rules and an audit trail are
+   overhead until there is a team whose mistakes they catch and a customer
+   whose trust they earn; the engine holds
+   <!-- derived: rule-count -->
+   96 house rules — `python -m quality.gate --rules` lists them.
+   <!-- /derived -->
 
 Fine despite appearances: heavy concurrent I/O (ASGI + Temporal are built for
 it), moderate authenticated B2C, heavy background processing, large-file
@@ -4159,12 +2102,12 @@ it), moderate authenticated B2C, heavy background processing, large-file
   design that loses on taste — it is one that cannot exist. With login v2
   declared per application, a hand-off from our page to the hosted page is a
   302 straight back to ours: a loop whose only exit is clearing cookies, which
-  locked a consumer's owner out of their own deployment for a morning (their
-  N1355, measured on the pinned build). So the two doors are a
+  locked a consumer's owner out of their own deployment for a morning (measured
+  by that consumer on the pinned build). So the two doors are a
   WHOLE-DEPLOYMENT switch (`SIGN_IN_DOOR`, ADR ident-9's amendment and design
   I-A §2) and never a per-step fallback: under `ours` a step this page cannot
   ask for reads a sentence and ends the ceremony, and under `hosted` the
-  platform draws every screen. *Trigger to revisit*: a build where the hosted
+  platform draws every screen. trigger to revisit: a build where the hosted
   page honours an inbound hand-off from a login-v2 application — which is a
   fact about somebody else's product, so the measurement kit is where it
   would show up first.
@@ -4176,7 +2119,7 @@ it), moderate authenticated B2C, heavy background processing, large-file
 - **Two API layers.** Drift with a countdown.
 - **DRF as the API layer.** Sound for a REST-only product; once MCP, webhooks and sockets each need typed contracts, its serializers become a second schema system beside Pydantic. Ninja's schemas serve every door.
 - **Celery (+ beat, + an FSM on a model) for background work and workflows.** A queue with retries; state, resumption and "where is this process" are rebuilt per product. Temporal is that layer, and replaces Celery rather than joining it.
-- **DBOS** (durable execution on Postgres alone) — attractive ops profile, but younger and thinner in the field; revisit if Temporal's operational weight becomes the problem.
+- **DBOS** (durable execution on Postgres alone) — attractive ops profile, but younger and thinner in the field; trigger to revisit: Temporal's operational weight becomes the problem.
 - **Processing inbound webhooks inline.** A slow or failing handler loses the event; verify, store, hand to a workflow.
 - **SQLite for local/tests.** Hides the Postgres behaviour the product depends on.
 - **Fat-model-only business logic.** Agents scatter logic into signals and

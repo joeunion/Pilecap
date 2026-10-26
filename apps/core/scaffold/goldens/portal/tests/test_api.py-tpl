@@ -1,0 +1,270 @@
+import json
+from typing import Any
+from uuid import uuid4
+
+import pytest
+from django.test import Client
+from django.urls import reverse
+
+from apps.example.models import Widget
+from apps.example.services import create_widget
+from apps.example_portal.models import PortalRequest
+from apps.example_portal.services import submit_portal_request
+from apps.example_portal.surfaces import SURFACES
+from apps.example_portal.tests.conftest import CUSTOMER_HOST, CUSTOMER_ROLE, STAFF_HOST
+from pilecap import Actor
+from pilecap.accounts import User
+from pilecap.surfaces import STAFF, surface_for_role
+from pilecap.tenancy import Tenant
+from pilecap.testing import REQUEST_FIXED_QUERIES, named
+
+pytestmark = pytest.mark.django_db
+
+WIDGETS = "/api/v1/widgets/"
+WIDGET = "/api/v1/widgets/{}/"
+JSON = "application/json"
+
+#: The request list's cost at any number of rows (rule 5): the fixed request cost and the page.
+LIST_QUERY_BUDGET = REQUEST_FIXED_QUERIES + 1
+
+#: What both doors answer a `widget_id` that is not an id.
+MALFORMED_CODE = "invalid"
+
+
+def _listed() -> str:
+    return reverse("api:portal_request-list")
+
+
+def _submitted() -> str:
+    return reverse("api:portal_request-submit")
+
+
+def _one(request_id: Any) -> str:
+    return reverse("api:portal_request-detail", kwargs={"request_id": request_id})
+
+
+def _as(user: User) -> Client:
+    client = Client()
+    client.force_login(user)
+    return client
+
+
+def _body(response: Any) -> Any:
+    return json.loads(response.content)
+
+
+def test_the_customer_host_answers_its_surface_and_its_screens(two_hosts: Any) -> None:
+    customer = Client().get("/api/v1/surface/", HTTP_HOST=CUSTOMER_HOST)
+    staff = Client().get("/api/v1/surface/", HTTP_HOST=STAFF_HOST)
+
+    assert customer.status_code == 200, customer.content
+    assert _body(customer)["surface"] == CUSTOMER_ROLE
+    assert _body(customer)["tenant_rule"] == "membership"
+    assert frozenset(_body(customer)["screens"]) == named(SURFACES[CUSTOMER_ROLE].screens)
+    assert _body(staff)["surface"] == STAFF
+
+
+def test_the_customer_role_belongs_to_the_customer_surface() -> None:
+    assert surface_for_role(CUSTOMER_ROLE).key == CUSTOMER_ROLE
+
+
+@pytest.mark.parametrize("rows", [5, 25])
+def test_the_request_list_query_count_does_not_grow_with_rows(
+    two_hosts: Any,
+    tenant: Tenant,
+    customer: User,
+    customer_actor: Actor,
+    widget: Widget,
+    django_assert_num_queries: Any,
+    rows: int,
+) -> None:
+    for index in range(rows):
+        submit_portal_request(tenant=tenant, actor=customer_actor, widget=widget, note=f"n{index}")
+    client = _as(customer)
+
+    with django_assert_num_queries(LIST_QUERY_BUDGET):
+        response = client.get(_listed(), HTTP_HOST=CUSTOMER_HOST)
+
+    assert response.status_code == 200, response.content
+    assert len(_body(response)["items"]) == rows
+
+
+def test_one_key_twice_is_one_request_and_the_first_answer(
+    two_hosts: Any, tenant: Tenant, customer: User, widget: Widget
+) -> None:
+    """E7: the same `Idempotency-Key` twice answers the first response and writes one row."""
+    client = _as(customer)
+    sent = json.dumps({"widget_id": str(widget.pk), "note": "Send another?"})
+
+    first = client.post(
+        _submitted(), sent, content_type=JSON, HTTP_HOST=CUSTOMER_HOST, HTTP_IDEMPOTENCY_KEY="ask-1"
+    )
+    again = client.post(
+        _submitted(), sent, content_type=JSON, HTTP_HOST=CUSTOMER_HOST, HTTP_IDEMPOTENCY_KEY="ask-1"
+    )
+
+    assert first.status_code == 201, first.content
+    assert again.status_code == 201, again.content
+    assert _body(again) == _body(first)
+    assert PortalRequest.objects.for_tenant(tenant).count() == 1
+
+
+def test_the_staff_read_the_request_and_another_tenants_customer_reads_nothing(
+    two_hosts: Any,
+    tenant: Tenant,
+    owner: User,
+    customer: User,
+    other_customer: User,
+    widget: Widget,
+) -> None:
+    """The second viewer: the staff above the customer see it; a stranger's customer, nothing."""
+    sent = json.dumps({"widget_id": str(widget.pk), "note": "Send another?"})
+    made = _as(customer).post(_submitted(), sent, content_type=JSON, HTTP_HOST=CUSTOMER_HOST)
+    assert made.status_code == 201, made.content
+    request_id = _body(made)["id"]
+
+    staff = _as(owner).get(_one(request_id), HTTP_HOST=STAFF_HOST)
+    stranger = _as(other_customer)
+    stranger_detail = stranger.get(_one(request_id), HTTP_HOST=CUSTOMER_HOST)
+    stranger_list = stranger.get(_listed(), HTTP_HOST=CUSTOMER_HOST)
+
+    assert staff.status_code == 200, staff.content
+    assert _body(staff) == _body(made)
+    assert stranger_detail.status_code == 404, stranger_detail.content
+    assert _body(stranger_detail)["code"] == "not_found"
+    assert stranger_list.status_code == 200, stranger_list.content
+    assert _body(stranger_list)["items"] == []
+
+
+def test_the_customer_reads_a_widget_and_is_offered_no_act(
+    two_hosts: Any, customer: User, widget: Widget
+) -> None:
+    """The widget, read-only: the list and the detail answer, and `allowed_acts` is empty."""
+    client = _as(customer)
+
+    listed = client.get(WIDGETS, HTTP_HOST=CUSTOMER_HOST)
+    detail = client.get(WIDGET.format(widget.pk), HTTP_HOST=CUSTOMER_HOST)
+
+    assert listed.status_code == 200, listed.content
+    (row,) = _body(listed)["items"]
+    assert row["id"] == str(widget.pk)
+    assert row["allowed_acts"] == []
+    assert detail.status_code == 200, detail.content
+    assert _body(detail)["allowed_acts"] == []
+    assert _body(detail)["tags"] == []
+
+
+def test_an_archive_from_the_customer_host_is_the_acts_own_refusal(
+    two_hosts: Any, customer: User, widget: Widget
+) -> None:
+    """`widgets` IS exposed here, so the refusal is not the surface's: it is the act's."""
+    pressed = _as(customer).post(f"{WIDGET.format(widget.pk)}archive/", HTTP_HOST=CUSTOMER_HOST)
+
+    assert pressed.status_code == 403, pressed.content
+    assert _body(pressed)["code"] == "forbidden"
+    widget.refresh_from_db()
+    assert widget.archived_at is None
+
+
+def test_the_customer_never_posts_an_accept_the_invitation_is_taken_at_sign_in(
+    two_hosts: Any, customer: User
+) -> None:
+    """Acceptance rides the sign-in adapter, so the customer surface exposes no invitations.
+
+    A customer's invitation is accepted where they sign in, on the customer host
+    (the identity join is written at sign-in); the accept route is a staff
+    family's and this host answers it as an operation that does not exist.
+    """
+    pressed = _as(customer).post(
+        reverse("api:invitation-accept"), "{}", content_type=JSON, HTTP_HOST=CUSTOMER_HOST
+    )
+
+    assert "invitations" not in (named(SURFACES[CUSTOMER_ROLE].families) or set())
+    assert pressed.status_code == 404, pressed.content
+    assert _body(pressed)["code"] == "surface_does_not_expose"
+
+
+def test_a_family_the_customer_host_does_not_expose_answers_as_nothing(
+    two_hosts: Any, customer: User
+) -> None:
+    refused = _as(customer).get("/api/v1/organizations/", HTTP_HOST=CUSTOMER_HOST)
+
+    assert refused.status_code == 404, refused.content
+    assert _body(refused)["code"] == "surface_does_not_expose"
+
+
+def test_the_list_narrows_to_one_widget_and_pages_as_it_did(
+    two_hosts: Any,
+    tenant: Tenant,
+    owner_actor: Actor,
+    customer: User,
+    customer_actor: Actor,
+    widget: Widget,
+) -> None:
+    other = create_widget(tenant=tenant, actor=owner_actor, name="Right mount")
+    for index in range(3):
+        submit_portal_request(tenant=tenant, actor=customer_actor, widget=widget, note=f"n{index}")
+    submit_portal_request(tenant=tenant, actor=customer_actor, widget=other, note="other")
+    client = _as(customer)
+
+    first = client.get(
+        _listed(), {"widget_id": str(widget.pk), "limit": "2"}, HTTP_HOST=CUSTOMER_HOST
+    )
+    assert first.status_code == 200, first.content
+    assert _body(first)["has_more"] is True
+    following = client.get(
+        _listed(),
+        {"widget_id": str(widget.pk), "limit": "2", "cursor": str(_body(first)["next_cursor"])},
+        HTTP_HOST=CUSTOMER_HOST,
+    )
+    everything = client.get(_listed(), HTTP_HOST=CUSTOMER_HOST)
+
+    assert following.status_code == 200, following.content
+    assert _body(following)["has_more"] is False
+    pages = _body(first)["items"] + _body(following)["items"]
+    assert len(pages) == 3
+    assert {item["widget_id"] for item in pages} == {str(widget.pk)}
+    assert len(_body(everything)["items"]) == 4
+
+
+def test_a_widget_the_customer_cannot_see_lists_nothing_and_a_malformed_id_is_refused(
+    two_hosts: Any, customer: User, customer_actor: Actor, tenant: Tenant, widget: Widget
+) -> None:
+    submit_portal_request(tenant=tenant, actor=customer_actor, widget=widget, note="Hello?")
+    client = _as(customer)
+
+    unseen = client.get(_listed(), {"widget_id": str(uuid4())}, HTTP_HOST=CUSTOMER_HOST)
+    malformed = client.get(_listed(), {"widget_id": "not-a-widget"}, HTTP_HOST=CUSTOMER_HOST)
+
+    assert unseen.status_code == 200, unseen.content
+    assert _body(unseen)["items"] == []
+    assert malformed.status_code == 400, malformed.content
+    assert _body(malformed)["code"] == MALFORMED_CODE
+    assert "widget_id" in json.dumps(_body(malformed)["errors"])
+
+
+def test_a_high_request_is_sent_and_listed_by_priority_and_a_bad_one_refused(
+    two_hosts: Any, customer: User, tenant: Tenant, widget: Widget
+) -> None:
+    client = _as(customer)
+    about = {"widget_id": str(widget.pk), "note": "Soon, please"}
+
+    high = client.post(
+        _submitted(), {**about, "priority": "high"}, content_type=JSON, HTTP_HOST=CUSTOMER_HOST
+    )
+    plain = client.post(_submitted(), about, content_type=JSON, HTTP_HOST=CUSTOMER_HOST)
+    bad = client.post(
+        _submitted(), {**about, "priority": "urgent"}, content_type=JSON, HTTP_HOST=CUSTOMER_HOST
+    )
+    listed = client.get(_listed(), {"priority": "high"}, HTTP_HOST=CUSTOMER_HOST)
+    bad_list = client.get(_listed(), {"priority": "urgent"}, HTTP_HOST=CUSTOMER_HOST)
+
+    assert high.status_code == 201, high.content
+    assert (_body(high)["priority"], _body(plain)["priority"]) == ("high", "normal")
+    assert [item["id"] for item in _body(listed)["items"]] == [_body(high)["id"]]
+    # A bad body is the house's `422 invalid_body`; a bad query, `400 invalid`.
+    for refused, status, code in ((bad, 422, "invalid_body"), (bad_list, 400, MALFORMED_CODE)):
+        assert refused.status_code == status, refused.content
+        assert _body(refused)["code"] == code
+        assert "priority" in _body(refused)["errors"]
+    assert PortalRequest.objects.filter(tenant=tenant).count() == 2

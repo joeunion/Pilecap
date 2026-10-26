@@ -16,17 +16,9 @@ before the first row-defining line, which is where the ROW STATUS block that
 verbatim, then every `##`/`###` heading verbatim, then one line per anchor.
 Every number this file prints is read off the detail file; none is typed.
 
-THE FOUR MODES.
-
-    --split  <index> <detail>   the migration: write <detail> from today's
-                                single <index>, then write the index over it.
-                                Refuses if <detail> exists or <index> is
-                                already a generated index (exit 2).
-    --index  [<index> <detail>] regenerate <index> from <detail>.
-    --check  [<index> <detail>] the gate leg: regenerate in memory, compare,
-                                and run the consistency checks below.
-    --unsplit <detail> [<out>]  strip the anchor lines — reproduces the
-                                pre-split single file BYTE FOR BYTE.
+THE SIX MODES (USAGE below holds their arguments): --split, the one-time
+migration; --index, regenerate; --check, the gate leg; --unsplit, the
+pre-split file back byte for byte; --strike and --book, the two writes.
 
 EXIT STATUS, the house semantics: 0 clean · 1 violations (a disagreement it
 looked at and judged) · 2 could-not-look, or a refusal (an absent or
@@ -76,9 +68,9 @@ GENERATED index and asserts the (id, status) sequence it yields equals the
 one the detail's rows yield. That is the whole of "the consumers are
 unchanged", made executable instead of asserted. It is also why the emitted
 line closes its bold AFTER the status rather than after the id: measured on
-that classifier, `- **N9001** . open .` reads as NO ROW AT ALL (the id is
+that classifier, `- **N<id>** . open .` reads as NO ROW AT ALL (the id is
 followed by an asterisk, and the open shape wants a space, `(` or `:`), while
-`- **N9001 . open** .` reads as open. The struck shape reads correctly either
+`- **N<id> . open** .` reads as open. The struck shape reads correctly either
 way. A generated line that would be misread is a violation here, not a
 surprise in somebody else's census two weeks later.
 
@@ -141,10 +133,20 @@ WHAT THIS DOES NOT COVER, declared rather than discovered:
 from __future__ import annotations
 
 import os
+import pathlib
 import re
 import sys
 import time
+from collections.abc import Sequence
 from typing import NamedTuple
+
+# THE CHECKOUT ROOT ON `sys.path`, so `quality/` imports from any cwd — this file
+# is run as `python3 scripts/<name>.py`, which puts `scripts/` there and nothing else.
+_ROOT = str(pathlib.Path(__file__).resolve().parent.parent)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from quality.could_not_look import CouldNotLook as Refusal  # noqa: E402
 
 DEFAULT_INDEX = "docs/product/queue.md"
 DEFAULT_DETAIL = "docs/product/queue-detail.md"
@@ -197,8 +199,12 @@ GENERATOR = "scripts/queue_index.py"
 INTERPRETER = ".venv/bin/python"
 
 
-class Refusal(Exception):
-    """Could not look, or will not act. Exit 2."""
+REPORT_ROWS = "## Rows"
+INBOX = "## Inbox — booked by machine, the PM orders"
+STRUCK_WORD = "SHIPPED"
+RE_WHOLE_ID = re.compile(r"^N[0-9]+[a-z]?$")
+RE_SHA = re.compile(r"^[0-9a-f]{7,40}$")
+BOOK_HEAD = "- **"
 
 
 class Row(NamedTuple):
@@ -239,7 +245,7 @@ def classify(line: str) -> tuple[str, str, str] | None:
 
 
 def slug_for(ident: str, occurrence: int) -> str:
-    """The anchor's fragment. `### N9001` -> `n9001`; `### N9001 (2)` -> `n9001-2`."""
+    """The anchor's fragment. `### N<id>` -> `n<id>`; `### N<id> (2)` -> `n<id>-2`."""
     base = ident.lower()
     return base if occurrence == 1 else f"{base}-{occurrence}"
 
@@ -616,7 +622,7 @@ def mode_split(index_path: str, detail_path: str) -> int:
     recorded = read_recorded(index, CEILING_PREFIX)
     print(f"   index   {index_path}  {size} bytes  (ceiling {recorded[0] if recorded else '?'})")
     print(f"   long rows  {len(ids)} over {LONG_ROW_CHARS} chars, {total} bytes")
-    print(f"   reverse it with: python3 {GENERATOR} --unsplit {detail_path}")
+    print(f"   reverse it with: {INTERPRETER} {GENERATOR} --unsplit {detail_path}")
     return 0
 
 
@@ -669,7 +675,7 @@ def mode_check(index_path: str, detail_path: str) -> int:
         )
         print(
             f"   This is a named absence, not a pass on the ledger: run "
-            f"`python3 {GENERATOR} --split` to migrate, and every check in this "
+            f"`{INTERPRETER} {GENERATOR} --split` to migrate, and every check in this "
             "instrument starts binding on the next commit."
         )
         return 0
@@ -754,12 +760,204 @@ def mode_unsplit(detail_path: str, out_path: str | None) -> int:
     return 0
 
 
+# the two writes: strike and book
+
+
+class ReportRows(NamedTuple):
+    ships: list[str]
+    books: list[str]
+
+
+def report_rows(path: str) -> ReportRows | None:
+    """The report's `## Rows` block as ids shipped and rows booked; None when it has no block."""
+    lines = read_lines(path, "the report")
+    try:
+        start = [line.rstrip() for line in lines].index(REPORT_ROWS)
+    except ValueError:
+        return None
+    ships: list[str] = []
+    books: list[str] = []
+    in_books = False
+    for lineno, raw in enumerate(lines[start + 1 :], start=start + 2):
+        if re.match(r"^#{1,2} ", raw):
+            break
+        line = raw.rstrip()
+        if line.startswith("ships:"):
+            in_books = False
+            for word in line[len("ships:") :].split("#", 1)[0].split():
+                if word == "none":
+                    continue
+                if RE_WHOLE_ID.match(word) is None:
+                    raise Refusal(f"{path}:{lineno}: `ships:` names {word!r}, which is not an id")
+                ships.append(word)
+        elif line.startswith("books:"):
+            in_books = True
+        elif in_books and line.startswith("- "):
+            books.append(line)
+        elif in_books and books and line[:1].isspace() and line.strip():
+            books[-1] = f"{books[-1]} {line.strip()}"
+    return ReportRows(ships, books)
+
+
+def split_files(rest: list[str]) -> tuple[list[str], str, str]:
+    """The arguments less a trailing `--files <index> <detail>`, and the two paths."""
+    if "--files" not in rest:
+        return rest, DEFAULT_INDEX, DEFAULT_DETAIL
+    at = rest.index("--files")
+    if len(rest) != at + 3:
+        raise Refusal("--files takes exactly <index> <detail>, last on the line")
+    return rest[:at], rest[at + 1], rest[at + 2]
+
+
+def queue_write(mode: str, rest: list[str]) -> int:
+    """`--strike`/`--book`: the record written, then the index regenerated and checked."""
+    args, index_path, detail_path = split_files(rest)
+    if mode == "--book":
+        if len(args) != 1:
+            raise Refusal("--book takes one report path")
+        rc = mode_book(args[0], detail_path)
+    else:
+        ids, sha, artifact = strike_args(args)
+        rc = mode_strike(ids, sha, artifact, detail_path)
+    if rc != 0:
+        return rc
+    mode_index(index_path, detail_path)
+    return mode_check(index_path, detail_path)
+
+
+def strike_args(args: Sequence[str]) -> tuple[list[str], str, str]:
+    """`<id>... --sha <sha> --artifact <path>`, each checked; `Refusal` naming what is wrong."""
+    ids: list[str] = []
+    sha = artifact = ""
+    words = list(args)
+    while words:
+        word = words.pop(0)
+        if word in ("--sha", "--artifact"):
+            if not words:
+                raise Refusal(f"{word} needs a value")
+            value = words.pop(0)
+            sha, artifact = (value, artifact) if word == "--sha" else (sha, value)
+        elif RE_WHOLE_ID.match(word):
+            ids.append(word)
+        else:
+            raise Refusal(f"--strike: {word!r} is neither an id nor --sha/--artifact")
+    if not ids or RE_SHA.match(sha) is None or not artifact:
+        raise Refusal("--strike needs at least one id, --sha <hex sha> and --artifact <path>")
+    return ids, sha[:8], artifact
+
+
+def read_record(detail_path: str) -> tuple[list[str], list[Row]]:
+    """The record and its rows; `Refusal` when it does not hold together."""
+    detail = read_lines(detail_path, "the queue's record")
+    rows, findings = parse_detail(detail, detail_path)
+    if findings:
+        for f in findings:
+            print(f"!! {f}")
+        raise Refusal("the record does not hold together — nothing was written.")
+    return detail, rows
+
+
+def mode_strike(ids: list[str], sha: str, artifact: str, detail_path: str) -> int:
+    """Each open row's head becomes `~~<id>~~ SHIPPED (<sha>, <artifact>)`: 0 · 1 no anchor."""
+    detail, rows = read_record(detail_path)
+    by_slug = {r.slug: r for r in rows}
+    missing = [i for i in ids if i.lower() not in by_slug]
+    if missing:
+        for ident in missing:
+            print(f"!! --strike: {ident} has no anchor in {detail_path} — nothing was written")
+        return 1
+    struck: list[str] = []
+    already: list[str] = []
+    for ident in dict.fromkeys(ids):
+        row = by_slug[ident.lower()]
+        if row.status == "struck":
+            already.append(ident)
+            continue
+        token = RE_ID.search(row.text[:HEAD_WIDTH])
+        if token is None or token.group(0) != ident:  # pragma: no cover - parse_detail read it
+            raise Refusal(f"{detail_path}:{row.lineno}: the head does not carry {ident}")
+        mark = f"~~{ident}~~ {STRUCK_WORD} ({sha}, {artifact})"
+        detail[row.lineno - 1] = row.text[: token.start()] + mark + row.text[token.end() :]
+        struck.append(ident)
+    if struck:
+        write_lines(detail_path, detail)
+    print(
+        f"== struck {' '.join(struck) or 'none'} at {sha}"
+        + (f" · already struck {' '.join(already)}" if already else "")
+    )
+    return 0
+
+
+def next_number(rows: list[Row]) -> int:
+    """One past the largest number any anchor carries."""
+    numbers = [int(re.sub(r"[^0-9]", "", r.ident)) for r in rows]
+    return max(numbers, default=0) + 1
+
+
+def mode_book(report: str, detail_path: str) -> int:
+    """The report's books under the Inbox, ids off the anchors: 0 · 1 a long row · 2 no block."""
+    wanted = report_rows(report)
+    if wanted is None:
+        raise Refusal(
+            f"{report} carries no `{REPORT_ROWS}` block — the report contract names the block"
+        )
+    detail, rows = read_record(detail_path)
+    known = {r.rest for r in rows}
+    number = next_number(rows)
+    booked: list[tuple[str, str]] = []
+    already: list[str] = []
+    for book in wanted.books:
+        if not book.startswith(BOOK_HEAD):
+            print(f"!! --book: {report}: a booked row opens `{BOOK_HEAD}`: {book[:60]!r}")
+            return 1
+        body = f"{book[len(BOOK_HEAD) :]} Booked from `{report}`."
+        if body in known:
+            already.append(body[:40])
+            continue
+        text = f"{BOOK_HEAD}N{number} {body}"
+        if len(text) > LONG_ROW_CHARS:
+            print(
+                f"!! --book: {report}: the row {book[:60]!r} is {len(text)} characters, over "
+                f"{LONG_ROW_CHARS} — shorten it; nothing was written"
+            )
+            return 1
+        booked.append((f"N{number}", text))
+        number += 1
+    if booked:
+        write_lines(detail_path, with_inbox(detail, booked))
+    ids = [ident for ident, _ in booked]
+    span = "none" if not ids else ids[0] if len(ids) == 1 else f"{ids[0]}–{ids[-1]}"
+    print(f"== booked {span} ← {report}" + (f" · {len(already)} already booked" if already else ""))
+    return 0
+
+
+def with_inbox(detail: list[str], booked: list[tuple[str, str]]) -> list[str]:
+    """The record with each booked row and its anchor appended at the Inbox's end."""
+    lines = list(detail)
+    if INBOX not in lines:
+        while lines and lines[-1] == "":
+            lines.pop()
+        lines += ["", INBOX, ""]
+    at = lines.index(INBOX)
+    end = next(
+        (i for i in range(at + 1, len(lines)) if re.match(r"^#{1,2} ", lines[i])), len(lines)
+    )
+    while end > at + 1 and lines[end - 1] == "":
+        end -= 1
+    block = [line for ident, text in booked for line in ("", anchor_for(ident, 1), text)]
+    return lines[:end] + block + (lines[end:] or [""])
+
+
 USAGE = f"""usage: {GENERATOR} <mode> [paths]
 
   --split   [<index> <detail>]   the one-time migration (writes both files)
   --index   [<index> <detail>]   regenerate the index from the record
-  --check   [<index> <detail>]   the gate leg: 0 clean, 1 findings, 2 cannot look
+  --check   [<index> <detail>]   the gate leg: 0 clean, 1 findings, 2 could not look
   --unsplit <detail> [<out>]     strip anchors — the pre-split file, byte for byte
+  --strike  <id>... --sha <sha> --artifact <path> [--files <index> <detail>]
+                                 strike each row with the merge and its artifact
+  --book    <report> [--files <index> <detail>]
+                                 book the report's `{REPORT_ROWS}` rows under the Inbox
 
   defaults: index {DEFAULT_INDEX} · detail {DEFAULT_DETAIL}
 """
@@ -778,6 +976,8 @@ def main(argv: list[str]) -> int:
         if not rest:
             raise Refusal("--unsplit needs the record's path")
         return mode_unsplit(rest[0], rest[1] if len(rest) > 1 else None)
+    if mode in ("--strike", "--book"):
+        return queue_write(mode, rest)
     if mode in ("--split", "--index", "--check"):
         if len(rest) not in (0, 2):
             raise Refusal(

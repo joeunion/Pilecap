@@ -16,7 +16,7 @@ from uuid import UUID
 from ninja import FilterLookup, FilterSchema, Schema
 from pydantic import ConfigDict, Field
 
-from apps.core.schemas import StrictIn
+from apps.core.schemas import StrictIn, example
 
 
 class ConnectionIn(StrictIn):
@@ -29,12 +29,19 @@ class ConnectionIn(StrictIn):
     provider: str = Field(min_length=1, max_length=64, pattern=r"^[-a-zA-Z0-9_]+$")
     name: str = Field(min_length=1, max_length=200)
     credentials: dict[str, Any] = Field(default_factory=dict)
+    is_signature_v2_required: bool = Field(default=True, json_schema_extra=example(True))
 
 
 class CredentialsIn(StrictIn):
     """New credentials for a connection. Merged into what is already stored."""
 
     credentials: dict[str, Any] = Field(min_length=1)
+
+
+class SignatureSchemeIn(StrictIn):
+    """Whether the connection's inbound webhook refuses a body-only signature."""
+
+    is_signature_v2_required: bool = Field(json_schema_extra=example(True))
 
 
 class RevokeIn(StrictIn):
@@ -62,6 +69,7 @@ class ConnectionOut(Schema):
     name: str
     status: str
     has_credentials: bool
+    is_signature_v2_required: bool = Field(json_schema_extra=example(True))
     last_error: str
     connected_at: datetime | None
     revoked_at: datetime | None

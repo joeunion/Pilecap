@@ -195,7 +195,7 @@ describe("no automatic reconnect", () => {
 
     it("spells no timer API in the modules that meet a close frame", () => {
         const timerApis = ["setTimeout", "setInterval", "requestAnimationFrame", "queueMicrotask"];
-        for (const path of ["src/api/socket-close.ts", "src/screens/socket-close-panel.tsx", "src/screens/refusal-panel.tsx"]) {
+        for (const path of ["src/api/socket-close.ts", "src/screens/socket-close-panel.tsx", "src/kit/refusal-panel.tsx"]) {
             const source = readFileSync(resolve(process.cwd(), path), "utf8");
             for (const api of timerApis) {
                 expect(source.includes(api), `${path} spells ${api}`).toBe(false);

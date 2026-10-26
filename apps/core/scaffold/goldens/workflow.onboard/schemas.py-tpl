@@ -1,0 +1,12 @@
+# golden-anchor: {"nth": 0, "scope": ["WidgetOut"], "side": "before", "text": "due_at: datetime | None = Field(default=None, json_schema_extra=example(\"2026-11-02T17:00:00Z\"))"}
+    # Null until the onboarding workflow's first activity marks it.
+    onboarded_at: datetime | None = Field(
+        default=None, json_schema_extra=example("2026-09-26T09:00:00Z")
+    )
+# golden-anchor: {"nth": 0, "scope": [], "side": "after", "text": "\"\"\"One widget, as its detail door answers it: the row and the words on it.\"\"\""}
+class WidgetOnboardedOut(WidgetOut):
+    """The `onboarded` event's payload: the row, and whether anybody approved in time."""
+
+    approved: bool
+
+

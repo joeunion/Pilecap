@@ -1,0 +1,21 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "before", "text": "def test_a_tool_filters_by_a_due_date(tenant: Tenant, owner: User, owner_actor: Actor) -> None:"}
+DUE_AT = datetime(2026, 11, 2, 17, 0, tzinfo=UTC)
+LATER_DUE_AT = datetime(2026, 12, 1, 9, 30, tzinfo=UTC)
+
+
+def test_a_tool_creates_changes_and_clears_due_at(tenant: Tenant, owner: User) -> None:
+    ctx = context_for(owner, tenant, root_organization(tenant=tenant))
+    created = tool("create_widget", register=register)(ctx=ctx, name="Due", due_at=DUE_AT)
+    assert created.due_at == DUE_AT
+
+    changed = tool("update_widget", register=register)(
+        ctx=ctx, widget_id=created.id, version=created.version, due_at=LATER_DUE_AT
+    )
+    assert changed.due_at == LATER_DUE_AT
+
+    cleared = tool("update_widget", register=register)(
+        ctx=ctx, widget_id=created.id, version=changed.version, clear_due_at=True
+    )
+    assert cleared.due_at is None
+
+

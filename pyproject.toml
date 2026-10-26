@@ -1,6 +1,6 @@
 [project]
 name = "pilecap"
-version = "0.1.0"
+version = "2.5.0"
 description = "A template repository for starting Django products."
 requires-python = ">=3.12"
 dependencies = [
@@ -17,8 +17,10 @@ dependencies = [
     # The `saml` extra is deliberately absent: it pulls `python3-saml`, which
     # needs libxml2/libxmlsec1 headers on every machine that installs this
     # template. See `config/settings/base.py`, "SAML", for the trigger and the
-    # exact steps to turn it on.
-    "django-allauth[socialaccount]>=65.0",
+    # exact steps to turn it on. The floor is the first release whose
+    # `socialaccount` extra admits the oauthlib that fixes CVE-2026-49265, so
+    # allauth's own specifier holds the fix in the lock and no override does.
+    "django-allauth[socialaccount]>=65.19.6",
     "django-linear-migrations>=2.16",
     "django-environ>=0.11",
     "django-stubs-ext>=6.1.0",
@@ -40,12 +42,13 @@ dependencies = [
     "django-redis>=7.0.0",
     "uuid6>=2025.0.1",
     "structlog>=26.1.0",
-    "opentelemetry-sdk>=1.44.0",
-    "opentelemetry-exporter-otlp>=1.44.0",
-    "opentelemetry-instrumentation-django>=0.65b0",
-    "opentelemetry-instrumentation-psycopg>=0.65b0",
-    "opentelemetry-instrumentation-redis>=0.65b0",
-    "opentelemetry-instrumentation-httpx>=0.65b0",
+    "opentelemetry-sdk>=1.45.1",
+    "opentelemetry-exporter-otlp>=1.45.1",
+    "opentelemetry-instrumentation-asgi>=0.66b1",
+    "opentelemetry-instrumentation-django>=0.66b1",
+    "opentelemetry-instrumentation-psycopg>=0.66b1",
+    "opentelemetry-instrumentation-redis>=0.66b1",
+    "opentelemetry-instrumentation-httpx>=0.66b1",
     "django-cors-headers>=4.9.0",
     "django-csp>=4.0",
     "whitenoise>=6.12.0",
@@ -121,7 +124,7 @@ dev = [
     # `pytest-xdist` is the speed. `-n auto` is applied by the gate legs in
     # `scripts/check.sh`, never here in `addopts` — a worker creates and
     # migrates its OWN test database, so putting it in `addopts` would make
-    # `uv run pytest apps/core/tests/test_x.py::test_one` pay ten database
+    # `uv run pytest apps/core/tests/test_<x>.py::test_one` pay ten database
     # creations to run one test. The gate wants the workers; a builder
     # debugging one test does not. Per-worker isolation nests inside the
     # checkout's: pytest-django suffixes the test database name with the
@@ -201,19 +204,6 @@ dev = [
     "pytest-cov>=7.0",
 ]
 
-[tool.uv]
-# THE ONE OVERRIDE, AND IT IS A DATED EXCEPTION (the owner's decision,
-# 2026-09-29). CVE-2026-49265 (GHSA-xpv3-w29h-x7cv) is fixed in oauthlib
-# 4.0.0, and every published django-allauth release (through 65.19.5) declares
-# `oauthlib<4,>=3.3.0` on its `socialaccount` extra — so without this line the
-# resolver holds oauthlib at 3.x silently and the supply-chain leg stays red.
-# The override replaces allauth's cap, which is a combination allauth has not
-# tested; this tree's suite and an authorize-URL construction through allauth's
-# own OAuth 1 and OAuth 2 clients are what vouch for it. IT COMES OUT the day
-# allauth's own specifier admits oauthlib 4: the supply-chain leg in
-# `scripts/check.sh` reds then, naming this line as dead weight.
-override-dependencies = ["oauthlib>=4"]
-
 [tool.ruff]
 line-length = 100
 target-version = "py312"
@@ -223,7 +213,18 @@ target-version = "py312"
 extend-exclude = ["*/migrations/*", "quality/canary", "quality/negative", "quality/local/canary", "quality/local/negative"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP", "DJ"]
+select = ["E", "F", "I", "B", "UP", "DJ", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+# A test's assert is the test.
+"**/tests/**" = ["S101"]
+"quality/tests/**" = ["S101"]
+"perf/**" = ["S101"]
+"**/test_*.py" = ["S101"]
+# The platform's tooling spawns the gate's processes with a fixed argv and no shell; S602 stays on.
+"quality/**" = ["S603", "S607"]
+"scripts/**" = ["S603", "S607"]
+"deploy/**" = ["S603", "S607"]
 
 [tool.ruff.format]
 # Ruff formats Python code blocks inside Markdown. That is wrong for this
@@ -239,7 +240,7 @@ strict = true
 # and every skill document it. Without this, a bare `uv run mypy` exits 2 with a
 # usage message, and a gate leg that exits non-zero for the wrong reason is a
 # gate leg nobody trusts.
-files = ["apps", "config"]
+files = ["apps", "config", "pilecap"]
 plugins = ["mypy_django_plugin.main"]
 exclude = ['(^|/)migrations/']
 warn_unreachable = true
@@ -273,6 +274,11 @@ module = [
 ]
 ignore_missing_imports = true
 
+# The pre-port engine `quality/tests` reaches through `quality.gate`: read for its callers' types, its own errors silent until N1992 (2026-10-10 addendum).
+[[tool.mypy.overrides]]
+module = ["quality.engine.*", "quality.checks.*", "quality.worlds", "quality.scan_ahead"]
+follow_imports = "silent"
+
 [tool.django-stubs]
 django_settings_module = "config.settings.test"
 
@@ -301,6 +307,10 @@ python_files = ["test_*.py"]
 testpaths = ["apps"]
 markers = [
     "perf: a seeded-scale measurement (ADR perf-1) — run via scripts/perf.sh, never in the default suite",
+    "template_only(reason): a property of the TEMPLATE's own tree; on a tree that declares rule_id_namespace the test is skipped naming the declaration (apps/conftest.py)",
+    "drives(*globs): the paths a drive's test covers, read from its `# drives:` line (quality/tests/test_drives.py)",
+    "full_gate: runs in the full gate's gate-tests leg only; the loop's touched session deselects it (quality/djb/legs/always_on.py)",
+    "product_drive: copies the tree as a product and drives the shapes in a subprocess; loop and full only (--fast collects no pytest)",
 ]
 asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "function"
@@ -382,7 +392,7 @@ timeout = 720
 [tool.importlinter]
 # Two root packages, because the direction between them is itself a contract:
 # `config` mounts `apps`, and no app ever reaches back up into `config`.
-root_packages = ["apps", "config"]
+root_packages = ["apps", "config", "quality", "pilecap"]
 include_external_packages = false
 
 [[tool.importlinter.contracts]]
@@ -399,9 +409,108 @@ ignore_imports = [
     # registries — the same "report what the mounts found" job as introspect,
     # exempted by name for the same reason, lazily inside the check functions.
     "apps.core.checks -> config.*",
+    # The one mount reader (`apps.core.api.mount.bound_operations`): introspect,
+    # verbs, mcp, views and checks read what the API mounted through it, so the
+    # walk over `config.api`'s bound routers is one function, read lazily.
+    "apps.core.api.mount -> config.*",
     "apps.*.tests.* -> config.*",
     "apps.*.tests.* -> config.settings.*",
+    # The edges into the gate the contract "the product never imports the gate" names; outside it, none.
+    "apps.core.management.commands.declare -> quality.**",
+    "apps.*.tests.** -> quality.**",
 ]
+
+[[tool.importlinter.contracts]]
+name = "pilecap re-exports the platform; no platform app imports pilecap"
+type = "forbidden"
+# `partition.yaml`'s platform apps, the worked example out; pinned equal by
+# `quality/tests/test_sdk_census.py`. A product app's edge is rule 96's, not a contract's.
+source_modules = [
+    "apps.accounts",
+    "apps.comms",
+    "apps.connections",
+    "apps.core",
+    "apps.djb_imports",
+    "apps.djb_notes",
+    "apps.djb_tags",
+    "apps.events",
+    "apps.exports",
+    "apps.files",
+    "apps.realtime",
+    "apps.search",
+    "apps.usage",
+    "apps.workflows",
+]
+forbidden_modules = ["pilecap"]
+# The platform's tests drive the worked example, which imports pilecap (rule 96): that edge.
+ignore_imports = [
+    "apps.example.** -> pilecap",
+    "apps.example.** -> pilecap.**",
+    "apps.example_portal.** -> pilecap",
+    "apps.example_portal.** -> pilecap.**",
+]
+
+[[tool.importlinter.contracts]]
+name = "pilecap reaches the platform apps, never config or the gate"
+type = "forbidden"
+source_modules = ["pilecap"]
+forbidden_modules = ["config", "quality"]
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "the gate reads the product's leaves; nothing else of apps"
+type = "forbidden"
+source_modules = ["quality"]
+forbidden_modules = ["apps"]
+# Each edge is a leaf, a dev-only grammar, or a lazy Django-time reader; `quality/tests/test_leaves.py` pins the leaves.
+ignore_imports = [
+    # The leaves: stdlib + `yaml`, imported when the gate itself is.
+    "quality.** -> apps.core.roads",
+    "quality.** -> apps.core.reach",
+    "quality.** -> apps.core.lexicon",
+    "config.settings.discovery -> apps.core.roads",
+    # The scaffold's fence grammar, dev-only (CQ-ARCH-2's `DEV_ONLY`); the golden copy is its subject.
+    "quality.checks.rule_91 -> apps.core.scaffold.copier",
+    "quality.engine.run -> apps.core.scaffold.copier",
+    "quality.djb.rituals.fold -> apps.core.scaffold.**",
+    # Lazy readers under Django in the venv: each imports a registry inside the function that reads it.
+    "quality.partition -> apps",
+    "quality.partition -> apps.**",
+    "quality.partition -> config.**",
+    "quality.hotpaths -> apps.**",
+    "quality.lifecycle_probe -> apps.**",
+    "quality.audit_population_probe -> apps",
+    "quality.audit_population_probe -> apps.**",
+    "quality.refusal_probe -> apps.**",
+    "quality.refusal_probe -> config.**",
+    "quality.djb.rituals.drive_doors -> apps.**",
+    # The SDK census ratchets the facade, which re-exports the platform.
+    "quality.sdk.census -> pilecap",
+    "quality.sdk.surface -> pilecap.**",
+    # Tests drive the product they measure.
+    "quality.tests.** -> apps.**",
+    "quality.tests.** -> config.**",
+]
+
+[[tool.importlinter.contracts]]
+name = "the product never imports the gate outside CoreConfig.DEV_ONLY"
+type = "forbidden"
+source_modules = ["apps"]
+forbidden_modules = ["quality"]
+# The image drops `quality/` and every `DEV_ONLY` path; `quality/tests/test_dev_only_census.py`
+# holds the string and `importlib` reads in `apps/core/scaffold/**`, which no static contract sees.
+ignore_imports = [
+    # Dev-only: `declare` validates the drawer with the engine's own rule grammar.
+    "apps.core.management.commands.declare -> quality.**",
+    # Tests drive the gate that measures them, in a checkout.
+    "apps.*.tests.** -> quality.**",
+]
+
+[[tool.importlinter.contracts]]
+name = "quality.djb runs the engine; quality.gate never imports quality.djb"
+type = "forbidden"
+source_modules = ["quality.gate"]
+forbidden_modules = ["quality.djb"]
 
 [[tool.importlinter.contracts]]
 name = "The fixed layers hold: platform above accounts above core"
@@ -416,9 +525,6 @@ type = "layers"
 # The rest — "app X may import only what its AppConfig's `depends_on` declares"
 # — is house rule 7's, enforced by AST over `apps/*/apps.py` in the quality
 # engine (rung C). The declaration lives with the app; the check reads it there.
-#
-# The platform apps beyond `workflows` do not exist yet; parenthesised layers
-# are optional, so each one becomes covered the day it lands, with no edit here.
 layers = [
     "apps.workflows | (apps.events) | (apps.connections) | (apps.realtime)",
     "apps.accounts",
@@ -460,6 +566,11 @@ ignore_imports = [
     # tags -> events`. The exemption is for the test modules only; `apps/workflows`
     # itself still imports no sibling.
     "apps.workflows.tests.* -> apps.example.*",
+    # Every platform test that drives the worked example reaches the whole facade through it.
+    "apps.example.** -> pilecap",
+    "apps.example.** -> pilecap.**",
+    "apps.example_portal.** -> pilecap",
+    "apps.example_portal.** -> pilecap.**",
     # `core`'s bridge test proves the whole point of the bridge: that a `core`
     # service can reach `emit` without importing the app that provides it. The
     # proof has to name the app the production code does not.
@@ -497,6 +608,10 @@ ignore_imports = [
     # as a `core -> everything` chain through `config`.
     "apps.core.management.commands.introspect -> config.*",
     "apps.core.checks -> config.*",
+    "apps.core.api.mount -> config.*",
     "apps.*.tests.* -> config.*",
     "apps.*.tests.* -> config.settings.*",
+    # The edges into the gate the contract "the product never imports the gate" names; outside it, none.
+    "apps.core.management.commands.declare -> quality.**",
+    "apps.*.tests.** -> quality.**",
 ]

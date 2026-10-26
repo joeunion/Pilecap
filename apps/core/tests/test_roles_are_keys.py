@@ -58,6 +58,7 @@ from apps.core.services import (
     role_label,
     set_role,
 )
+from apps.core.tests.unclaimed import unclaimed_role
 
 pytestmark = pytest.mark.django_db
 
@@ -216,6 +217,18 @@ def at_0017() -> Any:
     finally:
         migrate_to([("core", "0018_roles_are_keys")])
         _step_over_concurrent(forwards=True)
+        # And the ATOMIC migrations above the concurrent ones, back to the leaf,
+        # so the test leaves `core` where it found it.
+        migrate_to([("core", _leaf())])
+
+
+def _leaf() -> str:
+    from pathlib import Path
+
+    from django.conf import settings
+
+    path = Path(settings.BASE_DIR) / "apps" / "core" / "migrations" / "max_migration.txt"
+    return path.read_text().strip()
 
 
 def _victim_tenant(slug: str) -> tuple[Tenant, Organization]:
@@ -284,16 +297,17 @@ def test_0018_refuses_an_undeclared_role_value_naming_tenant_value_and_count() -
     from uuid import uuid4
 
     slug = f"census-{uuid4().hex[:8]}"
-    user = User.objects.create_user(email=f"{slug}@example.com", password="x")  # noqa: S106
+    user = User.objects.create_user(email=f"{slug}@example.com", password="x")  # noqa: S106 — a throwaway password a test user is made with
     tenant, org = _victim_tenant(slug)
-    Membership.objects.create(user_id=user.pk, tenant=tenant, organization=org, role="viewer")
+    viewer = unclaimed_role("viewer")
+    Membership.objects.create(user_id=user.pk, tenant=tenant, organization=org, role=viewer)
 
     with pytest.raises(RuntimeError) as refused:
         run_census()
 
     text = str(refused.value)
     assert slug in text, text
-    assert "'viewer'" in text, text
+    assert f"'{viewer}'" in text, text
     assert "1 row(s)" in text, text
     assert "roles.py" in text, text
 
@@ -349,7 +363,7 @@ def test_0018_passes_every_membership_naming_owner_a_declared_key_or_a_row() -> 
     tenant, org = _victim_tenant(slug)
     Role.objects.create(tenant=tenant, key="approver", name="Approver")
     for index, role in enumerate([OWNER_ROLE, "member", "approver", ""]):
-        user = User.objects.create_user(email=f"{slug}-{index}@example.com", password="x")  # noqa: S106
+        user = User.objects.create_user(email=f"{slug}-{index}@example.com", password="x")  # noqa: S106 — a throwaway password a test user is made with
         Membership.objects.create(user_id=user.pk, tenant=tenant, organization=org, role=role)
 
     run_census()  # the assertion: it does not raise
@@ -359,7 +373,7 @@ def test_0018_passes_every_membership_naming_owner_a_declared_key_or_a_row() -> 
     # other side.
     other_slug = f"{slug}-nb"
     other, other_org = _victim_tenant(other_slug)
-    stranger = User.objects.create_user(email=f"{other_slug}@example.com", password="x")  # noqa: S106
+    stranger = User.objects.create_user(email=f"{other_slug}@example.com", password="x")  # noqa: S106 — a throwaway password a test user is made with
     Membership.objects.create(
         user_id=stranger.pk, tenant=other, organization=other_org, role="approver"
     )
@@ -394,17 +408,22 @@ def test_0018_is_on_the_one_line_to_the_leaf(at_0017: None) -> None:
     """One leaf per app (rule 6), and `0018` is on the line to it.
 
     It WAS the leaf; the history index's `0019` (non-atomic, CONCURRENTLY) sits
-    above it now, which is why the rewind above steps over it by hand.
+    above it now, which is why the rewind above steps over it by hand — and
+    every non-atomic migration above `0018` must be one the rewind knows, or it
+    would try to run it inside the test's transaction.
     """
-    from pathlib import Path
-
-    from django.conf import settings
-
-    leaf = Path(settings.BASE_DIR) / "apps" / "core" / "migrations" / "max_migration.txt"
-    assert leaf.read_text().strip() == _CONCURRENT_ABOVE_0018[-1][0]
     graph = MigrationExecutor(connection).loader.graph
-    line_to_leaf = graph.forwards_plan(("core", leaf.read_text().strip()))
+    line_to_leaf = graph.forwards_plan(("core", _leaf()))
     assert ("core", "0018_roles_are_keys") in line_to_leaf
+    above = line_to_leaf[line_to_leaf.index(("core", "0018_roles_are_keys")) + 1 :]
+    from importlib import import_module
+
+    non_atomic = [
+        name
+        for app, name in above
+        if app == "core" and not import_module(f"apps.core.migrations.{name}").Migration.atomic
+    ]
+    assert non_atomic == [name for name, _index in _CONCURRENT_ABOVE_0018]
 
 
 # --- P2.3 · the compat surface ------------------------------------------------
@@ -414,9 +433,8 @@ def test_the_role_enum_and_is_privileged_are_untouched(tenant: Tenant, owner: Us
     """`Membership.Role`'s three constants and `is_privileged` answer as they did.
 
     They are no longer the field's `choices` — that is the whole rung — and they
-    are still the three names the template's own roles have, still readable off
-    `apps/core/models.py` by house rule 41's AST reader, and still the spelling
-    every fixture in the tree uses.
+    are still the three names the template's own roles have, and still the
+    spelling every fixture in the tree uses.
     """
     assert Membership.Role.OWNER.value == "owner"
     assert Membership.Role.ADMIN.value == "admin"
@@ -434,18 +452,17 @@ def test_the_role_enum_and_is_privileged_are_untouched(tenant: Tenant, owner: Us
     assert membership.is_privileged is False
 
 
-def test_the_shape_rule_41s_reader_depends_on_is_still_here() -> None:
-    """`Membership.Role`'s body and `is_privileged` are readable off this file.
+def test_the_compat_shim_still_names_owner_and_admin() -> None:
+    """`Membership.Role`'s body and `is_privileged` still say owner and admin.
 
-    `quality/checks.py::_privileged_role_words` resolves `{Role.OWNER,
-    Role.ADMIN}` through the `TextChoices` body by AST, and the gate binds a
-    `privileged_role_words: 2` floor on the answer — a `Role` class removed
-    leaves that floor unbound, which is exit 2 rather than a pass. **The floor
-    IS the mechanism**, so this test does not re-ask its question (importing
-    `quality.checks` from `apps/` would drag the whole quality package into
-    mypy's graph for every builder); it pins the two facts the reader needs to
-    find, so that a rename here fails beside the code that renamed it and the
-    gate's own answer is the one that counts.
+    House rule 41 no longer reads either: `quality/checks/rule_41_role_promise_clause.py::
+    _privileged_role_words` asks the role declarations (ADR core-25) — the
+    platform's owner role and every declared role holding the whole
+    vocabulary — and its `privileged_role_words` floor is the mechanism. What
+    this pins is the deprecated shim's own promise, kept through v2.x: the
+    three names, and a getter that answers true for owner and admin and for
+    nothing else, so a product predicate still reading it reads what the
+    declarations say on the template.
     """
     assert list(Membership.Role.names) == ["OWNER", "ADMIN", "MEMBER"]
     privileged = inspect.getattr_static(Membership, "is_privileged")
@@ -517,9 +534,10 @@ def test_a_role_this_tenant_cannot_name_is_invalid_in_every_writer(
     sites: a key validated in two of them is a hole in the third, and that is
     exactly the shape `choices` used to close for free.
     """
+    value = unclaimed_role(value)
     from apps.core.exceptions import Invalid
 
-    stranger = User.objects.create_user(email=f"s-{value.strip() or 'blank'}@x.com", password="p")  # noqa: S106
+    stranger = User.objects.create_user(email=f"s-{value.strip() or 'blank'}@x.com", password="p")  # noqa: S106 — a throwaway password a test user is made with
 
     with pytest.raises(Invalid) as one:
         add_membership(
@@ -554,7 +572,7 @@ def test_the_roleless_membership_is_a_road_the_system_has_and_a_door_does_not(
     from apps.core.actor import system_actor
     from apps.core.exceptions import Invalid
 
-    nobody = User.objects.create_user(email="roleless@example.com", password="p")  # noqa: S106
+    nobody = User.objects.create_user(email="roleless@example.com", password="p")  # noqa: S106 — a throwaway password a test user is made with
     landed = add_membership(
         user=nobody,
         tenant=tenant,
@@ -588,7 +606,7 @@ def test_the_first_membership_is_owner_and_the_next_is_the_declared_default(
         membership_of(User.objects.get(memberships__tenant=tenant), tenant).role or True
     )  # the tenant already has its owner
 
-    second = User.objects.create_user(email="second@example.com", password="p")  # noqa: S106
+    second = User.objects.create_user(email="second@example.com", password="p")  # noqa: S106 — a throwaway password a test user is made with
     landed = add_membership(
         user=second, tenant=tenant, organization=root_org, actor=system_actor(tenant=tenant)
     )
@@ -612,7 +630,7 @@ def test_an_invitation_naming_a_deleted_role_is_a_conflict_at_acceptance(
     )
     role.delete()
 
-    joiner = User.objects.create_user(email="later@example.com", password="p")  # noqa: S106
+    joiner = User.objects.create_user(email="later@example.com", password="p")  # noqa: S106 — a throwaway password a test user is made with
     with pytest.raises(Conflict) as refused:
         accept_invitation(
             tenant=tenant,
@@ -734,13 +752,14 @@ def test_w054_names_a_membership_holding_an_undeclared_key(tenant: Tenant, membe
     only way to reach the state the census exists for: every service refuses
     this value, which is the point of the census being a BELT.
     """
-    Membership.objects.filter(pk=membership_of(member, tenant).pk).update(role="viewer")
+    viewer = unclaimed_role("viewer")
+    Membership.objects.filter(pk=membership_of(member, tenant).pk).update(role=viewer)
 
     found = check_roles_are_keys(databases=["default"])
     assert [f.id for f in found] == ["djb.W054"]
     text = str(found[0].msg)
     assert tenant.slug in text
-    assert "'viewer'" in text
+    assert f"'{viewer}'" in text
     assert "1 membership(s)" in text
 
 
@@ -1020,6 +1039,11 @@ def test_rule_13s_model_half_goes_quiet_instead_of_dying_on_an_underivable_vocab
     assert check_scoped_write_policies() == []
 
 
+def _auditor() -> str:
+    """The planted second default's key: `auditor`, unless this tree's own roles took it."""
+    return unclaimed_role("auditor")
+
+
 def _two_default_roles(monkeypatch: pytest.MonkeyPatch) -> None:
     """Plant a second role marked as the one a new member gets.
 
@@ -1032,6 +1056,8 @@ def _two_default_roles(monkeypatch: pytest.MonkeyPatch) -> None:
     from apps.core import authz
     from apps.core.authz import DeclaredRole
 
+    auditor = _auditor()
+    authz.reset_policies()
     real = authz._declarations
 
     def _with_a_second_default(module: str, attribute: str) -> Any:
@@ -1041,8 +1067,8 @@ def _two_default_roles(monkeypatch: pytest.MonkeyPatch) -> None:
                 (
                     django_apps.get_app_config("example"),
                     {
-                        "auditor": DeclaredRole(
-                            key="auditor",
+                        auditor: DeclaredRole(
+                            key=auditor,
                             name="Auditor",
                             permissions=("*.read",),
                             is_default_for_new_members=True,
@@ -1075,7 +1101,7 @@ def test_two_default_roles_is_a_check_error_naming_both(
         authz.reset_policies()
 
     assert "(djb.E025)" in text
-    assert "'auditor'" in text and "'member'" in text
+    assert f"'{_auditor()}'" in text and "'member'" in text
 
     assert check_vocabulary_is_derivable() == []
 
@@ -1160,7 +1186,7 @@ def test_e025_names_the_readers_silence_only_when_they_are_silent(
     assert silence not in str(two_defaults[0].msg)
     # The finding still names both parties — narrowing the sentence narrowed
     # nothing else.
-    assert "'auditor'" in str(two_defaults[0].msg)
+    assert f"'{_auditor()}'" in str(two_defaults[0].msg)
 
     assert check_vocabulary_is_derivable() == []
 
@@ -1205,53 +1231,32 @@ def test_a_policies_discovery_failure_is_a_check_error_not_a_traceback(
     assert check_scoped_write_policies() == []
 
 
-def test_a_declared_role_holds_its_patterns_and_additions_and_nothing_else_without_a_predicate(
-    db: None, capsys: Any
-) -> None:
-    """**Two readers of one column, and they agree wherever no predicate intervenes.**
+def test_a_declared_role_holds_its_patterns_and_additions_and_nothing_else(db: None) -> None:
+    """**Two readers of one column, and they agree on every declared role.**
 
     `defaults_for(R)` is the DECLARATION's own half — patterns plus
-    `DEFAULT_ROLES` additions — and `collection(None, R, compat=True)` is what
-    somebody holding R actually holds today, which is the same set plus the
-    un-swept residue: keys whose predicate narrows them and whose app has not
-    declared `DEFAULT_ROLES` yet (clause (5)). Clause (4) put every `.read` key
-    in the second and not the first, so the two disagreed by 35 non-predicate
-    keys for a write-only role. R1-F2 deleted it, and this is the assertion that
-    keeps them together: **the difference is a SUBSET of the predicate keys**,
-    derived from `vocabulary()`'s own `predicate` column and never typed.
-
-    The residue is printed rather than pinned, because P7.x's sweeps shrink it
-    one app at a time and a pinned number would be a second thing each sweep has
-    to edit. When it reaches ∅ the assertion is still true and still
-    non-vacuous, because `defaults_for` for the template's roles is not empty.
+    `DEFAULT_ROLES` additions — and `collection(None, R)` is what somebody
+    holding R holds with no tenant rows. Clause (4) put every `.read` key in the
+    second and not the first (R1-F2 deleted it); clause (5), the compat residue,
+    put every un-declared predicate key there (retired since). With both gone
+    the two are one set, and this is the assertion that keeps them together.
 
     **The virtual kinds are in neither set, and that is one exclusion rather
     than a disagreement.** Both readers go through
     `authz.grantable_permissions()` — a kind with no table names no row anybody
     can be given authority over, so a key on one is in nobody's collection and
-    in nobody's declared half either, and the predicate is the whole rule. An
-    earlier draft of this test carried a "by design" note excusing a
-    disagreement here; the disagreement was the defect, and
+    in nobody's declared half either, and the predicate is the whole rule.
     `test_handing_out.py`'s virtual-kind assertions are the property's home.
     """
     from apps.core.authz import VIRTUAL_KINDS, collection, defaults_for
 
     words = vocabulary()
-    predicate_keys = {key for key, word in words.items() if word.predicate is not None}
-    assert predicate_keys, "the residue's own population must not be empty on this tree"
     virtual_keys = {key for key, word in words.items() if word.kind in VIRTUAL_KINDS}
 
+    assert role_declarations(), "no declared role — the loop would be vacuous"
     for role_key in sorted(role_declarations()):
-        held = collection(None, role_key, compat=True)
+        held = collection(None, role_key)
         declared = defaults_for(role_key)
         assert declared, f"{role_key} declares nothing — the assertion would be vacuous"
-        residue = held - declared
-        print(f"residue({role_key}) = {sorted(residue)}")
-        assert residue <= predicate_keys, sorted(residue - predicate_keys)
-        # And the other direction: nothing the declaration gives is lost.
-        assert declared <= held, sorted(declared - held)
-        # Neither reader carries a virtual kind — the one exclusion, both sides.
-        assert (held | declared) & virtual_keys == set(), sorted((held | declared) & virtual_keys)
-
-    printed = capsys.readouterr().out
-    assert "residue(" in printed
+        assert held == declared, (sorted(held - declared), sorted(declared - held))
+        assert held & virtual_keys == set(), sorted(held & virtual_keys)

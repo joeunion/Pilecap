@@ -5,12 +5,13 @@ hands it — a real `SocialLogin` carrying a real `SocialAccount` — rather tha
 stand-in that agrees with the code under test. The three doors are proved
 separately because they are separately wrong-able:
 
-* **workforce** — a Google account outside the organisation's domains is refused
-  and **no `User` row is written**; a fresh workforce login lands with no
-  membership and sees nothing;
+* **workforce** — a NEW person the platform would mint outside the
+  organisation's domains is refused and **no `User` row is written** (the
+  workforce's Google arrives through Zitadel, so the wall is on the platform
+  branch); a fresh workforce login lands with no membership and sees nothing;
 * **customers** — an assertion **through the platform provider** for an address
   a tenant's connection claims is provisioned just-in-time, and a refused one
-  becomes a page rather than a traceback. Since W2-R5 there is no per-connection
+  becomes a page rather than a traceback. Under ADR ident-6 there is no per-connection
   allauth app to arrive through: Zitadel fronts every customer IdP and
   `SsoDomain` is the router (ADR ident-6);
 * **password** — `enforced` takes it away, proved through allauth's own login
@@ -27,11 +28,11 @@ from django.core.exceptions import ValidationError
 from django.http import HttpRequest
 from django.test import Client
 
-from apps.accounts.adapter import GOOGLE_PROVIDER, SocialAccountAdapter
+from apps.accounts.adapter import SocialAccountAdapter
 from apps.accounts.models import SsoConnection, SsoIdentity, User
 from apps.accounts.selectors import get_platform_provider_id
 from apps.accounts.services import create_user, update_sso_connection
-from apps.accounts.tests.conftest import assertion
+from apps.accounts.tests.conftest import assertion, provider_landed
 from apps.core.actor import Actor
 from apps.core.middleware import resolve_tenant
 from apps.core.models import Membership, Tenant
@@ -45,31 +46,31 @@ WORKFORCE_DOMAIN = "union.studio"
 def workforce(settings: Any) -> None:
     """A deployment that has actually configured the workforce door.
 
-    Both halves, because `config/settings/base.py` requires both: credentials
-    *and* a domain list. With either missing there is no Google app at all,
-    which is the "empty means off" behaviour its own test below pins.
+    The domain list is the switch the platform door's wall reads; the Google
+    credentials themselves live inside Zitadel (`sync_workforce_identity_config`)
+    and never reach this side, so there is no allauth app to register.
     """
     settings.GOOGLE_WORKSPACE_DOMAINS = [WORKFORCE_DOMAIN]
-    settings.SOCIALACCOUNT_PROVIDERS = {
-        "google": {
-            "APPS": [{"client_id": "google-client-id", "secret": "google-secret", "key": ""}],
-            "SCOPE": ["profile", "email"],
-        },
-        "openid_connect": {},
-    }
 
 
 def adapter(request: HttpRequest) -> SocialAccountAdapter:
     return SocialAccountAdapter(request)
 
 
-# --- Workforce: Google Workspace ---------------------------------------------
+# --- Workforce: Google Workspace, arriving through Zitadel --------------------
+#
+# The direct allauth Google provider is gone: the workforce's Google is an IdP
+# inside Zitadel, so its assertions arrive on the platform branch and the domain
+# wall is `_platform_login`'s, on the NEW-person path (`test_workforce_wall.py`
+# holds the four cases the wall is judged by). What stays here is the same set
+# of door properties the direct road used to prove, now proved where the person
+# actually arrives.
 
 
-def test_a_google_account_outside_the_domains_is_refused_and_writes_no_user(
-    workforce: None, login_request: HttpRequest
+def test_an_account_outside_the_domains_is_refused_and_writes_no_user(
+    workforce: None, platform_provider: None, login_request: HttpRequest
 ) -> None:
-    """The refusal the whole workforce door exists for.
+    """The refusal the workforce wall exists for.
 
     **No `User` row**, and that is asserted rather than assumed: the refusal
     happens in `pre_social_login`, which allauth runs *before* the signup step
@@ -82,8 +83,8 @@ def test_a_google_account_outside_the_domains_is_refused_and_writes_no_user(
         adapter(login_request).pre_social_login(
             login_request,
             assertion(
-                provider=GOOGLE_PROVIDER,
-                subject="google-1",
+                provider=get_platform_provider_id(),
+                subject="zitadel-1",
                 email="outsider@gmail.example",
             ),
         )
@@ -92,26 +93,30 @@ def test_a_google_account_outside_the_domains_is_refused_and_writes_no_user(
     assert User.objects.count() == before
 
 
-def test_the_refusal_page_names_no_domain(workforce: None, login_request: HttpRequest) -> None:
-    """It is reachable by anybody with a Google account, so everything on it is public."""
+def test_the_refusal_page_names_no_domain(
+    workforce: None, platform_provider: None, login_request: HttpRequest
+) -> None:
+    """It is reachable by anybody the platform will vouch for, so everything on it is public."""
     with pytest.raises(ImmediateHttpResponse) as raised:
         adapter(login_request).pre_social_login(
             login_request,
-            assertion(provider=GOOGLE_PROVIDER, subject="g", email="outsider@gmail.example"),
+            assertion(
+                provider=get_platform_provider_id(), subject="z", email="outsider@gmail.example"
+            ),
         )
     page = raised.value.response.content.decode()
     assert WORKFORCE_DOMAIN not in page
     assert "not part of this organisation" in page
 
 
-def test_an_empty_domain_list_switches_the_provider_off(
-    settings: Any, login_request: HttpRequest
+def test_an_empty_domain_list_admits_no_stranger(
+    settings: Any, platform_provider: None, login_request: HttpRequest
 ) -> None:
-    """Empty means *off*, not "any domain".
+    """Empty means *off*, not "any domain" — and off fails CLOSED.
 
     This is the setting a deployment gets wrong by omission, and the failure it
-    guards against looks exactly like success: everyone with a Google account
-    quietly becoming a user.
+    guards against looks exactly like success: everyone the identity platform
+    will vouch for quietly becoming a user.
     """
     settings.GOOGLE_WORKSPACE_DOMAINS = []
 
@@ -119,37 +124,38 @@ def test_an_empty_domain_list_switches_the_provider_off(
         adapter(login_request).pre_social_login(
             login_request,
             assertion(
-                provider=GOOGLE_PROVIDER,
-                subject="google-1",
+                provider=get_platform_provider_id(),
+                subject="zitadel-1",
                 email=f"someone@{WORKFORCE_DOMAIN}",
             ),
         )
     assert User.objects.count() == 0
 
 
-def test_an_unverified_google_address_is_refused(
-    workforce: None, login_request: HttpRequest
+def test_an_unverified_workforce_address_is_refused(
+    workforce: None, platform_provider: None, login_request: HttpRequest
 ) -> None:
     """Even inside the domain: the linking below turns a claim into an account."""
     with pytest.raises(ImmediateHttpResponse):
         adapter(login_request).pre_social_login(
             login_request,
             assertion(
-                provider=GOOGLE_PROVIDER,
-                subject="google-1",
+                provider=get_platform_provider_id(),
+                subject="zitadel-1",
                 email=f"someone@{WORKFORCE_DOMAIN}",
                 verified=False,
             ),
         )
+    assert User.objects.count() == 0
 
 
 def test_a_verified_workforce_address_is_allowed_through(
-    workforce: None, login_request: HttpRequest
+    workforce: None, platform_provider: None, login_request: HttpRequest
 ) -> None:
     """No exception, and nothing created: allauth's signup step does that next."""
     login = assertion(
-        provider=GOOGLE_PROVIDER,
-        subject="google-1",
+        provider=get_platform_provider_id(),
+        subject="zitadel-1",
         email=f"someone@{WORKFORCE_DOMAIN}",
     )
     adapter(login_request).pre_social_login(login_request, login)
@@ -157,12 +163,14 @@ def test_a_verified_workforce_address_is_allowed_through(
 
 
 def test_an_existing_account_is_linked_not_duplicated(
-    workforce: None, login_request: HttpRequest
+    workforce: None, platform_provider: None, login_request: HttpRequest
 ) -> None:
-    """Somebody who had a password before the workforce door existed keeps their account."""
-    existing = create_user(email=f"joe@{WORKFORCE_DOMAIN}", password="a-long-enough-password")
+    """Somebody who existed before their first Zitadel sign-in keeps their account."""
+    existing = create_user(email=f"joe@{WORKFORCE_DOMAIN}", password="a-long-enough-password")  # noqa: S106 — a throwaway password a test user is made with
 
-    login = assertion(provider=GOOGLE_PROVIDER, subject="google-9", email=f"joe@{WORKFORCE_DOMAIN}")
+    login = assertion(
+        provider=get_platform_provider_id(), subject="zitadel-9", email=f"joe@{WORKFORCE_DOMAIN}"
+    )
     adapter(login_request).pre_social_login(login_request, login)
 
     assert login.user is not None
@@ -170,7 +178,9 @@ def test_an_existing_account_is_linked_not_duplicated(
     assert User.objects.count() == 1
 
 
-def test_the_signup_lock_agrees_with_the_gate(workforce: None, login_request: HttpRequest) -> None:
+def test_the_signup_lock_agrees_with_the_gate(
+    workforce: None, platform_provider: None, login_request: HttpRequest
+) -> None:
     """`is_open_for_signup` is the second lock on the same door.
 
     It is not redundant: "`pre_social_login` already refused" is a claim about
@@ -178,8 +188,9 @@ def test_the_signup_lock_agrees_with_the_gate(workforce: None, login_request: Ht
     branch.
     """
     door = adapter(login_request)
-    inside = assertion(provider=GOOGLE_PROVIDER, subject="g", email=f"someone@{WORKFORCE_DOMAIN}")
-    outside = assertion(provider=GOOGLE_PROVIDER, subject="g", email="someone@gmail.example")
+    platform = get_platform_provider_id()
+    inside = assertion(provider=platform, subject="z", email=f"someone@{WORKFORCE_DOMAIN}")
+    outside = assertion(provider=platform, subject="z", email="someone@gmail.example")
 
     assert door.is_open_for_signup(login_request, inside) is True
     assert door.is_open_for_signup(login_request, outside) is False
@@ -293,20 +304,24 @@ def test_a_disabled_connection_cannot_complete_a_login(
 
     An in-flight browser holding a half-finished handshake is exactly who a
     customer disabling a connection is trying to stop, so `get_connection_for_email`
-    resolves nothing and there is no connection to provision through. The person
-    is not locked out of the platform — they land as an ordinary account with no
-    membership, which is what somebody with no live connection *is* — and they
-    reach none of the tenant's rows, because tenancy fails closed.
+    resolves nothing and there is no connection to provision through. A person
+    who is NEW here is then somebody nobody vouches for, and the workforce wall
+    refuses them before any row is written; they reach none of the tenant's
+    rows either way. (Somebody who already had an account here still signs in
+    as that account, with no membership in this tenant — the wall is on the
+    new-person road only.)
     """
     from apps.accounts.services import disable_sso_connection
 
     disable_sso_connection(
         tenant=sso_connection.tenant, actor=owner_actor, connection=sso_connection
     )
-    adapter(login_request).pre_social_login(
-        login_request,
-        assertion(provider=get_platform_provider_id(), subject="okta|00u1", email="x@acme.com"),
-    )
+    with pytest.raises(ImmediateHttpResponse):
+        adapter(login_request).pre_social_login(
+            login_request,
+            assertion(provider=get_platform_provider_id(), subject="okta|00u1", email="x@acme.com"),
+        )
+    assert not User.objects.filter(email="x@acme.com").exists()
     assert SsoIdentity.objects.for_tenant(sso_connection.tenant).count() == 0
     assert not Membership.objects.filter(tenant=sso_connection.tenant, user__email="x@acme.com")
     # And the claim itself is still there: disabling frees nothing for anybody
@@ -316,7 +331,7 @@ def test_a_disabled_connection_cannot_complete_a_login(
 
 # --- The per-connection provider resolver, retired (ADR ident-6) -------------
 #
-# Until W2-R5 the adapter overrode `list_apps` to build an unsaved `SocialApp`
+# Before ADR ident-6 the adapter overrode `list_apps` to build an unsaved `SocialApp`
 # per `SsoConnection`, so that adding a customer's SSO was a row rather than a
 # deploy. The promise is kept and the mechanism is gone: the row is materialised
 # as an external provider *inside Zitadel* now, which means one place holds a
@@ -366,16 +381,14 @@ def test_a_connection_is_not_an_allauth_app_of_ours(
     code depending on whose `.env` ran the suite. Both states are pinned
     instead, and in **neither** may a connection appear.
 
-    Google is switched off in both for the same reason: what is under test is
-    the openid_connect half, not whether this machine holds workforce
-    credentials.
+    There is no second provider to switch off: the workforce's Google sits
+    inside Zitadel, so the openid_connect half is the whole of it.
     """
     settings.ZITADEL_CLIENT_ID = "test-client" if rp_door_armed else ""
     settings.ZITADEL_CLIENT_SECRET = (
         "test-secret" if rp_door_armed else ""  # pragma: allowlist secret
     )
     settings.SOCIALACCOUNT_PROVIDERS = {
-        "google": {"APPS": [], "SCOPE": ["profile", "email"]},
         # The shape `base.py` builds, under the condition `base.py` builds it
         # under. The issuer is `config/settings/test.py`'s must-not-dial
         # address, and nothing here opens a socket.
@@ -406,15 +419,14 @@ def test_a_connection_is_not_an_allauth_app_of_ours(
     assert [
         app.provider_id for app in door.list_apps(login_request, provider="openid_connect")
     ] == platform
-    # And each connection resolves to nothing by its own id, in both states —
-    # which is the property the retirement actually promises.
+    # A stale callback naming a retired per-connection provider id resolves to nothing.
     for connection in (sso_connection, other_sso_connection):
-        assert door.list_apps(login_request, provider=connection.provider_id) == []
+        assert door.list_apps(login_request, provider=f"sso-{connection.pk.hex}") == []
 
 
 # --- `enforced`, now that the password door it guarded is gone ---------------
 #
-# W2-R3 retired the local password form entirely (ADR ident-4): Zitadel hosts
+# ADR ident-4 retired the local password form entirely: Zitadel hosts
 # every interactive authentication, so there is no longer a password endpoint
 # for `SsoConnection.enforced` to stand in front of. The three tests that used
 # to live here drove that form; `test_password_door_retired.py` is what replaced
@@ -424,7 +436,7 @@ def test_a_connection_is_not_an_allauth_app_of_ours(
 # What is left to test here is the part that survived the door: the refusal
 # `AccountAdapter.pre_authenticate` raises is still correct, still says nothing
 # about a customer, and is still reachable by calling it. It is kept as the belt
-# for a product that reopens local accounts, and W2-R5 materialises the same
+# for a product that reopens local accounts, and ADR ident-6 materialises the same
 # flag as a Zitadel login policy — which is where `enforced` becomes
 # load-bearing again.
 
@@ -443,19 +455,19 @@ def test_enforced_still_refuses_a_password_when_the_adapter_is_asked(
     update_sso_connection(
         tenant=sso_connection.tenant,
         actor=owner_actor,
-        connection=sso_connection,
+        connection=provider_landed(sso_connection),
         enforced=True,
     )
     create_user(
         email="staff@acme.com",
-        password="a-long-enough-password",  # pragma: allowlist secret
+        password="a-long-enough-password",  # noqa: S106 — a throwaway password a test user is made with  # pragma: allowlist secret
     )
 
     with pytest.raises(ValidationError) as refusal:
         get_account_adapter().pre_authenticate(
             login_request,
             email="staff@acme.com",
-            password="a-long-enough-password",  # pragma: allowlist secret
+            password="a-long-enough-password",  # noqa: S106 — a throwaway password a test user is made with  # pragma: allowlist secret
         )
 
     assert "identity provider" in str(refusal.value)
@@ -470,19 +482,19 @@ def test_that_refusal_names_no_customer(
     update_sso_connection(
         tenant=sso_connection.tenant,
         actor=owner_actor,
-        connection=sso_connection,
+        connection=provider_landed(sso_connection),
         enforced=True,
     )
     create_user(
         email="staff@acme.com",
-        password="a-long-enough-password",  # pragma: allowlist secret
+        password="a-long-enough-password",  # noqa: S106 — a throwaway password a test user is made with  # pragma: allowlist secret
     )
 
     with pytest.raises(ValidationError) as refusal:
         get_account_adapter().pre_authenticate(
             login_request,
             email="staff@acme.com",
-            password="a-long-enough-password",  # pragma: allowlist secret
+            password="a-long-enough-password",  # noqa: S106 — a throwaway password a test user is made with  # pragma: allowlist secret
         )
 
     spoken = str(refusal.value)
@@ -498,11 +510,11 @@ def test_an_address_no_connection_claims_is_not_refused(
 
     create_user(
         email="someone@elsewhere.example",
-        password="a-long-enough-password",  # pragma: allowlist secret
+        password="a-long-enough-password",  # noqa: S106 — a throwaway password a test user is made with  # pragma: allowlist secret
     )
 
     get_account_adapter().pre_authenticate(
         login_request,
         email="someone@elsewhere.example",
-        password="a-long-enough-password",  # pragma: allowlist secret
+        password="a-long-enough-password",  # noqa: S106 — a throwaway password a test user is made with  # pragma: allowlist secret
     )

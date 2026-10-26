@@ -18,7 +18,7 @@ middleware wrapping a consumer is an ASGI application.
 Running after the session stack rather than before it is what makes the two
 credentials compose instead of fight. `TenantMiddlewareASGI` has already
 resolved a session user and their tenant by the time this runs; a request with
-no `Authorization` header and no `?token=` passes straight through untouched,
+no `Authorization` header and no `?ticket=` passes straight through untouched,
 and a request with one *overrides* what the session stack concluded — which for
 a token request is `AnonymousUser` and no tenant.
 
@@ -54,29 +54,34 @@ joins no branch group. The fix aligns the two credentials; it widens neither.
 from __future__ import annotations
 
 import functools
+import json
 from typing import Any
 from urllib.parse import parse_qs
 
+from apps.accounts.models import ApiToken, User
 from apps.accounts.services import authenticate_token
 from apps.core import context
 from apps.core.actor import TOKEN_ATTR, TOKEN_AUTH_ATTR
-from apps.core.asgi_middleware import ORG_SCOPE_KEY
+from apps.core.asgi_middleware import ORG_SCOPE_KEY, SURFACE_SCOPE_KEY, requested_slug
 from apps.core.asgi_middleware import SCOPE_KEY as TENANT_SCOPE_KEY
 from apps.core.asyncdb import run_db
+from apps.core.exceptions import CODE_STATUSES, wire_refusal
 from apps.core.middleware import (
     AUTHORIZATION_HEADER,
     ORG_HEADER,
     TENANT_HEADER,
     addressing_refusal,
     resolve_org,
-    was_sent,
 )
+from apps.core.models import Tenant
 from apps.realtime.schemas import CLOSE_NO_TENANT, CLOSE_UNAUTHENTICATED
+from apps.realtime.services import SocketCredentialInUrl, redeem_socket_ticket
+from apps.realtime.types import TICKET_QUERY_PARAM, TOKEN_QUERY_PARAM
 
 __all__ = ["TokenAuthMiddlewareASGI", "token_auth"]
 
 BEARER = "bearer"
-TOKEN_QUERY_PARAM = "token"
+HTTP_RESPONSE_EXTENSION = "websocket.http.response"
 TENANT_QUERY_PARAM = "tenant"
 ORG_QUERY_PARAM = "org"
 
@@ -85,7 +90,7 @@ def _query(scope: dict[str, Any]) -> dict[str, list[str]]:
     return parse_qs(scope.get("query_string", b"").decode("latin-1"))
 
 
-def _header(scope: dict[str, Any], name: str) -> str | None:
+def _scope_header(scope: dict[str, Any], name: str) -> str | None:
     wanted = name.lower().encode()
     for key, value in scope.get("headers", []):
         if key.lower() == wanted:
@@ -94,53 +99,47 @@ def _header(scope: dict[str, Any], name: str) -> str | None:
 
 
 def _bearer_token(scope: dict[str, Any]) -> str | None:
-    """The token this handshake presented, header first, query second.
-
-    The query parameter exists for the same reason `?tenant=` does: the browser
-    WebSocket API cannot set request headers, so a browser client has no other
-    way to present one. It is second, not first, because a URL ends up in
-    access logs and browser history and a header does not — a client that can
-    send the header should.
-    """
-    header = _header(scope, AUTHORIZATION_HEADER) or ""
+    """The bearer this handshake sent in its `Authorization` header; a URL never carries one."""
+    header = _scope_header(scope, AUTHORIZATION_HEADER) or ""
     scheme, _, value = header.partition(" ")
     if scheme.lower() == BEARER and value.strip():
         return value.strip()
-    from_query = _query(scope).get(TOKEN_QUERY_PARAM)
-    if from_query and from_query[0].strip():
-        return from_query[0].strip()
     return None
 
 
-def _requested_slug(scope: dict[str, Any], header_name: str, parameter: str) -> str | None:
-    """Which tenant — or which hat — this handshake asked for, if it named one.
-
-    Deliberately a second reading of the same two places
-    `apps.core.asgi_middleware` reads, rather than a call into it: that one's
-    reader is private to `core`, and `core` sits below this app. Six lines
-    duplicated with the twin named beats an import that reaches into another
-    app's internals.
-
-    Header first and query parameter second, for both values and for the reason
-    `_bearer_token` gives: a URL reaches access logs and browser history, so the
-    query form exists only because a browser's `WebSocket` constructor cannot
-    set a request header, and a client that can send the header should.
-
-    **Sent means sent, empty included** (`core.middleware.was_sent`). This
-    used to fall through to the query parameter on an EMPTY header, so a
-    handshake that set `X-Org` to a template value that did not interpolate was
-    answered as though it had named nothing — the quiet default, under a header
-    the caller had explicitly set. A header that is present has been sent; only
-    its absence reaches the query form.
-    """
-    header = _header(scope, header_name)
-    if was_sent(header):
-        return header
-    values = _query(scope).get(parameter)
-    return values[0] if values else None
+def _ticket(scope: dict[str, Any]) -> str | None:
+    """The one-use ticket this handshake presented as `?ticket=`, if any."""
+    sent = _query(scope).get(TICKET_QUERY_PARAM)
+    return sent[0].strip() if sent and sent[0].strip() else None
 
 
-async def _refuse(receive: Any, send: Any, code: int) -> None:
+async def _refuse_credential_in_url(scope: dict[str, Any], receive: Any, send: Any) -> None:
+    """Refuse a `?token=` handshake, never reading its value: the registered body, else a close."""
+    refusal = SocketCredentialInUrl()
+    message = await receive()
+    if message.get("type") != "websocket.connect":
+        return
+    if HTTP_RESPONSE_EXTENSION in (scope.get("extensions") or {}):
+        await send(
+            {
+                "type": "websocket.http.response.start",
+                "status": CODE_STATUSES[refusal.code],
+                "headers": [(b"content-type", b"application/json")],
+            }
+        )
+        await send(
+            {
+                "type": "websocket.http.response.body",
+                "body": json.dumps(wire_refusal(refusal)).encode(),
+            }
+        )
+        return
+    await send(
+        {"type": "websocket.close", "code": CLOSE_UNAUTHENTICATED, "reason": refusal.default_detail}
+    )
+
+
+async def _close_handshake(receive: Any, send: Any, code: int) -> None:
     """Close the handshake before the consumer is ever built.
 
     The `websocket.connect` message is consumed first because that is the
@@ -154,7 +153,7 @@ async def _refuse(receive: Any, send: Any, code: int) -> None:
 
 
 class TokenAuthMiddlewareASGI:
-    """Resolves `Authorization: Bearer <token>` (or `?token=`) onto the scope.
+    """Resolves `Authorization: Bearer <token>` or a one-use `?ticket=` onto the scope.
 
     What it leaves behind is exactly what the session stack leaves behind —
     `scope["user"]`, `scope["tenant"]` **and `scope["org"]`** — plus the two
@@ -181,23 +180,31 @@ class TokenAuthMiddlewareASGI:
             await self.app(scope, receive, send)
             return
 
-        plaintext = _bearer_token(scope)
-        if plaintext is None:
-            # No token presented: whatever the session stack concluded stands.
-            await self.app(scope, receive, send)
+        if TOKEN_QUERY_PARAM in _query(scope):
+            await _refuse_credential_in_url(scope, receive, send)
             return
 
-        requested_tenant = _requested_slug(scope, TENANT_HEADER, TENANT_QUERY_PARAM)
-        resolved = await run_db(
-            authenticate_token,
-            plaintext=plaintext,
-            requested_slug=requested_tenant,
-        )
+        ticket = _ticket(scope)
+        plaintext = _bearer_token(scope)
+        requested_tenant = requested_slug(scope, TENANT_HEADER, TENANT_QUERY_PARAM)
+        resolved: tuple[User, Tenant | None, ApiToken | None] | None
+        if ticket is not None:
+            resolved = await run_db(redeem_socket_ticket, ticket=ticket)
+        elif plaintext is not None:
+            resolved = await run_db(
+                authenticate_token,
+                plaintext=plaintext,
+                requested_slug=requested_tenant,
+            )
+        else:
+            # No credential presented: whatever the session stack concluded stands.
+            await self.app(scope, receive, send)
+            return
         if resolved is None:
             # A token was offered and it is not good. Refused here rather than
             # left to the consumer to notice, so that "bad credential" and
             # "no credential" are not the same code path.
-            await _refuse(receive, send, CLOSE_UNAUTHENTICATED)
+            await _close_handshake(receive, send, CLOSE_UNAUTHENTICATED)
             return
 
         user, tenant, token_row = resolved
@@ -207,7 +214,7 @@ class TokenAuthMiddlewareASGI:
         # no tenant, an unknown slug, or a slug this principal holds no role
         # over all answer `None` — so this cannot widen what the token reaches;
         # it can only stop the socket wearing somebody else's hat, or none.
-        requested_org = _requested_slug(scope, ORG_HEADER, ORG_QUERY_PARAM)
+        requested_org = requested_slug(scope, ORG_HEADER, ORG_QUERY_PARAM)
         org = await run_db(
             resolve_org,
             user=user,
@@ -228,23 +235,30 @@ class TokenAuthMiddlewareASGI:
         # nowhere it may act" — is the law said in the only vocabulary the wire
         # has here. It is the same code `EventConsumer.connect` closes with for
         # the session half of this door, so the two credentials answer alike.
+        #
+        # The surface is the one `TenantMiddlewareASGI` resolved from the
+        # handshake's host (`scope["surface"]`) — never read again here — and it
+        # is asked for the same reason the session half asks it: on a surface
+        # that chooses the workspace by membership, a sent `X-Tenant` is never
+        # honourable, whichever credential sent it.
         if (
             addressing_refusal(
                 requested_tenant=requested_tenant,
                 tenant=tenant,
                 requested_org=requested_org,
                 org=org,
+                surface=scope.get(SURFACE_SCOPE_KEY),
             )
             is not None
         ):
-            await _refuse(receive, send, CLOSE_NO_TENANT)
+            await _close_handshake(receive, send, CLOSE_NO_TENANT)
             return
 
         scope = dict(scope)
         scope["user"] = user
         scope[TENANT_SCOPE_KEY] = tenant
         scope[ORG_SCOPE_KEY] = org
-        scope[TOKEN_AUTH_ATTR] = True
+        scope[TOKEN_AUTH_ATTR] = token_row is not None
         scope[TOKEN_ATTR] = token_row
 
         # `TenantMiddlewareASGI` bound the context a moment ago and saw an
@@ -264,7 +278,7 @@ class TokenAuthMiddlewareASGI:
             "tenant_id": str(tenant.pk) if tenant is not None else None,
             "org_id": str(org.pk) if org is not None else None,
             "user_id": str(user.pk),
-            "actor_kind": "agent",
+            "actor_kind": "agent" if token_row is not None else "human",
         }
         context.bind(**bound)
         context.unbind(*[key for key, value in bound.items() if value is None])

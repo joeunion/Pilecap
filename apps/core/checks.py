@@ -23,9 +23,10 @@ import functools
 import inspect
 import re
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from functools import cache
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import yaml
 from django.apps import AppConfig, apps
@@ -33,7 +34,16 @@ from django.conf import settings
 from django.core.checks import CheckMessage, Error, Info, Warning, register
 from django.db import models
 
-from apps.core.verbs import HOOK_MODULES
+from apps.core.reach import extended_scope
+from apps.core.reach import road as reach_road
+from apps.core.verbs import (
+    HOOK_MODULES,
+    TOOL_FORMS,
+    UnderivableName,
+    derive_tool_name,
+    door_url_name,
+    split_url_name,
+)
 
 DJB = "djb"
 
@@ -64,9 +74,7 @@ CANONICAL_MODULES = {
     # edits collision the discovery pattern exists to avoid, and leave the
     # documented adoption path boot-refused (djb.E011) until somebody edits
     # quality/. The precedent and the argument are rule 11's `extra_modules`
-    # comment about `lifecycle`, which names this promotion as the wanted fix;
-    # `lifecycle` itself stays listed per app until a rung owning both files
-    # moves it, so this promotion is the only shape change here.
+    # comment about `lifecycle`, which names this promotion as the wanted fix.
     "search",
     # The same promotion, the same argument, one rung later (INTEG-1, P7).
     # `apps/<x>/integrations.py::register(registry)` is the filename
@@ -90,6 +98,15 @@ CANONICAL_MODULES = {
     # `apps/<x>/roles.py` is not `djb.E011` on sight, with the adoption path
     # documented and boot-refused until somebody edits `quality/`.
     "roles",
+    # `apps/<x>/surfaces.py` exposing `SURFACES`, by the same promotion and the
+    # same argument as `roles` above: `core.surfaces.declared()` requires the
+    # filename of every app that declares a surface, and a product's first
+    # customer face must not be `djb.E011` on sight.
+    "surfaces",
+    # The SDK's discovered page lists both (`quality/sdk/reference.py::DISCOVERED`,
+    # pinned a subset of this set by `quality/tests/test_sdk_reference.py`).
+    "meters",
+    "lifecycle",
     # THE NOUN-VERB FAMILY'S HOOKS, by the same promotion and the same argument,
     # and DERIVED rather than typed: `core.verbs.HOOK_MODULES` is the closed tuple
     # the family's walk reads (`archive_blockers.py`, `merge_repointers.py`,
@@ -106,7 +123,13 @@ MONEY_NAMES = re.compile(r"(amount|price|cost|rate|quantity|qty|total|balance|fe
 
 @cache
 def _rules() -> dict[str, dict[str, Any]]:
-    """quality/rules.yaml by rule id. Missing file → empty, and E000 says so."""
+    """quality/rules.yaml by rule id; an absent file reads as no rules at all.
+
+    No check id of its own says the file is missing: no house rule owns that
+    question, and a check no rule owns is a check nothing censuses. An empty
+    answer makes every allow-list here read as "nothing is exempt", so a
+    missing file reds the checks that carry exemptions rather than passing them.
+    """
     path = Path(settings.BASE_DIR) / "quality" / "rules.yaml"
     if not path.exists():
         return {}
@@ -115,9 +138,11 @@ def _rules() -> dict[str, dict[str, Any]]:
 
 
 def _scope(rule_id: str) -> dict[str, Any]:
+    """A rule's scope, its product-reachable lists joined by the drawer's (`apps.core.reach`)."""
     rule = _rules().get(rule_id) or {}
-    scope = rule.get("scope") or {}
-    return scope if isinstance(scope, dict) else {}
+    if not isinstance(rule.get("scope") or {}, dict):
+        return {}
+    return extended_scope(Path(settings.BASE_DIR), rule)
 
 
 def unauthenticated_url_names() -> set[str]:
@@ -184,6 +209,20 @@ def check_model_bases(app_configs: Any = None, **kwargs: Any) -> list[CheckMessa
 # --- rule 15: field policies ---------------------------------------------------
 
 
+def field_name_policy(field_class: type[models.Field[Any, Any]], name: str) -> str | None:
+    """Rule 15's sentence a field of `field_class` named `name` breaks, or None when it keeps it."""
+    if field_class is models.DateTimeField and not name.endswith("_at"):
+        return "a DateTimeField's name ends `_at` (house rule 15)."
+    if field_class is models.DateField and not name.endswith("_on"):
+        return "a DateField's name ends `_on` (house rule 15)."
+    if issubclass(field_class, models.BooleanField) and name in ("is_deleted", "deleted"):
+        return (
+            "no `is_deleted` booleans — use `archived_at` if the product needs soft deletion "
+            "(house rule 15)."
+        )
+    return None
+
+
 @register(DJB)
 def check_field_policies(app_configs: Any = None, **kwargs: Any) -> list[CheckMessage]:
     found: list[CheckMessage] = []
@@ -206,34 +245,8 @@ def check_field_policies(app_configs: Any = None, **kwargs: Any) -> list[CheckMe
                         id="djb.E015",
                     )
                 )
-            if type(field_obj) is models.DateTimeField and not field_obj.name.endswith("_at"):
-                found.append(
-                    Error(
-                        f"{where}: a DateTimeField's name ends `_at` (house rule 15).",
-                        obj=label,
-                        id="djb.E015",
-                    )
-                )
-            if type(field_obj) is models.DateField and not field_obj.name.endswith("_on"):
-                found.append(
-                    Error(
-                        f"{where}: a DateField's name ends `_on` (house rule 15).",
-                        obj=label,
-                        id="djb.E015",
-                    )
-                )
-            if isinstance(field_obj, models.BooleanField) and field_obj.name in (
-                "is_deleted",
-                "deleted",
-            ):
-                found.append(
-                    Error(
-                        f"{where}: no `is_deleted` booleans — use `archived_at` if the product "
-                        "needs soft deletion (house rule 15).",
-                        obj=label,
-                        id="djb.E015",
-                    )
-                )
+            if broken := field_name_policy(type(field_obj), field_obj.name):
+                found.append(Error(f"{where}: {broken}", obj=label, id="djb.E015"))
             remote = getattr(field_obj, "remote_field", None)
             if remote is not None and getattr(remote, "on_delete", None) is models.DO_NOTHING:
                 found.append(
@@ -251,20 +264,15 @@ def check_field_policies(app_configs: Any = None, **kwargs: Any) -> list[CheckMe
 
 
 def _bound_operations() -> list[tuple[str, Any]]:
-    """(mount label, operation) straight off the live NinjaAPI registry.
+    """(mounted path, operation) for every operation the live API mounts.
 
-    The lazy import of `config` mirrors `introspect`: reporting on what the
-    mounts found is the job, and pyproject's import-linter contracts exempt
-    this module by name for exactly that reason.
+    Read through `apps.core.api.mount.bound_operations`, the one mount reader,
+    imported inside the call: this module is imported from `AppConfig.ready()`,
+    and the mount reader imports `config.api` where it does.
     """
-    from config.api import api
+    from apps.core.api.mount import bound_operations
 
-    out: list[tuple[str, Any]] = []
-    for bound in api._get_bound_routers():
-        for _path, path_view in bound.path_operations.items():
-            for operation in path_view.operations:
-                out.append((str(bound.prefix), operation))
-    return out
+    return [(path, operation) for path, _name, operation in bound_operations()]
 
 
 def answers_cursor_envelope(operation: Any) -> bool:
@@ -330,7 +338,9 @@ def check_route_auth(app_configs: Any = None, **kwargs: Any) -> list[CheckMessag
                 Error(
                     f"route {url_name or where} ({where}) declares no auth and is not on the "
                     "rules.yaml allow-list — every route carries an explicit auth=; the only "
-                    "legitimate auth=None is a signature-verifying inbound webhook (house rule 3).",
+                    "legitimate auth=None is a signature-verifying inbound webhook, or a route "
+                    "recorded in `allow_unauthenticated` with the reason it is open; "
+                    f"{reach_road('3')} (house rule 3).",
                     obj=url_name or where,
                     id="djb.E003",
                 )
@@ -495,8 +505,7 @@ def check_plain_view_auth(app_configs: Any = None, **kwargs: Any) -> list[CheckM
                 "and is recorded in neither of rule 3's plain-view keys — put it in "
                 "`allow_unauthenticated_views` with the reason it may be read without a "
                 "credential, or in `authenticated_views` with what it demands. Which of the two "
-                "it is is a decision somebody writes down, in quality/rules.yaml "
-                "(house rule 3).",
+                f"it is is a decision somebody writes down; {reach_road('3')} (house rule 3).",
                 obj=name or where,
                 id="djb.E031",
             )
@@ -516,14 +525,13 @@ def check_plain_view_auth(app_configs: Any = None, **kwargs: Any) -> list[CheckM
 
 # --- rule 17: door parity ------------------------------------------------------
 
-_VERB_TOOLS = {
-    "list": ("list_{noun}s", "list_{noun}"),
-    "detail": ("get_{noun}",),
-    "create": ("create_{noun}",),
-    "update": ("update_{noun}", "set_{noun}"),
-    "delete": ("delete_{noun}", "remove_{noun}"),
-    # The family's bulk verb: `<noun>-bulk` → `bulk_<noun>s` (the selection is plural).
-    "bulk": ("bulk_{noun}s",),
+#: A VIEW of `apps.core.verbs.TOOL_FORMS` — the one table — kept only because
+#: the self-test's negative fixture `quality/negative/17/paired_tool.py` imports
+#: this name to name its probe tools. Nothing in this module reads it: rule 17
+#: and rule 41 ask `derive_tool_name`. It goes when that fixture asks the
+#: derivation instead.
+_VERB_TOOLS: dict[str, tuple[str, ...]] = {
+    verb: (form.replace("{plural}", "{noun}s"),) for verb, form in TOOL_FORMS.items()
 }
 
 
@@ -549,7 +557,11 @@ def check_door_parity(app_configs: Any = None, **kwargs: Any) -> list[CheckMessa
     exempt_routes = {
         str(x.get("url_name")) for x in scope.get("exemptions") or [] if x.get("url_name")
     }
+    from apps.core.mcp import twin_of
+    from config.mcp import server
+
     tools = _tools_by_app()
+    tools_by_name = {tool.name: tool for tool in server._tool_manager.list_tools()}
     for _prefix, operation in _bound_operations():
         view = operation.view_func
         module_parts = str(view.__module__).split(".")
@@ -563,23 +575,31 @@ def check_door_parity(app_configs: Any = None, **kwargs: Any) -> list[CheckMessa
             or f"api:{url_name}" in exempt_routes
         ):
             continue
-        noun, _, verb = url_name.rpartition("-")
-        candidates = [t.format(noun=noun) for t in _VERB_TOOLS.get(verb, ())] or [
-            f"{verb}_{noun}",
-            f"{noun}_{verb}",
-        ]
+        try:
+            expected = derive_tool_name(url_name)
+        except UnderivableName as refused:
+            found.append(Error(f"{refused} (house rule 17).", obj=url_name, id="djb.E017"))
+            continue
         app_tools = tools.get(app_label, set())
-        if not any(c in app_tools for c in candidates):
-            found.append(
-                Error(
-                    f"REST capability {url_name!r} (apps/{app_label}/api.py) has no MCP tool "
-                    f"(looked for {', '.join(candidates)} in apps/{app_label}/mcp.py) and no "
-                    "rules.yaml exemption — a capability on REST is on MCP unless exempted "
-                    "with the reason (house rule 17).",
-                    obj=url_name,
-                    id="djb.E017",
-                )
+        if expected in app_tools:
+            continue
+        # A twin by the contract it publishes (`twin_of`, rule 41's identity) is
+        # still the capability on the machine door — its NAME differing from the
+        # derivation is `apps/core/tests/test_tool_names.py`'s census, which names
+        # every such pair and pins the list so it can only shrink.
+        twin = twin_of(operation, tools_by_name.values())
+        if twin is not None and twin.name in app_tools:
+            continue
+        found.append(
+            Error(
+                f"REST capability {url_name!r} (apps/{app_label}/api.py) has no MCP tool "
+                f"(looked for {expected!r}, the name its url_name derives, in "
+                f"apps/{app_label}/mcp.py) and no rules.yaml exemption — a capability on REST "
+                "is on MCP unless exempted with the reason (house rule 17).",
+                obj=url_name,
+                id="djb.E017",
             )
+        )
     return found
 
 
@@ -616,29 +636,22 @@ def _response_schema(operation: Any) -> Any:
 
 
 def _offers_query(operation: Any, name: str) -> bool:
-    """Whether a route accepts `?<name>=` — a bare parameter or a filter schema's field."""
-    from pydantic import BaseModel
+    """Whether a route accepts `?<name>=` — the `takes_query` road, reached lazily.
 
-    for param_model in getattr(operation, "models", None) or []:
-        for field_name, field in getattr(param_model, "model_fields", {}).items():
-            if field_name == name:
-                return True
-            annotation = getattr(field, "annotation", None)
-            if (
-                isinstance(annotation, type)
-                and issubclass(annotation, BaseModel)
-                and name in annotation.model_fields
-            ):
-                return True
-    return False
+    The body lives once, in `apps.core.api.query.offers_query`; imported inside
+    the call for `answers_cursor_envelope`'s reason (this module is imported
+    from `AppConfig.ready()`, and `apps.core.api` pulls in the routes).
+    """
+    from apps.core.api.query import offers_query
+
+    return offers_query(operation, name)
 
 
 def _list_names(noun: str) -> set[str]:
-    """The `url_name`s a noun's list may carry: `<noun>-list` or its plural."""
-    plurals = {f"{noun}s", f"{noun}es"}
-    if noun.endswith("y"):
-        plurals.add(f"{noun[:-1]}ies")
-    return {f"{form}-list" for form in {noun, *plurals}}
+    """The `url_name`s a noun's list may carry — the `pluralize` road's forms, as a set."""
+    from apps.core.verbs import _list_forms
+
+    return set(_list_forms(noun))
 
 
 def _body_schemas(operation: Any) -> list[Any]:
@@ -666,7 +679,8 @@ def _versioned_findings(model: Any, noun: str, operations: dict[str, Any]) -> li
     found: list[CheckMessage] = []
     label = model._meta.label
     for verb in ("update", "move", "merge"):
-        operation = operations.get(f"{noun}-{verb}")
+        door = door_url_name(model, verb, noun)
+        operation = operations.get(door)
         if operation is None:
             continue
         bodies = _body_schemas(operation)
@@ -674,10 +688,10 @@ def _versioned_findings(model: Any, noun: str, operations: dict[str, Any]) -> li
             names = ", ".join(getattr(s, "__name__", str(s)) for s in bodies) or "no body"
             found.append(
                 Error(
-                    f"`{noun}-{verb}` takes {names}, which does not REQUIRE `version`: {label} "
+                    f"`{door}` takes {names}, which does not REQUIRE `version`: {label} "
                     "is `Versioned`, so every write that edits it names the version it was "
                     "made against — inherit `core.schemas.VersionedIn` (house rule 74).",
-                    obj=f"{noun}-{verb}",
+                    obj=door,
                     id="djb.E074",
                 )
             )
@@ -685,11 +699,11 @@ def _versioned_findings(model: Any, noun: str, operations: dict[str, Any]) -> li
         if not (isinstance(schema, type) and "version" in getattr(schema, "model_fields", {})):
             found.append(
                 Error(
-                    f"`{noun}-{verb}` answers {getattr(schema, '__name__', schema)!r}, which "
+                    f"`{door}` answers {getattr(schema, '__name__', schema)!r}, which "
                     f"carries no `version`: {label} is `Versioned`, so the answer hands back "
                     "the version the next write names — inherit `core.schemas.VersionedOut` "
                     "(house rule 74).",
-                    obj=f"{noun}-{verb}",
+                    obj=door,
                     id="djb.E074",
                 )
             )
@@ -700,13 +714,14 @@ def _bulk_findings(model: Any, noun: str, operations: dict[str, Any]) -> list[Ch
     """Every verb a noun lists in `bulk_verbs` has its own single road."""
     found: list[CheckMessage] = []
     for verb in getattr(model, "bulk_verbs", ()) or ():
-        if f"{noun}-{verb}" not in operations:
+        door = door_url_name(model, verb, noun)
+        if door not in operations:
             found.append(
                 Error(
                     f"{model._meta.label} lists {verb!r} in `bulk_verbs` and has no "
-                    f"`{noun}-{verb}` route: a bulk verb runs the noun's OWN single verb per "
+                    f"`{door}` route: a bulk verb runs the noun's OWN single verb per "
                     "item, so the single road comes first (house rule 74).",
-                    obj=f"{noun}-{verb}",
+                    obj=door,
                     id="djb.E074",
                 )
             )
@@ -758,7 +773,8 @@ def _no_body_findings(model: Any, noun: str, operations: dict[str, Any]) -> list
     """
     found: list[CheckMessage] = []
     for verb in ("archive", "restore"):
-        operation = operations.get(f"{noun}-{verb}")
+        door = door_url_name(model, verb, noun)
+        operation = operations.get(door)
         if operation is None:
             continue
         bodies = _body_schemas(operation)
@@ -766,11 +782,11 @@ def _no_body_findings(model: Any, noun: str, operations: dict[str, Any]) -> list
             names = ", ".join(getattr(schema, "__name__", str(schema)) for schema in bodies)
             found.append(
                 Error(
-                    f"`{noun}-{verb}` takes a body ({names}): {model._meta.label} is "
+                    f"`{door}` takes a body ({names}): {model._meta.label} is "
                     "archivable, and its archive and restore routes take none — the press "
                     "is the whole request, and a body turns a bodiless press into a 422 "
                     "(house rule 74).",
-                    obj=f"{noun}-{verb}",
+                    obj=door,
                     id="djb.E074",
                 )
             )
@@ -832,6 +848,7 @@ def _duplicate_findings(model: Any, noun: str) -> list[CheckMessage]:
     classified = set(copies) | set(resets)
     children = set(owned_children(model))
     fields = duplicate_fields(model)
+    door = door_url_name(model, "duplicate", noun)
     found: list[CheckMessage] = []
     for name in fields:
         if name not in classified:
@@ -840,7 +857,7 @@ def _duplicate_findings(model: Any, noun: str) -> list[CheckMessage]:
                     f"{model._meta.label}.{name} is neither copied nor reset by "
                     f"`{model.__name__}.duplicate`: a duplicate must say which side every "
                     "field is on — add it to `copies` or `resets` (house rule 74).",
-                    obj=f"{noun}-duplicate",
+                    obj=door,
                     id="djb.E074",
                 )
             )
@@ -850,7 +867,7 @@ def _duplicate_findings(model: Any, noun: str) -> list[CheckMessage]:
                 f"`{model.__name__}.duplicate` names {name!r}, which is not a field of "
                 f"{model._meta.label} it could copy or reset, nor an owned child "
                 "(house rule 74).",
-                obj=f"{noun}-duplicate",
+                obj=door,
                 id="djb.E074",
             )
         )
@@ -871,7 +888,8 @@ def _attach_findings(operations: dict[str, Any]) -> list[CheckMessage]:
         if model._meta.abstract or "tags" not in tuple(model.attachments or ()):  # type: ignore[attr-defined]
             continue
         noun = kind_of(model)
-        operation = operations.get(f"{noun}-detail") if noun else None
+        door = door_url_name(model, "detail", noun) if noun else ""
+        operation = operations.get(door) if noun else None
         if operation is None:
             continue
         schema = _response_schema(operation)
@@ -879,10 +897,10 @@ def _attach_findings(operations: dict[str, Any]) -> list[CheckMessage]:
             continue
         found.append(
             Error(
-                f"`{noun}-detail` answers {getattr(schema, '__name__', schema)!r}, which "
+                f"`{door}` answers {getattr(schema, '__name__', schema)!r}, which "
                 f"carries no `tags`: {model._meta.label} lists `tags` in `attachments`, so "
                 "the record answers the words on it (house rule 74).",
-                obj=f"{noun}-detail",
+                obj=door,
                 id="djb.E074",
             )
         )
@@ -891,19 +909,22 @@ def _attach_findings(operations: dict[str, Any]) -> list[CheckMessage]:
 
 def _importer_findings(operations: dict[str, Any]) -> list[CheckMessage]:
     """Every `IMPORTERS` key names a noun with a create road — an import is creates."""
+    from apps.core.authz import kind_registry
     from apps.core.verbs import hook
 
     found: list[CheckMessage] = []
+    kinds = kind_registry()
     for config, declared in hook("importers"):
         for noun in declared:
-            if f"{noun}-create" in operations:
+            door = door_url_name(kinds.get(noun), "create", noun)
+            if door in operations:
                 continue
             found.append(
                 Error(
                     f"apps/{config.label}/importers.py imports {noun!r} and there is no "
-                    f"`{noun}-create` route: an import applies the noun's own creates, so "
+                    f"`{door}` route: an import applies the noun's own creates, so "
                     "the single create road comes first (house rule 74).",
-                    obj=f"{noun}-create",
+                    obj=door,
                     id="djb.E074",
                 )
             )
@@ -980,7 +1001,7 @@ def check_noun_verb_roads(app_configs: Any = None, **kwargs: Any) -> list[CheckM
                     )
                 )
                 continue
-            demanded = road.url_names(noun)
+            demanded = road.url_names(noun, model)
             for url_name in demanded:
                 if url_name not in operations:
                     found.append(
@@ -1019,19 +1040,20 @@ def check_noun_verb_roads(app_configs: Any = None, **kwargs: Any) -> list[CheckM
             found.extend(_system_policy_findings(model, noun))
             found.extend(_no_body_findings(model, noun, operations))
             for verb in _ANSWERS_THE_NOUN:
-                operation = operations.get(f"{noun}-{verb}")
+                door = door_url_name(model, verb, noun)
+                operation = operations.get(door)
                 if operation is None:
                     continue
                 schema = _response_schema(operation)
                 if not (isinstance(schema, type) and issubclass(schema, ArchivedOut)):
                     found.append(
                         Error(
-                            f"`{noun}-{verb}` answers {getattr(schema, '__name__', schema)!r}, "
+                            f"`{door}` answers {getattr(schema, '__name__', schema)!r}, "
                             f"which does not subclass `ArchivedOut`: {label} is archivable, so "
                             "every answer that is the noun carries `archived_at` and "
                             "`archived_by` — the archived face's band reads them "
                             "(house rule 74).",
-                            obj=f"{noun}-{verb}",
+                            obj=door,
                             id="djb.E074",
                         )
                     )
@@ -1051,6 +1073,133 @@ def check_noun_verb_roads(app_configs: Any = None, **kwargs: Any) -> list[CheckM
     found.extend(_attach_findings(operations))
     found.extend(_bare_archived_at_findings())
     return found
+
+
+# --- rule 85: every surface declaration is a closed question over the tree -----
+#
+# A surface (`apps/core/surfaces.py`) is a host and what it exposes, declared by
+# an app in its `surfaces.py`. Every field names members of a population the
+# tree already declares — a family is a `TAGS` key, a role a `roles.py` key, an
+# act a verb, a screen a route-table row — so a word nobody declared is a
+# door that answers nothing, a role nobody can hold, a button nobody offers,
+# a page the face never draws. Nothing on the wire refuses it: the declaration
+# is accepted as written and the surface is quietly narrower than it reads.
+#
+# THE TWO COLLISIONS ARE THE SEAM'S OWN SENTENCES. Two apps declaring one key
+# and one role on two surfaces are refused by `core.surfaces.union` the first
+# time the map is read; this check feeds it the declarations one at a time, so
+# every collision is reported (not only the first), in the seam's words, and
+# the boot refusal stays behind it. The populations are read through their own
+# roads: `families()`, `role_declarations()`, the vocabulary and `ROADS`, and
+# the route table through house rule 71's reader.
+
+
+def _surface_field_findings(
+    where: str, key: str, field: str, members: Any, known: frozenset[str] | None, what: str
+) -> list[CheckMessage]:
+    """One `djb.E085` per member of a declared field that its population does not hold."""
+    from apps.core.surfaces import named
+
+    if known is None:
+        return []
+    return [
+        Error(
+            f"{where} declares the surface {key!r}; its {field} name {member!r}, which {what} "
+            "— every field of a surface is a closed question over the tree (house rule 85).",
+            obj=f"{where}::{key}",
+            id="djb.E085",
+        )
+        for member in sorted((named(members) or frozenset()) - known)
+    ]
+
+
+@register(DJB)
+def check_surfaces(app_configs: Any = None, **kwargs: Any) -> list[CheckMessage]:
+    """Rule 85. Every surface declaration is a closed question over the tree."""
+    from django.core.exceptions import ImproperlyConfigured
+
+    from apps.core import surfaces
+    from apps.core.api.mount import route_table_paths
+    from apps.core.api.scopes import families
+    from apps.core.authz import role_declarations, vocabulary
+    from apps.core.discovery import declared as discover
+    from apps.core.verbs import ROADS
+
+    module, attribute = surfaces.DECLARATION_MODULE, surfaces.DECLARATION_ATTRIBUTE
+    try:
+        found = discover(module, attribute, refuse_shape=True)
+    except ImproperlyConfigured as refused:
+        return [Error(f"{str(refused).rstrip('.')} (house rule 85).", obj=attribute, id="djb.E085")]
+    messages: list[CheckMessage] = []
+    # One declaration at a time through the seam's own union, so every
+    # collision is refused in its words, not only the first.
+    accepted: list[tuple[Any, dict[Any, Any]]] = []
+    # A REFUSED declaration still claims its key. It stands in the union as a
+    # surface admitting no role — so it can collide only by key — and a second
+    # app declaring the same key is refused on this pass, in the seam's words,
+    # rather than accepted until somebody fixes the first finding.
+    claimed: list[tuple[Any, dict[Any, Any]]] = []
+    for config, declared_here in found:
+        for key, surface in declared_here.items():
+            one = (config, {key: surface})
+            try:
+                surfaces.union([*accepted, *claimed, one])
+            except ImproperlyConfigured as refused:
+                where = f"apps/{config.label}/{module}.py"
+                messages.append(
+                    Error(
+                        f"{where}: {str(refused).rstrip('.')} (house rule 85).",
+                        obj=f"{where}::{key}",
+                        id="djb.E085",
+                    )
+                )
+                taken = {str(k) for _, held in (*accepted, *claimed) for k in held}
+                claims = (
+                    isinstance(surface, surfaces.Surface)
+                    and surfaces.SURFACE_KEY.match(str(key)) is not None
+                    and str(key) not in taken
+                )
+                if claims:
+                    claimed.append((config, {key: replace(surface, roles=frozenset(), key="")}))
+                continue
+            accepted.append(one)
+    words = _derived_or_none(vocabulary)
+    roles = _derived_or_none(role_declarations)
+    screens = route_table_paths()
+    populations = (
+        ("families", frozenset(families()), "no app's `TAGS` declares"),
+        ("roles", None if roles is None else frozenset(roles), "no app's `roles.py` declares"),
+        (
+            "acts",
+            None if words is None else frozenset(p.verb for p in words.values()) | set(ROADS),
+            "is no verb of the permission vocabulary and no family road",
+        ),
+        (
+            "screens",
+            frozenset() if screens is None else screens,
+            "no row of the face's route table carries"
+            + (" (this tree has no route table)" if screens is None else ""),
+        ),
+    )
+    for config, declaration in accepted:
+        ((key, surface),) = declaration.items()
+        where = f"apps/{config.label}/{module}.py"
+        for field, known, what in populations:
+            members = getattr(surface, field)
+            messages.extend(_surface_field_findings(where, str(key), field, members, known, what))
+    declared = surfaces.union(accepted)
+    for bound in sorted(getattr(settings, "SURFACE_HOSTS", None) or {}):
+        if bound not in declared:
+            messages.append(
+                Error(
+                    f"SURFACE_HOSTS binds the surface {bound!r}, which no app declares — the "
+                    f"declared ones are {', '.join(sorted(declared))}; a host bound to a surface "
+                    "nobody declared answers nothing (house rule 85).",
+                    obj="SURFACE_HOSTS",
+                    id="djb.E085",
+                )
+            )
+    return messages
 
 
 # --- rule 32: the first path segment names a resource, never an app ------------
@@ -1097,30 +1246,23 @@ def allowed_label_paths() -> set[str]:
     }
 
 
+def _module_file(dotted: str) -> str:
+    """The file a dotted module path names, spelled the way a person opens it.
+
+    `apps.djb_notes.schemas` → `apps/djb_notes/schemas.py`. The mount's refusals
+    name files rather than modules because the fix is an edit, and one spelling
+    here keeps rule 32's and rule 83's sentences naming a file the same way.
+    """
+    return dotted.replace(".", "/") + ".py"
+
+
 def _mounted_paths() -> list[tuple[str, Any]]:
     """(mounted path, operation) for every bound operation — the document's paths.
 
-    The same walk `config.api.document_api` uses to apply ADR api-1, for the
-    same reason: how deeply the mount nests its routers is the mount's business,
-    and the only thing that is anybody else's is the path that comes out.
-
-    Normalised to the spelling the document shows, because this path ends up in
-    a REFUSAL a person has to act on. The mount joins a prefix that already has
-    its slashes to a path that has its own — `/connections/` + `/` — so the raw
-    join reads `//connections///`, which is a correct answer nobody can search
-    for. Segments in, one slash between, a trailing slash when the route had one.
+    The path `apps.core.api.mount.bound_operations` spells — the one the
+    document shows, because it ends up in a REFUSAL a person has to act on.
     """
-    from config.api import api
-
-    out: list[tuple[str, Any]] = []
-    for bound in api._get_bound_routers():
-        for path, path_view in bound.path_operations.items():
-            segments = [part for part in f"{bound.prefix}/{path}".split("/") if part]
-            trailing = "/" if str(path).endswith("/") or not segments else ""
-            full = "/" + "/".join(segments) + trailing
-            for operation in path_view.operations:
-                out.append((full, operation))
-    return out
+    return _bound_operations()
 
 
 def _first_segment(path: str) -> str:
@@ -1153,7 +1295,7 @@ def check_resource_first_paths(app_configs: Any = None, **kwargs: Any) -> list[C
             offenders.setdefault(segment, []).append(path)
             dotted = str(getattr(operation.view_func, "__module__", ""))
             if dotted:
-                modules.setdefault(segment, set()).add(dotted.replace(".", "/") + ".py")
+                modules.setdefault(segment, set()).add(_module_file(dotted))
     found: list[CheckMessage] = []
     for segment, paths in sorted(offenders.items()):
         example = sorted(paths)[0]
@@ -1192,10 +1334,23 @@ def check_resource_first_paths(app_configs: Any = None, **kwargs: Any) -> list[C
 # TWO APPS, because a tag is a scope family and one key across two apps is one
 # token ceiling that reaches both.
 #
-# BOTH POPULATIONS ARE CLOSED: the paths off the live mount (`_mounted_paths`),
-# the tags off each app's `TAGS` (the same discovery the scope census reads)
-# and each bound operation's own tags. No hand list, no valve — the shape is
-# corrected, or one of the two apps takes a word of its own.
+# AND TWO THINGS THE KEY DOES NOT SEE, both measured on the published document.
+# ONE DISPLAY TITLE CARRIED BY TWO APPS' KEYS: the mount emits each key's
+# `Tag.display` as its heading and compares none, so `djb_notes` and a
+# product's `probe_notes` both titled "Notes" are two families under one
+# heading a reader cannot tell apart. ONE SCHEMA NAME DEFINED BY TWO MODULES:
+# django-ninja publishes one component per class `__name__` and neither raises
+# nor mangles on a second, so the class discovered last describes every route
+# of both apps. A scope family is a `TAGS` key and nothing else
+# (`apps/core/api/scopes.py`, `families()`), so there is no third "family"
+# clause to hold: two keys are two families by construction.
+#
+# ALL FOUR POPULATIONS ARE CLOSED: the paths off the live mount
+# (`_mounted_paths`), the tags and their display titles off each app's `TAGS`
+# (the same discovery the scope census reads) and each bound operation's own
+# tags, the schema classes off each bound operation's request and response
+# models. No hand list, no valve — the shape is corrected, or one of the two
+# apps takes a word of its own.
 
 
 def _path_pattern(path: str) -> str:
@@ -1208,21 +1363,110 @@ def _app_label_of(dotted: str) -> str:
     return str(config.label) if config is not None else dotted
 
 
+def _schema_classes(annotation: Any, into: set[type]) -> None:
+    """Add every Pydantic class `annotation` reaches, nested fields included.
+
+    A route's request and response models are ninja's wrappers around the
+    classes an app wrote (`response: list[NoteOut]`), and the document publishes
+    a component for each class those reach — so the walk follows `list[...]`,
+    `X | None` and every nested field until it has seen each class once.
+    """
+    from pydantic import BaseModel
+
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        if annotation in into:
+            return
+        into.add(annotation)
+        for field in annotation.model_fields.values():
+            _schema_classes(field.annotation, into)
+        return
+    for argument in get_args(annotation):
+        _schema_classes(argument, into)
+
+
+def _display_title_findings() -> list[CheckMessage]:
+    """Refuse one `Tag.display` carried by the keys of two apps, naming every key.
+
+    The heading is what a reader of the document meets, human or agent; two
+    families under one heading are one section describing either. A bare-string
+    `TAGS` entry has no display (rule 41's finding) and is skipped here.
+    """
+    from apps.core.api.scopes import _tag_declarations_by_app
+
+    carriers: dict[str, set[tuple[str, str]]] = {}
+    for label, declared in _tag_declarations_by_app().items():
+        for key, entry in declared.items():
+            display = str(getattr(entry, "display", "") or "")
+            if display:
+                carriers.setdefault(display, set()).add((key, label))
+    found: list[CheckMessage] = []
+    for display, keys in sorted(carriers.items()):
+        if len({label for _, label in keys}) < 2:
+            continue
+        sides = " and ".join(f"{key!r} (apps/{label})" for key, label in sorted(keys))
+        found.append(
+            Error(
+                f"the display title {display!r} is carried by tag keys {sides}; one word "
+                "for two families is one heading a reader cannot tell apart — give the "
+                "newer one a display of its own (house rule 83).",
+                obj=display,
+                id="djb.E083",
+            )
+        )
+    return found
+
+
+def _schema_name_findings(operations: list[Any]) -> list[CheckMessage]:
+    """Refuse one schema class name defined by two modules, naming both files.
+
+    The population is every class an installed app defines that a bound
+    operation's request or response models reach; ninja's own generated
+    wrappers belong to no app and are not in it.
+    """
+    reached: set[type] = set()
+    for operation in operations:
+        roots = [*(operation.models or ()), *(operation.response_models or {}).values()]
+        for root in roots:
+            _schema_classes(root, reached)
+    defined: dict[str, set[str]] = {}
+    for cls in reached:
+        if apps.get_containing_app_config(cls.__module__) is not None:
+            defined.setdefault(cls.__name__, set()).add(cls.__module__)
+    found: list[CheckMessage] = []
+    for name, modules in sorted(defined.items()):
+        if len(modules) < 2:
+            continue
+        files = " and ".join(_module_file(dotted) for dotted in sorted(modules))
+        found.append(
+            Error(
+                f"the schema name {name!r} is defined by {files}; django-ninja publishes "
+                "ONE component under that name and describes both apps' routes by "
+                "whichever was discovered last — rename one (house rule 83).",
+                obj=name,
+                id="djb.E083",
+            )
+        )
+    return found
+
+
 @register(DJB)
 def check_one_app_per_path_and_family(app_configs: Any = None, **kwargs: Any) -> list[CheckMessage]:
-    """Refuse a path bound by two modules, and a tag key declared by two apps.
+    """Refuse two owners of one path, tag key, display title or schema name.
 
-    One finding per path pattern and one per tag key, each naming BOTH sides —
-    the modules for a path, the apps for a tag — for the reason rule 32's
-    finding names its module: a person has to know which file to edit, and the
-    gate's negative probe recognises a false positive by the planted app's name.
+    One finding per path pattern, per tag key, per display title and per schema
+    name, each naming BOTH sides — the modules for a path or a schema, the apps
+    for a tag or a title — for the reason rule 32's finding names its module: a
+    person has to know which file to edit, and the gate's negative probe
+    recognises a false positive by the planted app's name.
     """
     from apps.core.api.scopes import _tag_declarations_by_app
 
     bound: dict[str, dict[str, set[str]]] = {}
     spelled: dict[str, str] = {}
     tag_apps: dict[str, set[str]] = {}
+    operations: list[Any] = []
     for path, operation in _mounted_paths():
+        operations.append(operation)
         dotted = str(getattr(operation.view_func, "__module__", ""))
         pattern = _path_pattern(path)
         spelled.setdefault(pattern, path)
@@ -1241,7 +1485,7 @@ def check_one_app_per_path_and_family(app_configs: Any = None, **kwargs: Any) ->
         path = spelled[pattern]
         verbs = ", ".join(sorted({m for methods in modules.values() for m in methods}))
         sides = " and ".join(
-            f"{dotted.replace('.', '/')}.py ({', '.join(sorted(methods))})"
+            f"{_module_file(dotted)} ({', '.join(sorted(methods))})"
             for dotted, methods in sorted(modules.items())
         )
         found.append(
@@ -1267,6 +1511,8 @@ def check_one_app_per_path_and_family(app_configs: Any = None, **kwargs: Any) ->
                 id="djb.E083",
             )
         )
+    found.extend(_display_title_findings())
+    found.extend(_schema_name_findings(operations))
     return found
 
 
@@ -1337,8 +1583,8 @@ def check_canonical_shape(app_configs: Any = None, **kwargs: Any) -> list[CheckM
             found.append(
                 Error(
                     f"{rel}: not a canonical module name for an app — use the canonical file "
-                    "for the job, or record the extra module for this app in rules.yaml "
-                    "rule 11 with the reason (house rule 11).",
+                    "for the job, or record the extra module for this app in rule 11's "
+                    f"`extra_modules` with the reason; {reach_road('11')} (house rule 11).",
                     obj=rel,
                     id="djb.E011",
                 )
@@ -1529,7 +1775,10 @@ def _sibling_list_offers(url_name: str, name: str, by_name: dict[str, Any]) -> b
     its noun's list, not itself; the list is found by the noun's `url_name`
     forms, the same ones rule 74 demands `?show=` of.
     """
-    noun = url_name.rsplit("-", 1)[0] if "-" in url_name else ""
+    try:
+        noun = split_url_name(url_name)[0]
+    except UnderivableName:
+        return False
     return any(
         _offers_query(by_name[list_name], name)
         for list_name in _list_names(noun)
@@ -1744,11 +1993,10 @@ def check_contract_documentation(app_configs: Any = None, **kwargs: Any) -> list
         if len(module_parts) >= 3 and module_parts[0] == "apps" and module_parts[2] == "api":
             if module_parts[1] in exempt_apps:
                 continue
-            noun, _, verb = url_name.rpartition("-")
-            candidates = [t.format(noun=noun) for t in _VERB_TOOLS.get(verb, ())] or [
-                f"{verb}_{noun}",
-                f"{noun}_{verb}",
-            ]
+            try:
+                candidates = [derive_tool_name(url_name)]
+            except UnderivableName:
+                candidates = []
             for name in candidates:
                 tool = tools.get(name)
                 if tool is None:
@@ -1903,25 +2151,6 @@ def check_document_top_level(app_configs: Any = None, **kwargs: Any) -> list[Che
     return [
         Error(f"{fault} (house rule 41, ADR api-1).", obj="quality/rules.yaml", id="djb.E042")
         for fault in top_level_key_faults(api.get_openapi_schema())
-    ]
-
-
-# --- the engine's own tripwire --------------------------------------------------
-
-
-@register(DJB)
-def check_rules_file_present(app_configs: Any = None, **kwargs: Any) -> list[CheckMessage]:
-    """These checks read their allow-lists from quality/rules.yaml; without it
-    every exemption silently becomes 'nothing is exempt' — say so instead."""
-    if _rules():
-        return []
-    return [
-        Error(
-            "quality/rules.yaml is missing or empty — the djb checks' allow-lists and "
-            "exemptions live there; without it enforcement is running blind.",
-            obj="quality/rules.yaml",
-            id="djb.E000",
-        )
     ]
 
 

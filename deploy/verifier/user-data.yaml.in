@@ -19,7 +19,9 @@
 #   VERIFIER_IMAGE_ID       the AMI this box was launched from — NOT for the
 #                           reaper, and not decoration. It is the machine half
 #                           of every drive verdict this box banks
-#                           (`scripts/gate_ledger.sh`, `drive_machine_digest`):
+#                           (`scripts/gate_ledger.sh`, `drive_machine__fill`)
+#                           and the box marker the gate reads
+#                           (`quality/djb/loop.py`, `DJB_GATE_BOX_MARKER`):
 #                           two boxes of one image share a key and reuse each
 #                           other's rows, and a box and a laptop never do. It is
 #                           written HERE because a box cannot be asked which
@@ -73,8 +75,9 @@ write_files:
     permissions: "0644"
     content: "${VERIFIER_IDLE_MINUTES}"
   # The image id, under /etc/djb rather than /etc/verifier: the other three are
-  # the reaper's and this one is the GATE's — read by `drive_machine_digest` on
-  # every drive key this box computes. Same mode and owner for the same reason:
+  # the reaper's and this one is the GATE's — read by `quality/djb/loop.py` as
+  # the box marker and by `drive_machine__fill` on every drive key this box
+  # computes. Same mode and owner for the same reason:
   # a box that could rewrite its own image id could forge a reuse.
   - path: /etc/djb/image-id
     owner: "root:root"
@@ -93,6 +96,17 @@ runcmd:
   # Owned by the verifier account rather than world-writable: the wrapper's
   # `touch` needs write permission on this one file and on nothing else.
   - [chown, "verifier:verifier", /run/verifier/last-activity]
+  # THE BOX'S SECOND HOST. A verification drives one stack at two surfaces —
+  # `localhost` (staff) and `customer.localhost` (the customer surface the
+  # template's worked example declares). glibc's `myhostname` answers every
+  # `*.localhost` with ::1 alone, and `scripts/serve.sh` binds 127.0.0.1, so
+  # without this line only curl (which maps `*.localhost` itself) ever reached
+  # the second name. Written as root at boot, because the verifier account has
+  # no sudo, and only when absent, so a re-run adds nothing. The app admits the
+  # name when the verification binds it in `SURFACE_HOSTS` (the base settings
+  # derive `ALLOWED_HOSTS` from it; the local settings re-read `ALLOWED_HOSTS`
+  # from the environment, so under them the name is listed there as well).
+  - [sh, -c, "grep -qx '127.0.0.1 customer.localhost' /etc/hosts || echo '127.0.0.1 customer.localhost' >> /etc/hosts"]
   # Chrony before the reaper: the grace window is a mitigation, not a fix, and
   # the fix is the clock being right by the time the window closes.
   - [systemctl, enable, --now, chronyd]

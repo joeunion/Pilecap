@@ -30,7 +30,7 @@ from apps.core.audit import AuditEntry
 from apps.core.exceptions import Conflict, Forbidden, NotFound
 from apps.core.models import Organization, Tenant
 from apps.workflows.models import WorkflowRun
-from apps.workflows.services import HISTORY_RETENTION, record_run, workflow_id
+from apps.workflows.services import HISTORY_RETENTION, _starter_actor, record_run, workflow_id
 
 pytestmark = pytest.mark.django_db
 
@@ -38,17 +38,13 @@ JSON = "application/json"
 RUNS_URL = "/api/v1/runs/"
 WIDGETS_URL = "/api/v1/widgets/"
 
-# Measured, not guessed, at ten runs and then again at thirty. The ten, in the
-# order they run: the session row + the user row (session authentication) + the
-# membership read `TenantMiddleware` resolves the tenant from + the membership
-# read `resolve_org` resolves the acting ORG from + 1 SAVEPOINT
-# (ATOMIC_REQUESTS) + THE THREE `authz.require` resolves `workflow_run.read`
-# from inside `list_runs` + the page + 1 RELEASE SAVEPOINT.
+# Measured, not guessed, at ten runs and then again at thirty: the session row + the user row +
+# the tenant and acting-ORG membership reads + the three `workflow_run.read` costs + the page.
 # `started_by` is `select_related`, which is the point of the pin — drop it and
 # this number grows with the page.
 # ADR core-18 took the COUNT off this pin: the default list issues none any
 # more — `has_more` comes from fetching one row more than asked for.
-# `?include_count=true` puts it back, and costs exactly one more (eleven).
+# `?include_count=true` puts it back, and costs exactly one more (nine).
 #
 # **8 -> 10, and the arithmetic is +3 and -1** (PR4.i.3). The +3 is the read key
 # resolved at the acting hat — memberships, grants, role deltas — which is what
@@ -57,7 +53,7 @@ WIDGETS_URL = "/api/v1/widgets/"
 # the three statements subsume. The three are memoized on the actor, so a second
 # question in the same request is free; a request builds one actor, which is why
 # ten is what a request pays rather than what a loop pays.
-LIST_QUERY_BUDGET = 10
+LIST_QUERY_BUDGET = 8
 
 
 def _make_widget(api: Client, owner: User, name: str) -> str:
@@ -76,7 +72,7 @@ def _failed_run(
         workflow_id=workflow_id(tenant=tenant, app="example", noun="widget", key=key),
         workflow_type="WidgetOnboardingWorkflow",
         input_digest="d" * 64,
-        user=user,
+        actor=_starter_actor(tenant=tenant, user=user),
     )
     run.status = WorkflowRun.Status.FAILED
     run.error = "the activity said no"
@@ -163,7 +159,7 @@ def test_a_run_with_no_recorded_starter_belongs_to_nobody(
 
     The `input_digest` convergence pattern, asserted rather than assumed: an old
     row never conflicts with anything, is readable through the tenant door, and
-    is nobody's own run — which is why the next test cannot replay it.
+    is nobody's own run — so only an administrator replays it.
     """
     orphan = _failed_run(tenant=tenant, user=None, key="from-before")
     assert orphan.started_by_id is None
@@ -268,16 +264,39 @@ def test_replay_refuses_another_tenants_run_as_not_found(
     assert theirs.status == WorkflowRun.Status.FAILED
 
 
-def test_replay_refuses_a_run_with_no_recorded_starter(
-    api: Client, tenant: Tenant, owner: User
+def test_an_admin_replays_a_run_with_no_recorded_starter(
+    api: Client, tenant: Tenant, admin_member: User, recorded_workflow_starts: None
 ) -> None:
-    """A NULL starter is unknown, so the run is nobody's — including the asker's."""
+    """A system-started run is the tenant administrator's to replay (ADR comms-4)."""
     orphan = _failed_run(tenant=tenant, user=None, key="failed-orphan")
 
-    api.force_login(owner)
+    api.force_login(admin_member)
     response = api.post(f"{RUNS_URL}{orphan.pk}/replay/", content_type=JSON)
-    assert response.status_code == 404
-    assert response.json()["code"] == "not_found"
+    assert response.status_code == 200, response.content
+    assert response.json()["status"] == WorkflowRun.Status.RUNNING
+
+    orphan.refresh_from_db()
+    assert orphan.status == WorkflowRun.Status.RUNNING
+    assert orphan.started_by_id is None
+
+
+def test_a_member_is_refused_a_system_runs_replay_by_the_admin_key(
+    api: Client, tenant: Tenant, member: User
+) -> None:
+    """Not an administrator here: `forbidden`, in `organization.update`'s own sentence."""
+    from apps.core.authz import refusal_sentence
+    from apps.core.policies import ADMINISTERS_THE_NODE
+
+    orphan = _failed_run(tenant=tenant, user=None, key="failed-orphan-member")
+
+    api.force_login(member)
+    response = api.post(f"{RUNS_URL}{orphan.pk}/replay/", content_type=JSON)
+    assert response.status_code == 403, response.content
+    assert response.json()["code"] == "forbidden"
+    assert response.json()["detail"] == refusal_sentence(ADMINISTERS_THE_NODE)
+
+    orphan.refresh_from_db()
+    assert orphan.status == WorkflowRun.Status.FAILED
 
 
 def test_replay_refuses_a_running_run(api: Client, tenant: Tenant, owner: User) -> None:
@@ -384,7 +403,7 @@ def _running_run(*, tenant: Tenant, user: User | None, key: str) -> WorkflowRun:
         workflow_id=workflow_id(tenant=tenant, app="example", noun="widget", key=key),
         workflow_type="WidgetOnboardingWorkflow",
         input_digest="c" * 64,
-        user=user,
+        actor=_starter_actor(tenant=tenant, user=user),
     )
 
 
@@ -499,12 +518,12 @@ def test_cancel_refuses_every_state_that_is_not_running(
 
 
 def test_a_member_of_no_tenant_cannot_cancel(api: Client, nomad: User, tenant: Tenant) -> None:
-    """Fails closed at the door: a write with no resolved tenant is refused."""
+    """Fails closed at the door: a write with no resolved tenant is `no_acting_scope`."""
     run = _running_run(tenant=tenant, user=None, key="cancel-nomad")
     api.force_login(nomad)
     response = api.post(f"{RUNS_URL}{run.pk}/cancel/", content_type=JSON)
     assert response.status_code == 403
-    assert response.json()["code"] == "forbidden"
+    assert response.json()["code"] == "no_acting_scope"
 
 
 def test_an_unauthenticated_caller_cannot_cancel(api: Client, tenant: Tenant, owner: User) -> None:
@@ -778,17 +797,12 @@ def test_an_unauthenticated_caller_gets_nothing(api: Client, tenant: Tenant) -> 
     assert api.get(RUNS_URL).status_code == 401
 
 
-def test_a_member_of_no_tenant_reads_an_empty_ledger(api: Client, nomad: User) -> None:
-    """Fails closed: no membership resolves no tenant, and no tenant reads nothing.
-
-    A `403` would be the wrong answer and a row would be worse: `for_tenant(None)`
-    is the wall, and `require` is what refuses the *action* to somebody with no
-    standing at all.
-    """
+def test_a_member_of_no_tenant_reads_no_ledger(api: Client, nomad: User) -> None:
+    """Fails closed at the one resolver: no membership resolves no tenant, `no_acting_scope`."""
     api.force_login(nomad)
     response = api.get(RUNS_URL)
     assert response.status_code == 403
-    assert response.json()["code"] == "forbidden"
+    assert response.json()["code"] == "no_acting_scope"
 
 
 def test_the_ledger_never_shows_a_platform_run(
@@ -804,7 +818,7 @@ def test_the_ledger_never_shows_a_platform_run(
         tenant=None,
         workflow_id="platform:accounts:identity:sync",
         workflow_type="SyncWorkforceIdentity",
-        user=owner,
+        actor=_starter_actor(tenant=None, user=owner),
     )
     api.force_login(owner)
     wide = api.get(f"{RUNS_URL}?mine=false").json()
@@ -824,7 +838,7 @@ def test_a_superseded_row_changes_hands(tenant: Tenant, owner: User, member: Use
         workflow_id=key,
         workflow_type="WidgetOnboardingWorkflow",
         input_digest="a" * 64,
-        user=owner,
+        actor=_starter_actor(tenant=tenant, user=owner),
     )
     first.status = WorkflowRun.Status.COMPLETED
     first.finished_at = timezone.now()
@@ -835,7 +849,7 @@ def test_a_superseded_row_changes_hands(tenant: Tenant, owner: User, member: Use
         workflow_id=key,
         workflow_type="WidgetOnboardingWorkflow",
         input_digest="b" * 64,
-        user=member,
+        actor=_starter_actor(tenant=tenant, user=member),
     )
     assert second.pk == first.pk
     assert second.started_by_id == member.pk

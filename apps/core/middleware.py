@@ -7,8 +7,8 @@ Two middlewares, in this order:
 freshly minted, and `door` — `admin` under `/admin/`, `rest` everywhere else,
 because "the same service, called from the admin" is the question that keeps
 coming up. It runs outermost so that anything raised by anything below it is
-logged with the context still bound, and it clears on the way out so nothing
-leaks into the next request on the same thread.
+logged with the context still bound, and on the way out it puts back what was
+there on the way in, so nothing leaks into the next request on the same thread.
 
 **The session is bound lower down, and deliberately.** `session_id` is the
 third of the three ids `core/context.py` promises, and outermost is above
@@ -85,19 +85,49 @@ that transport has.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 from django.contrib.auth.base_user import AbstractBaseUser
 from django.contrib.auth.models import AnonymousUser
-from django.http import HttpRequest, HttpResponse
+from django.db.models import QuerySet
+from django.http import HttpRequest, HttpResponse, JsonResponse
+from django.urls import Resolver404, resolve
 
 from apps.core import context
-from apps.core.exceptions import Forbidden, Remedy, register_refusal
-from apps.core.models import Membership, Organization, Tenant, is_descendant_path
+from apps.core.authz import chain_over
+from apps.core.exceptions import (
+    REFUSALS,
+    DomainError,
+    Forbidden,
+    Invalid,
+    Remedy,
+    register_refusal,
+    wire_refusal,
+)
+from apps.core.models import Membership, Organization, Tenant
+from apps.core.roads import road
+from apps.core.surfaces import (
+    Surface,
+    SurfaceUnknownHost,
+    claimed_elsewhere,
+    named,
+    resolve_surface,
+    tenant_from_host,
+)
 
 TENANT_HEADER = "X-Tenant"
 ORG_HEADER = "X-Org"
+#: The header the socket door reads the host from. The HTTP door asks Django's
+#: own reader, which validates the host against `ALLOWED_HOSTS`; an ASGI scope
+#: has no such reader, so the name is declared here, once (rule 40).
+HOST_HEADER = "Host"
 REQUEST_ID_HEADER = "X-Request-Id"
+#: The correlation chain's header on HTTP, declared here once — every door that
+#: speaks HTTP, inbound and outbound (the REST and admin door, the MCP door, an
+#: outbound webhook, a connection's client). Temporal carries the same chain
+#: under its own spelling, `apps.core.headers.CORRELATION_HEADER`, because a
+#: Temporal header is a lowercase, namespaced key and not an HTTP field. Two
+#: transports, two spellings, one constant each.
 CORRELATION_ID_HEADER = "X-Correlation-Id"
 #: The credential header, declared HERE — once, at the bottom of the layering —
 #: because four things above read it and every one of them is above `core`:
@@ -127,8 +157,30 @@ def was_sent(requested_slug: str | None) -> bool:
     return requested_slug is not None
 
 
-def resolve_tenant(*, user: ActingUser, requested_slug: str | None) -> Tenant | None:
+def resolve_tenant(
+    *,
+    user: ActingUser,
+    requested_slug: str | None,
+    surface: Surface | None = None,
+    host: str = "",
+) -> Tenant | None:
     """The resolution rule, without a request — so the socket side can share it.
+
+    **The surface decides HOW the tenant is chosen** (`surface.tenant_rule`), and
+    which memberships count at all — a membership whose role the surface does
+    not admit resolves nothing there, the same silence as a dark tenant's:
+
+    * `addressed` — today's rule, below, unchanged: `X-Tenant` or the default.
+    * `host` — the slug the surface's `{tenant}` host slot captured from `host`.
+      A sent `X-Tenant` that disagrees is the addressing refusal, asked by the
+      door exactly as it is for any other unhonoured header.
+    * `membership` — the person's ONE workspace among the admitted memberships.
+      None is `None`; two is `AmbiguousTenant`, because picking one would put the
+      person somewhere they did not choose. `X-Tenant` is not read at all: the
+      door refuses a sent one (`addressing_refusal`).
+
+    `surface=None` is the doors that do not resolve a surface yet (the token and
+    machine doors) and reads as the implicit staff surface's `addressed`.
 
     Resolution only: it answers `None` for anything it cannot honour and says
     nothing about whether that is a refusal. `addressing_refusal` is the half
@@ -153,7 +205,15 @@ def resolve_tenant(*, user: ActingUser, requested_slug: str | None) -> Tenant | 
     """
     if user is None or not user.is_authenticated:
         return None
-    memberships = Membership.objects.filter(user_id=user.pk).select_related("tenant")
+    memberships = _admitted(Membership.objects.of(user).select_related("tenant"), surface)
+    rule = surface.tenant_rule if surface is not None else "addressed"
+    if rule == "membership":
+        return _the_one_workspace(memberships)
+    if rule == "host":
+        slug = tenant_from_host(host, surface) if surface is not None else None
+        if not slug:
+            return None
+        return _active(memberships.filter(tenant__slug=slug).first())
     if was_sent(requested_slug):
         wanted = str(requested_slug).strip().lower()
         # A sent-but-empty slug matches no tenant, and it must NOT fall through
@@ -168,6 +228,34 @@ def resolve_tenant(*, user: ActingUser, requested_slug: str | None) -> Tenant | 
     return _active(membership)
 
 
+def _admitted(memberships: QuerySet[Membership], surface: Surface | None) -> QuerySet[Membership]:
+    """The memberships whose role this surface admits — every one, for a total surface.
+
+    A surface naming its roles admits those; a total one (`ALL`) admits every
+    role no OTHER surface names, because a role belongs to one surface. With no
+    surface declared that is every membership, and the query is untouched.
+    """
+    if surface is None:
+        return memberships
+    admitted = named(surface.roles)
+    if admitted is None:
+        claimed = claimed_elsewhere(surface)
+        # role-value: a surface admits the role KEYS a product declared for it —
+        # which memberships count at this host, never how much authority one holds
+        return memberships.exclude(role__in=claimed) if claimed else memberships
+    # role-value: a surface admits the role KEYS a product declared for it —
+    # which memberships count at this host, never how much authority one holds
+    return memberships.filter(role__in=admitted)
+
+
+def _the_one_workspace(memberships: QuerySet[Membership]) -> Tenant | None:
+    """The one ACTIVE tenant among these memberships; `AmbiguousTenant` for two or more."""
+    tenants = {m.tenant_id: m.tenant for m in memberships if m.tenant.is_active}
+    if len(tenants) > 1:
+        raise AmbiguousTenant()
+    return next(iter(tenants.values()), None)
+
+
 def _active(membership: Membership | None) -> Tenant | None:
     """The membership's tenant, or `None` when there is none or it is dark.
 
@@ -180,13 +268,14 @@ def _active(membership: Membership | None) -> Tenant | None:
     return tenant if tenant.is_active else None
 
 
+@road("resolve_hat", example="apps/core/middleware.py::TenantMiddleware.__call__")
 def resolve_org(
     *,
     user: ActingUser,
     tenant: Tenant | None,
     requested_slug: str | None,
 ) -> Organization | None:
-    """The acting hat, without a request — so the socket and MCP doors share it.
+    """The hat from `X-Org`, revalidated — one function, so every door shares it.
 
     Fails closed at every step: no user, no tenant, an unknown slug, or a slug
     the user holds no role over all resolve to `None`, and `None` makes every
@@ -205,7 +294,7 @@ def resolve_org(
     if user is None or not user.is_authenticated or tenant is None:
         return None
     memberships = list(
-        Membership.objects.filter(user_id=user.pk, tenant=tenant).select_related("organization")
+        Membership.objects.for_tenant(tenant).of(user).select_related("organization")
     )
     if not memberships:
         return None
@@ -219,10 +308,7 @@ def resolve_org(
             return None
         # On it, or under it. Nothing upward, nothing sideways — the same
         # prefix test `visible_to` uses, asked of the hat instead of the rows.
-        holds = any(
-            is_descendant_path(wanted.path, membership.organization.path)
-            for membership in memberships
-        )
+        holds = any(chain_over(memberships, wanted))
         if not holds:
             return None
         tenant.remember_root(wanted)
@@ -303,6 +389,42 @@ class AddressingHeaderNotHonoured(Forbidden):
     )
 
 
+# --- A surface that chooses the workspace by membership, and a person with two -
+#
+# Registered here, beside `resolve_tenant`, which is where it is decided: on a
+# surface whose tenant rule is `membership` the workspace is the person's ONE
+# membership among the roles that surface admits, and a person with two has not
+# chosen. Picking one would act somewhere they did not ask to be.
+
+register_refusal(
+    code="ambiguous_tenant",
+    boundary="door",
+    remedy=(
+        "The request's surface chooses the tenant by membership, and this person holds "
+        "admitted memberships in more than one active tenant. A surface that must serve "
+        "such people binds a `{tenant}` host (tenant rule `host`) so each address names "
+        "one; otherwise the person signs in at an address that names their workspace."
+    ),
+    fact=(
+        "You belong to more than one workspace that this address serves, and this "
+        "address chooses the workspace for you rather than letting you name it, so it "
+        "cannot tell which one you mean. Nothing was read and nothing was written."
+    ),
+    remedies=(Remedy("Sign in at the address that names your workspace", "self:address"),),
+    status=400,
+)
+
+
+class AmbiguousTenant(Invalid):
+    """A `membership` surface met a person with admitted memberships in two tenants."""
+
+    code = "ambiguous_tenant"
+    default_detail = (
+        "You belong to more than one workspace this address serves. Sign in at the "
+        "address that names the one you mean."
+    )
+
+
 def _not_honoured(header: str) -> AddressingHeaderNotHonoured:
     """The refusal, naming the header and **never** the slug.
 
@@ -339,6 +461,7 @@ def addressing_refusal(
     tenant: Tenant | None,
     requested_org: str | None,
     org: Organization | None,
+    surface: Surface | None = None,
 ) -> AddressingHeaderNotHonoured | None:
     """The law, in one function. `None` means every sent header was honoured.
 
@@ -350,7 +473,14 @@ def addressing_refusal(
     request that named a tenant it cannot have has no tree for its `X-Org` to
     be wrong against, and answering about the hat first would name the second
     mistake to somebody who has not yet been told about the first.
+
+    **On a `membership` surface `X-Tenant` is never honourable**: the person's
+    workspace is theirs, not the caller's to name, so a sent one — even one that
+    names the right tenant — is refused rather than quietly ignored.
     """
+    chooses_by_membership = surface is not None and surface.tenant_rule == "membership"
+    if chooses_by_membership and was_sent(requested_tenant):
+        return _not_honoured(TENANT_HEADER)
     if _unhonoured(requested_tenant, getattr(tenant, "slug", None)):
         return _not_honoured(TENANT_HEADER)
     if _unhonoured(requested_org, getattr(org, "slug", None)):
@@ -371,15 +501,21 @@ def request_addressing_refusal(request: HttpRequest) -> AddressingHeaderNotHonou
         tenant=getattr(request, "tenant", None),
         requested_org=request.headers.get(ORG_HEADER),
         org=getattr(request, "org", None),
+        surface=getattr(request, "surface", None),
     )
 
 
 class ContextMiddleware:
     """Binds `request_id`, `correlation_id` and `door` for the request.
 
-    Outermost, and it clears on the way out: contextvars are per-task, but a
-    synchronous Django worker thread outlives the request it just served, and a
-    stale `tenant_id` on the next request's log lines is worse than none.
+    Outermost, and it puts back on the way out exactly what was there on the
+    way in — `core.context.bound`'s shape, and the workflow door's: contextvars
+    are per-task, but a synchronous Django worker thread outlives the request it
+    just served, and a stale `tenant_id` on the next request's log lines is
+    worse than none. A worker thread starts empty and every request leaves it
+    empty; a caller that served the request in its own context (a test, an
+    in-process call) keeps the chain it had, so the work it does next is still
+    bound.
 
     The `session_id` pass below is the one that fires for a request that never
     reaches `SessionMiddleware` — a static file served by WhiteNoise, a CORS
@@ -391,6 +527,7 @@ class ContextMiddleware:
         self.get_response = get_response
 
     def __call__(self, request: HttpRequest) -> HttpResponse:
+        previous = context.get()
         context.clear()
         bound = context.from_headers(
             {
@@ -430,6 +567,39 @@ class ContextMiddleware:
             return response
         finally:
             context.clear()
+            context.bind(**previous)
+
+
+#: The headers a signed door never reads: a bearer, and the two addresses.
+SIGNED_DOOR_UNREAD_HEADERS = (AUTHORIZATION_HEADER, TENANT_HEADER, ORG_HEADER)
+
+#: The refusal a signed door answers when one of those headers is sent.
+SignedDoorRefusal = Callable[[Sequence[str]], DomainError]
+
+_SIGNED_DOORS: dict[str, SignedDoorRefusal] = {}
+
+
+def declare_signed_door(*, url_name: str, refusal: SignedDoorRefusal) -> None:
+    """Declare a rule-3 allow-listed route whose signature is its credential; no tenant resolves."""
+    from django.core.exceptions import ImproperlyConfigured
+
+    from apps.core.checks import unauthenticated_url_names
+
+    if url_name not in unauthenticated_url_names():
+        raise ImproperlyConfigured(
+            f"{url_name!r} is not on rule 3's `allow_unauthenticated` list in "
+            "quality/rules.yaml, so it cannot be declared a signed door."
+        )
+    _SIGNED_DOORS[url_name] = refusal
+
+
+def _signed_door(request: HttpRequest) -> SignedDoorRefusal | None:
+    """The declared signed door this request is for, by its route's name, or `None`."""
+    try:
+        match = resolve(request.path_info, getattr(request, "urlconf", None))
+    except Resolver404:
+        return None
+    return _SIGNED_DOORS.get(match.view_name)
 
 
 class TenantMiddleware:
@@ -444,12 +614,36 @@ class TenantMiddleware:
 
     def __call__(self, request: HttpRequest) -> HttpResponse:
         user = getattr(request, "user", None)
+        # The host, read ONCE for the request and nowhere else: which surface
+        # this address is decides which memberships count and how the tenant is
+        # chosen, so it is resolved first. An unbound host answers here, before
+        # anything is resolved against it.
+        host = request.get_host()
+        surface = resolve_surface(host)
+        if surface is None:
+            return _refused_here(SurfaceUnknownHost())
+        request.surface = surface  # type: ignore[attr-defined]
+        signed = _signed_door(request)
+        if signed is not None:
+            sent = [name for name in SIGNED_DOOR_UNREAD_HEADERS if name in request.headers]
+            if sent:
+                return _refused_here(signed(sent))
+            # The connection names the tenant; nothing on the request may.
+            request.tenant = None  # type: ignore[attr-defined]
+            request.org = None  # type: ignore[attr-defined]
+            context.bind(surface=surface.key)
+            return self.get_response(request)
         # `apps.core.requests.TenantRequest` is the declared shape of a request
         # past this point; `HttpRequest` itself has no `tenant` attribute.
-        tenant = resolve_tenant(
-            user=user,
-            requested_slug=request.headers.get(TENANT_HEADER),
-        )
+        try:
+            tenant = resolve_tenant(
+                user=user,
+                requested_slug=request.headers.get(TENANT_HEADER),
+                surface=surface,
+                host=host,
+            )
+        except AmbiguousTenant as refusal:
+            return _refused_here(refusal)
         request.tenant = tenant  # type: ignore[attr-defined]
         # Strictly after the tenant: a hat is a place *inside* a tenant, so an
         # `X-Org` resolved before `X-Tenant` would be resolved against the wrong
@@ -466,6 +660,7 @@ class TenantMiddleware:
             org_id=str(org.pk) if org is not None else None,
             user_id=str(user.pk) if user is not None and signed_in else None,
             actor_kind="human" if signed_in else None,
+            surface=surface.key,
             # The session, bound HERE and not above, because here is where it
             # exists: `ContextMiddleware` runs outermost, above
             # `SessionMiddleware`, so its own pass sees no `request.session`
@@ -477,3 +672,16 @@ class TenantMiddleware:
             ),
         )
         return self.get_response(request)
+
+
+def _refused_here(refusal: DomainError) -> HttpResponse:
+    """A refusal this middleware decides, in the one body every door sends.
+
+    The body is `wire_refusal`'s and the number is the one the code declared, so
+    a refusal answered here reads exactly like one a route answered — no route
+    has been reached yet, which is the point: neither refusal may depend on one.
+    """
+    # Every code this module answers declared its number where it registered;
+    # one that declared none is the `error` base's answer, 500 — never a guess.
+    declared = REFUSALS[refusal.code].status
+    return JsonResponse(wire_refusal(refusal), status=declared or 500)

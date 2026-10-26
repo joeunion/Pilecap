@@ -28,12 +28,8 @@ this codebase that reaches Zitadel's management API. That is what keeps a
 reconcile of ten disagreements from holding one transaction open across ten
 calls to somebody else's API (principle 8).
 
-**The exception is `applications`, and it is named rather than hidden.** The
-project and its applications have no row and no service: their declared values
-are settings, and `manage.py zitadel_seed`'s writers are the one door onto
-them. So that road runs the seed — a shell door calling a shell door — and the
-line it prints says so. Every other road leaves this process making no
-management call at all, and `--dry-run` makes none on any road.
+The `applications` road runs `zitadel_seed`'s writers: ADR ident-2's declared exception, since
+the project and its applications have no row to be an intent. `--dry-run` calls nothing.
 
 **The ownership table. One entry per identity fact this deployment has an
 opinion about** — who is authoritative, why a copy exists, which way a
@@ -45,14 +41,28 @@ run down the page rather than across it because five fields of argued prose do
 not fit in six columns of 100, and a cell trimmed until it fits is a cell
 nobody can act on.
 
+**a tenant's realm** — `kind`: `identity_home`
+  authority   our `IdentityHome` row — one per tenant, written `pending` when
+              the tenant is created and `own_org` when its realm lands.
+  the copy    the tenant's organisation at Zitadel, the project's grant to
+              it, and its own login policy.
+  settled     the row wins: a tenant with no home, a `pending` one, a realm
+              the platform no longer has or one not granted the project is
+              asked for again (`services.start_identity_home`, with
+              `observed`), which is how a tree that predates realms homes its
+              tenants at its next deploy.
+  staleness   the audit's realm section and its `n of n tenants homed`.
+
 **a customer's federation** — `kind`: `sso_connection`
   authority   our `SsoConnection` row.
-  the copy    the Zitadel IdP: an IdP is how Zitadel expresses somebody
-              else's federation, so a row that is not materialised signs
-              nobody in.
+  the copy    the Zitadel IdP inside the tenant's realm, linked to that
+              realm's login policy — and, while the row says `enforced`, that
+              policy with the password off and the provider required.
   settled     the row wins. A console edit to the name or the issuer is
-              drift, and it is re-asked with `observed`.
-  staleness   the audit's connection walk, plus the row's own `sync_state`.
+              drift, and so is a realm whose policy disagrees with `enforced`
+              either way; each is re-asked with `observed`.
+  staleness   the audit's connection walk and its enforced line, plus the
+              row's own `sync_state`.
 
 **an IdP no row of ours names** — `kind`: none
   authority   Zitadel — a sibling product on a shared instance, or a person.
@@ -121,7 +131,7 @@ nobody can act on.
 
 **the browser client's redirect and post-logout URIs, `devMode`** — `kind`:
 `applications`
-  authority   settings (`PUBLIC_BASE_URL`).
+  authority   settings (`core.surfaces.surface_base_urls`).
   the copy    the application's OIDC config.
   settled     settings win both ways, including by REMOVAL — a URI no longer
               declared is cleared, because an application still accepting a
@@ -187,9 +197,9 @@ no road and must not acquire one
               puts both in `aud`.
   staleness   printed beside the environment's on every run.
 
-**a person, and `User.zitadel_sub`** — `kind`: none, and said rather than implied
+**a person, and the identity join** — `kind`: none, and said rather than implied
   authority   Zitadel owns the credential; our `User` is minted at sign-in.
-  the copy    `zitadel_sub`.
+  the copy    the join's rows (`SsoIdentity` with no connection), one per realm.
   settled     NOT reconciled. Revocation flows one way, and a command that
               wrote a chosen subject onto a `User` would be a door for
               claiming somebody else's identity.
@@ -238,6 +248,7 @@ from apps.accounts.management.commands.zitadel_audit import (
     APPLICATIONS_KIND,
     DRIFT,
     ENV_COPY_KIND,
+    IDENTITY_HOME_KIND,
     LOGIN_CLIENT_KIND,
     POSTURE_KIND,
     Finding,
@@ -245,8 +256,11 @@ from apps.accounts.management.commands.zitadel_audit import (
     read_report,
 )
 from apps.accounts.models import SsoConnection, User
+from apps.accounts.selectors import list_stale_staff_joins
 from apps.accounts.services import (
+    retire_stale_staff_join,
     set_identity_branding,
+    start_identity_home,
     sync_identity_config,
     sync_workforce_identity_config,
 )
@@ -258,17 +272,19 @@ from apps.accounts.types import (
 from apps.core.actor import Actor, actor_for, system_actor
 from apps.core.exceptions import DomainError
 from apps.core.management import BaseCommand
+from apps.core.models import Tenant
 
 # The kinds this command has a road for. It is a subset of the ownership table's
 # `kind` column on purpose, and the table says why for each absence: the
 # posture's road is the seed's writers, the applications' is another rung's
-# section, and a person's `zitadel_sub` has no road at all by decision.
+# section, and a person's identity join has no road at all by decision.
 #
 # Derived nowhere and declared here, because "which repairs exist" is a fact
 # about THIS command rather than about the vocabulary: `types.py` names the kinds
 # the workflow can materialise, and a kind can be materialisable long before
 # anything knows how to notice it needs materialising.
 REPAIRED_KINDS: tuple[str, ...] = (
+    IDENTITY_HOME_KIND,
     KIND_SSO_CONNECTION,
     KIND_WORKFORCE_PROVIDER,
     KIND_IDENTITY_BRANDING,
@@ -386,6 +402,8 @@ class Command(BaseCommand):
         ]
         left = [one for one in deltas if one not in mine]
 
+        self._retire_stale_staff_joins(user=user, dry_run=dry_run)
+
         if dry_run:
             for finding in mine:
                 self.stdout.write(f"would ask   {finding.kind} — {finding.line.strip()}")
@@ -414,6 +432,18 @@ class Command(BaseCommand):
         )
         if left:
             raise SystemExit(1)
+
+    def _retire_stale_staff_joins(self, *, user: User | None, dry_run: bool) -> None:
+        """Each `staff` join row a tenant realm's row now supersedes: named, then retired."""
+        for identity in list_stale_staff_joins():
+            said = f"staff join for subject {identity.subject} — its realm row stands"
+            if dry_run:
+                self.stdout.write(f"would retire {said}")
+                continue
+            retire_stale_staff_join(
+                identity=identity, actor=self._platform_actor(user), tenant=None
+            )
+            self.stdout.write(f"retired     {said}")
 
     def _say_what_is_left(self, left: list[Finding], *, only: str) -> None:
         """Name every delta this command is walking away from, and WHY.
@@ -490,6 +520,16 @@ class Command(BaseCommand):
                     actor=self._platform_actor(user), tenant=None, observed=finding.line
                 )
                 return f"sign-in branding ({row.pk}) re-asked against the live intent row"
+            if finding.kind == IDENTITY_HOME_KIND:
+                tenant = Tenant.objects.filter(slug=finding.key).first()
+                if tenant is None:
+                    return f"tenant {finding.key} is gone since the read; nothing asked"
+                start_identity_home(
+                    tenant=tenant,
+                    actor=self._home_actor(user, tenant=tenant),
+                    observed=finding.line,
+                )
+                return f"realm for {tenant.slug} asked for"
             if finding.kind == KIND_WORKFORCE_PROVIDER:
                 asked = sync_workforce_identity_config(
                     actor=self._platform_actor(user), tenant=None, observed=finding.line
@@ -529,6 +569,13 @@ class Command(BaseCommand):
             # also why `--as` is the better habit on a shared deployment.
             return system_actor()
         return actor_for(user=user, tenant=None, kind="human")
+
+    @staticmethod
+    def _home_actor(user: User | None, *, tenant: Tenant) -> Actor:
+        """A tenant's realm: the system inside that tenant, or the named operator."""
+        if user is None:
+            return system_actor(tenant)
+        return actor_for(user=user, tenant=tenant, kind="human")
 
     @staticmethod
     def _connection_actor(user: User | None, *, connection: SsoConnection) -> Actor:

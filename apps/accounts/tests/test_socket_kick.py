@@ -40,14 +40,14 @@ from django.db import transaction
 from django.test import Client
 
 from apps.accounts.activities import apply_identity_config
-from apps.accounts.models import ApiToken, User
+from apps.accounts.models import STAFF_REALM, ApiToken, User
 from apps.accounts.services import (
     KICK_TOKEN_REVOKED,
     close_sockets,
     deactivate_user,
     erase_user,
     issue_token,
-    record_zitadel_identity,
+    record_identity,
     revoke_token,
 )
 from apps.accounts.types import KIND_IDENTITY_REVOCATION, IdentityConfigSync
@@ -55,6 +55,7 @@ from apps.core import bridge
 from apps.core.actor import Actor, actor_for, system_actor
 from apps.core.asyncdb import run_db
 from apps.core.models import Tenant
+from apps.core.tests.wire import socket_bearer
 from apps.realtime.schemas import CLOSE_KICKED
 from apps.realtime.tests.websocket import Handshake, Socket, open_socket
 
@@ -79,10 +80,6 @@ async def session_headers(user: User) -> list[tuple[bytes, bytes]]:
 
     cookie = await run_db(sign_in)
     return [(b"cookie", f"{settings.SESSION_COOKIE_NAME}={cookie}".encode())]
-
-
-def bearer_headers(plaintext: str) -> list[tuple[bytes, bytes]]:
-    return [(b"authorization", f"Bearer {plaintext}".encode())]
 
 
 @asynccontextmanager
@@ -135,7 +132,7 @@ async def test_revoking_a_token_closes_every_socket_that_person_has(
     )
 
     async with (
-        opened(headers=bearer_headers(plaintext)) as (machine, machine_handshake),
+        opened(headers=socket_bearer(plaintext)) as (machine, machine_handshake),
         opened(headers=await session_headers(owner)) as (human, human_handshake),
         opened(headers=await session_headers(stranger)) as (bystander, bystander_handshake),
     ):
@@ -264,7 +261,8 @@ async def test_the_identity_revocation_run_kicks_too(
     nothing open closes nothing rather than failing.
     """
     await run_db(
-        record_zitadel_identity,
+        record_identity,
+        realm=STAFF_REALM,
         user=member,
         subject="9001",
         tenant=None,

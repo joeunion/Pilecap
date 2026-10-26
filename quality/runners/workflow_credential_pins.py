@@ -21,7 +21,7 @@ WHAT COUNTS, per job, per step, in document order:
   to `""` has decided what it holds — or carry `# creds: <reason>`, on a
   comment line inside the step or in the contiguous comment block directly
   above its `-`. The valve is counted and returned as a target; a reason under
-  12 characters is its own finding.
+  the one floor (`quality.reason_floor.MIN_REASON`) is its own finding.
 * anything else is a FINDING naming the file, the job, the step and the names
   it did not pin (class `unpinned`), or the valve that is too short
   (`short_reason`). A file that is not YAML is class `unreadable`.
@@ -44,10 +44,12 @@ from pathlib import Path
 
 import yaml
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from quality.reason_floor import MIN_REASON  # noqa: E402  (stdlib only, the one floor)
+
 _RULES_YAML = "quality/rules.yaml"
 _THIS = "quality/runners/workflow_credential_pins.py"
 
-MIN_REASON = 12
 
 VALVE = re.compile(r"#\s*creds:\s*(?P<reason>.*)$")
 
@@ -59,7 +61,10 @@ def declaration(root: Path) -> tuple[list[str], list[str]]:
         argv = (rule.get("runner") or {}).get("argv") or []
         if _THIS in [str(a) for a in argv]:
             return (
-                [str(e) for e in (rule.get("exporters") or [])],
+                [
+                    str(entry.get("action") if isinstance(entry, dict) else entry)
+                    for entry in (rule.get("exporters") or [])
+                ],
                 [str(n) for n in (rule.get("exported_names") or [])],
             )
     return [], []
@@ -107,8 +112,7 @@ def valve_in(lines: list[str], first: int, last: int) -> str | None:
 
 
 def step_spans(lines: list[str], starts: list[int], tail: int) -> list[tuple[int, int]]:
-    """Each step's own lines: its `-` line to the line before the next step's
-    comment block (a comment block directly above a step belongs to THAT step)."""
+    """Each step's lines: its `-` line to the line before the next step's own comment block."""
     spans: list[tuple[int, int]] = []
     for n, start in enumerate(starts):
         end = (starts[n + 1] - 1) if n + 1 < len(starts) else tail

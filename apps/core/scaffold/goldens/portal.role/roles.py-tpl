@@ -1,0 +1,11 @@
+from pilecap import DeclaredRole
+
+ROLES: dict[str, DeclaredRole] = {
+    "customer": DeclaredRole(
+        key="customer",
+        name="Customer",
+        permissions=("widget.read", "djb_tag.read", "djb_tag_link.read", "portal_request.*"),
+        is_default_for_new_members=False,
+        description="Reads the widgets they can see and sends requests about them.",
+    ),
+}

@@ -1,0 +1,25 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "imports", "text": ""}
+from apps.example.events import WIDGET_TRANSITIONED
+
+from pilecap import Conflict
+
+
+# golden-anchor: {"nth": 0, "scope": [], "side": "before", "text": "def _locked_widget(*, tenant: Tenant, widget: Widget) -> Widget:"}
+@service
+def transition_widget(*, tenant: Tenant, actor: Actor, widget: Widget, status: str) -> Widget:
+    """Step a widget's status along its chain; any other move is `Conflict`."""
+    if not may_be_named(actor, widget):
+        raise NotFound()
+    locked = _locked_widget(tenant=tenant, widget=widget)
+    require_live(locked, noun="widget")
+    require(actor, "widget.update", locked)
+    if status not in Widget.Status.values:
+        raise Invalid({"status": [f"Send one of: {', '.join(Widget.Status.values)}."]})
+    if Widget.STATUS_NEXT.get(locked.status) != status:
+        raise Conflict("A status moves one step forward at a time, never back or past a step.")
+    locked.status = status
+    locked.save(update_fields=["status", "updated_at"])
+    _publish_widget(WIDGET_TRANSITIONED, tenant=tenant, widget=locked, actor=actor)
+    return locked
+
+

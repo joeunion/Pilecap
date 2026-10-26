@@ -26,9 +26,9 @@ the `Idempotency-Key` middleware (which only inspects writes under `/api/`).
 A probe has no credential to present: kubelet, an ALB target group and a
 compose healthcheck all speak unauthenticated HTTP, and gating liveness behind
 a token means a rotation outage looks exactly like a dead fleet. What they give
-away is bounded on purpose — `/healthz` says nothing at all, and `/readyz` says
-only which of its named dependencies this replica can currently reach. No
-versions, no hostnames, no error strings: an unreachable database is `false`,
+away is bounded on purpose — `/healthz` says nothing; `/readyz` says which named
+dependencies this replica reaches, and under DEBUG only `database`, its configured name.
+No versions, no hostnames, no error strings: an unreachable database is `false`,
 never a connection string in a stack trace.
 
 House rule 3 is about routes on the API. These are not on it; the reason they
@@ -285,16 +285,9 @@ def readiness() -> dict[str, bool]:
 # --- The two views -----------------------------------------------------------
 # Plain Django views, mounted at the root in `config/urls.py`. See the module
 # docstring for why they are open and why they are not ninja routes.
-#
-# **Both are `non_atomic_requests`, and that is load-bearing.** This project
-# sets `ATOMIC_REQUESTS = True`, so Django wraps every view in a transaction —
-# which means opening a database connection *before* the view runs. That would
-# make `/healthz` fail whenever Postgres is unreachable, which is precisely the
-# outage this endpoint exists not to amplify; and it would make `/readyz` hold a
-# transaction open across a network call to Temporal. The test that asserts
-# `/healthz` answers with no database is what keeps this decorator here.
 
 
+# A no-op under ADR perf-2; it keeps both views off the database if `ATOMIC_REQUESTS` returns.
 @transaction.non_atomic_requests
 def healthz(request: HttpRequest) -> HttpResponse:
     """Liveness. 200, always, as long as this process can still answer."""
@@ -303,7 +296,8 @@ def healthz(request: HttpRequest) -> HttpResponse:
 
 @transaction.non_atomic_requests
 def readyz(request: HttpRequest) -> HttpResponse:
-    """Readiness. 200 with every member `true`, or 503 with the failing one `false`."""
+    """Readiness: 200 with every member `true`, else 503 with the failing one `false`."""
     report = readiness()
     status = 200 if all(report.values()) else NOT_READY
-    return JsonResponse(report, status=status)
+    named = {"database": settings.DATABASES["default"]["NAME"]} if settings.DEBUG else {}
+    return JsonResponse({**report, **named}, status=status)

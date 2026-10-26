@@ -1,9 +1,9 @@
 """Rule 35's runner: EXPLAIN every probed hot path under `enable_seqscan = off`.
 
-Started as a subprocess by `quality/checks.py::hot_path_sargability` — never by
+Started as a subprocess by `quality/checks/rule_35.py::hot_path_sargability` — never by
 the default suite, never by `perf/`. It owns a per-checkout **probe database**
 (`<derived-name>_hp`, `quality/hotpaths.py::probe_database_name`): created on
-first use, migrated on every run (a no-op when current), seeded with the fixed
+first use (rebuilt when stale), migrated on every run (a no-op when current), seeded with the fixed
 world (small, but no longer *minimal* — `quality/hotpaths.py` says what the
 sizes buy and why a world too small to make the pinned plan the planner's own
 choice cannot assert a plan at all), and `ANALYZE`d before any plan is read —
@@ -24,7 +24,7 @@ Output: one JSON object on stdout —
     {"findings": [...], "notes": [...], "hot_paths": N, "probed": P,
      "explained_statements": M, "lookup_columns_declared": D,
      "lookup_columns_proven": Pv, "lookup_columns_unproven": Un,
-     "index_served_untyped": U, "plan_shapes": {path: {table: [shape, ...]}}}
+     "index_served_untyped": U, "plan_shapes": {...}, "rebuilt": sentence | null}
 Exit 0 whether or not there are findings (the check turns findings into
 violations); a non-zero exit means the probe itself could not run, which the
 check surfaces as UNBOUND — enforcement broken, never a pass.
@@ -35,6 +35,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -249,8 +250,55 @@ def load_counts() -> dict[str, int]:
     return {k: int(v) for k, v in (budgets.get("hot_path_query_counts") or {}).items()}
 
 
-def ensure_database() -> None:
-    """Point Django at the `_hp` probe database, creating it when missing.
+def connect(dbname: str) -> Any:
+    """An autocommit psycopg connection to `dbname` on the server the settings name."""
+    import psycopg
+    from django.conf import settings
+
+    default = settings.DATABASES["default"]
+    return psycopg.connect(
+        dbname=dbname,
+        user=default.get("USER") or None,
+        password=default.get("PASSWORD") or None,
+        host=default.get("HOST") or None,
+        port=default.get("PORT") or None,
+        autocommit=True,
+    )
+
+
+def stale_labels(name: str) -> list[str]:
+    """The app labels the world's `django_migrations` records and this tree does not install."""
+    from django.apps import apps
+
+    installed = {config.label for config in apps.get_app_configs()}
+    with connect(name) as world:
+        table = world.execute("SELECT to_regclass('django_migrations')").fetchone()
+        if table is None or table[0] is None:
+            return []
+        rows = world.execute("SELECT DISTINCT app FROM django_migrations ORDER BY app").fetchall()
+    return [str(row[0]) for row in rows if str(row[0]) not in installed]
+
+
+def drop_world(name: str) -> None:
+    """Drop the world through the sweep's `--hot-path` broom, the one drop path for `_hp`."""
+    proc = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "db_sweep.sh"), "--sweep", "--hot-path", "--name", name],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    with connect("postgres") as admin:
+        left = admin.execute("SELECT 1 FROM pg_database WHERE datname = %s", (name,)).fetchone()
+    if proc.returncode != 0 or left is not None:
+        raise SystemExit(
+            f"hot-path world {name} is stale and the sweep did not drop it (exit "
+            f"{proc.returncode}):\n{proc.stdout}{proc.stderr}"
+        )
+
+
+def ensure_database() -> str | None:
+    """Point Django at the `_hp` probe database: rebuilt when stale, created when missing.
 
     Both halves of its guard are here. `probe_database_name` refuses a name
     that is not `[A-Za-z0-9_]` within Postgres's budget — before any SQL is
@@ -268,25 +316,27 @@ def ensure_database() -> None:
     default = settings.DATABASES["default"]
     base_name = default["NAME"]
     default["NAME"] = probe_database_name(base_name)
+    name = str(default["NAME"])
 
-    import psycopg
     from psycopg import sql as psql
 
-    with psycopg.connect(
-        dbname="postgres",
-        user=default.get("USER") or None,
-        password=default.get("PASSWORD") or None,
-        host=default.get("HOST") or None,
-        port=default.get("PORT") or None,
-        autocommit=True,
-    ) as admin:
-        row = admin.execute(
-            "SELECT 1 FROM pg_database WHERE datname = %s", (default["NAME"],)
-        ).fetchone()
-        if row is None:
-            admin.execute(
-                psql.SQL("CREATE DATABASE {}").format(psql.Identifier(str(default["NAME"])))
+    rebuilt = None
+    with connect("postgres") as admin:
+        exists = admin.execute("SELECT 1 FROM pg_database WHERE datname = %s", (name,)).fetchone()
+    if exists is not None:
+        gone = stale_labels(name)
+        if gone:
+            drop_world(name)
+            exists = None
+            verb = "is" if len(gone) == 1 else "are"
+            rebuilt = (
+                f"hot-path world {name} was stale ({', '.join(gone)} {verb} no longer in "
+                "the tree) — rebuilt"
             )
+    if exists is None:
+        with connect("postgres") as admin:
+            admin.execute(psql.SQL("CREATE DATABASE {}").format(psql.Identifier(name)))
+    return rebuilt
 
 
 def main() -> int:
@@ -295,7 +345,9 @@ def main() -> int:
     import django
 
     django.setup()
-    ensure_database()
+    rebuilt = ensure_database()
+    if rebuilt:
+        sys.stderr.write(rebuilt + "\n")
 
     from django.core.management import call_command
     from django.db import connection, transaction
@@ -546,7 +598,7 @@ def main() -> int:
             {
                 "findings": findings,
                 # The skipped entries ride in `notes` as well as in their own
-                # key: `quality/checks.py` forwards notes and would drop an
+                # key: `quality/checks/rule_35.py` forwards notes and would drop an
                 # unknown key, and a world that shrank silently is the whole
                 # defect. Both, so neither reader has to know about the other.
                 "notes": notes + [f"NOT IN THIS WORLD: {one}" for one in skipped],
@@ -559,6 +611,7 @@ def main() -> int:
                 "lookup_columns_unproven": unproven_columns,
                 "index_served_untyped": untyped_tables,
                 "plan_shapes": shapes_by_path,
+                "rebuilt": rebuilt,
             }
         )
     )

@@ -35,7 +35,7 @@ from apps.exports import activities as export_activities
 from apps.exports.models import Export
 from apps.exports.services import create_export, finish_export
 from apps.exports.types import ExportBuilt
-from apps.exports.workflows import BUILD_RETRY
+from apps.exports.workflows import BUILD_ATTEMPTS
 from apps.files import storage as files_storage
 from apps.files.models import FileVersion, StoredFile
 from apps.files.services import store_bytes
@@ -201,7 +201,7 @@ async def test_a_failure_mid_walk_leaves_a_failed_row_with_no_artifact_on_it(
     """
     tenant, _root, _owner, actor = small_world
 
-    # **The attempts are counted, not assumed.** `BUILD_RETRY` says five, and
+    # **The attempts are counted, not assumed.** `BUILD_ATTEMPTS` says five, and
     # until this list existed nothing in this file could tell five attempts from
     # one: the row reads `failed` either way. It is what makes the retry floor a
     # test can lose — turn `initial_interval` into a literal and the wall clock
@@ -227,8 +227,8 @@ async def test_a_failure_mid_walk_leaves_a_failed_row_with_no_artifact_on_it(
             described = await handle.describe()
 
     assert described.status == WorkflowExecutionStatus.FAILED
-    assert len(attempts) == BUILD_RETRY.maximum_attempts == 5, (
-        f"the build was attempted {len(attempts)} times, not the five BUILD_RETRY declares"
+    assert len(attempts) == BUILD_ATTEMPTS == 5, (
+        f"the build was attempted {len(attempts)} times, not the five BUILD_ATTEMPTS declares"
     )
 
     failed = await run_db(lambda: Export.objects.for_tenant(tenant).get(pk=export.pk))
@@ -237,6 +237,9 @@ async def test_a_failure_mid_walk_leaves_a_failed_row_with_no_artifact_on_it(
     assert failed.is_downloadable is False
     assert "the bucket went away mid-walk" in failed.error, (
         "the row carries the activity's own complaint, not the wrapper's \"Activity task failed\""
+    )
+    assert failed.error.startswith("ActivityError: ") and " <- " in failed.error, (
+        f"the reason is `core.determinism.reason_of`'s chain, typed link by link: {failed.error!r}"
     )
 
     run = await run_db(

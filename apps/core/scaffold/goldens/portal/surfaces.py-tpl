@@ -1,0 +1,13 @@
+# golden: portal surface begin
+from pilecap.surfaces import Surface
+
+SURFACES: dict[str, Surface] = {
+    "customer": Surface(
+        families={"widgets", "portal_requests"},
+        acts={"read"},
+        roles={"customer"},
+        tenant_rule="membership",
+        screens={"/requests", "/requests/[id]", "/widgets", "/widgets/[id]"},
+    ),
+}
+# golden: portal surface end

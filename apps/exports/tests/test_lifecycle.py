@@ -26,7 +26,6 @@ invisible to any assertion about the table.
 
 from __future__ import annotations
 
-import inspect
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -35,6 +34,7 @@ from temporalio.client import ScheduleActionStartWorkflow
 
 from apps.core.actor import actor_for, system_actor
 from apps.core.lifecycle import LifecycleKind, lifecycle_of
+from apps.core.schedules import DAILY, platform_id
 from apps.core.time import now
 from apps.exports import activities, services
 from apps.exports.models import EXPORT_RETENTION_DAYS, Export
@@ -47,7 +47,7 @@ from apps.files.services import store_bytes
 from .conftest import archive_exists
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from .conftest import World
+    from apps.core.tests.permissions_world import World
 
 pytestmark = pytest.mark.django_db
 
@@ -75,11 +75,7 @@ def swept() -> PurgeOutcome:
     running on. `apps/connections/tests/test_lifecycle.py` drives its sweep the
     same way for the same reason.
 
-    What is lost by not calling the activity is only the wrapper, and that is
-    covered from the other side: `test_the_chain_from_the_declaration_to_a_
-    schedule_holds_link_by_link` reads the activity's own source and asserts it
-    calls this, and `test_workflows.py` drives the real activity in a real
-    worker.
+    The wrapper is covered by `test_workflows.py`, which drives the real activity in a worker.
     """
     return services.purge_exports(before=now() - timedelta(days=EXPORT_RETENTION_DAYS), tenant=None)
 
@@ -137,7 +133,7 @@ def an_export(world: World, recorded_workflow_starts: None) -> Any:
 
     def make() -> Export:
         return services.create_export(
-            tenant=world.tenant, actor=world.owner_actor, scope=Export.Scope.ORGANIZATION
+            tenant=world.tenant, actor=world.owner, scope=Export.Scope.ORGANIZATION
         )
 
     return make
@@ -156,46 +152,20 @@ def test_the_export_declares_purged_and_names_what_purges_it() -> None:
     assert len(declared.reason) > 120, "a reason a reviewer can disagree with"
 
 
-def test_the_chain_from_the_declaration_to_a_schedule_holds_link_by_link() -> None:
-    """House rule 31's tooth, walked from inside the app rather than trusted from the gate.
+def test_the_schedule_this_app_declares() -> None:
+    """Daily under one `platform:exports:purge:<queue>` id; the retention rides the action."""
+    declaration = activities.PURGE_EXPORTS
+    action = declaration.schedule(TASK_QUEUE).action
+    expected = platform_id(app="exports", noun="purge", key=TASK_QUEUE)
 
-    Four links, each asserted separately, because the failure a `purged`
-    declaration invites is the chain stopping SHORT: a service nothing calls, an
-    activity no workflow executes, a workflow no schedule starts. Any one of
-    those reads, from the model, exactly like a table that is being swept.
-    """
-    # 1. the callable the declaration names exists and is this app's service.
-    assert callable(services.purge_exports)
-
-    # 2. an activity references it.
-    source = inspect.getsource(activities.purge_expired_exports)
-    assert "services.purge_exports(" in source
-
-    # 3. a workflow executes that activity, by name.
-    assert "purge_expired_exports" in inspect.getsource(PurgeExportsWorkflow)
-
-    # 4. a ScheduleDeclaration in this app's SCHEDULES starts that workflow.
-    assert activities.SCHEDULES == [activities.PURGE_EXPORTS]
-    action = activities.PURGE_EXPORTS.schedule(TASK_QUEUE).action
-    # Narrowed rather than cast: `Schedule.action` is typed as the union base
-    # `ScheduleAction`, and asserting the concrete class is also the assertion
-    # that this schedule STARTS A WORKFLOW rather than doing something else.
+    assert activities.SCHEDULES == [declaration]
     assert isinstance(action, ScheduleActionStartWorkflow)
+    assert declaration.schedule_id(TASK_QUEUE) == action.id == expected
+    assert declaration.schedule_id("other") != expected
     assert action.workflow == PURGE_WORKFLOW
     assert action.task_queue == TASK_QUEUE
     assert action.args == [PurgeExports(retention_days=EXPORT_RETENTION_DAYS)]
-
-
-def test_both_ids_are_namespaced_by_task_queue() -> None:
-    """ADR events-2: a constant id is two deployments fighting.
-
-    A schedule id is global to the Temporal namespace, so a worktree starting a
-    worker would otherwise hijack every other worktree's sweep onto a queue that
-    is about to go away.
-    """
-    assert activities.purge_schedule_id(TASK_QUEUE).endswith(f":{TASK_QUEUE}")
-    assert activities.purge_workflow_id(TASK_QUEUE).endswith(f":{TASK_QUEUE}")
-    assert activities.purge_schedule_id("other") != activities.purge_schedule_id(TASK_QUEUE)
+    assert declaration.schedule(TASK_QUEUE).spec.intervals[0].every == DAILY
 
 
 def test_the_purge_workflow_owns_no_run_row() -> None:

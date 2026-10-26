@@ -58,7 +58,7 @@ def test_posting_a_correct_password_is_refused_and_creates_no_session(api: Clien
     Answering "that password was correct" for an account whose authentication
     has moved elsewhere is most of what moving it was for.
     """
-    person = create_user(email="staff@example.com", password="a-long-enough-password")
+    person = create_user(email="staff@example.com", password="a-long-enough-password")  # noqa: S106 — a throwaway password a test user is made with
 
     response = api.post(
         LOGIN_URL,
@@ -113,7 +113,7 @@ def test_the_page_does_not_enumerate_customer_connections(
     page = api.get(LOGIN_URL).content.decode()
 
     assert sso_connection.name not in page
-    assert sso_connection.provider_id not in page
+    assert sso_connection.pk.hex not in page
     assert tenant.name not in page
 
 
@@ -130,8 +130,8 @@ ADMIN_LOGIN_URL = "/admin/login/"
 ADMIN_URL = "/admin/"
 
 #: The two URLs behind that door that wrote `User.password` until it was shut.
-ADMIN_PASSWORD_CHANGE_URL = "/admin/password_change/"
-ADMIN_PASSWORD_CHANGE_DONE_URL = "/admin/password_change/done/"
+ADMIN_PASSWORD_CHANGE_URL = "/admin/password_change/"  # noqa: S105 — a throwaway password a test user is made with
+ADMIN_PASSWORD_CHANGE_DONE_URL = "/admin/password_change/done/"  # noqa: S105 — a throwaway password a test user is made with
 
 #: The sentence a signed-in person who is not staff reads instead of a form.
 ADMIN_REFUSAL = "This account cannot use the admin."
@@ -141,14 +141,14 @@ ADMIN_REFUSAL = "This account cannot use the admin."
 #: imports the constant it asserts on cannot see the constant change. The
 #: pragma is the Secret Keyword heuristic on the name, not on the value: the
 #: value is the sentence the refusal page renders.
-PASSWORD_CHANGE_REFUSAL = "Passwords are not changed here."  # pragma: allowlist secret
+PASSWORD_CHANGE_REFUSAL = "Passwords are not changed here."  # noqa: S105 — a throwaway password a test user is made with  # pragma: allowlist secret
 
-PASSWORD = "a-long-enough-password"  # pragma: allowlist secret
+PASSWORD = "a-long-enough-password"  # noqa: S105 — a throwaway password a test user is made with  # pragma: allowlist secret
 
 #: What a password-change form would be asked to write. Different from
 #: `PASSWORD` on purpose: "the hash did not change" is only an assertion if the
 #: change being attempted is a real one.
-NEW_PASSWORD = "an-entirely-different-password"  # pragma: allowlist secret
+NEW_PASSWORD = "an-entirely-different-password"  # noqa: S105 — a throwaway password a test user is made with  # pragma: allowlist secret
 
 
 def test_the_admin_login_mount_is_ours_and_the_admin_names_are_untouched() -> None:
@@ -476,11 +476,23 @@ def test_the_per_user_password_form_is_refused_for_a_superuser_too(api: Client) 
     assert not subject.check_password(NEW_PASSWORD)
 
 
-def test_the_admin_user_change_page_still_answers_a_superuser(api: Client) -> None:
+def test_the_admin_user_change_page_still_answers_a_superuser(api: Client, tenant: Tenant) -> None:
     """The negative: refusing the password sub-view left the change page alone."""
+    from apps.core.actor import system_actor
+    from apps.core.models import Membership
+    from apps.core.services import add_membership
+
     operator = create_user(email="pwnegative@example.com", password=PASSWORD, is_staff=True)
     operator.is_superuser = True
     operator.save(update_fields=["is_superuser"])
+    # The admin change page asks the kind's read since SF-CORE-1: a superuser needs a hat.
+    add_membership(
+        user=operator,
+        tenant=tenant,
+        is_default=True,
+        role=Membership.Role.OWNER,
+        actor=system_actor(tenant=tenant),
+    )
     api.force_login(operator)
 
     assert api.get(f"/admin/accounts/user/{operator.pk}/change/").status_code == 200

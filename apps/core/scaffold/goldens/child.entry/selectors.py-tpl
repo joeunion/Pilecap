@@ -1,0 +1,18 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "imports", "text": ""}
+from apps.example.models import WidgetEntry
+
+# golden-anchor: {"nth": 0, "scope": [], "side": "after", "text": "return widget"}
+def list_widget_entries(
+    *, tenant: Tenant | None, org: Any = None, widget_id: UUID | None = None, actor: Actor
+) -> ScopedQuerySet[WidgetEntry]:
+    """The ledger lines this hat may see, newest first, optionally one widget's."""
+    require(actor, "widget_entry.read")
+    entries = WidgetEntry.objects.for_tenant(tenant).visible_to(org).select_related("organization")
+    if widget_id is not None:
+        widgets: list[Any] = [widget_id]
+
+
+        entries = entries.filter(widget_id__in=widgets)
+    return entries
+
+

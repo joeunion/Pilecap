@@ -1,36 +1,5 @@
 #!/usr/bin/env bash
-# THIS FILE IS EXECUTED, AND IT IS BASH — not POSIX sh, and not zsh. The
-# shebang above is honoured by `./this`; `sh this` and `zsh this` IGNORE it,
-# and neither of them fails where the mistake was made. Measured on this tree:
-#
-#   zsh scripts/queue_cited.sh   exit 2 blaming the TREE ("this is not a
-#                                checkout root") for zsh's word-splitting
-#   zsh scripts/kill_mine.sh     an ordinary-looking census of nothing
-#   sh  scripts/sweep.sh         "lifecycle.sh: line 152: syntax error"
-#
-# A wrong shell here does not crash. It ANSWERS, and the answer looks like the
-# tree's fault.
-#
-# TWO TESTS, because on macOS `/bin/sh` IS bash: BASH_VERSION is set under
-# `sh x.sh` and only POSIX MODE tells the two apart (SHELLOPTS carries
-# `posix`). On Linux `/bin/sh` is dash and the first test is the one that
-# fires. Neither test alone covers both machines.
-#
-# A SOURCED library must never carry this. There the interpreter is the
-# caller's ON PURPOSE and an `exit` would kill the caller's shell — the
-# argument is scripts/db.sh's, at scripts/db.sh:50-57, and it is why db.sh is
-# the one executable in this tree deliberately without a belt.
-[ -n "${BASH_VERSION:-}" ] || {
-    echo "${0##*/}: must run under bash — not sh, not zsh. Try \`bash ${0}\`." >&2
-    exit 2
-}
-case ":${SHELLOPTS:-}:" in
-*:posix:*)
-    echo "${0##*/}: bash is in POSIX mode — which is what \`sh ${0}\` does on a" >&2
-    echo "  machine whose /bin/sh is bash. Try \`bash ${0}\`." >&2
-    exit 2
-    ;;
-esac
+. "$(dirname -- "${BASH_SOURCE:-$0}")/bash_only.sh" || exit 2
 # The seeded-scale harness runner (ADR perf-1).
 #
 #   ./scripts/perf.sh                       seed-if-stale, then run every perf/measure_*.py
@@ -75,6 +44,7 @@ esac
 # instruments are in `perf/measure.py`, and it governs them.
 
 set -euo pipefail
+. "$(dirname -- "${BASH_SOURCE[0]}")/gate_refuse.sh" || exit 2
 cd "$(git rev-parse --show-toplevel)"
 
 MODE="run"
@@ -145,27 +115,27 @@ echo "- perf database: ${DATABASE_NAME}"
 # nothing on disk remembers it. `_` is a LIKE wildcard, so the pattern escapes
 # it — the scope must be the names it says, not the names it rhymes with.
 #
-# Exit 1, not 2: this script LOOKED, and what it found is wrong. (Exit 2 here
-# stays what it has always been — a name it cannot trust, a flag nobody defined.
-# `restore_drill.sh`'s target-is-the-source refusal is the same shape.)
+# A `!!` refusal, so exit 2 — the seam's `gate_die`, and the one meaning `!!`
+# has in this tree: the run never got as far as seeding. Nothing was dropped,
+# created or seeded.
 OTHER_WORLDS="$(db_query "
     SELECT string_agg(datname, E'\n' ORDER BY datname)
     FROM pg_database
     WHERE datname LIKE 'djb\\_%\\_perf' AND datname <> :'mine'
 " -v mine="$DATABASE_NAME" -tA || true)"
 if [ -n "$OTHER_WORLDS" ] && [ "$FORCE" -eq 0 ]; then
-    echo "!! REFUSING to seed a second perf world: this server already carries these." >&2
-    printf '%s\n' "$OTHER_WORLDS" | sed 's/^/     /' >&2
-    echo "   Each is ~0.6 GB and the harness runs in one checkout at a time, so a" >&2
-    echo "   second world is almost always a checkout that seeded and moved on —" >&2
-    echo "   enough of them will fill the disk." >&2
-    echo "   Reap them:  ./scripts/db_sweep.sh --sweep --perf     (this checkout's own)" >&2
-    echo "               ./scripts/db_sweep.sh --all-checkouts --orphans --roots <dir>" >&2
-    echo "                   (census first: a world you cannot account for may be a live" >&2
-    echo "                    sibling clone's, and that mode drops nothing without" >&2
-    echo "                    --sweep --force-foreign)" >&2
-    echo "   Or say you meant it:  $0 --force" >&2
-    exit 1
+    gate_die "Nothing was dropped, created or seeded." \
+        "REFUSING to seed a second perf world: this server already carries these." \
+        "$(printf '%s\n' "$OTHER_WORLDS" | sed 's/^/  /')" \
+        "Each is ~0.6 GB and the harness runs in one checkout at a time, so a" \
+        "second world is almost always a checkout that seeded and moved on —" \
+        "enough of them will fill the disk." \
+        "Reap them:  ./scripts/db_sweep.sh --sweep --perf     (this checkout's own)" \
+        "            ./scripts/db_sweep.sh --all-checkouts --orphans --roots <dir>" \
+        "                (census first: a world you cannot account for may be a live" \
+        "                 sibling clone's, and that mode drops nothing without" \
+        "                 --sweep --force-foreign)" \
+        "Or say you meant it:  $0 --force"
 fi
 if [ -n "$OTHER_WORLDS" ]; then
     echo "- --force: seeding beside $(printf '%s\n' "$OTHER_WORLDS" | wc -l | tr -d ' ') other perf world(s) on this server"

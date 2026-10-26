@@ -1,0 +1,13 @@
+# golden-anchor: {"nth": 0, "scope": ["Widget"], "side": "before", "text": "class Meta(OrgScopedModel.Meta):"}
+
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        ACTIVE = "active", "Active"
+        RETIRED = "retired", "Retired"
+
+    #: The one move each status may make: a step forward, never back (`transition_widget`).
+    STATUS_NEXT: ClassVar[dict[str, str]] = {
+        Status.DRAFT: Status.ACTIVE,
+        Status.ACTIVE: Status.RETIRED,
+    }
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)

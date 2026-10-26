@@ -425,9 +425,8 @@ def test_a_request_that_resolves_no_tenant_is_never_replayed_and_leaves_no_trap(
     assert refused.status_code == 403, refused.content
     assert refused.headers.get(REPLAYED_HEADER) is None
 
-    record = IdempotencyRecord.objects.filter(key="no-tenant").first()
-    assert record is not None
-    assert record.tenant_id is None
+    # `no_acting_scope` is a door refusal, so the claim is dropped rather than kept (ADR core-23).
+    assert not IdempotencyRecord.objects.filter(key="no-tenant").exists()
 
     # A second identical attempt is refused on its own merits, never replayed.
     again = _post(api, "Nowhere", key="no-tenant")
@@ -632,9 +631,9 @@ def test_the_seam_costs_one_token_read_and_no_second_last_used_write(
     resolutions = [sql for sql in token_sql if "key_hash" in sql]
     writes = [sql for sql in token_sql if sql.lstrip().startswith("UPDATE")]
 
-    assert len(resolutions) == 2, token_sql
+    assert len(resolutions) == 1, token_sql
     assert len(writes) == 1, token_sql
-    assert len(token_sql) == 4, token_sql
+    assert len(token_sql) == 3, token_sql
 
 
 def test_the_resolver_is_asked_once_per_request(

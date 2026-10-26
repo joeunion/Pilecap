@@ -36,11 +36,14 @@
 // golden: attach begin
 import { type ReactNode, type Ref, type RefObject, useEffect, useRef, useState } from "react";
 
-import { WIDGET_COPY as C, removeTagLabel } from "@/copy/widget";
-import { RefusalPanel } from "@/screens/refusal-panel";
-import type { Refusal, SurfaceState } from "@/screens/state";
-import { type Act, actsFor, attachAct, type Road } from "@/screens/verbs";
-import { Card, dayOf, type Note, StillLine, type StoredFile, type Tag } from "@/screens/widget/parts";
+import { WIDGET_COPY as C, removeTagLabel } from "@pilecap/copy/widget";
+import { RefusalPanel } from "@pilecap/ui/refusal-panel";
+import { STAFF_SURFACE } from "@pilecap/ui/routes";
+import type { Refusal, SurfaceState } from "@pilecap/ui/state";
+import { type Act, actsFor, attachAct, type Road } from "@pilecap/ui/verbs";
+import { Card } from "@pilecap/ui/card";
+import { StillLine } from "@pilecap/ui/still-line";
+import { dayOf, type Note, type StoredFile, type Tag } from "@/screens/widget/parts";
 
 /** One attach kind's press: its read, the add, the add at work, and the last refusal. */
 type AttachPart<T, A> = {
@@ -291,7 +294,7 @@ export function TagRow({
             ) : null}
             {part.refused === null || part.refused === undefined || act === null ? null : (
                 <div className="widget-refusal-seat">
-                    <RefusalPanel refusal={part.refused} seat="tag-row" words={{ label: act.words.refused, remedies: C.remedies }} />
+                    <RefusalPanel surface={STAFF_SURFACE} refusal={part.refused} seat="tag-row" refused={act.words.refused} />
                 </div>
             )}
         </>
@@ -320,7 +323,7 @@ function CardRows<T>({
         );
     }
     if (state.kind === "empty") return <p className="widget-quiet">{empty}</p>;
-    if (state.kind === "error") return <RefusalPanel refusal={state.refusal} words={{ label: C.errorLabel, remedies: C.remedies }} />;
+    if (state.kind === "error") return <RefusalPanel surface={STAFF_SURFACE} refusal={state.refusal} />;
     return <ol className="widget-history">{rows(state.data)}</ol>;
 }
 
@@ -358,7 +361,7 @@ function AddFoot({
         <>
             {refused === null ? null : (
                 <div className="widget-refusal-seat">
-                    <RefusalPanel refusal={refused} seat="card-foot" words={{ label: act.words.refused, remedies: C.remedies }} />
+                    <RefusalPanel surface={STAFF_SURFACE} refusal={refused} seat="card-foot" refused={act.words.refused} />
                 </div>
             )}
             {open ? (

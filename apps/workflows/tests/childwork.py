@@ -75,3 +75,39 @@ class ParentContextWorkflow:
             result_type=SeenContext,
         )
         return seen
+
+
+@dataclass
+class TwoChains:
+    """What two activities of one run saw of the correlation chain."""
+
+    first: SeenContext
+    second: SeenContext
+
+
+@workflow.defn(name="TwoStepChainWorkflow")
+class TwoStepChainWorkflow:
+    """Two activities in one run: the shape a Schedule-started run has.
+
+    Started with no headers, as a Temporal Schedule starts one, it asks the
+    question the workflow door has to answer once: is this run ONE chain, or
+    one chain per activity?
+    """
+
+    owns_no_run = True
+
+    @workflow.run
+    async def run(self, note: str) -> TwoChains:
+        first: SeenContext = await workflow.execute_activity(
+            "report_workflow_context",
+            note,
+            start_to_close_timeout=REPORT_TIMEOUT,
+            result_type=SeenContext,
+        )
+        second: SeenContext = await workflow.execute_activity(
+            "report_workflow_context",
+            note,
+            start_to_close_timeout=REPORT_TIMEOUT,
+            result_type=SeenContext,
+        )
+        return TwoChains(first=first, second=second)

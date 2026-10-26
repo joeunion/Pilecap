@@ -655,3 +655,23 @@ def test_the_lazy_read_returns_the_real_constant() -> None:
     which is the failure it is meant to prevent, spelled differently.
     """
     assert docs._mcp_path() == MCP_PATH
+
+
+def test_every_operation_carries_its_url_name() -> None:
+    """The document carries the handle a `route:` remedy names — on every bound operation.
+
+    RED on the baseline: `grep -c url_name frontend/openapi.json` → 0.
+    """
+    from apps.core.api.mount import bound_operations
+    from config.api import api
+
+    document = api.get_openapi_schema()
+    published = [
+        operation["x-url-name"]
+        for path_item in document["paths"].values()
+        for operation in path_item.values()
+        if isinstance(operation, dict) and "x-url-name" in operation
+    ]
+    bound = [name for _path, name, _operation in bound_operations() if name]
+    assert sorted(published) == sorted(bound)
+    assert len(published) >= 154

@@ -11,13 +11,23 @@ def create_order(request, body: OrderIn): return Order.objects.create(tenant=req
 def send_receipt(sender, instance, created, **kwargs): ...
 
 # right — one service: @service, keyword-only, atomic, emits its event inside the transaction, returns the object
+from decimal import Decimal
+from uuid import UUID
+
 from django.db import transaction
+from ninja import Field, Schema
 
 from apps.core.actor import Actor
 from apps.core.authz import require
+from apps.core.schemas import event_payload, example, personal
 from apps.core.service import service
 from apps.events.services import emit
 from apps.orders.events import ORDER_CREATED           # rule 16: the name is a constant, never a literal here
+
+class OrderOut(Schema):                                # the door's shape; the event is it through the strip
+    id: UUID
+    total: Decimal
+    placed_by_email: str = Field(json_schema_extra=personal(example("dana@example.com")))  # names a person
 
 @service
 def create_order(*, tenant: Tenant, actor: Actor, customer: Customer, lines: list[LineIn]) -> Order:
@@ -25,7 +35,7 @@ def create_order(*, tenant: Tenant, actor: Actor, customer: Customer, lines: lis
     with transaction.atomic():
         order = Order.objects.create(tenant=tenant, customer=customer, placed_by=actor.user, total=sum(l.amount for l in lines))
         OrderLine.objects.bulk_create([OrderLine(order=order, **l.model_dump()) for l in lines])
-        emit(name=ORDER_CREATED, tenant=tenant, payload=OrderOut.from_orm(order).model_dump(mode="json"), actor=actor)
+        emit(name=ORDER_CREATED, tenant=tenant, payload=event_payload(OrderOut.from_orm(order)), actor=actor)
     return order
 ```
 
@@ -34,41 +44,44 @@ def create_order(*, tenant: Tenant, actor: Actor, customer: Customer, lines: lis
 A house-rule finding on a service usually has two remedies, and violation
 messages tend to name only the expensive one. Rule 16's message, for instance,
 says "add the verb to `service_verbs` in rules.yaml"
-(`quality/checks.py:1576-1578`) — which widens the lexicon for the whole
+(`quality/checks/rule_16_the_rest_of_the_grammar.py::naming_grammar`) — which widens the lexicon for the whole
 template, forever, to excuse one function. The two cheap roads it does not
 mention: a **counted override** on the line, and, when the thing is not a
 capability at all, the **underscore-prefix road** — rule 16 skips a
 `services.py` function whose name starts with `_` outright
-(`quality/checks.py:1569-1570`, "a private helper is the inside of a service,
+(`quality/checks/rule_16_the_rest_of_the_grammar.py::naming_grammar`'s `_` skip, "a private helper is the inside of a service,
 not a capability"). A private helper called only by services in the same module
 should be `_`-prefixed and is then not the rule's subject at all. Reach for the
 lexicon only when the verb genuinely names something a product DOES.
 
 Every valve is a comment somebody wrote and a reviewer can disagree with. Four
 of the five are **counted and printed** (a suppressed finding is never a silent
-one) and need **≥ 12 characters of reason** — a bare marker becomes its own
+one) and need a reason of at least `quality/reason_floor.py::MIN_REASON`
+characters — a bare marker becomes its own
 finding rather than an off switch. What differs, and what costs merge cycles to
 rediscover, is **where each has to sit**:
 
 | Valve | Whose | Where it counts | Where it is invisible |
 |---|---|---|---|
-| `# rule-<id>: <reason>` | any rule, the universal override (`quality/gate.py:70`, `override_at` `:91-110`) | on the **flagged line itself**, or in the **contiguous `#` block directly above it** | anywhere a non-comment line intervenes. Rule 13 reports at the `def` line, so a valve **above the `@service` decorator is invisible** — the decorator breaks the block — while one **between the decorator and `def` counts** |
-| `# authz: <reason>` | rule 13, a `@service` taking `actor` that never calls `authz.require` (`quality/checks.py:1221`; rule 41's refusal census reads it the same way, `:5978-5997`) | **anywhere inside the function**, `def` line through its last line (the check reads `ast.get_source_segment` of the `FunctionDef`) | above the decorator, **and** between the decorator and `def` — `FunctionDef.lineno` is the `def` line, so neither is in the segment |
-| `# reach: <reason>` | rule 26, an org-scoped parameter not passed through `may_be_named` (`quality/checks.py:3359`, `_reach_reason` `:3391-3410`) | on the **parameter's own line** (or the block above it) for that one parameter; or, for the whole function, on the **`def` line or the first decorator line** — either with its contiguous block above (`:3536-3537`) | anywhere else |
-| `# door: <reason>` | rule 42 — and since R6 (P15) the valve carries **two claims, told apart by the finding class it suppresses**: *no door reaches this service* (the original), or *only this tree's own hands reach it* (a service called by management commands/admin only); write the reason to say WHICH (`quality/checks.py:5215`, `_door_reason` `:5231-5248`) | on the **`def` line or the first decorator line**, each with its contiguous block above (`:5453-5454`) | anywhere else |
-| `# role-bound: <reason>` | rule 29, a role value written without bounding it against the granter's ceiling (`quality/checks.py:2018`, `_role_bound_reason` `:2022`) | on the **`def` line**, or on **any parameter's line**, each with its contiguous block above (`:2114-2118`) | anywhere else |
+| `# rule-<id>: <reason>` | any rule, the universal override (`quality/engine/run.py::override_at`) | on the **flagged line itself**, or in the **contiguous `#` block directly above it** | anywhere a non-comment line intervenes. Rule 13 reports at the `def` line, so a valve **above the `@service` decorator is invisible** — the decorator breaks the block — while one **between the decorator and `def` counts** |
+| `# authz: <reason>` | rule 13, a `@service` taking `actor` that never calls `authz.require` (`quality/checks/rule_13_clauses_i_iv.py::_AUTHZ_RE`, read by `quality/checks/rule_54.py::_function_valve`) | on a **comment line inside the function**, on the **`def` line**, or in the **contiguous `#` block above the first decorator** | a docstring or string that spells it (prose is not a valve), and anywhere a non-comment line intervenes |
+| `# reach: <reason>` | rule 26, an org-scoped parameter not passed through `may_be_named` (`quality/checks/rule_26.py::_REACH_RE`) | on the **parameter's own line** (or the block above it) for that one parameter; or, for the whole function, on the **`def` line or the first decorator line** — either with its contiguous block above | anywhere else |
+| `# door: <reason>` | rule 42 — and since R6 (P15) the valve carries **two claims, told apart by the finding class it suppresses**: *no door reaches this service* (the original), or *only this tree's own hands reach it* (a service called by management commands/admin only); write the reason to say WHICH (`quality/checks/rule_42.py::_DOOR_RE`) | on the **`def` line or the first decorator line**, each with its contiguous block above | anywhere else |
+| `# role-bound: <reason>` | rule 29, a role value written without bounding it against the granter's ceiling (`quality/checks/rule_29.py::_ROLE_BOUND_RE`) | on the **`def` line**, or on **any parameter's line**, each with its contiguous block above | anywhere else |
 
 Three of the five read the decorator line and two do not, which is the whole
 reason this table exists: if a valve you wrote did not take, check its position
 before you conclude the rule is broken.
 
 **`# authz:` is the exception to the counting, and knowing that is the point.**
-The other four carry a 12-character reason floor
-(`quality/gate.py:71`, `quality/checks.py:2019`, `:3361`, `:5216`), count their
-uses (`reach_overrides`, `door_overrides`, `role_bound_comments`, and the
-gate's own override census) and turn a bare marker into a finding of its own.
-Rule 13's `# authz:` does neither: `quality/checks.py:1221` is a substring test,
-so a bare `# authz:` with no sentence after it silently suppresses. Write the
+The other four carry the one reason floor (`quality/reason_floor.py::MIN_REASON`,
+applied by the one reader, `quality/worlds.py::comment_reason`), count their
+uses (`reach_valves`, `door_valves`, `role_bound_valves`, and the gate's own
+standing section, `quality/engine/run.py::standing_valves`) and turn a bare marker
+into a finding of its own. Rule 13's `# authz:` does neither: it reads through
+the same reader (`quality/checks/rule_54.py::_function_valve`) but accepts any valve
+that reader returns, holding or not, so a bare `# authz:` with no sentence
+after it still suppresses. Write the
 sentence anyway. It is the only thing standing between "this service does not
 authorize" and nobody ever asking why again.
 
@@ -106,7 +119,7 @@ class QuotaExceeded(DomainError):
 ```
 
 - **One composer.** `core.exceptions.wire_refusal(exc)` builds
-  `{detail, code, errors?, remedies?}`; `config/api.py` sends it as JSON and
+  the body over `apps/core/exceptions.py::WIRE_COMMON_KEYS`; `config/api.py` sends it as JSON and
   `core.mcp.tool_call` renders it through `refusal_message` as one line, code
   first. Never catch a domain exception in a route or a tool to shape your own
   body — that is the fourth copy of a rule with one home, and it is how the

@@ -17,17 +17,16 @@ from typing import Any
 import pytest
 from django.test import Client
 
-from apps.connections import services
 from apps.connections.models import Connection
 from apps.connections.policies import ACTION_PROSE
 from apps.connections.services import (
     create_connection,
-    record_failure,
     record_inbound_webhook,
     revoke_connection,
     update_credentials,
 )
 from apps.connections.tests.conftest import WEBHOOK_SECRET
+from apps.core import bridge
 from apps.core.actor import Actor, actor_for, system_actor
 from apps.core.audit import AuditEntry
 from apps.core.authz import refusal_sentence
@@ -39,7 +38,7 @@ from apps.core.services import add_membership, create_organization, root_organiz
 
 pytestmark = pytest.mark.django_db
 
-TOKEN = "sk-live-this-must-never-be-readable"
+TOKEN = "sk-live-this-must-never-be-readable"  # noqa: S105 — a fake token value only this test holds
 
 
 # --- The ordinary write path --------------------------------------------------
@@ -67,7 +66,7 @@ def test_update_credentials_merges_rather_than_replaces(
         connection=connection,
         credentials={"access_token": "a-refreshed-token"},
     )
-    assert updated.access_token == "a-refreshed-token"
+    assert updated.access_token == "a-refreshed-token"  # noqa: S105 — the fake value the test planted, read back
     assert updated.webhook_secret == WEBHOOK_SECRET
     assert updated.connected_at is not None
 
@@ -93,17 +92,6 @@ def test_revoking_takes_the_credentials_with_it(
     assert revoked.last_error == "rotated upstream"
 
     assert Connection.objects.for_webhook(connection.pk) is None
-
-
-def test_record_failure_says_what_broke_without_saying_what_the_token_was(
-    tenant: Tenant, owner_actor: Actor, connection: Connection
-) -> None:
-    failed = record_failure(
-        tenant=tenant, actor=owner_actor, connection=connection, reason="upstream returned 401"
-    )
-    assert failed.status == Connection.Status.ERROR
-    assert failed.last_error == "upstream returned 401"
-    assert failed.has_credentials is True, "a failure is not a revocation"
 
 
 # --- Authorization ------------------------------------------------------------
@@ -181,9 +169,6 @@ def test_no_audit_row_in_this_app_ever_contains_a_credential(
     update_credentials(
         tenant=tenant, actor=owner_actor, connection=connection, credentials={"access_token": TOKEN}
     )
-    record_failure(
-        tenant=tenant, actor=owner_actor, connection=connection, reason="upstream said no"
-    )
     revoke_connection(tenant=tenant, actor=owner_actor, connection=connection)
 
     everything = json.dumps([dict(entry.input) for entry in AuditEntry.objects.all()])
@@ -237,17 +222,23 @@ def test_a_stored_delivery_keeps_the_body_and_drops_the_authorization_header(
     assert "Bearer somebody-elses-token" not in json.dumps(received.headers)
 
 
-def test_a_delivery_is_stored_even_with_no_event_spine_in_the_tree(
-    tenant: Tenant, connection: Connection, monkeypatch: pytest.MonkeyPatch
+def test_a_delivery_is_stored_even_with_nothing_on_the_bridge_to_take_it(
+    tenant: Tenant, connection: Connection, monkeypatch: pytest.MonkeyPatch, settings: Any
 ) -> None:
-    """The store is unconditional: a template without `apps/events` still receives.
+    """The store is unconditional: with nothing registered to take it, it still lands.
 
-    The lookup is made to answer `None` — the state a tree without the spine is
-    in — rather than asserting a range of statuses that a tree *with* it would
-    also satisfy. What the lookup itself does in either tree is
-    `test_discovery`'s.
+    The two bridge names the hand-off reaches are made absent — the state a
+    process whose events app never ran `ready()` is in — rather than asserting a
+    range of statuses that a registered bridge would also satisfy. Outside
+    production the bridge's no-op answers `None`, and the hand-off reads that as
+    "nothing took it", never as a receiver that did. What production does
+    instead is `test_discovery`'s.
     """
-    monkeypatch.setattr(services, "_events_callable", lambda module, name: None)
+    settings.BRIDGE_STRICT = False  # opt-out: the non-production no-op is the subject
+    registered = bridge.registered()
+    for name in (bridge.EMIT, bridge.VERIFY_AND_STORE):
+        registered.pop(name)
+    monkeypatch.setattr(bridge, "_registry", registered)
 
     received = record_inbound_webhook(
         tenant=tenant, actor=system_actor(tenant), connection=connection, body="{}", headers={}
@@ -318,20 +309,12 @@ def test_a_branch_administrator_may_not_configure_the_tenants_connections(
     branch_admin_actor: Actor,
     connection: Connection,
 ) -> None:
-    """Four acts on the tenant's connection, four refusals, four sentences.
+    """Three acts on the tenant's connection, three refusals, three sentences.
 
     Each refusal is asserted against `ACTION_PROSE[key]` rather than a quoted
     string, so the test says "the key's own sentence" and cannot come to mean
     "these words". A bare `pytest.raises(Forbidden)` would pass on any wall at
     all, including one that refused everybody.
-
-    `record_failure` is here although its ordinary caller is an activity: it has
-    no caller in this tree at all today, and the caller its docstring names
-    restores the actor from the workflow's headers — which carry a person's hat.
-    A site that is system-only *in the ordinary case* is not a site nothing but
-    the system can reach, so it asks at the root like the other three rather
-    than carrying a valve whose sentence would be a claim about a caller that
-    does not exist.
     """
     attempts: tuple[tuple[str, Callable[[], object]], ...] = (
         (
@@ -355,12 +338,6 @@ def test_a_branch_administrator_may_not_configure_the_tenants_connections(
                 tenant=tenant, actor=branch_admin_actor, connection=connection, reason="captured"
             ),
         ),
-        (
-            "connection.update",
-            lambda: record_failure(
-                tenant=tenant, actor=branch_admin_actor, connection=connection, reason="captured"
-            ),
-        ),
     )
     for key, attempt in attempts:
         with pytest.raises(Forbidden) as refused:
@@ -371,7 +348,7 @@ def test_a_branch_administrator_may_not_configure_the_tenants_connections(
     # branch admin's credential in place and the test green on the sentence.
     connection.refresh_from_db()
     assert connection.status == Connection.Status.CONNECTED
-    assert connection.access_token == "an-access-token"
+    assert connection.access_token == "an-access-token"  # noqa: S105 — the fake value the test planted, read back
     assert connection.webhook_secret == WEBHOOK_SECRET
     assert connection.last_error == ""
     assert Connection.objects.for_tenant(tenant).count() == 1

@@ -10,7 +10,7 @@ The long form of `django-conventions` §13.
   an `[attr-defined]` error. Measured on this tree: `mypy --strict` clean is
   **exit 0, "Success: no issues found in 495 source files"**; the same command
   under `DJB_DISABLED_APPS=example` is **exit 1, 5 `[attr-defined]` errors in 5
-  files** (`apps/example/models.py:441` on `WidgetEntry.widget_id`, and
+  files** (`apps/example/models.py:374` on `WidgetEntry.widget_id`, and
   `Widget.owner_id` in `test_services.py:71`, `test_admin.py:85`,
   `test_mcp.py:268`, `test_api.py:105`). Nothing is wrong with that code; the
   app it belongs to is simply not installed in the world mypy was pointed at.

@@ -102,6 +102,16 @@ import re
 import subprocess
 import sys
 
+# THE CHECKOUT ROOT ON `sys.path`, so `quality/` imports from any cwd — this file
+# is run as `python3 scripts/<name>.py`, which puts `scripts/` there and nothing else.
+_ROOT = str(pathlib.Path(__file__).resolve().parent.parent)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from quality.could_not_look import CouldNotLook as CannotLook  # noqa: E402
+from quality.could_not_look import tool_said  # noqa: E402
+from quality.djb.rituals.publish import reserved  # noqa: E402
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 NORTH_STAR = ROOT / "docs/product/north-star.md"
@@ -127,10 +137,6 @@ CENSUS = ROOT / "docs/product/instruments.md"
 # The template never ships a `*.local.md` (`publish.sh` § R0), so a release can
 # never conflict with one.
 CENSUS_LOCAL = ROOT / "docs/product/instruments.local.md"
-
-
-class CannotLook(Exception):
-    """The input cannot be read or cannot be trusted. Exit 2, never a pass."""
 
 
 # --- the verdict vocabulary: DATA. ONE LINE PER KIND. ------------------------
@@ -190,9 +196,19 @@ FILE_LINE = re.compile(r"(?:[\w\-.]+/)+[\w\-.]+:\d+|[\w\-.]+\.\w{1,6}:\d+")
 # --- markdown table reading ---------------------------------------------------
 
 
+#: A cell boundary: a `|` that is not escaped. Markdown writes a literal pipe
+#: inside a cell as `\|`, and a split on every `|` shifted every column after it.
+_CELL_BOUNDARY = re.compile(r"(?<!\\)\|")
+
+
 def _cells(line: str) -> list[str]:
-    """Cells of a markdown table row, blockquote markers stripped."""
-    return [c.strip() for c in line.strip().lstrip("> ").strip().strip("|").split("|")]
+    """Cells of a markdown table row, blockquote markers stripped; `\\|` is a pipe inside a cell."""
+    row = line.strip().lstrip("> ").strip()
+    if row.startswith("|"):
+        row = row[1:]
+    if row.endswith("|") and not row.endswith("\\|"):
+        row = row[:-1]
+    return [c.strip().replace("\\|", "|") for c in _CELL_BOUNDARY.split(row)]
 
 
 def _is_separator(cells: list[str]) -> bool:
@@ -644,7 +660,7 @@ CENSUS_PINS = ("scripts/gate_ledger.sh",)
 # command owes a row is now made once here rather than by whoever next reads the
 # candidate line and decides not to.
 CENSUS_COMMANDS = re.compile(
-    r"^(introspect|integrations|.*_audit|.*_sweep|.*_reconcile|.*_measure)$"
+    r"^(introspect|integrations|roads|.*_audit|.*_sweep|.*_reconcile|.*_measure)$"
 )
 
 #: The verdict/exit grammar: a command reaching past `CommandError` to choose
@@ -728,6 +744,7 @@ def tracked_and_new() -> list[str]:
             raise CannotLook(
                 f"census: `git ls-files {' '.join(extra)}` could not be run in {ROOT} "
                 f"({exc}) — the population is derived from it and from nothing else"
+                f"{tool_said(getattr(exc, 'stderr', None))}"
             ) from exc
         paths.update(p for p in out.split("\0") if p)
     return sorted(paths)
@@ -816,20 +833,34 @@ def census(text: str, local_text: str | None = None) -> tuple[int, list[str]]:
     listed: dict[str, list[str]] = {}
     _census_rows(text, "instruments.md", listed)
     template_rows = len(listed)
+    in_template = set(listed)
     local_rows = 0
     if local_text is not None:
         local_rows = _census_rows(local_text, CENSUS_LOCAL.name, listed)
 
+    # A drawer executable (R0, `publish.reserved`) is censused in the local document only.
     derived = population()
-    uncensused = [p for p in derived if p not in listed]
+    drawer = [p for p in derived if reserved(p)]
+    uncensused = [p for p in derived if not reserved(p) and p not in listed]
+    drawer_owed = [p for p in drawer if p not in listed or p in in_template]
     ghost = [p for p in listed if p not in derived]
-    out = [f"census: {len(derived)} instruments derived, {template_rows} rows in {CENSUS.name}"]
+    out = [
+        f"census: {len(derived) - len(drawer)} instruments derived, "
+        f"{template_rows} rows in {CENSUS.name}"
+    ]
     # APPENDED AND NOT FOLDED INTO THE LINE ABOVE, so a tree with no drawer
     # prints exactly the bytes it printed before this reader existed.
     if local_text is not None:
         out.append(f"  and {local_rows} product row(s) in {CENSUS_LOCAL.name}")
+    if drawer:
+        out.append(f"  and {len(drawer)} product drawer instrument(s) derived (a `local/` path)")
     for p in uncensused:
         out.append(f"  uncensused: {p}")
+    for p in drawer_owed:
+        where = f"its row is in {CENSUS.name}, " if p in in_template else ""
+        out.append(
+            f"  uncensused: {p} — {where}a drawer instrument's row is in {CENSUS_LOCAL.name}"
+        )
     for p in ghost:
         out.append(f"  censused but not an instrument (gone, or no longer executable): {p}")
 
@@ -882,12 +913,33 @@ def census(text: str, local_text: str | None = None) -> tuple[int, list[str]]:
     if not by_grammar:
         out.append("    none on this tree")
 
-    if uncensused or ghost or thin:
+    if uncensused or ghost or thin or drawer_owed:
         out.append("")
         out.append(
             "CANNOT VOUCH — the census and the tree disagree. A new instrument ships uncensused "
             "and the doc goes stale invisibly; that is the class this re-deriver exists to refuse."
         )
+        if uncensused or ghost or thin:
+            out.append(
+                "   Every executable git knows about outside apps/, config/ and the product's "
+                "`local/` drawers owes a row in docs/product/instruments.md answering the three "
+                "honesty questions, a file:line each."
+            )
+        if drawer_owed:
+            out.append(
+                f"   An executable under a `local/` drawer is the product's: it owes a row in "
+                f"docs/product/{CENSUS_LOCAL.name} (create it if absent; never in "
+                f"{CENSUS.name}), the same five-column table, a file:line in columns 2-4:"
+            )
+            out.append(
+                "     | Instrument | Fails loud? | Says what it saw? | States its blind spots? "
+                "| Finding |"
+            )
+            out.append("     |---|---|---|---|---|")
+            out.append(
+                f"     | `{drawer_owed[0]}` | yes, exit 1 ({drawer_owed[0]}:N) | prints … "
+                f"({drawer_owed[0]}:N) | says … ({drawer_owed[0]}:N) | none |"
+            )
         return 2, out
     out.append("  every derived instrument has a row, and every row cites a file:line")
     return 0, out
@@ -959,7 +1011,7 @@ def _canary_command_body(what: str) -> str:
 def _canary_row(path: str) -> str:
     """The instruments row a planted command owes — five cells, three citations."""
     return (
-        f"| `{path}` | yes — a canary that cannot look raises, and the raise is the exit status "
+        f"| `{path}` | yes — a canary that could not look raises, and the raise is the exit status "
         f"(`{path}:1`) | loud — a disagreement is a `DRIFT` line and exit 1 (`{path}:1`) "
         f"| yes — it sees nothing at all, which is the whole of what it claims (`{path}:1`) "
         f"| none — planted and deleted inside one self-test case |"
@@ -1067,7 +1119,7 @@ def selftest() -> int:
         try:
             code, lines = scan(north, register)
         except CannotLook as e:
-            code, lines = 2, [f"CANNOT LOOK — {e}"]
+            code, lines = 2, [f"COULD NOT LOOK — {e}"]
         judge(name, want, code, lines, absent, present)
 
     # (a) a GREEN whose `paths:` glob was touched after the proof date -> STALE, exit 1
@@ -1218,7 +1270,7 @@ def selftest() -> int:
     try:
         code, lines = scan(NORTH_STAR.read_text(), REGISTER.read_text())
     except CannotLook as e:
-        code, lines = 2, [f"CANNOT LOOK — {e}"]
+        code, lines = 2, [f"COULD NOT LOOK — {e}"]
     for ln in lines:
         print(f"      {ln}")
     if code not in (0, 1):
@@ -1244,7 +1296,7 @@ def selftest() -> int:
     try:
         ccode, clines = census(_read(CENSUS), _census_local_text())
     except CannotLook as e:
-        ccode, clines = 2, [f"CANNOT LOOK — {e}"]
+        ccode, clines = 2, [f"COULD NOT LOOK — {e}"]
     for ln in clines:
         print(f"      {ln}")
     if ccode != 0:
@@ -1280,7 +1332,7 @@ def selftest() -> int:
             document = _instruments_text_with(_canary_row(rel)) if with_row else _read(CENSUS)
             code, lines = census(document)
         except CannotLook as e:
-            code, lines = 2, [f"CANNOT LOOK — {e}"]
+            code, lines = 2, [f"COULD NOT LOOK — {e}"]
         finally:
             if planted is not None:
                 planted.unlink(missing_ok=True)
@@ -1342,7 +1394,7 @@ def selftest() -> int:
             planted = _plant_drawer_instrument()
             code, lines = census(_read(CENSUS), local_text)
         except CannotLook as e:
-            code, lines = 2, [f"CANNOT LOOK — {e}"]
+            code, lines = 2, [f"COULD NOT LOOK — {e}"]
         finally:
             if planted is not None:
                 planted.unlink(missing_ok=True)
@@ -1458,7 +1510,7 @@ def main(argv: list[str]) -> int:
         else:
             code, lines = scan(_read(NORTH_STAR), _read(REGISTER))
     except CannotLook as e:
-        print(f"goalpost_scan: CANNOT LOOK — {e}", file=sys.stderr)
+        print(f"goalpost_scan: COULD NOT LOOK — {e}", file=sys.stderr)
         print(
             "  Exit 2 outranks a pass: an instrument that cannot read its input is not\n"
             "  reporting "

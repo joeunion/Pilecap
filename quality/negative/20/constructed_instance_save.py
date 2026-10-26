@@ -1,7 +1,7 @@
 
 
 # The ONE write an append-only model legitimately does, in the shape
-# `apps/example/services.py::_append_entry` really writes it: construct, clean,
+# `apps/example/services.py::_entry` really writes it: construct, clean,
 # save. `_state.adding` is True here, so the runtime belt lets it through — and
 # a static half that fired on it would accuse the rule's own worked example and
 # earn an override at the exact site the rule exists to permit.

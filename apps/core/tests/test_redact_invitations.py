@@ -12,11 +12,6 @@ The three properties the criterion asks for:
 * every invitation holding the address is redacted, **across tenants**;
 * another address's invitations are untouched;
 * the write is `@service` and audited (action + door — G3).
-
-And the one honest thing the rung disproved on its way through: the `# reach:`
-comment on `email` is NOT counted by the gate's valve section today. See
-`test_the_reach_valve_is_written_and_is_not_counted_yet`, which asserts both
-halves rather than letting a reader assume the first.
 """
 
 from __future__ import annotations
@@ -213,31 +208,10 @@ def test_the_address_never_reaches_the_audit_input(tenant: Tenant, owner_actor: 
 # --- the shape the rules read ------------------------------------------------
 
 
-def test_the_reach_valve_is_written_and_is_not_counted_yet() -> None:
-    """**Disproved, and said out loud rather than assumed.**
-
-    The rung's criterion expected the `# reach:` line to be "counted in the
-    gate's valve section". It is not: `quality/checks.py::service_reach` counts
-    `reach_overrides` only for a `@service` that WRITES an org-scoped row **and**
-    takes a parameter ANNOTATED with an org-scoped model — both halves, not
-    either.
-
-    The comment is written anyway, because it is the true sentence about this
-    call site and because it becomes a counted one when both halves hold. Each
-    half is asserted SEPARATELY so a later reader cannot mistake a silent counter
-    for a satisfied rule — and so that a change to one of them is visible here
-    rather than only in a number.
-
-    **One half has since moved, which is what this shape was built to notice.**
-    `Invitation` became org-scoped in ADR core-20: it records the node it was
-    sent from, so this service really does write org-scoped rows now. The other
-    half has not, and it is the one that keeps this uncounted — the reference is
-    still an `email: str`, and a string is not a row `may_be_named` could ask
-    about.
-    """
+def test_no_uncounted_reach_valve_stands_on_the_email() -> None:
+    """No `# reach:` on the `str` reference: rule 26 counts none there, so it is a comment."""
     source = inspect.getsource(redact_invitations)
-    assert "# reach:" in source
-    assert "`may_be_named` has\n" in source or "may_be_named" in source
+    assert "# reach:" not in source
 
     # The two properties rule 26's population test reduces to, read off the
     # model registry and the signature rather than out of the engine (importing

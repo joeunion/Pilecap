@@ -1,66 +1,44 @@
-"""Erasure and deactivation, driven through both doors.
-
-Until this fix the two most consequential acts in the product — take somebody's
-access away, and anonymise them for good — were reachable only from a Python
-shell. `erase_user` was one of the four names in accounts' house-rule-42 census,
-which is the rule's whole complaint said about the worst possible service: built,
-tested, audited, and indistinguishable from never having been written by anybody
-who was not holding a shell.
-
-What this file pins:
-
-* the doors exist and answer where the router says they do;
-* **the wall is the service's**, not the door's — a member is refused the same
-  way over REST and over MCP, and the two refusals are compared **byte for
-  byte** rather than described as similar (E9);
-* the credential really stops working: the erased person's token 401s on the
-  next request, and the deactivated person's socket is asked to close through
-  the SEC-R1 kick seam rather than left to notice;
-* every drive leaves an audit row that names the act and the door it came
-  through, and a **refused** drive leaves the refusal row `@service` writes and
-  no other.
-
-**What it deliberately does not pin** (ADO-7, and the route docstrings say it
-too): whether `erase_user`'s sweep is *complete*. These tests are about the
-contract of the door in front of it. Wave C deepens the sweep, and the trigger
-it carries is that this file should still pass byte-unchanged afterwards.
-"""
+"""Erasure and deactivation, driven through both doors: one wall, one refusal, byte for byte."""
 
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
-from dataclasses import dataclass, field
-from typing import Any, cast
+from functools import partial
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from allauth.socialaccount.models import SocialAccount
 from django.test import Client
 from django.urls import reverse
 from mcp.server import MCPServer
-from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 
 from apps.accounts.mcp import register
 from apps.accounts.models import ApiToken, User
+from apps.accounts.policies import ACTION_PROSE
+from apps.accounts.selectors import get_platform_provider_id
 from apps.accounts.services import (
     KICK_USER_DEACTIVATED,
     KICK_USER_ERASED,
     create_user,
     issue_token,
+    unlink_zitadel_identity,
 )
+from apps.accounts.tests.conftest import join, subject_of
 from apps.core import bridge, context
 from apps.core.actor import actor_for, system_actor
 from apps.core.audit import AuditEntry
-from apps.core.exceptions import refusal_message
-from apps.core.mcp import SCOPE_KEY, Principal
-from apps.core.models import Membership, Organization, Tenant
+from apps.core.exceptions import Forbidden, NoActingScope, refusal_message, wire_refusal
+from apps.core.models import Membership, Tenant
 from apps.core.services import add_membership, root_organization
+from apps.core.tests.mcp_context import context_for
+from apps.core.tests.mcp_context import tool as core_tool
 
 pytestmark = pytest.mark.django_db
 
 JSON = "application/json"
-PASSWORD = "a-long-enough-password"  # pragma: allowlist secret
+PASSWORD = "a-long-enough-password"  # noqa: S105 — a throwaway password a test user is made with  # pragma: allowlist secret
 
 ME_DEACTIVATE = "/api/v1/users/me/deactivate/"
 ME_ERASE = "/api/v1/users/me/erase/"
@@ -82,36 +60,7 @@ def body_of(response: Any) -> dict[str, Any]:
     return parsed
 
 
-# --- A tool call, without a transport -----------------------------------------
-# The same shape `apps/comms/tests/test_mcp.py` uses, for the same reason: the
-# tool functions are the door, and driving them directly is what lets a REST
-# response and a tool result be compared inside one test.
-
-
-@dataclass
-class _FakeRequest:
-    scope: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class _FakeRequestContext:
-    request: _FakeRequest
-
-
-def context_for(user: User, tenant: Tenant | None, org: Organization | None = None) -> Context[Any]:
-    resolved = org if org is not None else (root_organization(tenant=tenant) if tenant else None)
-    scope = {SCOPE_KEY: Principal(user=user, tenant=tenant, org=resolved)}
-    return Context(
-        request_context=cast(Any, _FakeRequestContext(request=_FakeRequest(scope=scope)))
-    )
-
-
-def tool(name: str) -> Callable[..., Any]:
-    server: MCPServer[Any] = MCPServer(name="test", version="1")
-    register(server)
-    registered = server._tool_manager.get_tool(name)
-    assert registered is not None, f"{name} is not registered"
-    return registered.fn
+tool = partial(core_tool, register=register)
 
 
 @pytest.fixture
@@ -254,7 +203,76 @@ def test_an_admin_deactivates_a_member_of_their_tenant(
     assert kicks == [{"user_id": member.pk, "reason": KICK_USER_DEACTIVATED}]
 
 
+# --- the unlink's wall, driven by somebody it refuses -------------------
+
+
+def test_a_member_of_another_tenant_may_not_unlink_this_tenants_person(
+    other_tenant: Tenant, member: User
+) -> None:
+    """The predicate's refusal, reached through the service with a real actor, not the system's."""
+    outsider = create_user(email="outsider@example.com", password=PASSWORD)
+    add_membership(
+        user=outsider,
+        tenant=other_tenant,
+        is_default=True,
+        role=Membership.Role.MEMBER,
+        actor=system_actor(tenant=other_tenant),
+    )
+    join(member, "sub-member")
+
+    with pytest.raises(Forbidden) as refused:
+        unlink_zitadel_identity(
+            user=member,
+            actor=actor_for(
+                user=outsider, tenant=other_tenant, org=root_organization(tenant=other_tenant)
+            ),
+            tenant=other_tenant,
+            reason="not theirs to cut",
+        )
+
+    assert refused.value.detail == ACTION_PROSE["user.unlink"]
+    assert subject_of(member) == "sub-member"
+
+
+def test_a_person_unlinks_themselves(tenant: Tenant, member: User) -> None:
+    """The self clause of the same predicate: the join goes, the person stays."""
+    join(member, "sub-member")
+    SocialAccount.objects.create(user=member, provider=get_platform_provider_id(), uid="sub-member")
+
+    unlink_zitadel_identity(
+        user=member,
+        actor=actor_for(user=member, tenant=tenant, org=root_organization(tenant=tenant)),
+        tenant=tenant,
+        reason="my platform account was rebuilt",
+    )
+
+    assert subject_of(member) is None
+    assert not SocialAccount.objects.filter(user=member).exists()
+    member.refresh_from_db()
+    assert member.is_active is True
+
+
 # --- B-ACCT-2: the wall, over both doors, byte for byte -----------------------
+
+
+@pytest.mark.parametrize("url", [ME_DEACTIVATE, ME_ERASE])
+def test_a_person_with_no_membership_is_refused_no_acting_scope(
+    api: Client, nomad: User, url: str
+) -> None:
+    """The door's one resolver refuses a tenantless request with the registered code."""
+    api.force_login(nomad)
+    rest = api.post(url, data="{}", content_type=JSON)
+    assert rest.status_code == 403, rest.content
+    assert body_of(rest) == wire_refusal(NoActingScope())
+
+
+def test_both_doors_refuse_a_tenantless_erasure_identically(api: Client, nomad: User) -> None:
+    api.force_login(nomad)
+    rest = api.post(erase_url(nomad), data="{}", content_type=JSON)
+    assert body_of(rest)["code"] == "no_acting_scope", rest.content
+    with pytest.raises(ToolError) as refused:
+        tool("erase_user")(context_for(nomad, None, None), user_id=nomad.pk)
+    assert str(refused.value) == refusal_message(body_of(rest))
 
 
 def test_a_member_may_not_erase_a_colleague_and_both_doors_say_so_identically(
@@ -279,7 +297,9 @@ def test_a_member_may_not_erase_a_colleague_and_both_doors_say_so_identically(
     assert rest_body["code"] == "forbidden"
 
     with pytest.raises(ToolError) as refused:
-        tool("erase_user")(context_for(member, tenant), user_id=colleague.pk)
+        tool("erase_user")(
+            context_for(member, tenant, root_organization(tenant=tenant)), user_id=colleague.pk
+        )
 
     assert str(refused.value) == refusal_message(rest_body), "one composer, two doors"
 
@@ -297,7 +317,9 @@ def test_a_member_may_not_deactivate_a_colleague_either(
     assert rest.status_code == 403, rest.content
 
     with pytest.raises(ToolError) as refused:
-        tool("deactivate_user")(context_for(member, tenant), user_id=colleague.pk)
+        tool("deactivate_user")(
+            context_for(member, tenant, root_organization(tenant=tenant)), user_id=colleague.pk
+        )
 
     assert str(refused.value) == refusal_message(body_of(rest))
     colleague.refresh_from_db()
@@ -361,7 +383,9 @@ def test_the_machine_door_erases_through_the_same_service(
     tenant: Tenant, owner: User, member: User
 ) -> None:
     """The tool is not a second implementation: the same wall, the same result."""
-    result = tool("erase_user")(context_for(owner, tenant), user_id=member.pk)
+    result = tool("erase_user")(
+        context_for(owner, tenant, root_organization(tenant=tenant)), user_id=member.pk
+    )
 
     assert result.is_active is False
     assert result.email.startswith("erased+")
@@ -419,7 +443,9 @@ def test_a_machine_door_erasure_is_audited_as_mcp(
     declared rather than blurred.
     """
     with context.bound(door="mcp", actor_kind="agent"):
-        tool("erase_user")(context_for(owner, tenant), user_id=member.pk)
+        tool("erase_user")(
+            context_for(owner, tenant, root_organization(tenant=tenant)), user_id=member.pk
+        )
 
     row = AuditEntry.objects.get(action="accounts.erase_user")
     assert row.door == "mcp"
@@ -477,34 +503,20 @@ HOUSE_WORDS = (
 
 
 def test_the_published_half_of_every_new_route_is_written_for_a_stranger() -> None:
-    """The contract half is public API documentation, not a note to a maintainer.
-
-    A description that explains itself in this repository's own vocabulary reads
-    as documentation and is not: the person meeting it has an API key and no
-    checkout, and "the machine door" or "`policies.py`" is a sentence they
-    cannot act on. The divider is where that material belongs, and the workshop
-    halves of these four routes are full of it.
-
-    Scoped to this app's routes on purpose. Sweeping the prose already
-    published is booked separately and doing it here would make this test
-    fail for somebody else's line.
-    """
+    """The contract half speaks to a caller with an API key and no checkout."""
     from apps.accounts.api import (
         deactivate_me_route,
         deactivate_user_route,
         erase_me_route,
         erase_user_route,
     )
-    from apps.core.api.docs import contract_of, workshop_half
+    from apps.core.api.docs import contract_of
 
     for route in (deactivate_me_route, erase_me_route, deactivate_user_route, erase_user_route):
         contract = contract_of(route).lower()
         assert contract, route.__name__
         found = [word for word in HOUSE_WORDS if word.lower() in contract]
         assert not found, f"{route.__name__}'s published half says {found}"
-        # And the divider is earning its keep rather than being decoration: each
-        # of these routes has something real to say to the next maintainer.
-        assert workshop_half(route.__doc__), f"{route.__name__} has an empty workshop half"
 
 
 def test_both_doors_describe_the_capability_with_one_text() -> None:

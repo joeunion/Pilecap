@@ -36,10 +36,9 @@ from django.test import override_settings
 from django.utils import timezone
 
 from apps.accounts.models import User
-from apps.accounts.services import issue_token
-from apps.core.actor import actor_for
 from apps.core.asyncdb import run_db
 from apps.core.models import Tenant
+from apps.core.tests.wire import bearer, socket_bearer
 from apps.realtime.bridge import push_event
 from apps.realtime.schemas import EventMessage
 from apps.realtime.tests.websocket import Handshake, Socket, open_socket
@@ -116,17 +115,6 @@ async def opened(headers: list[tuple[bytes, bytes]]) -> AsyncIterator[tuple[Sock
         yield pair
 
 
-async def bearer_headers(*, user: User, tenant: Tenant) -> list[tuple[bytes, bytes]]:
-    _, plaintext = await run_db(
-        issue_token,
-        user=user,
-        tenant=tenant,
-        name="idle-socket",
-        actor=actor_for(user=user, tenant=tenant),
-    )
-    return [(b"authorization", f"Bearer {plaintext}".encode())]
-
-
 def test_the_read_timeout_is_longer_than_the_blocking_read_it_guards() -> None:
     """The number that was turned on, pinned to the library it has to outlive.
 
@@ -158,7 +146,9 @@ async def test_a_socket_on_the_real_channel_layer_survives_an_idle_window(
     * the frame is the bridge still reaching a connection that waited.
     """
     with override_settings(CHANNEL_LAYERS=REDIS_LAYER):
-        async with opened(await bearer_headers(user=owner, tenant=tenant)) as (socket, handshake):
+        async with opened(
+            socket_bearer(await run_db(bearer, user=owner, tenant=tenant, name="idle-socket"))
+        ) as (socket, handshake):
             assert handshake.accepted is True
 
             await asyncio.sleep(IDLE)

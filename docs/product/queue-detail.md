@@ -12,7 +12,7 @@
 > anchor first and row second, then regenerate:
 >
 > ```
-> python3 scripts/queue_index.py --index
+> .venv/bin/python scripts/queue_index.py --index
 > ```
 >
 > `scripts/queue_index.py --check` compares the index against its own

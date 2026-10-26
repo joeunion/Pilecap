@@ -57,6 +57,8 @@ from apps.workflows.client import (
 from apps.workflows.models import WorkflowRun
 from apps.workflows.services import (
     FINISHED_RUN_RETENTION,
+    _starter_actor,
+    check_workflow_id,
     purge_finished_runs,
     record_run,
     workflow_id,
@@ -101,7 +103,7 @@ def closed(
         workflow_id=wanted,
         workflow_type="WidgetOnboardingWorkflow",
         input_digest="d" * 64,
-        user=user,
+        actor=_starter_actor(tenant=tenant, user=user),
     )
     WorkflowRun.objects.filter(pk=run.pk).update(
         status=status,
@@ -199,7 +201,7 @@ def test_the_purge_takes_exactly_the_closed_runs_past_the_window(
     )
     WorkflowRun.objects.filter(pk=undated.pk).update(finished_at=None)
 
-    went = purge_finished_runs(before=timezone.now() - FINISHED_RUN_RETENTION)
+    went = purge_finished_runs(before=timezone.now() - FINISHED_RUN_RETENTION, tenant=None).count
 
     assert went == 2
     assert not alive(old_completed.pk)
@@ -227,7 +229,7 @@ def test_the_platform_population_is_purged_too(tenant: Tenant) -> None:
         tenant=None, key="new", status=WorkflowRun.Status.COMPLETED, finished_ago=RECENT
     )
 
-    went = purge_finished_runs(before=timezone.now() - FINISHED_RUN_RETENTION)
+    went = purge_finished_runs(before=timezone.now() - FINISHED_RUN_RETENTION, tenant=None).count
 
     assert went == 1
     assert not alive(platform_old.pk)
@@ -245,8 +247,8 @@ def test_the_purge_is_idempotent(tenant: Tenant, owner: User) -> None:
     )
 
     before = timezone.now() - FINISHED_RUN_RETENTION
-    assert purge_finished_runs(before=before) == 1
-    assert purge_finished_runs(before=before) == 0
+    assert purge_finished_runs(before=before, tenant=None).count == 1
+    assert purge_finished_runs(before=before, tenant=None).count == 0
 
 
 def test_the_reconciler_still_finds_its_stranded_rows_after_a_purge(
@@ -269,7 +271,7 @@ def test_the_reconciler_still_finds_its_stranded_rows_after_a_purge(
         workflow_id=workflow_id(tenant=tenant, app="example", noun="widget", key="stranded"),
         workflow_type="WidgetOnboardingWorkflow",
         input_digest="d" * 64,
-        user=owner,
+        actor=_starter_actor(tenant=tenant, user=owner),
     )
     WorkflowRun.objects.filter(pk=stranded.pk).update(
         started_at=timezone.now() - LONG_PAST, run_id=""
@@ -284,7 +286,7 @@ def test_the_reconciler_still_finds_its_stranded_rows_after_a_purge(
     cutoff = timezone.now() - activities.RECONCILE_AFTER
     seen_before = {row.pk for row in activities.stranded_runs(older_than=cutoff)}
 
-    purge_finished_runs(before=timezone.now() - FINISHED_RUN_RETENTION)
+    purge_finished_runs(before=timezone.now() - FINISHED_RUN_RETENTION, tenant=None)
 
     assert seen_before == {stranded.pk}
     assert {row.pk for row in activities.stranded_runs(older_than=cutoff)} == seen_before
@@ -394,15 +396,16 @@ def test_both_purges_are_declared_machines_with_the_house_shape() -> None:
     assert runs.action.args == [
         PurgeFinishedRuns(retention_seconds=activities.finished_run_retention_seconds())
     ]
-    assert runs.action.id == activities.purge_runs_workflow_id(task_queue="djb-alpha")
+    assert runs.action.id == "platform:workflows:purge-runs:djb-alpha"
     assert runs.policy.overlap is ScheduleOverlapPolicy.SKIP
 
     assert sessions.action.workflow == activities.PURGE_SESSIONS_WORKFLOW
     assert list(sessions.action.args) == []
-    assert sessions.action.id == activities.purge_sessions_workflow_id(task_queue="djb-alpha")
+    assert sessions.action.id == "platform:workflows:purge-sessions:djb-alpha"
     assert sessions.policy.overlap is ScheduleOverlapPolicy.SKIP
 
-    assert activities.PURGE_EVERY == timedelta(hours=24)
+    assert runs.spec.intervals[0].every == timedelta(hours=24)
+    assert sessions.spec.intervals[0].every == timedelta(hours=24)
     assert FINISHED_RUN_RETENTION == timedelta(days=180)
 
 
@@ -414,13 +417,13 @@ def test_both_purges_are_namespaced_by_task_queue() -> None:
     start silently re-pointed everybody else's sweep at a queue that was about
     to go away.
     """
-    for build in (
-        activities.purge_runs_schedule_id,
-        activities.purge_runs_workflow_id,
-        activities.purge_sessions_schedule_id,
-        activities.purge_sessions_workflow_id,
-    ):
-        assert build(task_queue="djb-alpha") != build(task_queue="djb-beta")
+    for name in ("workflows.purge-finished-runs", "workflows.purge-expired-sessions"):
+        machine = declaration(name)
+        assert machine.schedule_id("djb-alpha") != machine.schedule_id("djb-beta")
+        alpha: Any = machine.schedule("djb-alpha").action
+        beta: Any = machine.schedule("djb-beta").action
+        assert alpha.id != beta.id
+        assert check_workflow_id(id=alpha.id, tenant=None) == alpha.id
 
 
 def test_both_purge_workflows_declare_that_they_own_no_run() -> None:

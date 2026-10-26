@@ -1,0 +1,4 @@
+# golden-anchor: {"nth": 0, "scope": ["register", "list_widgets_tool"], "side": "before", "text": "q: str | None = None,"}
+        name: str | None = None,
+# golden-anchor: {"nth": 0, "scope": ["register", "list_widgets_tool"], "side": "before", "text": "filters.due_before = due_before"}
+            filters.name = name

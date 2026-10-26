@@ -98,7 +98,7 @@ class Sink:
     def request(self, method: str, path: str, payload: dict | None = None) -> object:
         url = f"{self.base}/api{path}"
         data = json.dumps(payload).encode() if payload is not None else None
-        request = urllib.request.Request(url, data=data, method=method)
+        request = urllib.request.Request(url, data=data, method=method)  # noqa: S310 — base is the operator's https ClickStack URL; no file: scheme reaches it
         if data is not None:
             request.add_header("Content-Type", "application/json")
         if self.cookie:
@@ -174,6 +174,50 @@ def logs_source_id(sink: Sink) -> str:
     )
 
 
+def traces_source_id(sink: Sink) -> str:
+    """The Traces source the `traces` kind reads. Never created here, like the Logs one."""
+    for source in Sink.unwrap(sink.request("GET", "/sources")):
+        if str(source.get("kind", "")).lower() in ("trace", "traces"):
+            return str(source.get("id") or source.get("_id"))
+    raise SystemExit(
+        "No Traces source in this ClickStack. Bring the sink up and let it seed "
+        "its default sources first."
+    )
+
+
+def ensure_traces_dashboard(
+    sink: Sink, shape: dict, members: list[dict], webhook_id: str, namespace: str
+) -> None:
+    """One dashboard holding one tile per `traces` member, each tile's alert embedded."""
+    name = shape["dashboard"]["name"].format(namespace=namespace)
+    source_id = traces_source_id(sink)
+    tiles = []
+    for row, member in enumerate(members):
+        config = census_module.fill(shape["tile"], member)
+        if not config.get("groupBy"):
+            config.pop("groupBy", None)
+        alert = census_module.fill(shape["alert"], member)
+        alert.pop("source")
+        alert["threshold"] = float(alert["threshold"])
+        alert["channel"] = {"type": "webhook", "webhookId": webhook_id}
+        config.update(source=source_id, alert=alert)
+        tiles.append(
+            {"id": member["name"], "x": 0, "y": row * 4, "w": 12, "h": 4, "config": config}
+        )
+    payload = {"name": name, "tiles": tiles, "tags": shape["dashboard"]["tags"]}
+    listed = sink.request("GET", "/dashboards")
+    found = next((d for d in Sink.unwrap(listed) if d.get("name") == name), None)
+    if found is None:
+        created = sink.request("POST", "/dashboards", payload) or {}
+        print(f"[dashboard] created {name} ({created.get('id') or created.get('_id')})")
+    else:
+        dashboard_id = str(found.get("id") or found.get("_id"))
+        sink.request("PATCH", f"/dashboards/{dashboard_id}", payload)
+        print(f"[dashboard] updated {name} ({dashboard_id})")
+    for tile in tiles:
+        print(f"[alert]  tile {tile['id']} on {name}")
+
+
 def ensure_webhook(sink: Sink, spec: dict, url: str) -> str:
     # `?service=` because ClickStack's list route validates a query parameter;
     # we only ever create the one service, so asking for it is also the narrower
@@ -230,8 +274,9 @@ def ensure_alert(sink: Sink, spec: dict, search_id: str, webhook_id: str, fields
         "source": spec["source"],
         "savedSearchId": search_id,
         "channel": {"type": "webhook", "webhookId": webhook_id},
-        "interval": spec["interval"],
-        "threshold": spec["threshold"],
+        # A spike's shape spells its declared window and count as fields to fill.
+        "interval": str(spec["interval"]).format(**fields),
+        "threshold": int(str(spec["threshold"]).format(**fields)),
         "thresholdType": spec["thresholdType"],
         "name": name,
         "message": spec["message"].format(**fields),
@@ -258,9 +303,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     definitions = json.loads(DEFINITIONS.read_text(encoding="utf-8"))
-    # THE NAMESPACE IS CONFIGURATION AND HAS NO DEFAULT (deploy/dns.sh:33-34's
-    # grammar). The alert bundle's name and the slot this script tells an
-    # operator to fill are both this deployment's own coordinates, and
+    # THE NAMESPACE IS CONFIGURATION AND HAS NO DEFAULT (the grammar of the
+    # `DJB_ZONE_ID` refusal in deploy/dns.sh). The alert bundle's name and
+    # the slot this script tells an operator to fill are both this deployment's own coordinates, and
     # `definitions.json` deliberately spells neither. Resolved BEFORE the
     # `--dry-run` return, so a dry run is the free way to read what a real run
     # would reconcile — and so the refusal is reachable without a sink.
@@ -281,6 +326,12 @@ def main(argv: list[str] | None = None) -> int:
     webhook["url_slot"] = webhook["url_slot"].format(namespace=namespace)
     print(f"[webhook] bundle {webhook['name']}, slot {webhook['url_slot']}")
     print()
+
+    problems = census_module.shape_problems(definitions)
+    if problems:
+        print("REFUSING: the census kinds and definitions.json's shapes disagree:")
+        print("\n".join(f"  {problem}" for problem in problems))
+        return 2
 
     result = census_module.census(census_module.repo_root())
     print(census_module.render(result))
@@ -324,6 +375,7 @@ def main(argv: list[str] | None = None) -> int:
     # So the census carries it, the census names its deliverer, and this loop
     # reconciles the deliverer it owns.
     applied = 0
+    traces: list[dict] = []
     for member in result["alerts"]:
         if member.get("delivered_by") != "clickstack":
             print(
@@ -331,22 +383,26 @@ def main(argv: list[str] | None = None) -> int:
                 "not by this sink (deploy/observability/alerts/prober.sh)"
             )
             continue
-        # Three kinds now, one shape each, looked up rather than branched on:
-        # `transition` (the degraded half), `recovery` (the recovered half —
-        # obs-2 as amended), `probe`. A kind with no shape is a census this file
-        # cannot reconcile, and it says so rather than silently choosing one.
+        # One shape per kind (`census.KINDS`); `traces` rides one dashboard, not a saved search.
         kind = member["kind"]
-        if kind not in ("transition", "recovery", "probe"):
+        if kind not in census_module.KINDS:
             print(
                 f"REFUSING: census member {member['name']!r} has kind {kind!r}, "
                 f"which definitions.json declares no shape for. The census and the "
                 f"shapes have to be edited together."
             )
             return 2
+        if kind == "traces":
+            traces.append(member)
+            applied += 1
+            continue
         shape = definitions[kind]
         search_id = ensure_saved_search(sink, shape["saved_search"], source_id, member)
         ensure_alert(sink, shape["alert"], search_id, webhook_id, member)
         applied += 1
+
+    if traces:
+        ensure_traces_dashboard(sink, definitions["traces"], traces, webhook_id, namespace)
 
     print(f"\nApplied {applied} alerts. Re-run is a no-op.")
     return 0

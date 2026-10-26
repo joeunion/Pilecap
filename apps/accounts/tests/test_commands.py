@@ -17,9 +17,10 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 
 from apps.accounts.management.commands.grant_staff import Command as GrantStaffCommand
-from apps.accounts.models import ApiToken, SsoConnection, SsoDomain, User
+from apps.accounts.models import STAFF_REALM, ApiToken, SsoConnection, SsoDomain, SsoIdentity, User
 from apps.accounts.selectors import get_connection_for_email
-from apps.accounts.services import authenticate_token, create_user, record_zitadel_identity
+from apps.accounts.services import authenticate_token, create_user, record_identity
+from apps.accounts.tests.conftest import subject_of
 from apps.accounts.tests.test_rp_login import structured
 from apps.core.actor import system_actor
 from apps.core.api.scopes import effective_scopes
@@ -290,8 +291,12 @@ def test_naming_the_tenant_is_what_turns_the_computed_answer_on(
 def _joined(email: str, subject: str) -> User:
     """Somebody who has signed in: our column set, and allauth's row beside it."""
     person = create_user(email=email, password=None)
-    record_zitadel_identity(
-        user=person, subject=subject, tenant=None, actor=system_actor(tenant=None)
+    record_identity(
+        realm=STAFF_REALM,
+        user=person,
+        subject=subject,
+        tenant=None,
+        actor=system_actor(tenant=None),
     )
     SocialAccount.objects.create(user=person, provider="zitadel", uid=subject)
     return person
@@ -317,7 +322,9 @@ def test_unlink_identity_refuses_all_without_yes(owner: User) -> None:
     assert refused.value.returncode == 1
     # And nothing moved: a refusal that had already unlinked one of them would
     # be the worst of both answers.
-    assert User.objects.exclude(zitadel_sub=None).count() == 2
+    assert (
+        SsoIdentity.objects.filter(connection__isnull=True).values("user").distinct().count() == 2
+    )
     assert AuditEntry.objects.for_platform().filter(action=UNLINK_ACTION).count() == 0
 
 
@@ -337,7 +344,9 @@ def test_unlink_identity_all_prints_the_count_and_audits_each(owner: User) -> No
     printed = out.getvalue()
     assert "people holding a subject: 2" in printed, printed
     assert "unlinked 2 person(s)" in printed, printed
-    assert User.objects.exclude(zitadel_sub=None).count() == 0
+    assert (
+        SsoIdentity.objects.filter(connection__isnull=True).values("user").distinct().count() == 0
+    )
     assert SocialAccount.objects.filter(provider="zitadel").count() == 0
     rows = AuditEntry.objects.for_platform().filter(action=UNLINK_ACTION, outcome="ok")
     assert rows.count() == 2
@@ -377,7 +386,7 @@ def test_unlink_identity_on_a_person_with_no_subject_is_a_no_op(
     none. The absence of both its audit row and its own log line is the artifact
     for that; the socket instruments themselves live in `test_socket_kick.py`.
     """
-    assert owner.zitadel_sub is None
+    assert subject_of(owner) is None
     out = StringIO()
 
     caplog.clear()

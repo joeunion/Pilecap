@@ -4,15 +4,16 @@ The long form of `django-architect` § E.
 
 **E3 — Events are `<app>.<noun>.<past-verb>`, declared in the app's
 `events.py`, carry `v` in the payload, and are emitted only from services,
-inside the transaction; payloads are the `Out` schema.** *Why:* a name
+inside the transaction; payloads are the `Out` schema through `event_payload`,
+with no field marked `personal`.** *Why:* a name
 declared once is greppable and reviewable; a version lets a subscriber survive
 the next field; an emit from anywhere but a service is a write nobody audited.
 *Enforced:* house rule **16** (name + declaration); **4** (no signal emits);
 criterion (the event row exists after the write, with `v`). Form: conv §8.
 *Wrong:* `emit("OrderCreated", ...)` from a `post_save`. *Right:* **[A7a]**
 `events.py`: `ORDER_PLACED = "orders.order.placed"  # v=1`, and in the service
-`emit(name=ORDER_PLACED, tenant=tenant, payload={"v": 1,
-**OrderOut.from_orm(order).model_dump(mode="json")}, actor=actor)`.
+`emit(name=ORDER_PLACED, tenant=tenant,
+payload=event_payload(OrderOut.from_orm(order)), actor=actor)` — `emit` adds `v`.
 
 **E4 — Workflows: one workflow per long-running process; deterministic ids via
 `workflow_id()`; activities idempotent, with retries and timeouts declared at
@@ -70,8 +71,7 @@ in the template** (`<kind>:<name>` tokens — `header:X-Org`,
 against here, so the first product that grows one grows the rule that checks
 its remedies name real destinations — the product validates, never this
 layer. **One composer**: `core.exceptions.wire_refusal(exc)` builds
-`{detail, code, errors?, remedies?}` — additive on a body that already
-carried the first three keys — and both mappers call it: `config/api.py`
+the body over `apps/core/exceptions.py::WIRE_COMMON_KEYS` — and both mappers call it: `config/api.py`
 sends it as JSON, `core.mcp.tool_call` renders it through `refusal_message`
 as one line, code first. A raise site that knows something better than the
 registry may pass contextual `remedies=` (typed; overriding the default

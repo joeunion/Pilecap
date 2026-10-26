@@ -9,11 +9,15 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Annotated, Any, ClassVar, Literal
+from typing import Annotated, Any, ClassVar, Literal, get_args
 from uuid import UUID
 
 from ninja import FilterLookup, FilterSchema, Schema
-from pydantic import ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic.fields import FieldInfo
+
+from apps.core.lexicon import verb_of
+from apps.core.roads import road
 
 
 def example(value: Any) -> dict[str, Any]:
@@ -57,6 +61,15 @@ def example(value: Any) -> dict[str, Any]:
     fake".
     """
     return {"example": value}
+
+
+#: The schema-extra key `personal()` sets; OpenAPI publishes it beside the example.
+PERSONAL_KEY = "x-personal"
+
+
+def personal(extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Mark a field that names a person: the doors answer it, an event never carries it."""
+    return {**(extra or {}), PERSONAL_KEY: True}
 
 
 # --- The one seam every request body inherits (SB-1) --------------------------
@@ -120,7 +133,7 @@ class PingOut(Schema):
 
     ok: bool = Field(json_schema_extra=example(True))
     tenant: str | None = Field(json_schema_extra=example("acme"))
-    #: The acting hat — which node of the tenant's tree this token acts as.
+    #: The hat — which node of the tenant's tree this token acts as.
     #: An agent that cannot see which hat it is wearing cannot tell a partial
     #: answer from an empty table, so `ping` says.
     org: str | None = Field(default=None, json_schema_extra=example("northern-branch"))
@@ -140,7 +153,16 @@ class ArchivedByOut(Schema):
     """
 
     id: UUID = Field(json_schema_extra=example(ARCHIVER_ID))
-    name: str | None = Field(default=None, json_schema_extra=example("Maria Delgado"))
+    name: str | None = Field(default=None, json_schema_extra=personal(example("Maria Delgado")))
+
+
+#: Which cut of the book a list reads: the live rows (the default), the archived
+#: ones alone, or both — the one vocabulary of `?show=` on every archivable list,
+#: published as its enum. `apps.core.verbs.shown` applies it to a queryset.
+Show = Literal["live", "archived", "all"]
+
+#: The words of `Show`, for a reader that has a string and needs to judge it.
+SHOW_WORDS: tuple[str, ...] = ("live", "archived", "all")
 
 
 class ArchivedOut(Schema):
@@ -286,21 +308,65 @@ class BulkMoveIn(BulkIdsIn):
     owner_id: UUID | None = Field(default=None, json_schema_extra=example(ARCHIVER_ID))
 
 
-class BulkRefusalOut(Schema):
-    """One item's refusal: the body a single call would have answered.
+class RefusalRemedyOut(Schema):
+    """One thing the caller can do about a refusal — `apps.core.exceptions.Remedy` on the wire.
 
-    Open (`extra="allow"`) because a refusal's structured half — a blocked
-    archive's `blocking`, a stale write's `current_version` — rides beside the
-    four common keys exactly as it does on a single call.
+    `destination` is an opaque `<kind>:<name>` token, never a URL.
     """
 
-    model_config = ConfigDict(extra="allow")
+    label: str = Field(json_schema_extra=example("Name the organization to act as"))
+    destination: str = Field(json_schema_extra=example("header:X-Org"))
+
+
+@road(
+    "refusal_shape",
+    example="apps/core/tests/test_refusal_shape.py::test_every_registered_refusal_is_one_shape",
+)
+class RefusalOut(Schema):
+    """The one shape of a refusal anywhere it is sent or kept — `wire_refusal`'s body, typed.
+
+    `apps.core.exceptions.wire_refusal` is the only builder of the body and stays
+    free of this layer (a service imports the exceptions and never ninja); this
+    is that same body as a schema, for everything that SHIPS or STORES one: a
+    bulk item's refusal (`BulkRefusalOut`), a run's recorded `failure`, the
+    document's `Refusal` component. One shape, so a stored failure and a sent
+    one cannot drift into two.
+
+    The four common keys (`apps.core.exceptions.WIRE_COMMON_KEYS`), and open
+    (`extra="allow"`) because a refusal's structured half — a blocked archive's
+    `blocking`, a stale write's `current_version` — rides beside them exactly as
+    `wire_extra` puts it there. `errors` is present only when the refusal named
+    fields, as on the wire.
+    """
+
+    model_config = ConfigDict(
+        extra="allow",
+        # The example is a body the wire sends: no `errors` when no field was named.
+        json_schema_extra={
+            "example": {
+                "detail": "This cannot be archived while something still depends on it.",
+                "code": "archive_blocked",
+                "remedies": [
+                    {
+                        "label": "Archive what still depends on it first",
+                        "destination": "field:blocking",
+                    }
+                ],
+            }
+        },
+    )
 
     detail: str = Field(
         json_schema_extra=example("This cannot be archived while something still depends on it.")
     )
     code: str = Field(json_schema_extra=example("archive_blocked"))
-    remedies: list[dict[str, str]] = Field(default_factory=list)
+    #: Absent when no field was named, never `{}` or `null` — as `wire_refusal` composes it.
+    errors: dict[str, list[str]] = Field(default_factory=dict, exclude_if=lambda value: not value)
+    remedies: list[RefusalRemedyOut] = Field(default_factory=list)
+
+
+class BulkRefusalOut(RefusalOut):
+    """One item's refusal: the body a single call would have answered — `RefusalOut`, in a batch."""
 
 
 class BulkResultOut(Schema):
@@ -326,6 +392,13 @@ class BulkOut(Schema):
     refused: int = Field(json_schema_extra=example(0))
 
 
+class RepointOut(Schema):
+    """What one owning app moves across in a merge: its words, and how many."""
+
+    title: str = Field(json_schema_extra=example("Notes"))
+    left: int = Field(json_schema_extra=example(3))
+
+
 #: The keys every service is called with that are never a CHANGE to the row.
 _NOT_A_CHANGE = frozenset({"tenant", "actor", "idempotency_key", "version", "into_version"})
 
@@ -334,8 +407,26 @@ class HistoryActorOut(Schema):
     """Who acted: a person (id and name, when the trail has them) or the product."""
 
     id: UUID | None = Field(default=None, json_schema_extra=example(ARCHIVER_ID))
-    name: str | None = Field(default=None, json_schema_extra=example("Maria Delgado"))
+    name: str | None = Field(default=None, json_schema_extra=personal(example("Maria Delgado")))
     kind: str = Field(json_schema_extra=example("human"))
+
+
+def _with_the_service_verbs(schema: dict[str, Any]) -> None:
+    """`HistoryEntryOut.verb`'s document entry: its example, and the enum of service verbs.
+
+    The enum is the same population the history card's `verb` is cut from —
+    every verb this deployment's services begin with, through the one matcher
+    (`apps.core.mcp.service_verbs`, `apps.core.lexicon.verb_of`) — so a face can
+    pin its words against what the trail can say. Read when the DOCUMENT is
+    written, after every app has loaded its services, which is why it is a
+    callable and not a `Literal`: the population is not known when this module
+    imports. Documentation of the field, not validation of it: an audit row
+    written by a service since renamed still reads back, under its old verb.
+    """
+    from apps.core.mcp import service_verbs
+
+    schema["example"] = "update"
+    schema["enum"] = sorted(service_verbs())
 
 
 class HistoryEntryOut(Schema):
@@ -349,7 +440,7 @@ class HistoryEntryOut(Schema):
     """
 
     at: datetime = Field(json_schema_extra=example("2026-09-26T08:24:00Z"))
-    verb: str = Field(json_schema_extra=example("update"))
+    verb: str = Field(json_schema_extra=_with_the_service_verbs)
     actor: HistoryActorOut
     door: str = Field(json_schema_extra=example("rest"))
     changed_fields: list[str] = Field(json_schema_extra=example(["name"]))
@@ -364,7 +455,7 @@ class HistoryEntryOut(Schema):
         person = value.actor_user
         return {
             "at": value.created_at,
-            "verb": str(value.action).rpartition(".")[2].split("_", 1)[0],
+            "verb": verb_of(str(value.action)),
             "actor": {
                 "id": value.actor_user_id,
                 "name": (getattr(person, "full_name", None) or None) if person else None,
@@ -424,11 +515,7 @@ class MeasuredOut(Schema):
     a `Decimal` as a **string** in `model_dump(mode="json")` and on the wire, so
     the value that arrives is the value that was computed.
 
-    **The name.** The suffix is the naming grammar's (rule 16) and it is
-    accurate: this shape only ever travels outward. ADR core-7 writes it
-    `Measured`/`MeasuredBasis` in prose; the classes carry the suffix every
-    other schema in the tree carries, which is what keeps rule 16 silent
-    without an exemption. See rung W1-R1's report.
+    The `Out` suffix is rule 16's grammar; ADR core-7's prose says `Measured`/`MeasuredBasis`.
 
     **Enforcement is at criteria-tier, honestly** (ADR core-7): "any endpoint
     returning a computed aggregate" is an open set, and no closed question can
@@ -536,7 +623,7 @@ class MembershipOut(Schema):
 
     id: UUID
     user_id: UUID
-    user_email: str = Field(json_schema_extra=example("dana@example.com"))
+    user_email: str = Field(json_schema_extra=personal(example("dana@example.com")))
     organization_id: UUID | None
     role: str = Field(json_schema_extra=example("admin"))
     is_default: bool = Field(json_schema_extra=example(True))
@@ -584,7 +671,7 @@ class InvitationOut(Schema):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    email: str = Field(json_schema_extra=example("dana@example.com"))
+    email: str = Field(json_schema_extra=personal(example("dana@example.com")))
     #: The node this offer was sent from, and the node its membership will land
     #: on (ADR core-20). It is on the shape rather than implied, because "a
     #: place in which branch" is the substance of the offer and a reader who had
@@ -1102,20 +1189,75 @@ class ActsOut(Schema):
 PER_VIEWER_FIELDS: frozenset[str] = frozenset(ActsOut.model_fields)
 
 
-def event_payload(out: Schema) -> dict[str, Any]:
-    """The one way a service builds an event payload from an `Out`: the row, no viewer.
+# rule-16: a dict an event carries, never a wire schema — it travels inside `emit`
+class EventPayload(dict[str, Any]):
+    """A payload `event_payload` built, naming the `Out` type it came from for `emit`'s belt."""
 
-        emit(name=WIDGET_ARCHIVED, tenant=tenant, payload=event_payload(WidgetOut.from_orm(w)),
-             actor=actor)
+    def __init__(self, row: dict[str, Any], *, source: type[BaseModel]) -> None:
+        super().__init__(row)
+        self.source = source
 
-    `model_dump(mode="json")` minus `PER_VIEWER_FIELDS` **at any depth** — an
-    `Out` nesting other `Out`s (a row's `entries[]`, each with its own
-    `allowed_acts`) loses them too — so a webhook subscriber and every socket
-    listener, other viewers all of them, read the row as every viewer sees it,
-    never one person's permissions.
+
+@road("event_payload", example="apps/example/services.py::_publish_widget")
+def event_payload(out: Schema) -> EventPayload:
+    """The one way a service builds an event payload from an `Out`: the row, no viewer, no person.
+
+    Strips `PER_VIEWER_FIELDS` and every `personal()` field, at any depth.
+    why-not the dumped keys: one name is a person's on one `Out` and a role's on another.
     """
-    stripped: dict[str, Any] = without_per_viewer(out.model_dump(mode="json"))
+    row = without_per_viewer(out.model_dump(mode="json"))
+    return EventPayload(without_personal(type(out), row), source=type(out))
+
+
+def without_personal(schema: type[BaseModel], row: dict[str, Any]) -> dict[str, Any]:
+    """`row`, dumped from `schema`, less every field `schema` marks `personal`, any depth."""
+    stripped: dict[str, Any] = _personal_walk((schema,), row, "", [])
     return stripped
+
+
+def personal_paths(payload: EventPayload) -> list[str]:
+    """Where in `payload` a field its `Out` marks `personal` sits — `email`, `owner.email`."""
+    found: list[str] = []
+    _personal_walk((payload.source,), payload, "", found)
+    return found
+
+
+def _is_personal(field: FieldInfo) -> bool:
+    """Whether `field` was declared with `personal()`."""
+    extra = field.json_schema_extra
+    return isinstance(extra, dict) and extra.get(PERSONAL_KEY) is True
+
+
+def _models_in(annotation: Any) -> tuple[type[BaseModel], ...]:
+    """The `BaseModel` types an annotation can hold — through `X | None`, `list[X]`."""
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return (annotation,)
+    return tuple(model for arg in get_args(annotation) for model in _models_in(arg))
+
+
+def _personal_walk(
+    models: tuple[type[BaseModel], ...], value: Any, path: str, found: list[str]
+) -> Any:
+    """`value` less every key `models` mark `personal`; each dropped key's path joins `found`."""
+    if isinstance(value, dict):
+        if not models:
+            return value
+        kept: dict[str, Any] = {}
+        for key, item in value.items():
+            here = f"{path}.{key}" if path else str(key)
+            fields = [model.model_fields[key] for model in models if key in model.model_fields]
+            if any(_is_personal(field) for field in fields):
+                found.append(here)
+                continue
+            inner = tuple(model for field in fields for model in _models_in(field.annotation))
+            kept[key] = _personal_walk(inner, item, here, found)
+        return kept
+    if isinstance(value, list | tuple):
+        return [
+            _personal_walk(models, item, f"{path}[{index}]", found)
+            for index, item in enumerate(value)
+        ]
+    return value
 
 
 def without_per_viewer(value: Any) -> Any:

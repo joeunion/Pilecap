@@ -1,8 +1,9 @@
 import { notFound } from "next/navigation";
 
+import type { SocketCloseState } from "@/api/refusals";
 import { OBSERVABLE_SOCKET_CLOSE_STATES, OBSERVED_FRAME, signInAct, socketCloseRefusal } from "@/api/socket-close";
-import { SocketClosePanel, type SocketCloseStateName } from "@/screens/socket-close-panel";
-import { REQUIRED_STORY_EXPORTS } from "@/screens/state";
+import { SocketClosePanel } from "@/screens/socket-close-panel";
+import { REQUIRED_STORY_EXPORTS } from "@pilecap/ui/state";
 import { Empty, Error as Refused, Loading, Ready } from "@/screens/welcome/welcome-screen.stories";
 
 /**
@@ -67,7 +68,7 @@ export default function StatesPage() {
  * walk whose seed frame produced no refusal would be a disagreement between the
  * walk and the mapper. It renders the disagreement instead of hiding it.
  */
-function SocketCloseSection({ state }: { readonly state: SocketCloseStateName }) {
+function SocketCloseSection({ state }: { readonly state: SocketCloseState }) {
     const frame = OBSERVED_FRAME[state];
     const refusal = socketCloseRefusal(frame);
     if (refusal === null) {

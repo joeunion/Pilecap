@@ -211,20 +211,3 @@ class MessageOutcome:
     provider: str = ""
     provider_message_id: str = ""
     error: str = ""
-
-
-@dataclass
-class RunFinished:
-    """What `mark_run_finished` is told when this app's workflow ends.
-
-    The activity belongs to `apps.workflows` and is invoked **by name**, which
-    is how every activity is invoked (house rule 9) — so the shape crosses the
-    boundary and the class does not. It is restated here rather than imported
-    because a workflow module may import its own `types.py` and nothing else.
-    Keep the three fields matching `apps.workflows.types.MarkRunFinished`; the
-    worker deserialises into that.
-    """
-
-    workflow_id: str
-    status: str
-    error: str = ""

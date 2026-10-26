@@ -1,0 +1,10 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "imports", "text": ""}
+from apps.example.api import widget_stats, widget_stats_route
+from apps.example.schemas import WidgetStatsOut
+
+# golden-anchor: {"nth": 0, "scope": ["register"], "side": "before", "text": "@server.tool(name=\"archive_widget\", description=contract_of(archive_widget_route))"}
+    @server.tool(name="get_widget_stats", description=contract_of(widget_stats_route))
+    def get_widget_stats_tool(ctx: Context[Any]) -> WidgetStatsOut:
+        with tool_call(ctx) as acting:
+            return widget_stats(tenant=acting_tenant(acting), actor=acting.actor())
+

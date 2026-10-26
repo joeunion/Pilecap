@@ -1,25 +1,19 @@
 #!/usr/bin/env bash
-# THIS FILE IS EXECUTED, AND IT IS BASH — not POSIX sh, and not zsh. The
-# shebang above is honoured by `./this`; `sh this` and `zsh this` IGNORE it,
-# and neither of them fails where the mistake was made.
-[ -n "${BASH_VERSION:-}" ] || {
-    echo "${0##*/}: must run under bash — not sh, not zsh. Try \`bash ${0}\`." >&2
-    exit 2
-}
-case ":${SHELLOPTS:-}:" in
-*:posix:*)
-    echo "${0##*/}: bash is in POSIX mode — which is what \`sh ${0}\` does on a" >&2
-    echo "  machine whose /bin/sh is bash. Try \`bash ${0}\`." >&2
-    exit 2
-    ;;
-esac
-# drives: .github/workflows/ci.yml scripts/check.sh scripts/gate_ledger.sh scripts/gate_refuse.sh scripts/tests/
+# drives: .github/workflows/ci.yml scripts/check.sh scripts/gate_ledger.sh scripts/gate_refuse.sh scripts/tests/ deploy/tests/ quality/roads.py quality/djb/legs/goalpost_census.py
 # cites: scripts/local/env_keys scripts/local/ci .claude/agents .claude/skills CLAUDE.md
 # The drive for THE REAL-REPOSITORY TRIPWIRE — `drive_repo_fingerprint` and
 # `drive_tripwire_check` in `scripts/tests/drive_preamble.sh` §3.
 #
-#   ./scripts/tests/test_drive_preamble.sh          run every case
-#   ./scripts/tests/test_drive_preamble.sh --list   name them and stop
+#   ./scripts/tests/test_drive_preamble.sh                 run every case
+#   ./scripts/tests/test_drive_preamble.sh --list          name them and stop
+#   ./scripts/tests/test_drive_preamble.sh --case <name>   run exactly that case
+#
+# IT IS ALSO THE HARNESS'S WORKED EXAMPLE. This drive carries none of its own:
+# its prologue is the preamble's one line, its assertions are the preamble's
+# `ok` and `bad`, its cases run through `drive_run_case`, its scratch
+# repositories are `drive_scratch_repo`'s, and its summary is the epilogue's.
+# Section 10 below drives that harness, and the census beside it refuses a
+# drive that writes its own copy.
 #
 # WHAT THE TRIPWIRE IS FOR, in one sentence, because every case below is a
 # judgement about that sentence: a drive builds throwaway repositories and works
@@ -81,115 +75,40 @@ esac
 #      force-moved backwards could un-excuse a reap that was legitimate when it
 #      happened. Both red rather than forgive, which is the direction this file
 #      chooses everywhere.
-#   4. IT DRIVES §3 AND NOTHING ELSE of the preamble. The other five sections —
-#      the git-location neutralisation, the scratch-path belt, the CI strip, the
-#      finished-sentinel and the signal bridge — have their own coverage in the
-#      drives that use them, and this file adds none.
-#   5. THE REGISTRATION CASES READ `scripts/check.sh`, they do not run it. A
-#      drive cannot run a nested gate inside a gate, so the three blocks are
-#      EXTRACTED by their sentinels and run against planted drives. That proves
-#      the block's exit map and that the invocation sits inside the selftest
-#      leg; it does not prove the leg itself is reached, which is the gate's own
-#      `leg`/`leg_done` machinery and has its own coverage.
+#   4. IT DRIVES §3, §5, §9 AND §10 of the preamble. The git-location
+#      neutralisation, the scratch-path belt, the CI strip and the signal
+#      bridge have their own coverage in the drives that use them.
+#   5. THE HARNESS CENSUS READS DEFINITIONS BY NAME. A drive's own `is`,
+#      `same` or `differs` is `holds` under a name the census does not know,
+#      and a helper renamed rather than removed is invisible to it.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
+. scripts/tests/drive_preamble.sh || exit 2
 
-[ -r scripts/tests/drive_preamble.sh ] || {
-    echo "!! test_drive_preamble: scripts/tests/drive_preamble.sh is not in this tree." >&2
-    echo "   It is the file under drive. Refusing to run without it." >&2
-    exit 2
-}
-. scripts/tests/drive_preamble.sh
-
-DRIVE_OPTED_IN_TO_FINISH=1
-
-PASSED=0
-FAILED=0
-
-cannot_look() {
-    echo "!! test_drive_preamble: $*" >&2
-    echo "   Nothing was asserted. A driver that could not run its cases has not" >&2
-    echo "   cleared them." >&2
-    exit 2
-}
-
-# >>> one case, by name >>>
-# `--case <name>` runs exactly that case and nothing else. The seam exists so
-# rule 60's drawer census can prove ONE PLANT PER DRAWER through the drive that
-# already owns the property, rather than re-implementing the drawer's reader —
-# a second implementation of a reader is a second opinion about it. A name this
-# file does not define is exit 2, never a silent run of nothing.
-ONLY_CASE=""
-run_case() {
-    [ -z "$ONLY_CASE" ] || [ "$1" = "$ONLY_CASE" ] || return 0
-    "$@"
-}
-# <<< one case, by name <<<
-case "${1:-}" in
-"") ;;
---list)
-    grep -n '^case_' "$0" | sed 's/() {.*//; s/^/  /'
-    exit 0
-    ;;
---case)
-    [ -n "${2:-}" ] || {
-        echo "!! --case needs a case name; --list names them" >&2
-        exit 2
-    }
-    grep -q "^${2}() {" "$0" || {
-        echo "!! --case: test_drive_preamble.sh defines no case named '${2}'; --list names them" >&2
-        exit 2
-    }
-    ONLY_CASE="$2"
-    ;;
-*)
-    echo "!! unknown argument '$1': test_drive_preamble.sh takes nothing, --list or --case <name>" >&2
-    exit 2
-    ;;
-esac
-
-command -v git >/dev/null 2>&1 || cannot_look "no git on PATH — the whole file is about git refs"
+command -v git >/dev/null 2>&1 || drive_cannot_look "no git on PATH — the whole file is about git refs"
 
 ROOT="$PWD"
 PREAMBLE="${ROOT}/scripts/tests/drive_preamble.sh"
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/djb-preamble-drive.XXXXXX")" || cannot_look "could not make a scratch directory"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/djb-preamble-drive.XXXXXX")" || drive_cannot_look "could not make a scratch directory"
 drive_require_scratch WORK "${WORK:-}"
 drive_at_exit 'rm -rf "$WORK"'
 
-CURRENT=""
-OUT=""
-ok() {
-    echo "  ok       ${CURRENT} — $1"
-    PASSED=$((PASSED + 1))
-}
-bad() {
-    echo "  FAILED   ${CURRENT} — $1"
-    if [ -n "$OUT" ] && [ -f "$OUT" ] && [ -s "$OUT" ]; then
-        sed 's/^/             | /' "$OUT"
-    fi
-    FAILED=$((FAILED + 1))
-}
+# The capture a red shows (the preamble's `bad` reads it unless handed another).
+DRIVE_OUT=""
 
-# A throwaway repository with one commit on `main`. `git init` then
-# `symbolic-ref`, rather than `init -b`, because the flag is newer than the git
-# a fresh machine may carry and the default branch name is a config a laptop
-# may have set to anything.
+# A throwaway repository on `main` — the preamble's, so the path is proven
+# before git is handed it — with one file committed on top of its base.
 new_scratch_repo() {
-    local d="$1"
-    mkdir -p "$d"
-    git -C "$d" init -q
-    git -C "$d" symbolic-ref HEAD refs/heads/main
-    git -C "$d" config user.email "drive@example.invalid"
-    git -C "$d" config user.name "drive"
-    git -C "$d" config commit.gpgsign false
-    printf 'one\n' >"${d}/f.txt"
-    git -C "$d" add f.txt
-    git -C "$d" commit -q -m "one"
+    SCRATCH_REPO="$1"
+    drive_scratch_repo SCRATCH_REPO
+    printf 'one\n' >"${SCRATCH_REPO}/f.txt"
+    git -C "$SCRATCH_REPO" add f.txt
+    git -C "$SCRATCH_REPO" commit -q -m "one"
 }
 
 # Run the SHIPPED preamble inside `$1`, with `$2` as the mid-run mutation, and
-# leave the tripwire's own output plus a `TRIPWIRE_RC=` line in `$OUT`.
+# leave the tripwire's own output plus a `TRIPWIRE_RC=` line in `$DRIVE_OUT`.
 #
 # The child is written to a file rather than passed with `bash -c` so the
 # mutation reads as the script it is, and so `$0` gives the preamble a sensible
@@ -199,7 +118,7 @@ run_tripwire() {
     local stand_in="$1" mutation="$2" child
     CHILD_N=$((CHILD_N + 1))
     child="${WORK}/child-${CHILD_N}.sh"
-    OUT="${WORK}/child-${CHILD_N}.log"
+    DRIVE_OUT="${WORK}/child-${CHILD_N}.log"
     {
         printf '#!/usr/bin/env bash\n'
         printf 'set -uo pipefail\n'
@@ -215,33 +134,33 @@ run_tripwire() {
         printf 'exit 0\n'
     } >"$child"
     chmod +x "$child"
-    "$child" >"$OUT" 2>&1 || true
+    "$child" >"$DRIVE_OUT" 2>&1 || true
 }
 
 tripwire_rc() {
     local seen
-    seen="$(grep '^TRIPWIRE_RC=' "$OUT" || true)"
+    seen="$(grep '^TRIPWIRE_RC=' "$DRIVE_OUT" || true)"
     seen="${seen%%$'\n'*}"
     printf '%s' "${seen#TRIPWIRE_RC=}"
 }
 
-says() { grep -qF -- "$1" "$OUT"; }
+# seen <needle> — the predicate over the last capture (the preamble's `says` asserts; this asks).
+seen() { grep -qF -- "$1" "$DRIVE_OUT"; }
 
 # --- the fingerprint ----------------------------------------------------------
 
 case_the_fingerprint_records_a_sha_for_every_ref() {
-    CURRENT=case_the_fingerprint_records_a_sha_for_every_ref
     local repo="${WORK}/fp" want got
     new_scratch_repo "$repo"
     git -C "$repo" branch zzz-other
     run_tripwire "$repo" 'drive_repo_fingerprint'
     want="$(git -C "$repo" rev-parse refs/heads/main)"
-    got="$(awk '$1=="ref" && $2=="refs/heads/main" { print $3 }' "$OUT")"
+    got="$(awk '$1=="ref" && $2=="refs/heads/main" { print $3 }' "$DRIVE_OUT")"
     if [ "$got" != "$want" ]; then
         bad "the fingerprint's main line carries '${got}', wanted the sha '${want}' — a name-only fingerprint cannot tell a reap of merged work from a reap of lost work"
         return
     fi
-    got="$(awk '$1=="ref" { n++ } END { print n+0 }' "$OUT")"
+    got="$(awk '$1=="ref" { n++ } END { print n+0 }' "$DRIVE_OUT")"
     if [ "$got" != "2" ]; then
         bad "wanted 2 ref lines, got ${got}"
         return
@@ -252,7 +171,6 @@ case_the_fingerprint_records_a_sha_for_every_ref() {
 # --- the four excuses ---------------------------------------------------------
 
 case_a_peer_worktree_branch_created_mid_run_does_not_red_the_tripwire() {
-    CURRENT=case_a_peer_worktree_branch_created_mid_run_does_not_red_the_tripwire
     local repo="${WORK}/created" rc
     new_scratch_repo "$repo"
     run_tripwire "$repo" "git -C '${repo}' worktree add -q -b zzz-peer '${WORK}/created-peer' >/dev/null 2>&1"
@@ -261,7 +179,7 @@ case_a_peer_worktree_branch_created_mid_run_does_not_red_the_tripwire() {
         bad "a peer's worktree creation red the tripwire (rc=${rc}) — this is the flake that costs a whole gate"
         return
     fi
-    if ! says "excused: refs/heads/zzz-peer — created by a peer worktree"; then
+    if ! seen "excused: refs/heads/zzz-peer — created by a peer worktree"; then
         bad "the excuse was silent; an excuse nobody can read is an excuse nobody can audit"
         return
     fi
@@ -269,7 +187,6 @@ case_a_peer_worktree_branch_created_mid_run_does_not_red_the_tripwire() {
 }
 
 case_a_peer_worktrees_commit_mid_run_does_not_red_the_tripwire() {
-    CURRENT=case_a_peer_worktrees_commit_mid_run_does_not_red_the_tripwire
     local repo="${WORK}/moved" peer="${WORK}/moved-peer" rc
     new_scratch_repo "$repo"
     git -C "$repo" worktree add -q -b zzz-peer "$peer"
@@ -281,7 +198,7 @@ git -C '${peer}' commit -q -m two"
         bad "a peer's ordinary boundary commit red the tripwire (rc=${rc})"
         return
     fi
-    if ! says "excused: refs/heads/zzz-peer — checked out by a peer worktree"; then
+    if ! seen "excused: refs/heads/zzz-peer — checked out by a peer worktree"; then
         bad "the moved ref was not excused by name and reason"
         return
     fi
@@ -289,7 +206,6 @@ git -C '${peer}' commit -q -m two"
 }
 
 case_a_merge_into_main_by_the_primary_worktree_does_not_red_a_linked_drive() {
-    CURRENT=case_a_merge_into_main_by_the_primary_worktree_does_not_red_a_linked_drive
     local repo="${WORK}/merge" linked="${WORK}/merge-linked" rc
     new_scratch_repo "$repo"
     # The work the primary is about to merge, made before the drive is armed.
@@ -306,7 +222,7 @@ case_a_merge_into_main_by_the_primary_worktree_does_not_red_a_linked_drive() {
         bad "a merge into main from the primary checkout red a linked worktree's drive (rc=${rc})"
         return
     fi
-    if ! says "excused: refs/heads/main — checked out by a peer worktree"; then
+    if ! seen "excused: refs/heads/main — checked out by a peer worktree"; then
         bad "main moved and was not excused by the primary worktree that holds it"
         return
     fi
@@ -314,7 +230,6 @@ case_a_merge_into_main_by_the_primary_worktree_does_not_red_a_linked_drive() {
 }
 
 case_a_reap_of_a_merged_peer_branch_mid_run_does_not_red_the_tripwire() {
-    CURRENT=case_a_reap_of_a_merged_peer_branch_mid_run_does_not_red_the_tripwire
     local repo="${WORK}/reap" rc
     new_scratch_repo "$repo"
     git -C "$repo" worktree add -q -b zzz-done "${WORK}/reap-done"
@@ -329,7 +244,7 @@ case_a_reap_of_a_merged_peer_branch_mid_run_does_not_red_the_tripwire() {
         bad "the reap of a branch already merged into main red the tripwire (rc=${rc})"
         return
     fi
-    if ! says "excused: refs/heads/zzz-done — merged into main, reaped"; then
+    if ! seen "excused: refs/heads/zzz-done — merged into main, reaped"; then
         bad "the vanished ref was not excused as a reap of merged work"
         return
     fi
@@ -339,7 +254,6 @@ case_a_reap_of_a_merged_peer_branch_mid_run_does_not_red_the_tripwire() {
 # --- the controls: the alarm still fires ---------------------------------------
 
 case_a_branch_with_no_worktree_still_reds_the_tripwire() {
-    CURRENT=case_a_branch_with_no_worktree_still_reds_the_tripwire
     local repo="${WORK}/escape" rc
     new_scratch_repo "$repo"
     run_tripwire "$repo" "git -C '${repo}' branch zzz-escape"
@@ -348,7 +262,7 @@ case_a_branch_with_no_worktree_still_reds_the_tripwire() {
         bad "a branch created with no worktree behind it did not red (rc=${rc}) — this is the escape class the tripwire exists for"
         return
     fi
-    if ! says "MUTATED THE REAL REPOSITORY"; then
+    if ! seen "MUTATED THE REAL REPOSITORY"; then
         bad "no banner; a red with no sentence is a red nobody acts on"
         return
     fi
@@ -356,7 +270,6 @@ case_a_branch_with_no_worktree_still_reds_the_tripwire() {
 }
 
 case_a_moved_ref_with_no_worktree_still_reds_the_tripwire() {
-    CURRENT=case_a_moved_ref_with_no_worktree_still_reds_the_tripwire
     local repo="${WORK}/orphan" other rc
     new_scratch_repo "$repo"
     git -C "$repo" branch zzz-orphan
@@ -374,7 +287,6 @@ case_a_moved_ref_with_no_worktree_still_reds_the_tripwire() {
 }
 
 case_a_vanished_unmerged_ref_still_reds() {
-    CURRENT=case_a_vanished_unmerged_ref_still_reds
     local repo="${WORK}/lost" lost rc
     new_scratch_repo "$repo"
     git -C "$repo" worktree add -q -b zzz-unmerged "${WORK}/lost-wt"
@@ -389,7 +301,7 @@ case_a_vanished_unmerged_ref_still_reds() {
         bad "work that was NOT on main vanished and the tripwire forgave it (rc=${rc})"
         return
     fi
-    if ! says "$lost"; then
+    if ! seen "$lost"; then
         bad "the banner did not print the sha that was lost (${lost}) — the one thing a recovery needs"
         return
     fi
@@ -397,7 +309,6 @@ case_a_vanished_unmerged_ref_still_reds() {
 }
 
 case_a_peer_worktree_removed_mid_run_still_reds() {
-    CURRENT=case_a_peer_worktree_removed_mid_run_still_reds
     local repo="${WORK}/removed" peer="${WORK}/removed-peer" rc
     new_scratch_repo "$repo"
     git -C "$repo" worktree add -q -b zzz-gone "$peer"
@@ -414,7 +325,6 @@ git -C '${repo}' worktree remove --force '${peer}'"
 }
 
 case_this_checkouts_head_moving_still_reds() {
-    CURRENT=case_this_checkouts_head_moving_still_reds
     local repo="${WORK}/ownhead" rc
     new_scratch_repo "$repo"
     run_tripwire "$repo" "printf 'two\n' > '${repo}/f.txt'
@@ -425,22 +335,12 @@ git -C '${repo}' commit -q -m two"
         bad "the drive's own checkout committed and the tripwire did not red (rc=${rc}) — this is exactly the escape the preamble was written for"
         return
     fi
-    if ! says "HEAD"; then
+    if ! seen "HEAD"; then
         bad "the banner did not name HEAD"
         return
     fi
     ok "rc=1 — this checkout's own HEAD is nobody else's to excuse"
 }
-
-# --- the gate's registration of the drive family -------------------------------
-#
-# THE SECOND SUBJECT OF THIS FILE, and it belongs here for the same reason the
-# tripwire does: it is a property of the family, not of any one drive. A drive
-# that nothing invokes is a promise — green every time somebody remembers — and
-# `scripts/check.sh` already carries the derivation that would catch one, as a
-# comment nobody runs. These cases run it, and drive the exit map the gate wraps
-# every drive in: 2 is could-not-look and outranks a pass, 1 is the drive's own
-# red, 0 carries on.
 
 # --- the base ref -------------------------------------------------------------
 
@@ -459,14 +359,13 @@ runner_shaped_clone() {
 }
 
 case_the_base_ref_reader_resolves_main_then_origin_main_then_refuses() {
-    CURRENT=case_the_base_ref_reader_resolves_main_then_origin_main_then_refuses
     # FOUR SHAPES AND FOUR ANSWERS, and the two that matter are the ones
     # no drive had ever been in: the runner's (no local `main`), and nothing at
     # all. The reader's whole job is that the second is a REFUSAL rather than an
     # empty string a caller then interpolates into `"${base}:path"`.
     local src="${WORK}/base-src" clone="${WORK}/base-clone" bare="${WORK}/base-bare"
     local err="${WORK}/base-err.txt" got rc
-    OUT="$err"
+    DRIVE_OUT="$err"
     rm -rf "$src" "$clone" "$bare"
     new_scratch_repo "$src"
 
@@ -481,7 +380,7 @@ case_the_base_ref_reader_resolves_main_then_origin_main_then_refuses() {
     # (2) THE RUNNER'S SHAPE. Today's bare `main` is exit 1 here, and the
     # `|| true` spelling this reader replaces printed its own ARGUMENT instead.
     runner_shaped_clone "$src" "$clone" || {
-        cannot_look "could not build the runner-shaped clone in ${clone}"
+        drive_cannot_look "could not build the runner-shaped clone in ${clone}"
     }
     if [ -n "$(git -C "$clone" for-each-ref --format='x' refs/heads)" ] ||
         [ -n "$(git -C "$clone" symbolic-ref -q HEAD || true)" ]; then
@@ -518,7 +417,7 @@ case_the_base_ref_reader_resolves_main_then_origin_main_then_refuses() {
     # (5) NOTHING AT ALL — rc 1, and the sentence names all three sources
     # because the reader of a refusal is deciding what to type next.
     runner_shaped_clone "$src" "$bare" || {
-        cannot_look "could not build the second runner-shaped clone in ${bare}"
+        drive_cannot_look "could not build the second runner-shaped clone in ${bare}"
     }
     git -C "$bare" remote remove origin >/dev/null 2>&1
     git -C "$bare" update-ref -d refs/remotes/origin/main >/dev/null 2>&1 || true
@@ -543,108 +442,63 @@ case_the_base_ref_reader_resolves_main_then_origin_main_then_refuses() {
     esac
 
     rm -rf "$src" "$clone" "$bare"
-    OUT=""
+    DRIVE_OUT=""
 }
 
-SELFTEST_BLOCK="${WORK}/selftest-block.txt"
 
-case_every_drive_under_tests_is_invoked_by_the_gate() {
-    CURRENT=case_every_drive_under_tests_is_invoked_by_the_gate
-    local present invoked missing
-    OUT=""
-    present="$(ls "${ROOT}"/scripts/tests/test_*.sh | xargs -n1 basename | LC_ALL=C sort)"
-    invoked="$(grep -oE '\./scripts/tests/test_[a-z_]+\.sh' "${ROOT}/scripts/check.sh" |
-        xargs -n1 basename | LC_ALL=C sort -u)"
-    missing="$(comm -23 <(printf '%s\n' "$present") <(printf '%s\n' "$invoked"))"
-    if [ -n "$missing" ]; then
-        bad "invoked by no moment: $(printf '%s' "$missing" | tr '\n' ' ') — by hand is a promise, not a leg"
-        return
-    fi
-    ok "$(printf '%s\n' "$present" | grep -c . ) drive(s) under scripts/tests/, every one invoked by scripts/check.sh"
-}
+# --- section 5: a drive that did not finish is not a pass ---------------------
+# Deleted: case_every_registered_drive_calls_drive_finished — subject dies with the shim (pin: test_harness.py::test_every_registered_drive_calls_drive_finished)
 
-case_the_drive_is_registered_in_the_gate() {
-    CURRENT=case_the_drive_is_registered_in_the_gate
-    local leg_at drive_at
-    OUT=""
-    # Inside the selftest leg, not merely somewhere in the file: a drive invoked
-    # above the leg's own banner is a drive in a different leg.
-    leg_at="$(grep -n '^leg selftest ' "${ROOT}/scripts/check.sh" | sed -n '1p' | cut -d: -f1)"
-    drive_at="$(grep -n '^\./scripts/tests/test_gate_explain\.sh$' "${ROOT}/scripts/check.sh" | sed -n '1p' | cut -d: -f1)"
-    if [ -z "$leg_at" ] || [ -z "$drive_at" ]; then
-        bad "the selftest leg (${leg_at:-none}) or the gate-explain invocation (${drive_at:-none}) is not in scripts/check.sh"
-        return
-    fi
-    if [ "$drive_at" -le "$leg_at" ]; then
-        bad "the gate-explain drive is invoked at line ${drive_at}, above the selftest leg at ${leg_at}"
-        return
-    fi
-    ok "./scripts/tests/test_gate_explain.sh is invoked at line ${drive_at}, inside the selftest leg that starts at ${leg_at}"
-}
-
-# Pull one registration block out of `scripts/check.sh` by its sentinels and run
-# it against a PLANTED drive of the given exit status, in a scratch tree. The
-# block the gate ships is the block that runs — a copy of its logic here would
-# be a case that passes while the gate drifts.
-run_registration() {
-    local name="$1" planted_rc="$2" dir="${WORK}/reg-${name}-${2}"
-    mkdir -p "${dir}/scripts/tests"
-    sed -n "/^# >>> drive: ${name} >>>\$/,/^# <<< drive: ${name} <<<\$/p" \
-        "${ROOT}/scripts/check.sh" >"$SELFTEST_BLOCK"
+# THE CLASS, NOT THE BASH-3.2 SYMPTOM. A drive that `exit 0`s from inside a case
+# never reaches its summary on any bash, so this arm is what bash 5 (the boxes,
+# CI) can verify. The child sources the REAL preamble and sets nothing, so what
+# it measures is the default.
+run_unfinished_child() { # <arm: early|finished|opted-out>
+    local arm="$1" child="${WORK}/unfinished-$1.sh"
+    DRIVE_OUT="${WORK}/unfinished-$1.out"
+    UNFINISHED_RC=0
     {
         printf '#!/usr/bin/env bash\n'
-        printf 'set -euo pipefail\n'
-        cat "$SELFTEST_BLOCK"
-        printf 'echo "THE LEG CARRIED ON"\n'
-    } >"${dir}/block.sh"
-    {
-        printf '#!/usr/bin/env bash\n'
-        printf 'echo "the planted drive said its piece"\n'
-        printf 'exit %s\n' "$planted_rc"
-    } >"${dir}/scripts/tests/test_${name}.sh"
-    chmod +x "${dir}/block.sh" "${dir}/scripts/tests/test_${name}.sh"
-    OUT="${WORK}/reg-${name}-${2}.log"
-    REG_RC=0
-    (cd "$dir" && ./block.sh) >"$OUT" 2>&1 || REG_RC=$?
+        printf 'set -uo pipefail\n'
+        printf 'cd "%s" || exit 9\n' "$ROOT"
+        printf '. scripts/tests/drive_preamble.sh\n'
+        [ "$arm" != "opted-out" ] || printf 'DRIVE_OPTED_IN_TO_FINISH=0\n'
+        printf 'case_that_leaves() {\n'
+        [ "$arm" = "finished" ] || printf '    exit 0\n'
+        printf '    :\n'
+        printf '}\n'
+        printf 'case_that_leaves\n'
+        printf 'echo "unfinished-child: summary"\n'
+        [ "$arm" = "opted-out" ] || printf 'drive_finished\n'
+        printf 'exit 0\n'
+    } >"$child"
+    chmod +x "$child"
+    "$child" >"$DRIVE_OUT" 2>&1 || UNFINISHED_RC=$?
+}
+UNFINISHED_RC=0
+
+case_a_drive_that_exits_inside_a_case_is_exit_2_on_any_bash() {
+    run_unfinished_child early
+    if [ "$UNFINISHED_RC" != "2" ] || ! seen "DIED BEFORE REPORTING" || seen "unfinished-child: summary"; then
+        bad "a drive that left from inside a case, by default, exited ${UNFINISHED_RC} (want 2 and the DIED BEFORE REPORTING banner)"
+        return
+    fi
+    ok "by default, an exit 0 from inside a case is exit 2 with the banner ($(bash --version | sed -n '1p'))"
+    run_unfinished_child finished
+    if [ "$UNFINISHED_RC" != "0" ] || seen "DIED BEFORE REPORTING"; then
+        bad "the control — the same drive reaching drive_finished — exited ${UNFINISHED_RC}, want 0 and no banner"
+        return
+    fi
+    ok "the control reaches drive_finished and exits 0"
+    run_unfinished_child opted-out
+    if [ "$UNFINISHED_RC" != "0" ] || seen "DIED BEFORE REPORTING"; then
+        bad "a drive that opted out with DRIVE_OPTED_IN_TO_FINISH=0 exited ${UNFINISHED_RC}, want 0 — the opt-out is not honoured"
+        return
+    fi
+    ok "a drive that opts out (DRIVE_OPTED_IN_TO_FINISH=0) keeps the old behaviour"
 }
 
-REG_RC=0
-
-case_a_registered_drive_that_cannot_look_is_exit_2_not_a_pass() {
-    CURRENT=case_a_registered_drive_that_cannot_look_is_exit_2_not_a_pass
-    local name
-    for name in gate_explain drive_preamble pipefail_readers; do
-        run_registration "$name" 2
-        if [ "$REG_RC" != "2" ]; then
-            bad "${name}: a drive that exited 2 mapped to ${REG_RC}; could-not-look outranks a pass and must not become one"
-            return
-        fi
-        if ! grep -qF 'COULD NOT LOOK — see above.' "$OUT"; then
-            bad "${name}: exit 2 with no COULD NOT LOOK sentence — the status is right and the reader is told nothing"
-            return
-        fi
-        if grep -qF 'THE LEG CARRIED ON' "$OUT"; then
-            bad "${name}: the leg continued past a could-not-look"
-            return
-        fi
-        run_registration "$name" 1
-        if [ "$REG_RC" != "1" ]; then
-            bad "${name}: a drive that exited 1 mapped to ${REG_RC}"
-            return
-        fi
-        if grep -qF 'THE LEG CARRIED ON' "$OUT"; then
-            bad "${name}: the leg continued past a failed drive"
-            return
-        fi
-        run_registration "$name" 0
-        if [ "$REG_RC" != "0" ] || ! grep -qF 'THE LEG CARRIED ON' "$OUT"; then
-            bad "${name}: a green drive did not let the leg carry on (rc=${REG_RC})"
-            return
-        fi
-    done
-    OUT=""
-    ok "three registrations × three statuses: 2 is COULD NOT LOOK and exit 2, 1 is the drive's red, 0 carries on"
-}
+# Deleted: case_a_registered_drive_that_cannot_look_is_exit_2_not_a_pass — subject dies with the shim (pin: test_selftest_compose.py::test_a_could_not_look_drive_outranks_a_red_one_and_both_are_named)
 
 # Every name `.github/workflows/ci.yml` puts into the environment of the step
 # that runs a unit, DERIVED FROM THE WORKFLOW rather than typed here. Three
@@ -696,9 +550,8 @@ case_every_variable_the_workflow_sets_is_accounted_for() {
     # Containment, not equality: `DRIVE_GATE_VARS` also names knobs an operator
     # types by hand and CI never sets, which is what the two sanction variables
     # are.
-    CURRENT=case_every_variable_the_workflow_sets_is_accounted_for
     local workflow names name unlisted="" stripped="" inherited=""
-    OUT=""
+    DRIVE_OUT=""
     workflow="${ROOT}/.github/workflows/ci.yml"
     if [ ! -r "$workflow" ]; then
         bad "no readable ${workflow} — this case cannot look, and a silent pass would vouch for a list nothing compares"
@@ -737,73 +590,9 @@ case_every_variable_the_workflow_sets_is_accounted_for() {
     ok "$(printf '%s\n' "$names" | grep -c .) name(s) the workflow sets, all accounted for — stripped: ${stripped:-none} · declared inherited: ${inherited:-none}"
 }
 
-case_every_registered_drive_declares_what_it_drives() {
-    CURRENT=case_every_registered_drive_declares_what_it_drives
-    # THE NEGATIVE OF THE LEG'S OWN REFUSALS, and the fourth thing this census
-    # out of a registration. `test_selftest_leg.sh` plants the three ways a key
-    # cannot be decided and requires exit 2 for each; this case requires that no
-    # drive this repository SHIPS is in any of those states — a marker in its
-    # first forty lines, every declared path expanding to something in the
-    # measured tree, and every checkout path its body spells covered by one of
-    # them.
-    #
-    # THE POPULATION IS `selftest_registered_drives`, read out of
-    # `scripts/check.sh` (:901-910) and never typed here: a list in this file
-    # would be right on the day it was written and silent ever after.
-    local names name file keyout tree listing bad_ones=""
-    OUT=""
-    # shellcheck source=scripts/gate_refuse.sh
-    . "${ROOT}/scripts/gate_refuse.sh"
-    # shellcheck source=scripts/gate_ledger.sh
-    . "${ROOT}/scripts/gate_ledger.sh"
-    if ! command -v drive_key >/dev/null 2>&1; then
-        bad "scripts/gate_ledger.sh defines no drive_key — the declaration nothing derives is FULL_LEGS before R3-F3x"
-        return
-    fi
-    names="$(cd "$ROOT" && awk '
-        /^\.\/scripts\/tests\/test_[a-z_]+\.sh$/ {
-            name = $0
-            sub(/^\.\/scripts\/tests\/test_/, "", name)
-            sub(/\.sh$/, "", name)
-            print name
-        }
-    ' scripts/check.sh)"
-    if [ -z "$names" ]; then
-        bad "no registered drives read out of scripts/check.sh — this census has lost its subject"
-        return
-    fi
-    tree="$(cd "$ROOT" && gate_measured_tree)" || tree=""
-    if [ -z "$tree" ]; then
-        cannot_look "the measured tree could not be read — every key below would be undecidable for the wrong reason"
-    fi
-    listing="${WORK}/tree-listing.txt"
-    (cd "$ROOT" && git ls-tree -r "$tree") >"$listing" 2>/dev/null || true
-    if [ ! -s "$listing" ]; then
-        cannot_look "git ls-tree -r ${tree} produced nothing"
-    fi
-    for name in $names; do
-        file="${ROOT}/scripts/tests/test_${name}.sh"
-        if [ ! -f "$file" ]; then
-            bad_ones="${bad_ones}
-  ${name}: registered and not in scripts/tests/"
-            continue
-        fi
-        keyout="$(cd "$ROOT" && drive_key "scripts/tests/test_${name}.sh" "$tree" "$listing")" || true
-        case "$keyout" in
-        ok\ drive-v1:*) ;;
-        *) bad_ones="${bad_ones}
-  ${name}: ${keyout#err }" ;;
-        esac
-    done
-    if [ -n "$bad_ones" ]; then
-        bad "drive(s) whose key the leg could not decide — each is exit 2 on every full gate:${bad_ones}"
-        return
-    fi
-    ok "$(printf '%s\n' "$names" | grep -c .) registered drive(s), each with a \`# drives:\` line that keys cleanly against tree ${tree:0:12}…"
-}
+# Deleted: case_every_registered_drive_declares_what_it_drives — subject dies with the shim (pin: test_harness.py::test_every_registered_drive_keys_cleanly_against_the_measured_tree)
 
 case_a_body_spelling_three_undeclared_paths_is_named_whole_and_refused_at_the_hook() {
-    CURRENT=case_a_body_spelling_three_undeclared_paths_is_named_whole_and_refused_at_the_hook
     # THE MEASURED SHAPE. A drive edit spelled `.claude/agents`, `.claude/skills`
     # and `CLAUDE.md` in its body and declared none of them; the hook and
     # `--loop` never asked, and the first reader was a ten-box bank that named
@@ -821,7 +610,7 @@ case_a_body_spelling_three_undeclared_paths_is_named_whole_and_refused_at_the_ho
     fi
     clone="${WORK}/three-paths-clone"
     git clone --quiet --shared --no-hardlinks "$ROOT" "$clone" >/dev/null 2>&1 ||
-        cannot_look "could not clone this checkout into ${clone}"
+        drive_cannot_look "could not clone this checkout into ${clone}"
     drive="scripts/tests/test_three_undeclared.sh"
     # THE MARKER IS ASSEMBLED, never typed at column zero in this file's own
     # first forty lines — the same rule every planted declaration here keeps.
@@ -874,15 +663,9 @@ case_a_body_spelling_three_undeclared_paths_is_named_whole_and_refused_at_the_ho
     *) bad "an empty touched set answered ${rc}: ${out}" ;;
     esac
     rm -rf "$clone"
-    # WIRED INTO THE HOOK'S TIER: the call sits inside the goalpost-census leg's
-    # body, which `--fast` runs — so no new leg, and `--list-legs` does not move.
-    if awk '
-        /^gate_leg_goalpost_census\(\) \{/ { inside = 1 }
-        inside && /drive_keys_of_touched / { found = 1 }
-        inside && /^gate_run_body goalpost-census / { exit }
-        END { exit !found }
-    ' "${ROOT}/scripts/check.sh"; then
-        ok "check.sh's goalpost-census leg (a --fast leg) calls drive_keys_of_touched"
+    # WIRED INTO THE HOOK'S TIER: the goalpost-census leg (a --fast leg) calls it.
+    if grep -qF 'drive_keys_of_touched "$changed"' "${ROOT}/quality/djb/legs/goalpost_census.py"; then
+        ok "the goalpost-census leg (a --fast leg) calls drive_keys_of_touched"
     else
         bad "the --fast tier never decides a touched drive's key — the goalpost-census leg does not call drive_keys_of_touched"
     fi
@@ -930,14 +713,14 @@ run_preamble_child() {
         . scripts/tests/drive_preamble.sh
         echo "AFTER sanction=${DJB_GATE_SANCTION:-<unset>} acme=${ACME_DRIVE_TOKEN:-<unset>}"
         echo "AFTER inherited=${DRIVE_INHERITED_VARS}"
+        drive_finished
     ) >"$PRE_OUT" 2>&1 || PRE_RC=$?
 }
 PRE_OUT=""
 PRE_RC=0
 
 case_the_product_env_keys_drawer_declares_product_keys_only() {
-    CURRENT=case_the_product_env_keys_drawer_declares_product_keys_only
-    OUT=""
+    DRIVE_OUT=""
     # (1) NO DRAWER: the template's own knob is stripped, as it always was, and
     # the product's is never mentioned. This is the negative, and it is first
     # so the arms below are differences from a measured baseline rather than
@@ -1046,7 +829,7 @@ run_local_ci_block() {
         on && /^[[:space:]]*run: \|$/     { body = 1 }
     ' "${ROOT}/.github/workflows/ci.yml" >"$block"
     if ! grep -qF 'scripts/local/ci' "$block"; then
-        cannot_look "the local-ci sentinels in .github/workflows/ci.yml enclose no run: body that mentions the drawer — the extraction is reading the wrong thing, and every arm below would judge an empty script"
+        drive_cannot_look "the local-ci sentinels in .github/workflows/ci.yml enclose no run: body that mentions the drawer — the extraction is reading the wrong thing, and every arm below would judge an empty script"
     fi
     LOCAL_CI_OUT="${WORK}/local-ci.out"
     LOCAL_CI_RC=0
@@ -1056,8 +839,7 @@ LOCAL_CI_OUT=""
 LOCAL_CI_RC=0
 
 case_the_workflows_optional_local_job_runs_the_products_ci_steps() {
-    CURRENT=case_the_workflows_optional_local_job_runs_the_products_ci_steps
-    OUT=""
+    DRIVE_OUT=""
     local dir="${WORK}/local-ci-tree"
     rm -rf "$dir"
     mkdir -p "$dir"
@@ -1170,6 +952,7 @@ case_the_templates_own_count
 case_any_tree
 echo "child: ran[\${RAN# }] · \${DRIVE_SKIPPED} skipped"
 if [ "${arm}" = "no-reason" ]; then template_only ""; fi
+drive_finished
 exit 0
 CHILD
     (
@@ -1182,12 +965,11 @@ CHILD
 }
 
 case_a_template_only_case_runs_on_the_template_and_is_counted_skipped_on_a_product() {
-    CURRENT=case_a_template_only_case_runs_on_the_template_and_is_counted_skipped_on_a_product
-    OUT=""
+    DRIVE_OUT=""
     # (1) THE TEMPLATE: no namespace declared. Both cases run, nothing is
     #     counted, and nothing new is printed — not even a zero.
     run_template_only_child template ""
-    OUT="$TO_OUT"
+    DRIVE_OUT="$TO_OUT"
     if [ "$TO_RC" != "0" ] || ! grep -qxF 'child: ran[template any] · 0 skipped' "$TO_OUT"; then
         bad "on a tree with no namespace the template-only case did not run (exit ${TO_RC})"
         return
@@ -1200,10 +982,10 @@ case_a_template_only_case_runs_on_the_template_and_is_counted_skipped_on_a_produ
 
     # (2) A PRODUCT: the case returns before it asserts, the skip is printed
     #     with the Python side's sentence and counted, the other case still
-    #     runs, the epilogue repeats the reason under the summary, and the exit
+    #     runs, the epilogue repeats the reason above the summary, and the exit
     #     status does not move.
     run_template_only_child product acme
-    OUT="$TO_OUT"
+    DRIVE_OUT="$TO_OUT"
     local sentence="case_the_templates_own_count — template-only: this tree declares rule_id_namespace acme; it types the template's own rule count"
     if [ "$TO_RC" != "0" ]; then
         bad "a template-only skip moved the exit status to ${TO_RC} — a skip is not a status"
@@ -1217,16 +999,17 @@ case_a_template_only_case_runs_on_the_template_and_is_counted_skipped_on_a_produ
         bad "the skip line does not name the case and the reason in the one sentence"
         return
     fi
-    if ! grep -qxF "to-child-product: 1 skipped — template-only cases this tree cannot pose:" "$TO_OUT" ||
+    if ! grep -qxF "to-child-product: 1 skipped, by kind:" "$TO_OUT" ||
+        ! grep -qxF "  template-only — the template's own properties, which this tree cannot pose:" "$TO_OUT" ||
         ! grep -qxF "    ${sentence}" "$TO_OUT"; then
-        bad "the epilogue did not print the count and the reason under the summary"
+        bad "the epilogue did not print the count and the reason under its kind's heading"
         return
     fi
     ok "a product skips the template-only case with the one sentence, counts it, runs the rest, and exits 0"
 
     # (3) A SKIP WITH NO REASON is exit 2: a skip nobody can audit.
     run_template_only_child no-reason acme
-    OUT="$TO_OUT"
+    DRIVE_OUT="$TO_OUT"
     if [ "$TO_RC" != "2" ] || ! grep -qF 'with no reason' "$TO_OUT"; then
         bad "template_only with no reason gave exit ${TO_RC}, want 2 naming the missing reason"
         return
@@ -1241,7 +1024,7 @@ case_a_template_only_case_runs_on_the_template_and_is_counted_skipped_on_a_produ
     printf '#!/usr/bin/env bash\necho "uv: the engine would not start" >&2\nexit 1\n' >"${shim}/uv"
     chmod +x "${shim}/uv"
     run_template_only_child reader-broken - "$shim"
-    OUT="$TO_OUT"
+    DRIVE_OUT="$TO_OUT"
     if [ "$TO_RC" != "2" ] || ! grep -qF 'did not answer' "$TO_OUT"; then
         bad "a reader that could not ask the engine gave exit ${TO_RC}, want 2"
         return
@@ -1249,36 +1032,862 @@ case_a_template_only_case_runs_on_the_template_and_is_counted_skipped_on_a_produ
     ok "an engine that cannot answer is exit 2, never a guess in either direction"
 }
 
+# Every skip carries a kind, and the report groups by it: an environment skip
+# is never filed under the template-only heading. A kind outside the three is
+# exit 2.
+case_a_skip_carries_its_kind_and_the_report_groups_by_it() {
+    local child="${WORK}/kinds_child.sh" out="${WORK}/kinds.out" rc=0
+    DRIVE_OUT="$out"
+    new_scratch_repo "${WORK}/kinds-repo"
+    cat >"$child" <<CHILD
+#!/usr/bin/env bash
+cd "${WORK}/kinds-repo" || exit 9
+. "${PREAMBLE}" || exit 2
+DRIVE__NAMESPACE_READ=1
+DRIVE__NAMESPACE=acme
+case_mine() { template_only "it types the template's own count" || return 0; }
+case_db() { drive_skip environment "no database on this machine" || return 0; }
+case_world() { drive_skip could-not-pose "the fixture would not build" || return 0; }
+case_held() { ok "held"; }
+case_odd() { drive_skip whimsy "not a kind" || return 0; }
+drive_run_case case_mine
+drive_run_case case_db
+drive_run_case case_world
+drive_run_case case_held
+[ "\${KINDS_ODD:-}" != "go" ] || drive_run_case case_odd
+drive_finished
+CHILD
+    bash "$child" >"$out" 2>&1 || rc=$?
+    local want
+    want="kinds_child: 3 skipped, by kind:
+  template-only — the template's own properties, which this tree cannot pose:
+    case_mine — template-only: this tree declares rule_id_namespace acme; it types the template's own count
+  environment — what this machine's environment cannot reach:
+    case_db — environment: no database on this machine
+  could-not-pose — a world the case could not build:
+    case_world — could-not-pose: the fixture would not build
+kinds_child: 1 passed · 0 failed · 3 skipped"
+    if [ "$rc" != "0" ] || [ "$(tail -n 8 "$out")" != "$want" ]; then
+        bad "three skips of three kinds exited ${rc}, and the report's tail is not the three groups above the summary"
+        return
+    fi
+    ok "a skip of each kind is reported under its own heading, above the one summary, and moves no status"
+    rc=0
+    env KINDS_ODD=go bash "$child" >"$out" 2>&1 || rc=$?
+    if [ "$rc" != "2" ] || ! grep -qF "drive_skip: 'whimsy' is not a kind" "$out"; then
+        bad "a skip of an unknown kind exited ${rc}, want 2 naming it"
+        return
+    fi
+    ok "a skip of a kind outside template-only, environment and could-not-pose is exit 2"
+    DRIVE_OUT=""
+}
+
+# --- section 7: one header window, two readers ------------------------------
+#
+# A shell file's header is its first N lines, and two readers read it there:
+# `scripts/gate_ledger.sh` reads a drive's `# drives:` / `# cites:` lines within
+# `DRIVE_MARKER_LINES`, and `quality/roads.py` reads a whole script's road marker
+# within `HEADER_WINDOW`. The Python census cannot import a shell constant, so
+# the two are typed twice, and THIS is the pin its comment points at: a window
+# widened on one side only would let a marker at line 41 be read by one reader
+# and not the other. Each constant is read from its own source file, never
+# retyped here.
+
+# header_window_value <file> <name> — the integer `<name>=N` or `<name> = N`
+# assigns at column zero, or nothing when the file holds no such line.
+header_window_value() {
+    awk -v name="$2" '
+        $0 ~ ("^" name "[ \t]*=[ \t]*[0-9]+[ \t]*($|#)") {
+            sub("^" name "[ \t]*=[ \t]*", "")
+            sub("[^0-9].*$", "")
+            print
+            exit
+        }
+    ' "$1"
+}
+
+# header_window_pin <roads.py> <gate_ledger.sh> — exit 0 when the two windows
+# are equal, 1 when they differ, 2 when either cannot be read; one line saying which.
+header_window_pin() {
+    local census ledger
+    [ -r "$1" ] && [ -r "$2" ] || {
+        echo "cannot read $1 or $2"
+        return 2
+    }
+    census="$(header_window_value "$1" HEADER_WINDOW)"
+    ledger="$(header_window_value "$2" DRIVE_MARKER_LINES)"
+    if [ -z "$census" ] || [ -z "$ledger" ]; then
+        echo "HEADER_WINDOW='${census}' in $1, DRIVE_MARKER_LINES='${ledger}' in $2 — one is not an integer assignment at column zero"
+        return 2
+    fi
+    if [ "$census" != "$ledger" ]; then
+        echo "HEADER_WINDOW=${census} but DRIVE_MARKER_LINES=${ledger}"
+        return 1
+    fi
+    echo "both ${census}"
+    return 0
+}
+
+case_the_road_census_and_the_drive_markers_read_one_header_window() {
+    DRIVE_OUT=""
+    local roads="${ROOT}/quality/roads.py" ledger="${ROOT}/scripts/gate_ledger.sh"
+    local said rc=0
+    said="$(header_window_pin "$roads" "$ledger")" || rc=$?
+    case "$rc" in
+    0) ok "quality/roads.py and scripts/gate_ledger.sh read one header window: ${said}" ;;
+    1)
+        bad "the two header windows differ: ${said} — a marker between them is read by one reader and not the other"
+        return
+        ;;
+    *) drive_cannot_look "the header-window pin could not read its two constants: ${said}" ;;
+    esac
+
+    # THE PIN CAN FAIL: a scratch copy of the census with its window widened by
+    # one, and a scratch copy with the constant gone, each through the same pin.
+    local plant="${WORK}/roads-window-plant.py"
+    sed 's/^HEADER_WINDOW = .*/HEADER_WINDOW = 41/' "$roads" >"$plant" ||
+        drive_cannot_look "could not write the widened-window plant"
+    grep -q '^HEADER_WINDOW = 41$' "$plant" ||
+        drive_cannot_look "the widened-window plant did not take — there is no HEADER_WINDOW line to widen"
+    rc=0
+    said="$(header_window_pin "$plant" "$ledger")" || rc=$?
+    if [ "$rc" != "1" ]; then
+        bad "a census window of 41 against a ledger window of 40 gave exit ${rc} (${said}), want 1"
+        return
+    fi
+    ok "a widened census window is refused: ${said}"
+
+    sed '/^HEADER_WINDOW = /d' "$roads" >"$plant" ||
+        drive_cannot_look "could not write the missing-window plant"
+    rc=0
+    said="$(header_window_pin "$plant" "$ledger")" || rc=$?
+    if [ "$rc" != "2" ]; then
+        bad "a census with no HEADER_WINDOW gave exit ${rc} (${said}), want 2 — an unread constant is could-not-look"
+        return
+    fi
+    ok "a census with no window to read is could-not-look, never a pass"
+}
+
+# --- section 10: the harness a drive carries, once ----------------------------
+#
+# THE HARNESS IS DRIVEN THROUGH A DRIVE OF ITS OWN MAKING: a child that sources
+# the real preamble, carries no harness of its own, and is asked the four
+# things a verifier and the gate ask a drive — name your cases, run them, run
+# just this one, and what is your verdict. Its scratch is this file's WORK; it
+# stands in a scratch repository so the tripwire it is born with fingerprints
+# that and nothing here.
+
+# write_harness_child <path> — a drive on the preamble's harness: two cases, one
+# ok and one bad over a 30-line capture, a heredoc that PLANTS a third case
+# (which is not this child's), and nothing else.
+write_harness_child() {
+    cat >"$1" <<CHILD
+#!/usr/bin/env bash
+cd "${HARNESS_REPO}" || exit 9
+. "${PREAMBLE}" || exit 2
+set -euo pipefail
+CAPTURE="\${TMPDIR:-/tmp}/harness-child-capture.\$\$"
+drive_at_exit 'rm -f "\$CAPTURE"'
+i=1
+while [ "\$i" -le 30 ]; do echo "capture line \$i"; i=\$((i + 1)); done >"\$CAPTURE"
+case_alpha() { ok "alpha held"; }
+case_beta() { bad "beta did not hold" "\$CAPTURE"; }
+cat >/dev/null <<'PLANT'
+case_planted() {
+PLANT
+drive_run_case case_alpha
+drive_run_case case_beta
+drive_finished
+CHILD
+    chmod +x "$1"
+}
+
+# harness_run <out> <args…> — run the child, leaving its transcript in <out>
+# and its status in HARNESS_RC.
+harness_run() {
+    local out="$1"
+    shift
+    HARNESS_RC=0
+    bash "$HARNESS_CHILD" "$@" >"$out" 2>&1 || HARNESS_RC=$?
+}
+
+HARNESS_RC=0
+HARNESS_REPO="${WORK}/harness-repo"
+HARNESS_CHILD="${WORK}/harness_child.sh"
+
+case_the_harness_lists_runs_and_summarises_a_drive_once() {
+    local out="${WORK}/harness.out" first last summaries
+    new_scratch_repo "$HARNESS_REPO"
+    write_harness_child "$HARNESS_CHILD"
+    DRIVE_OUT="$out"
+
+    # (1) `--list`: each case once, by definition, the planted one not at all —
+    # and readable through a pipe, which is what a list is for.
+    harness_run "$out" --list
+    if [ "$HARNESS_RC" != "0" ] || [ "$(cat "$out")" != "case_alpha
+case_beta" ]; then
+        bad "--list exited ${HARNESS_RC} and did not print exactly case_alpha and case_beta, once each"
+        return
+    fi
+    first="$(bash "$HARNESS_CHILD" --list | sed -n '1p')"
+    if [ "$first" != "case_alpha" ]; then
+        bad "a piped --list did not read: its first line was '${first}'"
+        return
+    fi
+    ok "--list names each case once, by definition, never the heredoc's planted case, and reads through a pipe"
+
+    # (2) the whole run: one summary, in the one grammar, last; the counted red
+    # is the status; the red shows the LAST 25 lines of its capture.
+    harness_run "$out"
+    summaries="$(grep -cE '^harness_child: [0-9]+ passed · [0-9]+ failed · [0-9]+ skipped$' "$out" || true)"
+    last="$(sed -n '$p' "$out")"
+    if [ "$HARNESS_RC" != "1" ] || [ "$summaries" != "1" ] ||
+        [ "$last" != "harness_child: 1 passed · 1 failed · 0 skipped" ]; then
+        bad "the run exited ${HARNESS_RC} with ${summaries} summary line(s), last line '${last}' — want 1, one, and the summary last"
+        return
+    fi
+    if ! grep -qxF '             | capture line 30' "$out" || ! grep -qxF '             | capture line 6' "$out" ||
+        grep -qxF '             | capture line 5' "$out"; then
+        bad "the red did not show the last 25 lines of its capture (lines 6 to 30, and not 5)"
+        return
+    fi
+    ok "the run ends with one summary in the one grammar, a counted red is exit 1, and the red shows the capture's last 25 lines"
+
+    # (3) `--case`: exactly that case, and its summary says so.
+    harness_run "$out" --case case_alpha
+    if [ "$HARNESS_RC" != "0" ] || grep -q 'case_beta' "$out" ||
+        [ "$(sed -n '$p' "$out")" != "harness_child: 1 passed · 0 failed · 0 skipped" ]; then
+        bad "--case case_alpha exited ${HARNESS_RC} or ran case_beta too"
+        return
+    fi
+    ok "--case runs exactly the case it names"
+
+    # (3b) a repeated `--case` runs exactly that set, counted in the one summary.
+    harness_run "$out" --case case_beta --case case_alpha
+    if [ "$HARNESS_RC" != "1" ] || ! grep -qF 'alpha held' "$out" || ! grep -qF 'beta did not hold' "$out" ||
+        [ "$(sed -n '$p' "$out")" != "harness_child: 1 passed · 1 failed · 0 skipped" ]; then
+        bad "--case case_beta --case case_alpha exited ${HARNESS_RC} or did not run and count both"
+        return
+    fi
+    ok "a repeated --case runs exactly the named set and the summary counts them"
+
+    # (4) the two refusals: a case the drive does not define, and an argument
+    # nobody declared. Both exit 2 before any case runs — never a silent run.
+    harness_run "$out" --case case_planted
+    if [ "$HARNESS_RC" != "2" ] || ! grep -qF -- "--case 'case_planted' names no case this drive defines" "$out" ||
+        grep -q 'alpha held' "$out"; then
+        bad "--case naming the heredoc's planted case exited ${HARNESS_RC}, want 2 naming it and no case run"
+        return
+    fi
+    harness_run "$out" --lsit
+    if [ "$HARNESS_RC" != "2" ] || ! grep -qF "unknown argument '--lsit'" "$out"; then
+        bad "a mistyped flag exited ${HARNESS_RC}, want 2 naming it"
+        return
+    fi
+    ok "a case the drive does not define and a mistyped flag are both exit 2, named, with nothing run"
+
+    # (5) `--list` over a drive with no case is a refusal, never an empty pass.
+    local caseless="${WORK}/caseless_child.sh"
+    printf '#!/usr/bin/env bash\ncd "%s" || exit 9\n. "%s" || exit 2\nok "no case"\ndrive_finished\n' \
+        "$HARNESS_REPO" "$PREAMBLE" >"$caseless"
+    HARNESS_RC=0
+    bash "$caseless" --list >"$out" 2>&1 || HARNESS_RC=$?
+    if [ "$HARNESS_RC" != "2" ] || ! grep -qF 'defines no `case_` function — nothing to list' "$out"; then
+        bad "--list over a drive with no case exited ${HARNESS_RC}, want 2 with the one sentence"
+        return
+    fi
+    ok "--list over a drive that defines no case is exit 2 with one sentence"
+    DRIVE_OUT=""
+}
+
+# A peer's branch created mid-run is an excused tripwire delta, printed; the
+# summary still comes after it and stays the last line.
+case_the_summary_stays_last_when_the_tripwire_excuses_a_delta() {
+    local repo="${WORK}/excused-repo" child="${WORK}/excused_child.sh" out="${WORK}/excused.out" rc=0 last
+    DRIVE_OUT="$out"
+    new_scratch_repo "$repo"
+    cat >"$child" <<CHILD
+#!/usr/bin/env bash
+cd "${repo}" || exit 9
+. "${PREAMBLE}" || exit 2
+case_peer() {
+    git -C "${repo}" worktree add -q -b peer-mid-run "${WORK}/excused-peer" >/dev/null 2>&1 || exit 9
+    ok "a peer worktree made its branch mid-run"
+}
+drive_run_case case_peer
+drive_finished
+CHILD
+    bash "$child" >"$out" 2>&1 || rc=$?
+    last="$(sed -n '$p' "$out")"
+    if [ "$rc" != "0" ] || ! grep -qF 'excused: refs/heads/peer-mid-run — created by a peer worktree' "$out" ||
+        [ "$last" != "excused_child: 1 passed · 0 failed · 0 skipped" ]; then
+        bad "an excused delta exited ${rc} with last line '${last}' — want 0, the excused line printed, and the summary last"
+        return
+    fi
+    ok "an excused tripwire delta prints before the one summary line, which stays last"
+    DRIVE_OUT=""
+}
+
+# The four readers a run is asserted by: each counts through ok/bad in both
+# directions, and a capture they cannot read is exit 2.
+case_the_four_run_readers_count_both_ways_and_refuse_an_empty_capture() {
+    local child="${WORK}/readers_child.sh" out="${WORK}/readers.out" rc=0
+    DRIVE_OUT="$out"
+    new_scratch_repo "${WORK}/readers-repo"
+    cat >"$child" <<CHILD
+#!/usr/bin/env bash
+cd "${WORK}/readers-repo" || exit 9
+. "${PREAMBLE}" || exit 2
+DRIVE_OUT="${WORK}/readers-capture.txt"
+printf 'the subject said its piece\\n' >"\$DRIVE_OUT"
+RUN="the subject" RC=3
+case_held() { holds "two equal" a a; exits 3; says "said its piece"; says_not "refused"; }
+case_not() { holds "two unequal" a b; exits 0; says "refused"; says_not "said its piece"; }
+case_empty() { : >"\$DRIVE_OUT"; says_not "anything"; }
+drive_run_case case_held
+drive_run_case case_not
+[ "\${READERS_EMPTY:-}" != "go" ] || drive_run_case case_empty
+drive_finished
+CHILD
+    bash "$child" >"$out" 2>&1 || rc=$?
+    if [ "$rc" != "1" ] || [ "$(sed -n '$p' "$out")" != "readers_child: 4 passed · 4 failed · 0 skipped" ] ||
+        ! grep -qxF "  ok       case_held — the subject: exit 3" "$out" ||
+        ! grep -qxF "  FAILED   case_not — two unequal — wanted 'a', got 'b'" "$out" ||
+        ! grep -qxF '  FAILED   case_not — the subject: says "said its piece" and must not' "$out"; then
+        bad "the four readers over a held and an unheld run exited ${rc}, want 1 with 4 passed and 4 failed, each line labelled by \$RUN"
+        return
+    fi
+    ok "holds, exits, says and says_not count a pass and a fail each, labelled by \$RUN"
+    rc=0
+    env READERS_EMPTY=go bash "$child" >"$out" 2>&1 || rc=$?
+    if [ "$rc" != "2" ] || ! grep -qF 'which is EMPTY' "$out"; then
+        bad "says_not over an empty capture exited ${rc}, want 2 naming the empty capture"
+        return
+    fi
+    ok "says_not over an empty capture is exit 2, never a pass nobody looked at"
+    DRIVE_OUT=""
+}
+
+case_the_preamble_refuses_a_shell_that_is_not_bash() {
+    local out="${WORK}/not-bash.out" rc=0
+    DRIVE_OUT="$out"
+    new_scratch_repo "${WORK}/not-bash-repo"
+    printf 'cd "%s" || exit 9\n. "%s"\necho "the sh reached its first case"\n' "${WORK}/not-bash-repo" "$PREAMBLE" >"${WORK}/not_bash.sh"
+    sh "${WORK}/not_bash.sh" >"$out" 2>&1 || rc=$?
+    if [ "$rc" != "2" ] || grep -qF 'the sh reached its first case' "$out" ||
+        ! grep -qE 'must run under bash|bash is in POSIX mode' "$out"; then
+        bad "a drive run by sh exited ${rc}; want 2 with the preamble's one sentence and nothing after it"
+        return
+    fi
+    ok "sh on a drive is exit 2 with the preamble's sentence ($(sed -n '1p' "$out"))"
+    DRIVE_OUT=""
+}
+
+case_the_scratch_repo_is_on_main_with_an_author_and_one_base_commit() {
+    local repo="${WORK}/scratch-made" count branch who
+    DRIVE_OUT=""
+    SCRATCH_MADE="$repo"
+    drive_scratch_repo SCRATCH_MADE builder
+    branch="$(git -C "$repo" symbolic-ref --short HEAD)"
+    count="$(git -C "$repo" rev-list --count HEAD)"
+    who="$(git -C "$repo" log -1 --format='%an <%ae>')"
+    if [ "$branch" != "main" ] || [ "$count" != "1" ] || [ "$who" != "builder <builder@example.invalid>" ]; then
+        bad "drive_scratch_repo made branch '${branch}', ${count} commit(s), author '${who}' — want main, 1, builder <builder@example.invalid>"
+        return
+    fi
+    ok "drive_scratch_repo: on main, one base commit, the author it was handed"
+    local out="${WORK}/scratch-refused.out" rc=0
+    (
+        RELATIVE_REPO="relative/path"
+        drive_scratch_repo RELATIVE_REPO
+    ) >"$out" 2>&1 || rc=$?
+    if [ "$rc" != "2" ] || ! grep -qF 'is relative' "$out" || [ -e relative/path ]; then
+        bad "a relative scratch path exited ${rc}, want 2 from the belt, and nothing made" "$out"
+        return
+    fi
+    ok "a relative scratch path is refused by the belt before git is handed it"
+}
+
+case_a_drive_with_its_own_list_arm_keeps_its_own_parse_and_summary() {
+    # A DRIVE NOT YET MIGRATED IS UNTOUCHED: its own `--list)` arm answers, and
+    # its own summary is the only one — this is what lets the migration go one
+    # drive at a time.
+    local child="${WORK}/legacy_child.sh" out="${WORK}/legacy.out" rc=0 n
+    DRIVE_OUT="$out"
+    new_scratch_repo "${WORK}/legacy-repo"
+    cat >"$child" <<CHILD
+#!/usr/bin/env bash
+cd "${WORK}/legacy-repo" || exit 9
+. "${PREAMBLE}" || exit 2
+case "\${1:-}" in
+"") ;;
+--list) echo "LEGACY LIST"; exit 0 ;;
+esac
+PASSED=0
+ok() { PASSED=\$((PASSED + 1)); }
+case_one() { ok; }
+case_one
+echo "legacy_child: \${PASSED} passed, 0 failed"
+drive_finished
+CHILD
+    bash "$child" --list >"$out" 2>&1 || rc=$?
+    if [ "$rc" != "0" ] || [ "$(cat "$out")" != "LEGACY LIST" ]; then
+        bad "a drive with its own --list arm was answered by the preamble (exit ${rc})"
+        return
+    fi
+    rc=0
+    bash "$child" >"$out" 2>&1 || rc=$?
+    n="$(grep -c 'passed' "$out" || true)"
+    if [ "$rc" != "0" ] || [ "$n" != "1" ] || ! grep -qxF 'legacy_child: 1 passed, 0 failed' "$out"; then
+        bad "a drive with its own harness printed ${n} summary line(s) (exit ${rc}) — the preamble's must stand back"
+        return
+    fi
+    ok "a drive that still carries its own --list arm and ok keeps its own parse and its own one summary"
+    DRIVE_OUT=""
+}
+
+# --- section 10: the census — no drive writes the harness itself --------------
+#
+# THE POPULATION: every `scripts/tests/test_*.sh` and `deploy/tests/test_*.sh`
+# the index carries. THE CLASS: a definition, in the drive's own code (a
+# heredoc's body is a plant, not the drive), of a helper the preamble ships
+# (`ok`, `bad`, `holds`, `exits`, `says`, `says_not`, `says_before` by name; `cannot_look`,
+# `run_case`, `fresh*`, `clone_into` as its drive_ forms), or a `--list)` arm of
+# its own. THE VALVE: `# harness: <reason>` on the line directly above a
+# definition — honoured only for a name the preamble does not ship verbatim. THE RATCHET: the copies are FOUND, never typed, and their count
+# may only fall — over HARNESS_COPIES_RECORDED is a red naming every copy; under
+# it prints the lower number to record.
+#
+# does-not-cover: a helper under a name this census does not read (`is`,
+# `same`, `differs` — the equality assertion under other names); a copy
+# deleted while another is added (the count holds); a drive that does not
+# source the preamble at all.
+HARNESS_HELPERS_RE='^[[:space:]]*(function[[:space:]]+)?(ok|bad|holds|exits|says_not|says_before|says|cannot_look|run_case|fresh_repo|fresh_checkout|fresh|clone_into)[[:space:]]*\(\)'
+# The names the preamble ships verbatim: a valve above one of these is no excuse.
+HARNESS_SHIPPED=" ok bad holds exits says says_not says_before "
+HARNESS_LIST_ARM_RE='^[[:space:]]*["'\'']?--list["'\'']?[[:space:]]*(\)|[|])'
+
+# harness_copies_in <file> — `<helper>` per copy the file defines in its own
+# code, or `valved <helper> <reason>` for one carrying the valve above it.
+harness_copies_in() {
+    local file="$1" text prev="" name
+    while IFS= read -r text; do
+        text="${text#*$'\t'}"
+        if [[ "$text" =~ $HARNESS_HELPERS_RE ]]; then
+            name="${BASH_REMATCH[2]}"
+            if [[ "$HARNESS_SHIPPED" != *" ${name} "* ]] &&
+                [[ "$prev" =~ ^[[:space:]]*#[[:space:]]*harness:[[:space:]]*([^[:space:]].*)$ ]]; then
+                printf 'valved %s %s\n' "$name" "${BASH_REMATCH[1]}"
+            else
+                printf '%s\n' "$name"
+            fi
+        elif [[ "$text" =~ $HARNESS_LIST_ARM_RE ]]; then
+            printf '%s\n' "--list"
+        fi
+        prev="$text"
+    done < <(drive__code_lines "$file")
+}
+
+# harness_census <root> — sets HARNESS_COPIES, HARNESS_COUNT, HARNESS_DRIVES, HARNESS_VALVED, HARNESS_NONE and HARNESS_CLEAN.
+# A drive whose only copies are the five run readers is still ON the harness (HARNESS_CLEAN).
+harness_census() {
+    local root="$1" drive helper pop copies core
+    HARNESS_VALVED=0
+    HARNESS_CLEAN=""
+    HARNESS_NONE=0
+    HARNESS_COPIES=""
+    pop="$(cd "$root" && git ls-files 'scripts/tests/test_*.sh' 'deploy/tests/test_*.sh')" ||
+        drive_cannot_look "git ls-files did not answer in ${root} — the drive population is unknown"
+    HARNESS_DRIVES="$(printf '%s\n' "$pop" | grep -c . || true)"
+    [ "$HARNESS_DRIVES" -gt 0 ] || drive_cannot_look "no drive under ${root} — a census over nothing asserts nothing"
+    while IFS= read -r drive; do
+        [ -n "$drive" ] || continue
+        copies="$(harness_copies_in "${root}/${drive}" | LC_ALL=C sort -u)"
+        core=0
+        [ -n "$copies" ] || HARNESS_NONE=$((HARNESS_NONE + 1))
+        while IFS= read -r helper; do
+            case "$helper" in
+            '') ;;
+            valved\ *) HARNESS_VALVED=$((HARNESS_VALVED + 1)) ;;
+            holds | exits | says | says_not | says_before) HARNESS_COPIES="${HARNESS_COPIES}${drive}|${helper}"$'\n' ;;
+            *)
+                HARNESS_COPIES="${HARNESS_COPIES}${drive}|${helper}"$'\n'
+                core=1
+                ;;
+            esac
+        done <<<"$copies"
+        [ "$core" = 1 ] || HARNESS_CLEAN="${HARNESS_CLEAN}${drive}"$'\n'
+    done <<<"$pop"
+    HARNESS_COPIES="$(printf '%s' "$HARNESS_COPIES" | LC_ALL=C sort)"
+    HARNESS_COUNT="$(printf '%s' "$HARNESS_COPIES" | grep -c . || true)"
+}
+
+# The recorded count, from the census's own printed line; only ever lowered.
+HARNESS_COPIES_RECORDED=33
+
+# harness_ratchet <recorded> — 0 at or under the recorded count (printing the
+# lower number to record when under), 1 over it, after a `bad` naming every copy.
+harness_ratchet() {
+    local recorded="$1"
+    if [ "$HARNESS_COUNT" -gt "$recorded" ]; then
+        bad "harness copies grew to ${HARNESS_COUNT}, over the recorded ${recorded} — use the preamble's (\`drive_cannot_look\`, \`ok\`, \`bad\`, \`drive_run_case\`, \`drive_scratch_repo\`, its --list and --case) and delete the copy, or say why with \`# harness: <reason>\` above a helper the preamble does not ship. Every copy:
+$(printf '%s\n' "$HARNESS_COPIES" | sed 's/^/             copy /')"
+        return 1
+    fi
+    if [ "$HARNESS_COUNT" -lt "$recorded" ]; then
+        echo "  note     harness copies fell to ${HARNESS_COUNT} from the recorded ${recorded} — record it: HARNESS_COPIES_RECORDED=${HARNESS_COUNT}"
+    fi
+    return 0
+}
+
+case_no_drive_defines_the_harness_itself() {
+    local drives
+    DRIVE_OUT=""
+    harness_census "$ROOT"
+    harness_ratchet "$HARNESS_COPIES_RECORDED" || return 0
+    drives="$(printf '%s\n' "$HARNESS_COPIES" | cut -d'|' -f1 | LC_ALL=C sort -u | grep -c . || true)"
+    ok "harness copies: ${HARNESS_COUNT} (recorded ${HARNESS_COPIES_RECORDED}) in ${drives} drives; ${HARNESS_VALVED} valved; ${HARNESS_NONE} of ${HARNESS_DRIVES} drives carry none, $(printf '%s' "$HARNESS_CLEAN" | grep -c . || true) are on the harness"
+
+    # THE PLANT, in a scratch tree of its own and with no row anywhere: a drive
+    # that defines `cannot_look()` is named and counted; the same definition
+    # inside a heredoc, and one under the valve, are not.
+    local plant="${WORK}/harness-plant"
+    new_scratch_repo "$plant"
+    mkdir -p "${plant}/scripts/tests"
+    printf '#!/usr/bin/env bash\ncannot_look() {\n    exit 2\n}\n' >"${plant}/scripts/tests/test_planted.sh"
+    printf '#!/usr/bin/env bash\ncat <<%s\nok() {\n%s\n# harness: a helper the preamble does not ship, said so\nfresh() {\n    :\n}\n' "'X'" "X" >"${plant}/scripts/tests/test_heredoc_and_valve.sh"
+    git -C "$plant" add scripts >/dev/null 2>&1 && git -C "$plant" commit -q -m plant >/dev/null 2>&1 ||
+        drive_cannot_look "the harness plant would not commit in ${plant}"
+    harness_census "$plant"
+    if [ "$HARNESS_COPIES" != "scripts/tests/test_planted.sh|cannot_look" ] || [ "$HARNESS_VALVED" != "1" ]; then
+        bad "the planted cannot_look() was not the one copy found (got '${HARNESS_COPIES}', ${HARNESS_VALVED} valved)"
+        return
+    fi
+    # A valve above a name the preamble ships verbatim excuses nothing.
+    printf '#!/usr/bin/env bash\n# harness: an assertion over the capture\nsays() {\n    :\n}\n' >"${plant}/scripts/tests/test_valved_says.sh"
+    git -C "$plant" add scripts >/dev/null 2>&1 && git -C "$plant" commit -q -m says >/dev/null 2>&1 ||
+        drive_cannot_look "the valved-says plant would not commit in ${plant}"
+    harness_census "$plant"
+    if [ "$HARNESS_COPIES" != "scripts/tests/test_planted.sh|cannot_look
+scripts/tests/test_valved_says.sh|says" ] || [ "$HARNESS_VALVED" != "1" ]; then
+        bad "a valved says() was not counted as a copy (got '${HARNESS_COPIES}', ${HARNESS_VALVED} valved)"
+        return
+    fi
+    git -C "$plant" rm -q scripts/tests/test_valved_says.sh >/dev/null 2>&1 && git -C "$plant" commit -q -m unsays >/dev/null 2>&1 ||
+        drive_cannot_look "the valved-says plant would not come out of ${plant}"
+    harness_census "$plant"
+    local saved_failed="$FAILED" said
+    said="$(harness_ratchet 0)" && {
+        bad "one copy over a recorded 0 did not red"
+        return
+    }
+    FAILED="$saved_failed"
+    case "$said" in
+    *"copy scripts/tests/test_planted.sh|cannot_look"*) ;;
+    *)
+        bad "the ratchet's red did not name the planted copy: ${said}"
+        return
+        ;;
+    esac
+    said="$(harness_ratchet 2)" || {
+        bad "one copy under a recorded 2 was red: ${said}"
+        return
+    }
+    case "$said" in
+    *"HARNESS_COPIES_RECORDED=1"*) ;;
+    *)
+        bad "one copy under a recorded 2 did not print the lower number to record: ${said}"
+        return
+        ;;
+    esac
+    ok "a planted cannot_look() is found with no row typed and reds over the count, naming it; a heredoc's ok() and a valved helper are not copies; under the count prints the number to record"
+}
+
+# summary_census <root> <drives> — each drive lists once and ends with one summary; sets SUMMARY_ON, returns 1 after a `bad`.
+# An exit 2 carrying `drive_cannot_reach`'s `environment:` sentence is an environment skip, never a red.
+SUMMARY_ON=0
+summary_census() {
+    local root="$1" drives="$2" drive name out listing lines unique first last summary rc reach
+    SUMMARY_ON=0
+    while IFS= read -r drive; do
+        [ -n "$drive" ] || continue
+        name="$(basename "$drive" .sh)"
+        out="${WORK}/on-harness-${name}.out"
+        listing="${WORK}/on-harness-${name}.list"
+        bash "${root}/${drive}" --list >"$listing" 2>&1 || {
+            bad "${drive} --list did not exit 0" "$listing"
+            return 1
+        }
+        lines="$(grep -c . "$listing" || true)"
+        unique="$(LC_ALL=C sort -u "$listing" | grep -c . || true)"
+        first="$(sed -n '1p' "$listing")"
+        # Never this case asking for itself: a drive whose first case is this
+        # one is asked for its second.
+        [ "$first" != "case_every_drive_on_the_harness_lists_once_and_prints_one_summary" ] || first="$(sed -n '2p' "$listing")"
+        if [ "$lines" = "0" ] || [ "$lines" != "$unique" ]; then
+            bad "${drive} lists ${lines} line(s) for ${unique} case(s) — a case listed twice, or none" "$listing"
+            return 1
+        fi
+        rc=0
+        bash "${root}/${drive}" --case "$first" >"$out" 2>&1 || rc=$?
+        if [ "$rc" = "2" ]; then
+            reach="$(grep -F "!! ${name}: environment: " "$out" || true)"
+            if [ -n "$reach" ]; then
+                reach="${reach%%$'\n'*}"
+                drive_skip environment "${drive} --case ${first} could not reach its world: ${reach#"!! ${name}: environment: "}" || true
+                continue
+            fi
+        fi
+        if [ "$rc" != "0" ]; then
+            bad "${drive} --case ${first} exited ${rc}, not 0" "$out"
+            return 1
+        fi
+        last="$(sed -n '$p' "$out")"
+        summary="$(grep -E "^${name}: [0-9]+ passed · [0-9]+ failed · [0-9]+ skipped\$" "$out" || true)"
+        if [ -z "$summary" ] || [ "$summary" != "$last" ]; then
+            bad "${drive} --case ${first} does not end with the preamble's one summary line" "$out"
+            return 1
+        fi
+        SUMMARY_ON=$((SUMMARY_ON + 1))
+    done <<<"$drives"
+    return 0
+}
+
+case_every_drive_on_the_harness_lists_once_and_prints_one_summary() {
+    # THE SEAM USED: every drive the census finds carrying no copy is ON the
+    # harness, so it lists each case once and, run for its first case alone,
+    # ends with the preamble's one summary line. Asked of the drive itself, by
+    # `--case`, so the property is the drive's and not a reading of its text.
+    local pending
+    DRIVE_OUT=""
+    harness_census "$ROOT"
+    summary_census "$ROOT" "$HARNESS_CLEAN" || return 0
+    if [ "$SUMMARY_ON" = "0" ]; then
+        bad "no drive is on the harness — the property below would hold of nothing"
+        return
+    fi
+    pending="$(printf '%s\n' "$HARNESS_COPIES" | cut -d'|' -f1 | LC_ALL=C sort -u | grep -c . || true)"
+    ok "summary grammar: ${SUMMARY_ON} drive(s) on the harness list each case once and end with the one summary; ${pending} carry copies pending their migration"
+}
+
+# The census's own plant: a drive that cannot reach its environment is a skip
+# by kind; a drive that refuses for any other reason is still red.
+case_an_environment_refusal_is_a_skip_in_the_summary_census_and_any_other_refusal_is_red() {
+    local plant="${WORK}/reach-plant" before
+    DRIVE_OUT=""
+    new_scratch_repo "$plant"
+    mkdir -p "${plant}/scripts/tests"
+    printf '#!/usr/bin/env bash\ncd "$(dirname "$0")/../.." || exit 9\n. "%s" || exit 2\ndrive_cannot_reach "no database on this machine"\ncase_one() { ok "one"; }\ndrive_run_case case_one\ndrive_finished\n' \
+        "$PREAMBLE" >"${plant}/scripts/tests/test_unreachable.sh"
+    printf '#!/usr/bin/env bash\ncd "$(dirname "$0")/../.." || exit 9\n. "%s" || exit 2\ndrive_cannot_look "a broken fixture"\ncase_one() { ok "one"; }\ndrive_run_case case_one\ndrive_finished\n' \
+        "$PREAMBLE" >"${plant}/scripts/tests/test_broken.sh"
+    before="$DRIVE_SKIPPED"
+    if ! summary_census "$plant" "scripts/tests/test_unreachable.sh" >"${WORK}/reach-plant.out" 2>&1; then
+        bad "an environment refusal was red in the summary census" "${WORK}/reach-plant.out"
+        return
+    fi
+    if [ "$DRIVE_SKIPPED" != "$((before + 1))" ] || ! grep -qF 'environment: scripts/tests/test_unreachable.sh --case case_one could not reach its world: no database on this machine' "${WORK}/reach-plant.out"; then
+        bad "an environment refusal was not counted as one skip of kind environment naming the drive" "${WORK}/reach-plant.out"
+        return
+    fi
+    DRIVE_SKIPPED="$before"
+    DRIVE_SKIP_REASONS=""
+    local saved_failed="$FAILED" saved_passed="$PASSED"
+    if summary_census "$plant" "scripts/tests/test_broken.sh" >"${WORK}/reach-plant.out" 2>&1 ||
+        ! grep -qF 'scripts/tests/test_broken.sh --case case_one exited 2, not 0' "${WORK}/reach-plant.out"; then
+        FAILED="$saved_failed"
+        PASSED="$saved_passed"
+        bad "a refusal that is not the environment sentence was not red in the summary census" "${WORK}/reach-plant.out"
+        return
+    fi
+    FAILED="$saved_failed"
+    PASSED="$saved_passed"
+    ok "an environment refusal (drive_cannot_reach) is one environment skip naming the drive; any other exit 2 is still red"
+}
+
+# A case that returns having recorded nothing is FAILED `nothing asserted`.
+case_a_case_that_asserts_nothing_is_failed_nothing_asserted() {
+    local child="${WORK}/hollow_child.sh" out="${WORK}/hollow.out" rc=0
+    DRIVE_OUT="$out"
+    new_scratch_repo "${WORK}/hollow-repo"
+    cat >"$child" <<CHILD
+#!/usr/bin/env bash
+set -uo pipefail
+cd "${WORK}/hollow-repo" || exit 9
+. "${PREAMBLE}" || exit 2
+case_hollow() { an_undefined_helper "the assertion it meant to make"; }
+case_held() { ok "this one asserted"; }
+case_skipped() { drive_skip environment "a skip is a record" || return 0; }
+drive_run_case case_hollow
+drive_run_case case_held
+drive_run_case case_skipped
+drive_finished
+CHILD
+    bash "$child" >"$out" 2>&1 || rc=$?
+    if [ "$rc" != "1" ] || [ "$(sed -n '$p' "$out")" != "hollow_child: 1 passed · 1 failed · 1 skipped" ] ||
+        ! grep -qF "  FAILED   case_hollow — nothing asserted" "$out" ||
+        grep -qF "  FAILED   case_held" "$out" || grep -qF "  FAILED   case_skipped" "$out"; then
+        bad "a case calling an undefined helper exited ${rc}, want 1 with case_hollow FAILED 'nothing asserted' and the asserting and skipping cases untouched"
+        return
+    fi
+    ok "a case that called an undefined helper is FAILED 'nothing asserted', exit 1; a case that asserted or skipped is not"
+    DRIVE_OUT=""
+}
+
+# A case whose only assertion ran in a subshell is FAILED `nothing asserted`, and the hint names the subshell.
+case_a_subshell_only_assertion_is_named_in_the_hint() {
+    local child="${WORK}/subshell_child.sh" out="${WORK}/subshell.out" rc=0
+    DRIVE_OUT="$out"
+    new_scratch_repo "${WORK}/subshell-repo"
+    cat >"$child" <<CHILD
+#!/usr/bin/env bash
+set -uo pipefail
+cd "${WORK}/subshell-repo" || exit 9
+. "${PREAMBLE}" || exit 2
+case_in_a_subshell() { ( ok "counted in a subshell that dies" ); }
+drive_run_case case_in_a_subshell
+drive_finished
+CHILD
+    bash "$child" >"$out" 2>&1 || rc=$?
+    holds "a subshell-only case's run status" "1" "$rc"
+    says "FAILED   case_in_a_subshell — nothing asserted"
+    says "inside a subshell"
+    DRIVE_OUT=""
+}
+
+# A whole run that recorded nothing is exit 2 for a tracked drive; a planted child (untracked) is exempt.
+case_a_whole_run_that_asserted_nothing_is_refused_unless_planted() {
+    local repo="${WORK}/wholerun-repo" out="${WORK}/wholerun.out" rc=0
+    DRIVE_OUT="$out"
+    new_scratch_repo "$repo"
+    mkdir -p "${repo}/scripts/tests"
+    cat >"${repo}/scripts/tests/test_empty.sh" <<CHILD
+#!/usr/bin/env bash
+set -uo pipefail
+cd "\$(dirname "\$0")/../.." || exit 9
+. "${PREAMBLE}" || exit 2
+case_never_called() { ok "not run"; }
+drive_finished
+CHILD
+    git -C "$repo" add scripts/tests/test_empty.sh
+    git -C "$repo" commit -q -m "a registered drive that runs no case"
+    bash "${repo}/scripts/tests/test_empty.sh" >"$out" 2>&1 || rc=$?
+    holds "a tracked drive that ran no case" "2" "$rc"
+    says "the run asserted nothing"
+    cp "${repo}/scripts/tests/test_empty.sh" "${repo}/scripts/tests/test_planted.sh"
+    rc=0
+    bash "${repo}/scripts/tests/test_planted.sh" >"$out" 2>&1 || rc=$?
+    holds "the same drive planted (untracked) — a parent's child, exempt" "0" "$rc"
+    says "test_planted: 0 passed · 0 failed · 0 skipped"
+    DRIVE_OUT=""
+}
+
+# says_before orders two needles; an absent needle is a bad under pipefail, never a dead drive.
+case_says_before_orders_two_lines_and_an_absent_needle_is_a_bad() {
+    local child="${WORK}/before_child.sh" out="${WORK}/before.out" rc=0
+    DRIVE_OUT="$out"
+    new_scratch_repo "${WORK}/before-repo"
+    cat >"$child" <<CHILD
+#!/usr/bin/env bash
+set -euo pipefail
+cd "${WORK}/before-repo" || exit 9
+. "${PREAMBLE}" || exit 2
+DRIVE_OUT="${WORK}/before-capture.txt"
+printf 'the fold ran\\nthe gate ran\\n' >"\$DRIVE_OUT"
+case_order() {
+    says_before "the fold ran" "the gate ran"
+    says_before "the gate ran" "the fold ran"
+    says_before "never printed" "the gate ran"
+    ok "the case ran on past the absent needle"
+}
+drive_run_case case_order
+drive_finished
+CHILD
+    bash "$child" >"$out" 2>&1 || rc=$?
+    if [ "$rc" != "1" ] || [ "$(sed -n '$p' "$out")" != "before_child: 2 passed · 2 failed · 0 skipped" ] ||
+        ! grep -qxF '  ok       case_order — "the fold ran" (line 1) before "the gate ran" (line 2)' "$out" ||
+        ! grep -qxF '  FAILED   case_order — "never printed" (line absent) is not before "the gate ran" (line 2)' "$out"; then
+        bad "says_before over an ordered, a reversed and an absent pair exited ${rc}, want 1 with 2 passed and 2 failed and the case run to its end"
+        return
+    fi
+    ok "says_before passes the ordered pair, fails the reversed one, and an absent needle is a bad under pipefail"
+    DRIVE_OUT=""
+}
+
+# drive_checkout_mirror carries the working tree, the branch and main; a plant there leaves the source untouched.
+case_the_checkout_mirror_carries_the_working_tree_and_a_plant_there_stays_there() {
+    local src="${WORK}/mirror-src" mirror="${WORK}/mirror-dst" out="${WORK}/mirror.out" rc=0 before after
+    DRIVE_OUT="$out"
+    new_scratch_repo "$src"
+    printf 'gone\n' >"${src}/deleted.txt"
+    printf '.env\nignored.txt\n' >"${src}/.git/info/exclude"
+    git -C "$src" add deleted.txt && git -C "$src" commit -q -m two
+    git -C "$src" checkout -q -b rung-x
+    printf 'committed on the rung\n' >"${src}/rung.txt"
+    git -C "$src" add rung.txt && git -C "$src" commit -q -m three
+    git -C "$src" update-ref refs/remotes/origin/main "$(git -C "$src" rev-parse main)"
+    printf 'edited, uncommitted\n' >"${src}/f.txt"
+    rm "${src}/deleted.txt"
+    printf 'untracked\n' >"${src}/new.txt"
+    printf 'IGNORED\n' >"${src}/ignored.txt"
+    printf 'DATABASE_NAME=pinned\n' >"${src}/.env"
+    before="$(cd "$src" && git status --porcelain=v1 --ignored | LC_ALL=C sort)"
+    (
+        cd "$src" || exit 9
+        drive_checkout_mirror mirror "$src"
+        cp "${mirror}/f.txt" "${WORK}/mirror-f.txt"
+        printf 'planted\n' >"${mirror}/planted.txt"
+        printf 'severed\n' >"${mirror}/f.txt"
+    ) >"$out" 2>&1 || rc=$?
+    after="$(cd "$src" && git status --porcelain=v1 --ignored | LC_ALL=C sort)"
+    holds "the mirror built" 0 "$rc"
+    holds "the mirror's branch" rung-x "$(git -C "$mirror" symbolic-ref --short HEAD 2>&1)"
+    holds "the mirror's HEAD" "$(git -C "$src" rev-parse HEAD)" "$(git -C "$mirror" rev-parse HEAD 2>&1)"
+    holds "the mirror's main" "$(git -C "$src" rev-parse main)" "$(git -C "$mirror" rev-parse main 2>&1)"
+    holds "the mirror's origin/main" "$(git -C "$src" rev-parse origin/main)" "$(git -C "$mirror" rev-parse origin/main 2>&1)"
+    holds "an uncommitted edit carried" "edited, uncommitted" "$(cat "${WORK}/mirror-f.txt" 2>&1)"
+    holds "an untracked file carried" untracked "$(cat "${mirror}/new.txt" 2>&1)"
+    holds "a deletion carried" absent "$([ -e "${mirror}/deleted.txt" ] && echo present || echo absent)"
+    holds "an ignored file other than .env is not carried" absent "$([ -e "${mirror}/ignored.txt" ] && echo present || echo absent)"
+    holds ".env is a copy" "DATABASE_NAME=pinned" "$([ -L "${mirror}/.env" ] && echo link || cat "${mirror}/.env")"
+    holds "the source's working tree is unmoved by the plant" "$before" "$after"
+    holds "the source's f.txt is its own" "edited, uncommitted" "$(cat "${src}/f.txt")"
+    DRIVE_OUT=""
+}
+
 # --- run ----------------------------------------------------------------------
 
-run_case case_the_fingerprint_records_a_sha_for_every_ref
-run_case case_a_peer_worktree_branch_created_mid_run_does_not_red_the_tripwire
-run_case case_a_peer_worktrees_commit_mid_run_does_not_red_the_tripwire
-run_case case_a_merge_into_main_by_the_primary_worktree_does_not_red_a_linked_drive
-run_case case_a_reap_of_a_merged_peer_branch_mid_run_does_not_red_the_tripwire
-run_case case_a_branch_with_no_worktree_still_reds_the_tripwire
-run_case case_a_moved_ref_with_no_worktree_still_reds_the_tripwire
-run_case case_a_vanished_unmerged_ref_still_reds
-run_case case_a_peer_worktree_removed_mid_run_still_reds
-run_case case_this_checkouts_head_moving_still_reds
-run_case case_the_base_ref_reader_resolves_main_then_origin_main_then_refuses
-run_case case_every_drive_under_tests_is_invoked_by_the_gate
-run_case case_the_drive_is_registered_in_the_gate
-run_case case_a_registered_drive_that_cannot_look_is_exit_2_not_a_pass
-run_case case_every_variable_the_workflow_sets_is_accounted_for
-run_case case_every_registered_drive_declares_what_it_drives
-run_case case_a_body_spelling_three_undeclared_paths_is_named_whole_and_refused_at_the_hook
-run_case case_the_product_env_keys_drawer_declares_product_keys_only
-run_case case_the_workflows_optional_local_job_runs_the_products_ci_steps
-run_case case_a_template_only_case_runs_on_the_template_and_is_counted_skipped_on_a_product
-
-echo "test_drive_preamble: ${PASSED} passed · ${FAILED} failed"
+drive_run_case case_the_fingerprint_records_a_sha_for_every_ref
+drive_run_case case_a_peer_worktree_branch_created_mid_run_does_not_red_the_tripwire
+drive_run_case case_a_peer_worktrees_commit_mid_run_does_not_red_the_tripwire
+drive_run_case case_a_merge_into_main_by_the_primary_worktree_does_not_red_a_linked_drive
+drive_run_case case_a_reap_of_a_merged_peer_branch_mid_run_does_not_red_the_tripwire
+drive_run_case case_a_branch_with_no_worktree_still_reds_the_tripwire
+drive_run_case case_a_moved_ref_with_no_worktree_still_reds_the_tripwire
+drive_run_case case_a_vanished_unmerged_ref_still_reds
+drive_run_case case_a_peer_worktree_removed_mid_run_still_reds
+drive_run_case case_this_checkouts_head_moving_still_reds
+drive_run_case case_the_base_ref_reader_resolves_main_then_origin_main_then_refuses
+drive_run_case case_a_drive_that_exits_inside_a_case_is_exit_2_on_any_bash
+drive_run_case case_every_variable_the_workflow_sets_is_accounted_for
+drive_run_case case_a_body_spelling_three_undeclared_paths_is_named_whole_and_refused_at_the_hook
+drive_run_case case_the_product_env_keys_drawer_declares_product_keys_only
+drive_run_case case_the_workflows_optional_local_job_runs_the_products_ci_steps
+drive_run_case case_a_template_only_case_runs_on_the_template_and_is_counted_skipped_on_a_product
+drive_run_case case_a_skip_carries_its_kind_and_the_report_groups_by_it
+drive_run_case case_the_road_census_and_the_drive_markers_read_one_header_window
+drive_run_case case_the_harness_lists_runs_and_summarises_a_drive_once
+drive_run_case case_the_summary_stays_last_when_the_tripwire_excuses_a_delta
+drive_run_case case_the_four_run_readers_count_both_ways_and_refuse_an_empty_capture
+drive_run_case case_the_preamble_refuses_a_shell_that_is_not_bash
+drive_run_case case_the_scratch_repo_is_on_main_with_an_author_and_one_base_commit
+drive_run_case case_a_drive_with_its_own_list_arm_keeps_its_own_parse_and_summary
+drive_run_case case_no_drive_defines_the_harness_itself
+drive_run_case case_every_drive_on_the_harness_lists_once_and_prints_one_summary
+drive_run_case case_an_environment_refusal_is_a_skip_in_the_summary_census_and_any_other_refusal_is_red
+drive_run_case case_a_case_that_asserts_nothing_is_failed_nothing_asserted
+drive_run_case case_a_subshell_only_assertion_is_named_in_the_hint
+drive_run_case case_a_whole_run_that_asserted_nothing_is_refused_unless_planted
+drive_run_case case_says_before_orders_two_lines_and_an_absent_needle_is_a_bad
+drive_run_case case_the_checkout_mirror_carries_the_working_tree_and_a_plant_there_stays_there
 drive_finished
-if [ "$FAILED" -gt 0 ]; then
-    echo "!! the real-repository tripwire no longer tells a drive's escape from a" >&2
-    echo "   peer's ordinary work. Too loud and a gate that cries wolf is a gate" >&2
-    echo "   people pass with --no-verify; too quiet and a drive can write into the" >&2
-    echo "   repository it is measuring and still read green." >&2
-    exit 1
-fi
-exit 0

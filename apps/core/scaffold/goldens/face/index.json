@@ -1,0 +1,28 @@
+{
+  "face": {
+    "app": "",
+    "files": [
+      "frontend/src/screens/widget/parts.tsx",
+      "frontend/src/screens/widget/road.ts",
+      "frontend/src/screens/widget/widget-attach.tsx",
+      "frontend/src/screens/widget/widget-edit.tsx",
+      "frontend/src/screens/widget/widget-face.css",
+      "frontend/src/screens/widget/widget-history.tsx",
+      "frontend/src/screens/widget/widget-import.stories.tsx",
+      "frontend/src/screens/widget/widget-import.tsx",
+      "frontend/src/screens/widget/widget-list.stories.tsx",
+      "frontend/src/screens/widget/widget-list.tsx",
+      "frontend/src/screens/widget/widget-merge.tsx",
+      "frontend/src/screens/widget/widget-move.tsx",
+      "frontend/src/screens/widget/widget-record.stories.tsx",
+      "frontend/src/screens/widget/widget-record.tsx",
+      "frontend/src/copy/widget.ts",
+      "frontend/src/app/example/widgets/[id]/page.tsx",
+      "frontend/src/app/example/widgets/import/page.tsx",
+      "frontend/src/app/example/widgets/page.tsx",
+      "frontend/src/app/example/widgets/walk-navigation.tsx",
+      "frontend/src/kit/routes.ts",
+      "frontend/src/api/refusal-union.test.ts"
+    ]
+  }
+}

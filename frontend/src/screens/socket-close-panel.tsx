@@ -12,7 +12,7 @@
  * only from `app` and `journeys`). The ROUTE that owns the socket calls the
  * seam and hands down the result, which is fe-conventions Law 4 exactly.
  *
- * IT IS A SCREENS-LAYER MODULE for the reason `@/screens/refusal-panel` states
+ * IT IS A SCREENS-LAYER MODULE for the reason `@pilecap/ui/refusal-panel` states
  * at length: the refusal vocabulary reaches a surface through the
  * surface-state seam, and `components/` is below that seam.
  *
@@ -25,16 +25,14 @@
  * over this file and the seam.
  */
 
-import type { Refusal } from "@/screens/state";
+import type { Refusal, SocketCloseState } from "@pilecap/ui/state";
 import { SOCKET_CLOSE_COPY } from "@/copy/refusals";
-import { RefusalPanel, type RefusalAct } from "@/screens/refusal-panel";
-
-/** The designed states, named by the copy that exists for them. */
-export type SocketCloseStateName = keyof typeof SOCKET_CLOSE_COPY;
+import { RefusalPanel, type RefusalAct } from "@pilecap/ui/refusal-panel";
+import { STAFF_SURFACE } from "@pilecap/ui/routes";
 
 export type SocketClosePanelProps = {
-    /** Which designed state this close frame resolved to. */
-    readonly state: SocketCloseStateName;
+    /** Which designed state this close frame resolved to — the one close vocabulary, `SocketCloseState`. */
+    readonly state: SocketCloseState;
     /** The transport-class refusal the seam minted for it. */
     readonly refusal: Refusal;
     /** The ONE act. Required, and singular. */
@@ -44,14 +42,11 @@ export type SocketClosePanelProps = {
 export function SocketClosePanel({ state, refusal, act }: SocketClosePanelProps) {
     return (
         <RefusalPanel
+            surface={STAFF_SURFACE}
             refusal={refusal}
-            words={{
-                label: SOCKET_CLOSE_COPY[state].label,
-                // A close frame carries no envelope, so there are no remedies
-                // to head. The heading is never rendered; it is required by the
-                // shape and an empty string is the honest value.
-                remedies: "",
-            }}
+            // The surface's own voice: a close frame is not a refusal the
+            // server spoke, so the panel's default first line would misname it.
+            words={{ label: SOCKET_CLOSE_COPY[state].label }}
             act={act}
         />
     );

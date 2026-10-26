@@ -625,11 +625,14 @@ def test_the_prober_is_a_schedule_and_not_a_cron_line() -> None:
 def test_the_probers_workflow_id_is_deterministic_and_per_queue() -> None:
     """House rule 18. Two workers in one deployment derive the same id, so the
     second to ask is told the probe is already happening."""
-    from apps.core.activities import probe_workflow_id
+    from apps.core.activities import PROBE_INTEGRATIONS
 
-    assert probe_workflow_id("q") == probe_workflow_id("q")
-    assert probe_workflow_id("q") != probe_workflow_id("other")
-    assert probe_workflow_id("q").startswith("platform:")
+    def run_id(queue: str) -> str:
+        return str(PROBE_INTEGRATIONS.schedule(queue).action.id)  # type: ignore[attr-defined]
+
+    assert run_id("q") == run_id("q")
+    assert run_id("q") != run_id("other")
+    assert run_id("q") == PROBE_INTEGRATIONS.schedule_id("q") == "platform:core:integrations:q"
 
 
 def test_the_prober_owns_no_run(monkeypatch: Any) -> None:
@@ -689,8 +692,9 @@ async def test_the_prober_completes_and_says_so_when_the_census_cannot_be_read()
     assert "the bucket never answered" in outcome.incomplete, (
         "the run completed but says nothing about WHY it could not look. "
         "Temporal's wrapper alone is `Activity task failed`, which is true and "
-        "useless six weeks later — `_reason` walks the cause chain for this."
+        "useless six weeks later — `reason_of` walks the cause chain for this."
     )
+    assert " <- " in outcome.incomplete, outcome.incomplete
 
 
 @pytest.mark.django_db(transaction=True)

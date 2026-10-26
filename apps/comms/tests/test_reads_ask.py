@@ -163,13 +163,10 @@ def test_the_valved_list_has_no_door_behind_it() -> None:
 
     for module in ("apps/comms/api.py", "apps/comms/mcp.py"):
         tree = ast.parse((Path(settings.BASE_DIR) / module).read_text())
-        called = {
-            node.func.id
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-        }
-        # The prose in `mcp.py` NAMES `list_devices` while explaining why there
-        # is no tool for it, so the claim is about calls and not about the text.
+        calls = [node.func for node in ast.walk(tree) if isinstance(node, ast.Call)]
+        called = {func.id for func in calls if isinstance(func, ast.Name)}
+        called |= {func.attr for func in calls if isinstance(func, ast.Attribute)}
+        assert "get_device" in called or module.endswith("mcp.py"), "the walk sees no calls"
         assert "list_devices" not in called, module
 
 
@@ -199,14 +196,14 @@ class ReadsWorld:
             actor=self.owner_at_a,
             recipient=self.inside,
             platform="ios",
-            push_token="reads-token-inside",
+            push_token="reads-token-inside",  # noqa: S106 — a fake token value only this test holds
         )
         self.device_outside = register_device(
             tenant=tenant,
             actor=self.owner_at_b,
             recipient=self.outside,
             platform="ios",
-            push_token="reads-token-outside",
+            push_token="reads-token-outside",  # noqa: S106 — a fake token value only this test holds
         )
         self.message_inside = send(
             recipient=self.inside,
@@ -460,7 +457,9 @@ def test_the_machine_reads_still_answer_with_no_actor_at_all(world: ReadsWorld) 
     """
     assert (
         selectors.get_device_by_token_hash(
-            tenant=world.tenant, push_token_hash="nothing-like-this", org=world.a
+            tenant=world.tenant,
+            push_token_hash="nothing-like-this",  # noqa: S106 — a fake token value only this test holds
+            org=world.a,
         )
         is None
     )

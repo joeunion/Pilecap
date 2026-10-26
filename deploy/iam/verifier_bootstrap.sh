@@ -1,16 +1,5 @@
 #!/usr/bin/env bash
-# THIS FILE IS EXECUTED, AND IT IS BASH — not POSIX sh, and not zsh.
-[ -n "${BASH_VERSION:-}" ] || {
-    echo "${0##*/}: must run under bash — not sh, not zsh. Try \`bash ${0}\`." >&2
-    exit 2
-}
-case ":${SHELLOPTS:-}:" in
-*:posix:*)
-    echo "${0##*/}: bash is in POSIX mode — which is what \`sh ${0}\` does on a" >&2
-    echo "  machine whose /bin/sh is bash. Try \`bash ${0}\`." >&2
-    exit 2
-    ;;
-esac
+. "$(dirname -- "${BASH_SOURCE:-$0}")/../../scripts/bash_only.sh" || exit 2
 # THE OWNER'S ONCE-ONLY HAND. Everything the verifier boxes need that nobody but
 # a human with the account's own credential can make: one IAM identity, its
 # policy, the boxes' instance role, and the egress-only security group they
@@ -138,11 +127,10 @@ set -euo pipefail
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 set +x # never; this script handles a secret access key
 
-die() {
-    echo "!! verifier-bootstrap: $*" >&2
-    exit 2
-}
-say() { echo "verifier-bootstrap: $*"; }
+# `die`, `say` and the pipe guard are deploy/lib.sh's and the seam's.
+DEPLOY_NAME=verifier-bootstrap
+# shellcheck source=deploy/lib.sh
+. "$HERE/../lib.sh" || exit 2
 
 #: The deployment namespace — the slug every identity, group, image and tag
 #: below is composed from. REQUIRED, with no default, exactly as
@@ -203,14 +191,9 @@ TRUST_DOC="${HERE}/verifier-box-trust.json"
 SUMMARY="${HERE}/../policy_summary.py"
 
 # --- the pipe refusal --------------------------------------------------------
-# The exit status is the verdict and a filter replaces it. Identical in shape
-# and reason to the gate's, the merge wrapper's and the release script's.
-if [ -z "${CI:-}" ] && { [ -p /dev/fd/1 ] || [ -p /dev/stdout ]; }; then
-    echo "!! verifier-bootstrap refuses pipes — run it bare or redirect to a file." >&2
-    echo "   This script prints an access key on its last line and its exit status is" >&2
-    echo "   the verdict; a filter takes both." >&2
-    exit 2
-fi
+# The exit status is the verdict and a filter replaces it — the seam's
+# `refuse_if_piped`. This script also prints an access key on its last line.
+refuse_if_piped "$DEPLOY_NAME" "This script prints an access key on its last line; a filter takes it too."
 
 CONFIRM=""
 ROTATE=""

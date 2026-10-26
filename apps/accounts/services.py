@@ -11,8 +11,6 @@ noticed:
 * `touch_token` and `authenticate_token` are the read path every authenticated
   machine request takes — wrapping the hottest read in the API in a transaction,
   a span and an audit row would cost more than the fact it records;
-* `tenants_this_user_alone_owns` is a read `erase_user` consults before it
-  refuses;
 * `close_sockets` writes nothing at all — it asks the socket app, through
   `core.bridge`, to hang up on somebody whose credential has just been taken
   away, and the write that took it away has already happened. It is re-exported
@@ -46,12 +44,16 @@ from allauth.socialaccount.models import SocialAccount
 from django.conf import settings
 from django.utils import timezone
 
+from apps.accounts.events import IDENTITY_HOME_CREATED
 from apps.accounts.models import (
     CLIENT_ID_KEY,
     CLIENT_SECRET_KEY,
     ISSUER_KEY,
+    STAFF_REALM,
     ApiToken,
+    FirstAdminVouch,
     IdentityBranding,
+    IdentityHome,
     SsoConnection,
     SsoDomain,
     SsoIdentity,
@@ -59,7 +61,14 @@ from apps.accounts.models import (
     domain_of,
     normalise_domain,
 )
-from apps.accounts.selectors import get_platform_provider_id
+from apps.accounts.schemas import IdentityHomeOut
+from apps.accounts.selectors import (
+    DIRECT_GOOGLE_PROVIDER,
+    get_direct_google_links,
+    get_first_admin_vouch,
+    get_platform_provider_id,
+    list_tenants_this_user_alone_owns,
+)
 from apps.accounts.types import (
     KIND_IDENTITY_BRANDING,
     KIND_IDENTITY_REVOCATION,
@@ -67,36 +76,34 @@ from apps.accounts.types import (
     KIND_WORKFORCE_PROVIDER,
     IdentityConfigApplied,
     IdentityConfigSync,
+    IdentityHomeAsk,
 )
 from apps.core import authz, bridge
 from apps.core.actor import Actor, system_actor
 from apps.core.authz import OWNER_ROLE, default_role_key, role_declarations
-from apps.core.exceptions import Conflict, Invalid, NotFound, Remedy, as_invalid
+from apps.core.exceptions import Conflict, Invalid, NotFound, Remedy, as_invalid, register_refusal
 from apps.core.ids import uuid7
 from apps.core.log import get_logger
 from apps.core.middleware import resolve_tenant
-from apps.core.models import Grant, Membership, Role, Tenant
+from apps.core.models import Membership, Role, Tenant
+from apps.core.schemas import event_payload
 from apps.core.service import service
 from apps.core.services import (
-    OWNERSHIP_PERMISSION,
     _refuse_escalation,
     add_membership,
     redact_invitations,
     root_organization,
 )
 
-# Re-exported under their own names — the redundant alias is the explicit
-# re-export form `mypy --strict` requires (implicit re-export is off), and it
-# is what keeps `apps.accounts.services.close_sockets` a real name for the
-# callers A1 wrote: `activities.py`'s identity revocation, and this module's
-# own erasure and token revocation.
+# Re-exported under their own names: the redundant alias is `mypy --strict`'s explicit form.
 from apps.core.services import close_sockets as close_sockets
 from apps.core.services import close_sockets_on_commit as close_sockets_on_commit
+from apps.core.surfaces import Surface, surface_for_role
 from apps.core.time import now
 
 log = get_logger(__name__)
 
-TOKEN_PREFIX = "djb"
+TOKEN_PREFIX = "djb"  # noqa: S105 — the public prefix every minted API token starts with
 TOKEN_BYTES = 32
 
 # `.invalid` is reserved by RFC 2606 and guaranteed never to resolve, so an
@@ -151,7 +158,7 @@ LOG_KEYS: frozenset[str] = frozenset(
 # function. The reasons below stay in this app because a reason is the free text
 # on the kick's log line, and the app that made the decision is the app somebody
 # will grep for it in.
-KICK_TOKEN_REVOKED = "accounts.token.revoked"
+KICK_TOKEN_REVOKED = "accounts.token.revoked"  # noqa: S105 — the event name a revoked token's socket kick carries
 KICK_USER_ERASED = "accounts.user.erased"
 KICK_USER_DEACTIVATED = "accounts.user.deactivated"
 KICK_IDENTITY_REVOKED = "accounts.identity.revoked"
@@ -184,6 +191,7 @@ class Authenticated(NamedTuple):
     token: ApiToken
 
 
+# door: no door reaches it - the seed command and a first SSO sign-in's account make people
 @service
 def create_user(
     *,
@@ -277,55 +285,6 @@ def deactivate_user(*, user: User, actor: Actor, tenant: Tenant | None) -> User:
     return user
 
 
-def tenants_this_user_alone_owns(*, user: User) -> list[Tenant]:
-    """Tenants where this person is the only one holding ownership. A read.
-
-    A tenant with no owner is a tenant nobody can administer: no one can invite
-    a member, change a role, or close it. That is not a state an erasure is
-    allowed to create, and it is not a state anybody notices until they need to
-    do one of those things.
-
-    **The question is `tenant.own`, not the word in the `role` column, and it is
-    asked on the ROOT.** This used to count rows whose `role` read `owner` at
-    any node, which answered the question only while that column was the whole
-    story. It is not: ownership is the reserved key `tenant.own`, which `owner`
-    alone carries and a `withhold` grant can take away, and an owner of one
-    branch owns that branch rather than the tenant. So the algebra here is the
-    same one `core.services._refuse_orphaning_the_tenant` runs on the other road
-    into the same state — root memberships at `OWNER_ROLE`, minus the
-    memberships a `withhold` of `OWNERSHIP_PERMISSION` names — written against
-    the two constants core exports rather than against a second copy of the
-    words. `OWNER_ROLE` is read here as a KEY and never as a rank: there is no
-    comparison, only a set membership.
-
-    One tenant's grants at a time, because `Grant` is tenant-scoped and a
-    cross-tenant read of it fails closed (house rule 8) — which is the right
-    behaviour and the reason the withhold filter is inside the loop.
-    """
-    owned = Membership.objects.filter(user_id=user.pk, role=OWNER_ROLE).select_related("tenant")
-    alone = []
-    for membership in owned:
-        tenant = membership.tenant
-        root = root_organization(tenant=tenant)
-        if membership.organization_id != root.pk:
-            continue
-        withheld = (
-            Grant.objects.for_tenant(tenant)
-            .filter(permission=OWNERSHIP_PERMISSION, effect=Grant.Effect.WITHHOLD)
-            .values("membership_id")
-        )
-        if membership.pk in {row["membership_id"] for row in withheld}:
-            continue
-        others = (
-            Membership.objects.filter(tenant_id=tenant.pk, organization_id=root.pk, role=OWNER_ROLE)
-            .exclude(user_id=user.pk)
-            .exclude(pk__in=withheld)
-        )
-        if not others.exists():
-            alone.append(tenant)
-    return alone
-
-
 # CONTEXTUAL REMEDIES, BECAUSE THE REGISTERED ONES ARE WRONG HERE.
 # `conflict`'s registered defaults are "re-read the row and retry against what is
 # true now" and "send an Idempotency-Key to get the first answer back". Both are
@@ -353,7 +312,7 @@ def erase_user(*, user: User, actor: Actor, tenant: Tenant | None) -> User:
 
     What goes:
 
-    * the email address, replaced by `erased+<uuid>@invalid` — unique, so the
+    * the email address, replaced by `erased+<uuid>@erased.invalid` — unique, so the
       unique constraint holds, and in the reserved `.invalid` TLD, so nothing
       can ever deliver to it by accident;
     * the password, set unusable — which also invalidates every live session,
@@ -377,8 +336,8 @@ def erase_user(*, user: User, actor: Actor, tenant: Tenant | None) -> User:
     trail readable ("an owner of Acme did this") and grant nothing once the
     account cannot be used; `AuditEntry` rows; `Event` payloads written before
     the erasure, the witnessed record of what was emitted rather than a copy of
-    the person (ADO-4); and `zitadel_sub`, an opaque subject kept as the fence
-    that refuses a re-link of this Zitadel account to anybody else's row. A
+    the person (ADO-4); and the identity join's rows, opaque subjects kept as the
+    fence that refuses a re-link of those platform accounts to anybody else's row. A
     product that adds a profile model erases it in its own service.
 
     **Who may:** `policies.themselves_or_administers_the_whole_tenant` — you, or
@@ -409,7 +368,7 @@ def erase_user(*, user: User, actor: Actor, tenant: Tenant | None) -> User:
     authz.require(actor, "user.erase", user)
     _refuse_a_person_outside_this_actors_tenant(user=user, actor=actor)
 
-    orphaned = tenants_this_user_alone_owns(user=user)
+    orphaned = list_tenants_this_user_alone_owns(user=user)
     if orphaned:
         raise Conflict(
             "That person is the only owner of "
@@ -490,7 +449,7 @@ def _erase_the_account_footprint(
       IdP asserted at login lives in that JSON, and the link the row records is
       one Zitadel has already been asked to revoke by
       `_revoke_identity_platform_access`. Its `SocialToken` children cascade.
-    * **`SsoIdentity.email`** — REDACTED to the `erased+<uuid>@invalid` form the
+    * **`SsoIdentity.email`** — REDACTED to the `erased+<uuid>@erased.invalid` form the
       `User` row gets, across every tenant the person has an identity in. The
       row stays: `subject` is what a later assertion is matched against, and
       `last_seen_at` is a fact about a login rather than about a person.
@@ -531,7 +490,7 @@ def _refuse_a_person_outside_this_actors_tenant(*, user: User, actor: Actor) -> 
     """
     if actor.tenant is None:
         return
-    if not Membership.objects.filter(user_id=user.pk, tenant=actor.tenant).exists():
+    if not Membership.objects.for_tenant(actor.tenant).filter(user_id=user.pk).exists():
         raise NotFound()
 
 
@@ -551,9 +510,11 @@ def _revoke_identity_platform_access(*, user: User, actor: Actor) -> str | None:
     person's primary key (house rule 18), so erasing twice asks for the same run
     rather than a second one.
 
-    **One honest skip**, logged rather than swallowed: a person with no
-    `zitadel_sub` has never signed in through the platform, so there is no
-    account to deactivate.
+    **One honest skip**, logged rather than swallowed: a person with no subject
+    in the identity join has never signed in through the platform, so there is
+    no account to deactivate. **Every subject they hold is revoked, per realm**
+    — a person in two tenants is two platform accounts, and the run deactivates
+    each in its own realm through the realm port.
 
     **The second skip is gone.** It used to
     read: a person with no tenant anywhere leaves nowhere to record the run, so
@@ -581,16 +542,14 @@ def _revoke_identity_platform_access(*, user: User, actor: Actor) -> str | None:
     Returns the run key, or `None` when it skipped — which is what the tests
     assert on rather than reaching into the log.
     """
-    subject = str(user.zitadel_sub or "").strip()
-    if not subject:
+    if not user.sso_identities.filter(connection__isnull=True).exists():
         return None
     run_key = str(user.pk)
     try:
         _start_identity_run(
             tenant=None,
             actor=actor,
-            kind=KIND_IDENTITY_REVOCATION,
-            key=run_key,
+            arg=IdentityConfigSync(kind=KIND_IDENTITY_REVOCATION, key=run_key),
             noun="identity_revocation",
             run_key=run_key,
         )
@@ -814,6 +773,7 @@ def authenticate_token(
     *,
     plaintext: str,
     requested_slug: str | None = None,
+    surface: Surface | None = None,
 ) -> Authenticated | None:
     """Resolve a bearer token to the user, tenant and token row it acts as.
 
@@ -829,7 +789,10 @@ def authenticate_token(
     that takes a tenant dark; a credential that kept working into it would make
     the act a suggestion. The status is read through `Tenant.is_active`, the one
     predicate that spells `ACTIVE`, so there is never a second spelling of it
-    here.
+    here. **And while the door's surface admits the person there**: a pin is a
+    tenant, never a role, so a customer's token pinned to her tenant resolves
+    nowhere at the staff host — as her session does — and an owner's resolves
+    nowhere at the customer host (`_admits_the_pin`).
 
     So this returns the pin whatever `X-Tenant` asked for, and the door then
     refuses a request that asked for a different one. It used to return `None` here — the
@@ -840,8 +803,9 @@ def authenticate_token(
     can only be given by something that authenticated first.
 
     A token without a pin resolves the tenant the same way a signed-in request
-    does, from the user's memberships — so the machine door and the human door
-    cannot disagree about who can see what.
+    does, from the user's memberships under the SURFACE the door resolved — its
+    tenant rule and the roles it admits — so the machine door and the human door
+    cannot disagree about who can see what, on any host.
     """
     if not plaintext:
         return None
@@ -859,13 +823,32 @@ def authenticate_token(
         # used: a credential that authenticated and was then refused for where
         # it pointed is not the same event as a credential that did not work.
         touch_token(token=token)
-        return Authenticated(token.user, token.tenant if token.tenant.is_active else None, token)
+        pinned = token.tenant if token.tenant.is_active else None
+        if pinned is not None and not _admits_the_pin(surface, user=token.user, tenant=pinned):
+            pinned = None
+        return Authenticated(token.user, pinned, token)
     touch_token(token=token)
     return Authenticated(
         token.user,
-        resolve_tenant(user=token.user, requested_slug=requested_slug),
+        resolve_tenant(user=token.user, requested_slug=requested_slug, surface=surface),
         token,
     )
+
+
+def _admits_the_pin(surface: Surface | None, *, user: User, tenant: Tenant) -> bool:
+    """Whether the door's surface admits this person in the pinned tenant — the session's law.
+
+    A surface admits the roles that belong to it (`core.surfaces.surface_for_role`:
+    a role belongs to one surface), so a pinned token acts in its tenant here only
+    when its person holds a membership there in a role this surface admits —
+    exactly the membership `resolve_tenant` would have counted for their session.
+    No surface resolved (a door driven below the stack) is today's answer: the pin.
+    """
+    if surface is None:
+        return True
+    held = Membership.objects.for_tenant(tenant).filter(user_id=user.pk)
+    roles = held.values_list("role", flat=True)
+    return any(surface_for_role(role).key == surface.key for role in roles)
 
 
 # --- Customer SSO ------------------------------------------------------------
@@ -1144,6 +1127,58 @@ def create_sso_connection(
     return connection
 
 
+# `enforced` switched on over a connection whose identity provider has not
+# reached the identity platform: the wall would stand with no door in it. E9's
+# grammar — the fact, the remedy for the reader of the registry, the remedies a
+# caller can press — declared beside the raise site.
+register_refusal(
+    code="enforced_without_provider",
+    boundary="service",
+    remedy=(
+        "The connection's identity provider has not been materialised at the identity "
+        "platform yet (no provider id, or its last sync is not applied), so a login "
+        "policy requiring it would lock every person it covers out. Let the sync land — "
+        "an operator runs manage.py zitadel_reconcile if it failed — then set enforced."
+    ),
+    fact=(
+        "This identity provider is not set up at the identity platform yet, so requiring "
+        "it would leave the people it covers with no way to sign in. Nothing was changed."
+    ),
+    remedies=(
+        Remedy("Read the provider back until it says it is applied", "route:sso-connection-list"),
+        Remedy("Require it once it is applied", "route:sso-connection-update"),
+    ),
+    status=409,
+)
+
+
+class EnforcedWithoutProvider(Conflict):
+    """`enforced` asked of a connection with no provider materialised to require."""
+
+    code = "enforced_without_provider"
+    default_detail = (
+        "This identity provider is not set up at the identity platform yet, so it cannot "
+        "be required."
+    )
+
+
+def _refuse_enforcing_without_a_provider(
+    *, connection: SsoConnection, enforced: bool | None
+) -> None:
+    """The flip to `enforced` needs a provider that already landed; the flip is refused first.
+
+    Only the switch ON is asked: turning `enforced` off, or sending it true again
+    over a connection that already enforces, takes nothing away from anybody.
+    """
+    if not enforced or connection.enforced:
+        return
+    landed = bool(connection.zitadel_idp_id) and (
+        connection.sync_state == SsoConnection.SyncState.APPLIED
+    )
+    if not landed:
+        raise EnforcedWithoutProvider()
+
+
 @service
 def update_sso_connection(
     *,
@@ -1173,6 +1208,8 @@ def update_sso_connection(
     # At the root: this row is the tenant's, not a branch's (see `create`).
     authz.require(actor, "sso_connection.update", root_organization(tenant=tenant))
     _refuse_role_above_the_configurer(tenant=tenant, actor=actor, role=default_role)
+    _refuse_enforcing_without_a_provider(connection=connection, enforced=enforced)
+    before = _identity_config_key(connection)
 
     if name is not None:
         connection.name = name.strip()
@@ -1195,7 +1232,9 @@ def update_sso_connection(
     connection.save()
     if email_domains is not None:
         _apply_domains(connection=connection, domains=email_domains)
-    _materialise(tenant=tenant, actor=actor, connection=connection)
+    _materialise(tenant=tenant, actor=actor, connection=connection, before=before)
+    # The caller's prefetched `domains` predate `_apply_domains`; answer the stored row.
+    connection.refresh_from_db()
     return connection
 
 
@@ -1208,20 +1247,19 @@ def disable_sso_connection(
     **The row and its domain claims stay.** Deleting them would free the domain
     for another tenant to claim while this one is mid-migration, and would take
     the `SsoIdentity` rows — the record of who arrived through it — with them.
-    A disabled connection resolves to nothing in
-    `SsoConnectionManager.by_provider_id`, so an in-flight callback is refused
-    rather than honoured, and `enforced` stops applying, so the people it
-    covered can use a password again instead of being locked out.
+    Its verified claims still confine their people to the tenant's realm
+    (`get_dormant_claim_tenant`), and `enforced` stops applying: they sign in there by password.
     """
     # At the root: this row is the tenant's, not a branch's (see `create`).
     authz.require(actor, "sso_connection.disable", root_organization(tenant=tenant))
+    before = _identity_config_key(connection)
     connection.status = SsoConnection.Status.DISABLED
     connection.disabled_at = now()
     connection.save(update_fields=["status", "disabled_at", "updated_at"])
-    # **And Zitadel is told.** Before W2-R5 this stopped our own callback and
+    # **And Zitadel is told.** Without this, disabling stopped our own callback and
     # left the identity platform perfectly willing to sign the same people in —
     # which, once Zitadel fronts every IdP, is the whole of the door still open.
-    _materialise(tenant=tenant, actor=actor, connection=connection)
+    _materialise(tenant=tenant, actor=actor, connection=connection, before=before)
     return connection
 
 
@@ -1269,7 +1307,7 @@ def verify_sso_domain(
     **Idempotent, and audited every time.** A second call returns the row
     unchanged and still files its receipt: "an operator asserted this domain
     again" is a fact the ledger is being asked for, which is
-    `record_zitadel_identity`'s precedent exactly. The row is locked while it is
+    `record_identity`'s precedent exactly. The row is locked while it is
     read and written so two operators verifying at once serialize rather than
     race (E8).
     """
@@ -1358,36 +1396,12 @@ def _with_observed(key: str, observed: str) -> str:
     return f"{key}-{hashlib.sha256(observed.encode()).hexdigest()[:12]}"
 
 
-def _identity_config_key(connection: SsoConnection, *, observed: str = "") -> str:
-    """What makes one sync of this connection unique, and repeatable.
+def _identity_config_key(
+    connection: SsoConnection, *, observed: str = "", generation: str = ""
+) -> str:
+    """One sync's run key: the row, a digest of its intent, and the write's generation if given.
 
-    The row's primary key **and a digest of the intent**, because a workflow id
-    is deterministic (house rule 18) and `record_run` answers the three ways a
-    repeated id can arrive: the same live id is the same run, and a *finished*
-    one is a `Conflict` — "re-running completed work is a decision about a new
-    key, and this layer will not make it silently".
-
-    So the key has to say which intent this is. The primary key alone would mean
-    a connection could be synced exactly once in its life; a timestamp would
-    mean a retried service started a second run, which is the whole thing rule
-    18 exists to prevent. A digest of what is actually being materialised —
-    issuer, client id, client secret — gives both: **the same configuration
-    twice is the same run, and changed configuration is a new one.** It is the
-    shape `core.mail.send_mail`'s docstring names and declines for email, for
-    the opposite reason: two identical reminders a week apart really are two
-    sends, and two identical syncs really are one.
-
-    The secret goes into the hash and never comes out of it: what lands in the
-    workflow id is twelve hex characters, and Temporal's history is not a place
-    to keep a customer's client secret.
-
-    **A re-sync of unchanged, already-applied configuration is therefore
-    refused**, with the `Conflict` `record_run` composes — unless the caller
-    says what it SAW. That refusal was the right answer for as long as nobody
-    could act on console drift; `manage.py zitadel_reconcile` is the caller that
-    can, and `observed` (see `_with_observed`) is how it asks for the same
-    intent again without claiming the intent changed. `manage.py zitadel_audit`
-    is still what makes the drift visible in the first place.
+    The same intent twice is the same run (rule 18); the secret enters the digest and never leaves.
     """
     intent = "|".join(
         [
@@ -1395,18 +1409,15 @@ def _identity_config_key(connection: SsoConnection, *, observed: str = "") -> st
             connection.issuer,
             connection.client_id,
             connection.client_secret,
-            # **Status is in the digest because W2-R5 made it materialise.**
-            # Disabling a connection now deactivates the Zitadel provider, so
-            # "active with these credentials" and "disabled with these
-            # credentials" are two different things to say to Zitadel — and two
-            # different things need two ids, or the second one is refused as a
-            # repeat of the first.
+            # Status and `enforced` both materialise, so each is part of the intent.
             connection.status,
+            str(connection.enforced),
         ]
     )
-    return _with_observed(
-        f"{connection.pk}-{hashlib.sha256(intent.encode()).hexdigest()[:12]}", observed
-    )
+    key = f"{connection.pk}-{hashlib.sha256(intent.encode()).hexdigest()[:12]}"
+    if generation:
+        key = f"{key}-{hashlib.sha256(generation.encode()).hexdigest()[:12]}"
+    return _with_observed(key, observed)
 
 
 #
@@ -1425,6 +1436,7 @@ def _identity_config_key(connection: SsoConnection, *, observed: str = "") -> st
 # spoken, and it is the activity's word: no door passes it.
 
 
+# door: never a door's own call - the realm activity, zitadel_reconcile, the SSO connection writes
 @service
 def sync_identity_config(
     *,
@@ -1432,40 +1444,17 @@ def sync_identity_config(
     actor: Actor,
     connection: SsoConnection,
     observed: str = "",
+    generation: str = "",
     applied: IdentityConfigApplied | None = None,
 ) -> SsoConnection:
     """Make our row and Zitadel agree about this connection's identity config.
 
-    Called with no `applied` — by a door, a command, or `create_sso_connection`'s
-    caller — this records the *intent*: the row goes to `pending` and
-    `SyncIdentityConfigWorkflow` is started **on commit**, never inside the
-    transaction. That ordering is C2's classic and it is not negotiable: a
-    management call inside the transaction means a Zitadel hiccup rolls back a
-    legitimate row, and a rolled-back service leaves no run at all.
-
-    Called with `applied` — by `apply_identity_config`, and by nothing else —
-    this records the *outcome*: the Zitadel resource id lands on the row and the
-    state becomes `applied`. It starts no run, which is what keeps the activity
-    from re-entering the workflow that is running it.
-
-    The workflow id is deterministic (`workflow_id`, house rule 18), keyed on
-    this connection, so syncing the same row twice before the first run finishes
-    is the same run rather than a second one racing it.
-
-    **`observed` is the reconciler's argument and nobody else's.** It names what
-    Zitadel was seen to say, it joins the run key through `_with_observed`, and
-    it is what lets an unchanged intent be asked for again after its first run
-    finished. A door, a command or a write's own materialisation passes nothing
-    and gets the key it has always got.
-
-    **The start goes through `core.bridge`, not through an import.** `workflows`
-    sits *above* `accounts` in the fixed layer contract, so naming it here would
-    be the upward import that contract exists to refuse — the same inversion
-    `core.mail` and `apps.events` already use, with the dependency still declared
-    on this app's `AppConfig.depends_on`.
+    No `applied`: record the intent and start the run on commit (ADR ident-2). With `applied`
+    (the activity only): record the outcome and start nothing.
+    `observed` is the reconciler's argument; `generation` is a write's whose intent moved.
     """
-    # At the root: the same key at the same height as the door that writes
-    # the row this run is materialising (see `create`).
+    # The wall behind `update_sso_connection`'s own ask: the same key at the root,
+    # asked only when a change reaches the identity platform's configuration.
     authz.require(actor, "sso_connection.update", root_organization(tenant=tenant))
 
     if applied is not None:
@@ -1482,10 +1471,9 @@ def sync_identity_config(
     _start_identity_run(
         tenant=tenant,
         actor=actor,
-        kind=KIND_SSO_CONNECTION,
-        key=str(connection.pk),
+        arg=IdentityConfigSync(kind=KIND_SSO_CONNECTION, key=str(connection.pk)),
         noun="identity_config",
-        run_key=_identity_config_key(connection, observed=observed),
+        run_key=_identity_config_key(connection, observed=observed, generation=generation),
     )
     connection.sync_state = SsoConnection.SyncState.PENDING
     connection.save(update_fields=["sync_state", "updated_at"])
@@ -1495,13 +1483,18 @@ def sync_identity_config(
 def _start_identity_run(
     *,
     tenant: Tenant | None,
-    actor: Actor,
-    kind: str,
-    key: str,
+    actor: Actor | None,
+    arg: Any,
     noun: str,
     run_key: str,
+    workflow: str = SYNC_IDENTITY_CONFIG_WORKFLOW,
 ) -> Any:
-    """Start one `SyncIdentityConfigWorkflow`, on commit, under a deterministic id.
+    """Start one identity run, on commit, under a deterministic id.
+
+    `SyncIdentityConfigWorkflow` unless `workflow` names the other one this app
+    starts from a service — `EnsureTenantIdentityHomeWorkflow`, whose argument
+    is the tenant rather than a configuration row. One starter for both, so the
+    id's four segments and the re-ask policy are written once.
 
     **It returns the `WorkflowRun` row it wrote**, and the docstring below used
     to claim it wrote nothing of ours. That was wrong (AUDIT-2c's L9 check):
@@ -1547,11 +1540,11 @@ def _start_identity_run(
     else:
         run_id = build_id(tenant=tenant, app="accounts", noun=noun, key=run_key)
     return start(
-        workflow=SYNC_IDENTITY_CONFIG_WORKFLOW,
-        arg=IdentityConfigSync(kind=kind, key=key),
+        workflow=workflow,
+        arg=arg,
         tenant=tenant,
-        user=actor.user,
-        org=actor.org if tenant is not None else None,
+        user=actor.user if actor is not None else None,
+        org=actor.org if tenant is not None and actor is not None else None,
         id=run_id,
         # **The honest retry, for all three kinds at once.** A materialisation
         # that FAILED — Zitadel down, a PAT expired, a credential rotated —
@@ -1567,34 +1560,28 @@ def _start_identity_run(
     )
 
 
-def _materialise(*, tenant: Tenant, actor: Actor, connection: SsoConnection) -> None:
-    """Ask for this connection's configuration to be put into Zitadel. **A no-op
-    is not a failure.**
+def _materialise(
+    *, tenant: Tenant, actor: Actor, connection: SsoConnection, before: str = ""
+) -> None:
+    """Ask for this connection's configuration to be materialised: one run per intent change.
 
-    Called by the three services that change a connection, which is what ADR
-    ident-6 means by "re-pointed": the same signatures, the same audit, the same
-    refusals — and, now, the materialisation that makes the row true of the
-    identity platform rather than only of us.
-
-    The one thing it does that `sync_identity_config` will not is **swallow the
-    repeat**. Asked directly — by a door, by a command — re-syncing configuration
-    that is already applied and unchanged is a `Conflict`, and that refusal is
-    deliberate (ADR ident-2: repairing console drift is the reconciler nobody
-    built, with its trigger named). Asked *as a side effect of a write that
-    changed nothing Zitadel can see* — a renamed connection, a new default role,
-    a re-issued but identical secret — a refusal would turn an ordinary update
-    into a 409 for a reason the person editing has no way to understand. So the
-    door keeps its refusal and the write keeps its no-op, and the difference is
-    one line in a log rather than a second code path.
+    A write whose intent moved keys its run on the intent plus the write's own moment, so a
+    change back to an earlier intent is a new run, never a ride on a live or landed one.
+    A write that changed nothing Zitadel can see asks nothing.
     """
-    try:
-        sync_identity_config(tenant=tenant, actor=actor, connection=connection)
-    except Conflict:
+    if before and before == _identity_config_key(connection):
         log.info(
             "accounts.identity_config.unchanged",
             connection_id=str(connection.pk),
             tenant_id=str(tenant.pk),
         )
+        return
+    sync_identity_config(
+        tenant=tenant,
+        actor=actor,
+        connection=connection,
+        generation=connection.updated_at.isoformat() if before else "",
+    )
 
 
 def _workforce_config_key(*, observed: str = "") -> str:
@@ -1651,6 +1638,7 @@ class WorkforceConfigAsked:
     key: str
 
 
+# door: only this tree's own hands reach it - sync_workforce_idp and zitadel_reconcile
 @service
 def sync_workforce_identity_config(
     *, actor: Actor, tenant: Tenant | None, observed: str = ""
@@ -1660,7 +1648,7 @@ def sync_workforce_identity_config(
     The sibling of `sync_identity_config`, for the provider that is nobody's
     customer: the people who build and run this product. It is here, in the same
     family, driving the same workflow through the same activity, because ADR
-    ident-6's whole claim is that after W2-R5 there is **one way** identity
+    ident-6's whole claim is that there is **one way** identity
     configuration reaches Zitadel — and a workforce door seeded by hand in the
     console would be the exception that made the claim untrue.
 
@@ -1750,8 +1738,7 @@ def sync_workforce_identity_config(
     run = _start_identity_run(
         tenant=None,
         actor=actor,
-        kind=KIND_WORKFORCE_PROVIDER,
-        key=run_key,
+        arg=IdentityConfigSync(kind=KIND_WORKFORCE_PROVIDER, key=run_key),
         noun="identity_config",
         run_key=run_key,
     )
@@ -1884,18 +1871,14 @@ def set_identity_branding(
     _start_identity_run(
         tenant=None,
         actor=actor,
-        kind=KIND_IDENTITY_BRANDING,
-        key=str(row.pk),
+        arg=IdentityConfigSync(kind=KIND_IDENTITY_BRANDING, key=str(row.pk)),
         noun="identity_config",
         run_key=_branding_run_key(row, observed=observed),
     )
     return row
 
 
-# The stated fields — what this row says the screen should look like, and
-# therefore what a run about it is ABOUT. `product_name` is in the list because
-# it reaches the hosted screen too, and `is_watermark_disabled` because it is a
-# field of the intent even though it is the one the command can only turn off.
+#: What a branding row says the screen should look like: what a run about it is about.
 BRANDING_STATED_FIELDS = (
     "product_name",
     "accent",
@@ -1948,22 +1931,6 @@ def _the_standing_screen(row: IdentityBranding | None) -> IdentityBranding:
     row.sync_state = SsoConnection.SyncState.PENDING
     row.save(update_fields=["sync_state", "updated_at"])
     return row
-
-
-# The stated fields — what this row says the screen should look like, and
-# therefore what a run about it is ABOUT. `product_name` is in the list because
-# it reaches the hosted screen too, and `is_watermark_disabled` because it is a
-# field of the intent even though it is the one the command can only turn off.
-BRANDING_STATED_FIELDS = (
-    "product_name",
-    "accent",
-    "background_color",
-    "font_color",
-    "background_color_dark",
-    "font_color_dark",
-    "logo_url",
-    "is_watermark_disabled",
-)
 
 
 def _branding_run_key(row: IdentityBranding, *, observed: str = "") -> str:
@@ -2231,89 +2198,202 @@ def ensure_membership(*, user: User, tenant: Tenant, role: str) -> Membership:
     the connection itself (`_refuse_role_above_the_configurer`). That is the
     only place in this path where there is a granter at all.
     """
-    membership = Membership.objects.filter(user_id=user.pk, tenant=tenant).first()
+    membership = Membership.objects.for_tenant(tenant).filter(user_id=user.pk).first()
     if membership is not None:
         return membership
-    is_first = not Membership.objects.filter(user_id=user.pk).exists()
+    is_first = not Membership.objects.of(user).exists()
     return add_membership(
         user=user, tenant=tenant, is_default=is_first, role=role, actor=system_actor(tenant=tenant)
     )
 
 
+# --- The identity home --------------------------------------------------------
+#
+# Identity option B: every tenant has a realm of its own at the identity
+# platform, made when the tenant is. `core.create_tenant` asks through
+# `core.bridge` (core learns no identity); the pending row is written here, in
+# the creating transaction, and `EnsureTenantIdentityHomeWorkflow` makes the
+# realm on commit and writes it back through `sync_identity_home`.
+
+#: The workflow's registered name — a string for `SYNC_IDENTITY_CONFIG_WORKFLOW`'s
+#: reason: `workflows` sits above this app.
+IDENTITY_HOME_WORKFLOW = "EnsureTenantIdentityHomeWorkflow"
+
+
+def _ask_for_identity_home(*, tenant: Tenant) -> None:
+    """What `core.bridge.ENSURE_IDENTITY_HOME` is filled with: a new tenant's realm, asked for."""
+    _ask_for_a_realm(tenant=tenant)
+
+
+def _ask_for_a_realm(*, tenant: Tenant, observed: str = "") -> None:
+    """Write the tenant's `pending` home and start its realm run on commit.
+
+    What `core.bridge.ENSURE_IDENTITY_HOME` is filled with, so it runs inside
+    `create_tenant`'s transaction — not a `@service` of its own for the reason
+    `create_tenant`'s root organisation is not: it is part of the tenant being
+    born, the tenant row is the record of it, and a rolled-back creation takes
+    the home and the run's row with it.
+
+    **A platform run** (`platform:accounts:identity_home:<slug>`, house rule 18):
+    the realm is the deployment's identity configuration, not any tenant's row,
+    so the run carries no tenant on its headers and names its tenant in the
+    payload. `observed` is the reconciler's, as it is for every identity run: it
+    lets a tenant whose realm went missing be asked for again after its first
+    run finished.
+    """
+    home = IdentityHome.objects.for_tenant(tenant).first()
+    if home is None:
+        IdentityHome(tenant=tenant).save()
+    _start_identity_run(
+        tenant=None,
+        actor=None,
+        arg=IdentityHomeAsk(tenant_slug=tenant.slug),
+        noun="identity_home",
+        run_key=_with_observed(tenant.slug, observed),
+        workflow=IDENTITY_HOME_WORKFLOW,
+    )
+
+
+# door: the shell — `manage.py zitadel_reconcile` asks it for every tenant the
+# audit finds without a realm. A tenant is homed at creation; there is no route
+# for asking again, because asking again is an operator's repair.
+@service
+def start_identity_home(*, tenant: Tenant, actor: Actor, observed: str = "") -> IdentityHome:
+    """Ask for a tenant's realm again — the reconciler's road for a tenant with none.
+
+    The same pending row and the same run `create_tenant` asks for, under the
+    same id; a tenant created before realms existed is homed by this exactly as
+    a new one is. A run already asked and still live is the same run; one that
+    finished needs `observed`, the audit's line about what it saw.
+    """
+    # authz: the reconciler is the deployment's operator acting as the system,
+    # and this grants nothing — it asks for the realm the tenant already should
+    # have. There is no tenant-level key for it because no tenant door reaches it.
+    _ask_for_a_realm(tenant=tenant, observed=observed)
+    home: IdentityHome = IdentityHome.objects.for_tenant(tenant).get()
+    return home
+
+
+# door: `apps/accounts/activities.py::ensure_identity_home` — the run's own
+# write-back, and nothing else. A route onto it would let a caller say which
+# realm a tenant's people sign in at.
+@service
+def sync_identity_home(*, tenant: Tenant, actor: Actor, realm_id: str) -> IdentityHome:
+    """Record that the tenant's realm exists: the home becomes `own_org`, naming it.
+
+    **Said once, as an event**: `accounts.identity_home.created` when the home
+    first gets its realm, and again only when it is given a different one (a
+    realm deleted at the platform and made again by the reconciler). The same
+    realm reported twice — a retried activity — writes nothing new and says
+    nothing.
+    """
+    # authz: written by the realm activity alone, as the system actor, about a
+    # realm it has just made; nobody asks for this and there is nothing to grant.
+    home = IdentityHome.objects.for_tenant(tenant).select_for_update().first()
+    if home is None:
+        home = IdentityHome(tenant=tenant)
+    changed = home.realm_id != realm_id or home.state != IdentityHome.State.OWN_ORG
+    if not changed:
+        return home
+    home.realm_id = realm_id
+    home.state = IdentityHome.State.OWN_ORG
+    with as_invalid():
+        home.full_clean()
+    home.save()
+    emit = bridge.listener(bridge.EMIT)
+    if emit is None:
+        log.info("accounts.event.unpublished", event_name=IDENTITY_HOME_CREATED)
+    else:
+        emit(
+            name=IDENTITY_HOME_CREATED,
+            tenant=tenant,
+            payload=event_payload(IdentityHomeOut.from_orm(home)),
+            actor=actor,
+        )
+    return home
+
+
+# door: `manage.py zitadel_seed` — the deployment's shell door, where the staff
+# realm is the organisation the seed already owns. Nothing a tenant reaches.
+@service
+def record_staff_realm(*, actor: Actor, tenant: Tenant | None, realm_id: str) -> IdentityHome:
+    """Record which realm is the deployment's own: the home with no tenant.
+
+    The staff realm is the identity platform's organisation this deployment
+    already had — its operators and its workforce sign in there — and a sign-in
+    that names no tenant's realm names this one. Idempotent: the same realm
+    twice is the row it was; a different one moves it (a re-seeded platform).
+    `tenant` is `None`, always: the row is the deployment's, and its audit row
+    lands in the platform population.
+    """
+    # authz: the seed is the deployment operator at the shell, recording a fact
+    # it just read off the platform; no tenant owns this row to ask about it.
+    # rule-8: the staff realm's home is the one row with NO tenant.
+    home = IdentityHome.objects.staff()
+    if home is None:
+        home = IdentityHome(tenant=None)
+    if home.realm_id == realm_id and home.state == IdentityHome.State.OWN_ORG:
+        return home
+    home.realm_id = realm_id
+    home.state = IdentityHome.State.OWN_ORG
+    with as_invalid():
+        home.full_clean(validate_constraints=False)
+    home.save()
+    return home
+
+
 # --- The platform identity join ----------------------------------------------
 #
-# ADR ident-4. Zitadel hosts every interactive authentication now, so
-# everybody who signs in has a `sub` there — and exactly one column joins that
-# fact to this product's `User`.
+# ADR ident-4, widened by identity option B. Zitadel hosts every interactive
+# authentication, so everybody who signs in has a subject there — ONE PER
+# REALM, since a person in two tenants is a person in two realms — and the
+# `SsoIdentity` rows with no connection are the join from each of those
+# subjects to this product's one `User`.
 
 
 @service
-# rule-13: still not a tenant-owned write. A person's Zitadel subject is a fact
-# about them and not about any customer — they may hold memberships in several
-# tenants or, on a first login, in none at all — and `tenant` below is therefore
-# an audit-population SELECTOR and never a filter, exactly as it is on
-# `erase_user` and `redact_invitations`.
-#
-# **N79b, and what actually changed.** This service used to declare no `tenant`
-# at all, which under ADR core-8's mechanism is the declaration "I am not about
-# a tenant's rows" — and `@service` reads the signature, so the identity join
-# left no audit row anywhere. That was the last gap in the identity ledger: the
-# one column that decides which Zitadel account signs in as which of our people
-# was written on every login with nothing recording it. Declaring the parameter
-# is the whole fix; the value is `None` in practice, because the join belongs to
-# the deployment rather than to any customer, and the row lands in the platform
-# population readable through `AuditEntry.objects.for_platform()`.
-#
-# The rule-13 sentence above is why this is a DECLARATION and not a schema
-# change: `AuditEntry.tenant` has been nullable since `core` migration 0013 and
-# null has been a declared population since ADR core-8. Nothing here was
-# forbidden; nobody had asked.
+# rule-13: still not a tenant-owned write. A person's subject is a fact about
+# them and not about any customer — `tenant` below is an audit-population
+# SELECTOR (the realm's tenant, or `None` for the staff realm), never a filter,
+# exactly as it is on `erase_user` and `redact_invitations`.
 #
 # door: `apps/accounts/adapter.py` — the allauth social-login callback — is its
 # door, and it is the same unconventional mount `provision_sso_identity` sits
 # behind. A door of its own would be worse than none: `subject` is the column
-# that decides which Zitadel account signs in as which of our people, so a route
-# that accepted one would be a route for claiming somebody else's identity.
-def record_zitadel_identity(
-    *, user: User, subject: str, tenant: Tenant | None, actor: Actor
+# that decides which platform account signs in as which of our people, so a
+# route that accepted one would be a route for claiming somebody else's identity.
+def record_identity(
+    *,
+    user: User,
+    realm: str,
+    subject: str,
+    tenant: Tenant | None,
+    actor: Actor,
+    issuer: str = "",
 ) -> User:
-    """Record which Zitadel subject this person is. **The one writer.**
+    """Record which subject this person is in `realm`. **The one writer of the join.**
 
     Called from `accounts.adapter.SocialAccountAdapter` at the moment the
-    platform IdP asserts an identity, and from nowhere else: a second writer is
-    how a join between two identity systems comes to disagree with itself.
+    platform asserts an identity, and from nowhere else: a second writer is how
+    a join between two identity systems comes to disagree with itself.
 
-    **Keyed on the subject, not the address**, for the reason `SsoIdentity`
-    already gives: an address is a label an employer can reassign, and keying on
-    it is how somebody inherits their predecessor's access along with their
-    desk. The column is unique, so a subject already claimed by somebody else is
-    a `Conflict` rather than a silent re-point — that shape is an account
-    takeover with an extra step.
+    **Keyed `(realm, subject)`, never on the address**, for the reason
+    `SsoIdentity` gives: an address is a label an employer can reassign. The
+    four states, per realm, and only one of them writes:
 
-    Idempotent: the same subject for the same user is a no-op, which matters
-    because this runs on **every** login and not only the first. **The audit row
-    is not** — one per call, no-op included, because "the platform asserted this
-    identity again" is the fact the ledger is being asked for. The `subject`
-    itself never reaches the row: it is not in this app's `LOG_KEYS`, so the
-    trail says a join was recorded and for whom, and not what was asserted.
+    * no subject for this person in this realm, the subject free → **written**;
+    * this person's subject in this realm IS the subject → **no-op**;
+    * this person holds a DIFFERENT subject in this realm → **`Conflict`**;
+    * the subject is held in this realm by another account → **`Conflict`**.
 
-    **Four states, and only one of them writes.** The paragraph above used to
-    describe one refusal and then take the other direction silently: a subject
-    already held by somebody else was a `Conflict`, and a person who already
-    held a DIFFERENT subject had theirs quietly replaced. Both are the same
-    claim — "this account is mine now" — arriving from opposite sides, and
-    refusing one while performing the other is the takeover the docstring says
-    it exists to stop. The states:
+    A subject in ANOTHER realm is not a conflict: it is the same person in a
+    second tenant, which is the whole reason the join is keyed by realm. Cutting
+    a join on purpose is `unlink_zitadel_identity`, an operator's audited act.
 
-    * `zitadel_sub` unset, the subject free → **written**; the first login;
-    * `zitadel_sub` equal to the subject → **no-op**; every login after it;
-    * `zitadel_sub` set and different → **`Conflict`**, nothing written;
-    * the subject held by another account → **`Conflict`**, nothing written.
-
-    The third is not a dead end: cutting a join on purpose — an issuer swap, a
-    re-seed, a person whose platform account was rebuilt — is
-    `unlink_zitadel_identity` below, which is an operator's audited act rather
-    than something a sign-in decides for itself.
+    The audit row is one per call, no-op included — "the platform asserted this
+    identity again" is the fact the ledger is asked for — and it is about the
+    PERSON (the person is what this returns), while the `subject` never reaches
+    it: it is not in this app's `LOG_KEYS`.
     """
     cleaned = str(subject or "").strip()
     if not cleaned:
@@ -2321,32 +2401,60 @@ def record_zitadel_identity(
             {"subject": ["An identity provider must assert a subject."]},
             detail="That sign-in carried no subject, so it cannot be joined to an account.",
         )
-    if user.zitadel_sub == cleaned:
+    # rule-8: the realm and the subject are the join's whole key, asked
+    # before the sign-in knows whose person the subject is.
+    held = SsoIdentity.objects.in_realm(realm=realm, subject=cleaned)
+    if held is not None and held.user_id == user.pk:
         return user
-
-    # BOTH DIRECTIONS, AND THE SAME SENTENCE FOR EACH. It says nothing about
-    # which account, which is the point on a page anybody who can start a login
-    # can reach: "that identity is already linked to a different account" is
-    # true whether the collision is on this row or on somebody else's, and a
-    # message that distinguished them would answer "does an account exist at
-    # this address" for free.
-    if user.zitadel_sub:
+    # BOTH DIRECTIONS, AND THE SAME SENTENCE FOR EACH: it says nothing about
+    # which account, on a page anybody who can start a sign-in can reach.
+    if held is not None:
         raise Conflict("That identity is already linked to a different account.")
-
-    claimed = User.objects.filter(zitadel_sub=cleaned).exclude(pk=user.pk).first()
-    if claimed is not None:
+    if user.sso_identities.filter(connection__isnull=True, realm=realm).exists():
         raise Conflict("That identity is already linked to a different account.")
-
-    user.zitadel_sub = cleaned
-    user.save(update_fields=["zitadel_sub", "updated_at"])
+    identity = SsoIdentity(
+        tenant=tenant,
+        connection=None,
+        user=user,
+        realm=realm,
+        subject=cleaned,
+        issuer=issuer,
+        email=user.email,
+    )
+    with as_invalid():
+        identity.full_clean(validate_constraints=False)
+    identity.save()
     return user
+
+
+# door: an operator's reconcile at the shell (`zitadel_reconcile`); no persona owns the copy.
+@service
+def retire_stale_staff_join(*, identity: SsoIdentity, actor: Actor, tenant: None) -> str:
+    """Delete one `staff` join row whose subject a tenant's realm row now holds; answer the subject.
+
+    Refused unless the realm row exists: the realm row is the person's, the `staff` copy is not.
+    """
+    # hat-scoped: a staff join row belongs to no tenant and no node; the operator acts at the shell.
+    authz.require(actor, "sso_identity.delete")
+    held = (
+        # rule-8: the join is platform-wide; the realm row is found by its subject, not a tenant.
+        SsoIdentity.objects.filter(connection__isnull=True, subject=identity.subject)
+        .exclude(realm=STAFF_REALM)
+        .exists()
+    )
+    if identity.realm != STAFF_REALM or identity.connection_id is not None or not held:
+        raise Conflict("This join row is not a stale staff copy; nothing was retired.")
+    subject = identity.subject
+    identity.delete()
+    log.info("accounts.identity.stale_staff_join_retired", user_id=str(identity.user_id))
+    return subject
 
 
 # door: the shell, and only the shell. `manage.py unlink_identity` is the door,
 # at the deployment operator's altitude — the same place `bootstrap_tenant` and
 # `zitadel_first_admin` stand. A route onto this would be a way to cut somebody
 # else's identity join on request, which is the shape the refusal in
-# `record_zitadel_identity` exists to close.
+# `record_identity` exists to close.
 @service
 # rule-16: "unlink" is the verb, and it is the exact one — this cuts a join
 # somebody made, and `remove`/`revoke`/`delete` each claim something it does not
@@ -2367,10 +2475,11 @@ def unlink_zitadel_identity(
     door that re-points a join because the request asked it to is the hole the
     refusal closes, wearing a switch.
 
-    **It cuts every handle on the platform side, not just our column.** Three
-    tables can name a subject — `User.zitadel_sub` (ours), `SocialAccount.uid`
-    (allauth's) and `SsoIdentity.subject` (per-connection, a customer IdP's) —
-    and this service now clears the first two. **The allauth row is NOT
+    **It cuts every handle on the platform side, not just our rows.** Three
+    places can name a subject — the identity join (ours: `SsoIdentity` rows with
+    no connection, one per realm), `SocialAccount.uid` (allauth's) and a
+    per-connection `SsoIdentity.subject` (a customer IdP's) — and this service
+    clears the first two, in every realm the person holds a subject in. **The allauth row is NOT
     "replaced by the next successful sign-in"**; that sentence stood here for a
     cycle and was false: a sign-in adds a second row, and the old one stays a
     live handle on this account. allauth resolves `(provider, uid)` itself,
@@ -2427,8 +2536,7 @@ def unlink_zitadel_identity(
     # number this reports is rows on the platform provider.
     removed = rows.count()
     rows.delete()
-    user.zitadel_sub = None
-    user.save(update_fields=["zitadel_sub", "updated_at"])
+    user.sso_identities.filter(connection__isnull=True).delete()
     log.info(
         "accounts.identity.unlinked",
         user_id=str(user.pk),
@@ -2436,6 +2544,63 @@ def unlink_zitadel_identity(
     )
     close_sockets_on_commit(user_id=user.pk, reason=KICK_USER_IDENTITY_UNLINKED)
     return user
+
+
+# --- The retired direct Google road's leftovers -------------------------------
+
+
+# door: only this tree's own hands reach it — `manage.py
+# retire_direct_google_links`, an operator's one-time step in a product's move
+# off the retired direct Google road. It is a deployment's cleanup, not a
+# capability a tenant's person or client needs a route or a tool for.
+@service
+def retire_direct_google_links(*, actor: Actor, tenant: Tenant | None) -> int:
+    """Delete the direct Google road's `SocialAccount` rows, once nobody needs them.
+
+    The workforce's Google is an identity provider inside Zitadel now, and the
+    allauth Google provider those rows were written by is no longer installed —
+    so a leftover `SocialAccount(provider="google")` is a row no provider
+    serves: it signs nobody in, allauth's connections page under
+    `/accounts/3rdparty/` leaves it out without saying so, and any code that
+    asks it for its provider account (`get_provider_account()`) gets an error.
+    (`str()` of it still works — it is the person's address.) This takes them
+    away.
+
+    **Only for people who already carry a Zitadel identity, and all or none.**
+    A person with a direct-road row and no subject in the identity join has not signed in
+    through Zitadel yet; their row is the only trace of how they used to arrive,
+    and the fold's order is that their first Zitadel sign-in comes first. So a
+    single such person REFUSES the whole run, naming them — an operator reads
+    the list, has those people sign in once (or unlinks them by hand), and runs
+    it again. A template never deletes a product's identity rows silently, which
+    is also why this is a command an operator runs and not a migration.
+
+    **Who may:** `deployment.configure` — a platform operator; these rows are
+    about the installation's own door, not any tenant's. `tenant` is the audit
+    anchor and nothing else, as it is for `grant_staff`.
+
+    Returns how many rows went (their `SocialToken`s go with them by cascade).
+    """
+    # authz-kind: the rows removed are allauth's `SocialAccount`s and the key
+    # asked is `deployment.configure`, deliberately — they are the retired
+    # workforce door's links, a fact about the deployment's identity
+    # configuration, not about any one person their tenant owns.
+    authz.require(actor, "deployment.configure", tenant)
+    census = get_direct_google_links()
+    if census.unjoined:
+        raise Conflict(
+            "These people hold a link from the retired direct Google sign-in and "
+            "have not signed in through the identity platform yet, so removing "
+            "their link would leave no record of how they arrive: "
+            f"{', '.join(census.unjoined)}. Have each of them sign in once through "
+            "the identity platform's Google button, then run this again.",
+        )
+    rows = SocialAccount.objects.filter(provider=DIRECT_GOOGLE_PROVIDER)
+    # `int(...)`: allauth ships no type information, so its manager's count is `Any`.
+    removed = int(rows.count())
+    rows.delete()
+    log.info("accounts.direct_google.retired", social_accounts_removed=removed)
+    return removed
 
 
 # --- The admin's key, and why it is a service at all --------------------------
@@ -2510,3 +2675,44 @@ def grant_staff(*, user: User, actor: Actor, tenant: Tenant | None) -> User:
     # being handed over is the deployment's identity configuration.
     user.save(update_fields=["is_staff", "updated_at"])
     return user
+
+
+#: How long the operator's day-zero vouch stands before the first sign-in must have happened.
+FIRST_ADMIN_VOUCH_TTL = timedelta(days=7)
+
+
+# door: `manage.py zitadel_first_admin`, the operator at the box before any tenant exists.
+@service
+def issue_first_admin_vouch(*, email: str, tenant: Tenant | None, actor: Actor) -> FirstAdminVouch:
+    """Record the address the operator invited as the deployment's first human.
+
+    Invariant: a re-run renews an unspent vouch's expiry; a spent one is never reopened.
+    """
+    # authz: the operator at the box's shell, via `zitadel_first_admin`, before any tenant.
+    address = email.strip().lower()
+    vouch, _created = FirstAdminVouch.objects.get_or_create(
+        email=address, defaults={"expires_at": now() + FIRST_ADMIN_VOUCH_TTL}
+    )
+    if vouch.consumed_at is None:
+        vouch.expires_at = now() + FIRST_ADMIN_VOUCH_TTL
+        vouch.save(update_fields=["expires_at", "updated_at"])
+    return vouch
+
+
+# door: the sign-in adapter's signup, the one place the vouch it admitted can be spent.
+@service
+def mark_first_admin_vouch_spent(
+    *, user: User, tenant: Tenant | None, actor: Actor
+) -> FirstAdminVouch:
+    """Spend the day-zero vouch `user`'s first sign-in arrived on; `NotFound` if none stands."""
+    # authz: the sign-in adapter, as the system, at the signup the wall admitted on this vouch.
+    live = get_first_admin_vouch(email=user.email)
+    if live is None:
+        raise NotFound()
+    vouch = FirstAdminVouch.objects.select_for_update().get(pk=live.pk)
+    if vouch.consumed_at is not None:
+        raise NotFound()
+    vouch.consumed_at = now()
+    vouch.consumed_by = user
+    vouch.save(update_fields=["consumed_at", "consumed_by", "updated_at"])
+    return vouch

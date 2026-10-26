@@ -1,6 +1,6 @@
 """Rule 31's runner: who declared how their data dies, and whether a purge is reached.
 
-Started as a subprocess by `quality/checks.py::declared_lifecycles` — never by
+Started as a subprocess by `quality/checks/rule_31.py::declared_lifecycles` — never by
 the default suite, and never in the gate's own process. It is a subprocess for
 the reason `quality/refusal_probe.py` and `quality/hotpath_probe.py` are: the
 answer lives in the **live app registry** (`apps.core.lifecycle.undeclared_models`
@@ -236,6 +236,76 @@ def _closure_of(fn: Any, depth: int) -> set[str]:
     return reached
 
 
+def activity_closure(fn: Any) -> set[str]:
+    """The callables an activity reaches, as `module.qualname`, to rule 31's depth."""
+    return _closure_of(fn, _REFERENCE_DEPTH)
+
+
+def registries() -> tuple[dict[str, Any], dict[str, Any]]:
+    """The discovered workflows and activities, each by its registered name and its `__name__`."""
+    from temporalio import activity as temporal_activity
+    from temporalio import workflow as temporal_workflow
+
+    from apps.workflows.client import discovered_activities, discovered_workflows
+
+    workflow_by_name: dict[str, Any] = {}
+    for cls in discovered_workflows():
+        definition = temporal_workflow._Definition.from_class(cls)
+        name = definition.name if definition is not None else getattr(cls, "__name__", "")
+        if name:
+            workflow_by_name[name] = cls
+        workflow_by_name.setdefault(getattr(cls, "__name__", ""), cls)
+
+    activity_by_name: dict[str, Any] = {}
+    for fn in discovered_activities():
+        definition = temporal_activity._Definition.from_callable(fn)
+        name = definition.name if definition is not None else getattr(fn, "__name__", "")
+        if name:
+            activity_by_name[name] = fn
+        activity_by_name.setdefault(getattr(fn, "__name__", ""), fn)
+    return workflow_by_name, activity_by_name
+
+
+def workflow_name_of(target: Any) -> str:
+    """The registered name of a schedule action's workflow, a name or a class; "" for none."""
+    from temporalio import workflow as temporal_workflow
+
+    if target is None:
+        return ""
+    if isinstance(target, str):
+        return target
+    definition = temporal_workflow._Definition.from_class(target)
+    return definition.name if definition is not None else getattr(target, "__name__", "")
+
+
+def reached_activities(
+    scheduled: list[tuple[str, str]],
+    workflow_by_name: dict[str, Any],
+    activity_by_name: dict[str, Any],
+) -> tuple[dict[str, tuple[str, str, str]], set[str]]:
+    """The activities the scheduled workflows execute, by dotted name, and the workflows walked."""
+    reached: dict[str, tuple[str, str, str]] = {}
+    seen_workflows: set[str] = set()
+    frontier = list(scheduled)
+    while frontier:
+        schedule_name, workflow_name = frontier.pop()
+        if workflow_name in seen_workflows:
+            continue
+        seen_workflows.add(workflow_name)
+        cls = workflow_by_name.get(workflow_name)
+        if cls is None:
+            continue
+        source = _source_of(cls)
+        for activity_name in _first_arg_names(source, _ACTIVITY_CALLS):
+            fn = activity_by_name.get(activity_name)
+            dotted = _dotted(fn) if fn is not None else ""
+            if dotted:
+                reached.setdefault(dotted, (schedule_name, workflow_name, activity_name))
+        for child in _first_arg_names(source, _CHILD_CALLS):
+            frontier.append((schedule_name, child))
+    return reached, seen_workflows
+
+
 def main() -> int:
     sys.path.insert(0, str(ROOT))
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.test")
@@ -244,15 +314,9 @@ def main() -> int:
     django.setup()
 
     from django.apps import apps as django_apps
-    from temporalio import activity as temporal_activity
-    from temporalio import workflow as temporal_workflow
 
     from apps.core.lifecycle import LifecycleKind, declared_lifecycles, undeclared_models
-    from apps.workflows.client import (
-        discovered_activities,
-        discovered_schedules,
-        discovered_workflows,
-    )
+    from apps.workflows.client import discovered_activities, discovered_schedules
 
     # --- the census -----------------------------------------------------------
     declared = declared_lifecycles()
@@ -275,59 +339,17 @@ def main() -> int:
         )
 
     # --- the registries the tooth walks ---------------------------------------
-    workflow_by_name: dict[str, Any] = {}
-    for cls in discovered_workflows():
-        definition = temporal_workflow._Definition.from_class(cls)
-        name = definition.name if definition is not None else getattr(cls, "__name__", "")
-        if name:
-            workflow_by_name[name] = cls
-        workflow_by_name.setdefault(getattr(cls, "__name__", ""), cls)
-
-    activity_by_name: dict[str, Any] = {}
-    for fn in discovered_activities():
-        definition = temporal_activity._Definition.from_callable(fn)
-        name = definition.name if definition is not None else getattr(fn, "__name__", "")
-        if name:
-            activity_by_name[name] = fn
-        activity_by_name.setdefault(getattr(fn, "__name__", ""), fn)
-
+    workflow_by_name, activity_by_name = registries()
     schedules: list[dict[str, str]] = []
     scheduled: list[tuple[str, str]] = []  # (schedule name, workflow name)
     for declaration in discovered_schedules():
-        action = declaration.schedule(PROBE_QUEUE).action
-        target = getattr(action, "workflow", None)
-        if target is None:
-            name = ""
-        elif isinstance(target, str):
-            name = target
-        else:
-            definition = temporal_workflow._Definition.from_class(target)
-            name = definition.name if definition is not None else getattr(target, "__name__", "")
+        name = workflow_name_of(getattr(declaration.schedule(PROBE_QUEUE).action, "workflow", None))
         schedules.append({"name": declaration.name, "workflow": name})
         if name:
             scheduled.append((declaration.name, name))
 
     # --- schedule -> workflow -> (child workflow)* -> activity ----------------
-    # : dotted activity -> (schedule name, workflow name, activity name)
-    reached: dict[str, tuple[str, str, str]] = {}
-    seen_workflows: set[str] = set()
-    frontier = [(schedule, workflow) for schedule, workflow in scheduled]
-    while frontier:
-        schedule_name, workflow_name = frontier.pop()
-        if workflow_name in seen_workflows:
-            continue
-        seen_workflows.add(workflow_name)
-        cls = workflow_by_name.get(workflow_name)
-        if cls is None:
-            continue
-        source = _source_of(cls)
-        for activity_name in _first_arg_names(source, _ACTIVITY_CALLS):
-            fn = activity_by_name.get(activity_name)
-            dotted = _dotted(fn) if fn is not None else ""
-            if dotted:
-                reached.setdefault(dotted, (schedule_name, workflow_name, activity_name))
-        for child in _first_arg_names(source, _CHILD_CALLS):
-            frontier.append((schedule_name, child))
+    reached, seen_workflows = reached_activities(scheduled, workflow_by_name, activity_by_name)
 
     # : What every activity in the tree names, reached or not. The second half of
     # : the tooth's message: an unreachable callable that IS referenced by an
@@ -337,7 +359,7 @@ def main() -> int:
     for fn in discovered_activities():
         dotted = _dotted(fn)
         if dotted:
-            closures[dotted] = _closure_of(fn, _REFERENCE_DEPTH)
+            closures[dotted] = activity_closure(fn)
 
     # --- the purged declarations, judged --------------------------------------
     #

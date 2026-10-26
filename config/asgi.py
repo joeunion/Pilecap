@@ -17,8 +17,6 @@ file.
 
 from __future__ import annotations
 
-import importlib
-import importlib.util
 import os
 from typing import Any
 
@@ -30,23 +28,19 @@ django_asgi_app = get_asgi_application()
 
 from channels.auth import AuthMiddlewareStack  # noqa: E402
 from channels.routing import ProtocolTypeRouter, URLRouter  # noqa: E402
-from django.apps import apps as django_apps  # noqa: E402
 
 from apps.core.asgi_middleware import TenantMiddlewareASGI  # noqa: E402
+from apps.core.discovery import declared  # noqa: E402
 from config.mcp import MCP_PATH, build_http_app  # noqa: E402
 
 
 def discovered_websocket_urlpatterns() -> list[Any]:
     """Every installed `apps.*.consumers.websocket_urlpatterns`, in app order."""
     patterns: list[Any] = []
-    for config in django_apps.get_app_configs():
-        if not config.name.startswith("apps."):
-            continue
-        module_name = f"{config.name}.consumers"
-        if importlib.util.find_spec(module_name) is None:
-            continue
-        module = importlib.import_module(module_name)
-        patterns.extend(getattr(module, "websocket_urlpatterns", []) or [])
+    for _config, declared_patterns in declared(
+        "consumers", "websocket_urlpatterns", predicate=lambda value: isinstance(value, list)
+    ):
+        patterns.extend(declared_patterns)
     return patterns
 
 

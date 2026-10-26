@@ -13,9 +13,9 @@ three models below do not have one in the shape it expects:
   `visible_to` raises `TypeError` on it by design. Its subtree read is the same
   indexed prefix scan `visible_to` performs, expressed on the row's own `path`.
 * `Membership` is person × tenant × org × role and inherits `BaseModel`, not
-  `TenantScopedModel`, so it carries no scoped manager at all. Its reads name
-  the tenant explicitly and narrow by the hat's subtree through the related
-  organization's path.
+  `TenantScopedModel`, so it carries its own `MembershipQuerySet`: its reads
+  go through `.for_tenant(tenant)` and narrow by the hat's subtree through the
+  related organization's path (`subtree_q(org, field="organization__path")`).
 `Invitation` is the exception that proves the paragraph: it **is** org-scoped
 since ADR core-20 — it records the node it was sent from — so its two reads go
 through `visible_to` like any other org-scoped read, with no prefix scan written
@@ -36,7 +36,7 @@ No selector below filters rows by permission.
 **Where the question is asked differs between a list and a get, and the order
 is the rule** (reach before capability — the ruling `architecture.md` records):
 
-* a `list_` asks at the **acting hat** (`obj=None` → `where_of` → `actor.org`)
+* a `list_` asks at the **hat** (`obj=None` → `where_of` → `actor.org`)
   BEFORE it builds the queryset. A list has no row to hide, so the only honest
   answers are the page and `forbidden`.
 * a `get_` asks **after the scoped fetch**, with `obj=row`, at the row's own
@@ -55,13 +55,14 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from django.db.models import F, Q, QuerySet
+from django.db.models import F, QuerySet
 
 from apps.core.actor import Actor
 from apps.core.authz import (
     OWNER_ROLE,
     RESERVED_PERMISSIONS,
     Permission,
+    chain_over,
     defaults_for,
     grantable_permissions,
     memberships_in,
@@ -79,7 +80,6 @@ from apps.core.authz import (
 from apps.core.authz import _collection_from_rows as collection_from_rows
 from apps.core.exceptions import NotFound
 from apps.core.models import (
-    PATH_SEPARATOR,
     Grant,
     Invitation,
     Membership,
@@ -88,27 +88,15 @@ from apps.core.models import (
     RolePermission,
     Tenant,
     is_descendant_path,
+    subtree_q,
 )
+from apps.core.roads import road
+from apps.core.services import OWNERSHIP_PERMISSION, root_organization
+from apps.core.time import now
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from apps.core.audit import AuditEntry
     from apps.core.models import ScopedQuerySet
-
-
-def _subtree(org: Organization | None) -> Q:
-    """Everything at or below `org`, as a `Q` over an organization `path`.
-
-    One indexed `LIKE 'prefix.%'` plus an equality, which is exactly what
-    `ScopedQuerySet.visible_to` does — restated here because the models below
-    reach the path by three different routes and the alternative is three
-    slightly different prefix scans.
-    """
-    if org is None:
-        # An impossible predicate rather than `Q()`: an empty `Q` would widen
-        # the read to the whole tenant, which is the failure this exists to
-        # prevent. Callers already refuse a `None` hat; this is the belt.
-        return Q(pk__in=[])
-    return Q(path=org.path) | Q(path__startswith=org.path + PATH_SEPARATOR)
 
 
 # --- the scoped reads, without the capability -----------------------------------
@@ -128,19 +116,16 @@ def _subtree(org: Organization | None) -> Q:
 
 def _organizations_in(*, tenant: Tenant | None, org: Organization | None) -> QuerySet[Organization]:
     """The hat's subtree, scoped and ordered. No capability asked."""
-    return Organization.objects.for_tenant(tenant).filter(_subtree(org)).order_by("path")
+    return Organization.objects.for_tenant(tenant).filter(subtree_q(org)).order_by("path")
 
 
 def _memberships_in(*, tenant: Tenant | None, org: Organization | None) -> QuerySet[Membership]:
     """Every membership inside the hat's subtree, scoped. No capability asked."""
-    if tenant is None or org is None:
-        return Membership.objects.none()
-    subtree = Q(organization__path=org.path) | Q(
-        organization__path__startswith=org.path + PATH_SEPARATOR
-    )
+    if org is None:
+        return Membership.objects.for_tenant(None)
     return (
-        Membership.objects.filter(tenant=tenant)
-        .filter(subtree)
+        Membership.objects.for_tenant(tenant)
+        .filter(subtree_q(org, field="organization__path"))
         .select_related("user", "organization")
         .order_by("organization__path", "user__email")
     )
@@ -151,6 +136,38 @@ def _invitations_in(
 ) -> ScopedQuerySet[Invitation]:
     """Every invitation inside the hat's subtree, scoped. No capability asked."""
     return Invitation.objects.for_tenant(tenant).visible_to(org).order_by("-created_at")
+
+
+# read-open: the tenant's own ownership invariant, read by a service floor and the
+# erasure path inside their transactions; no door lists it and no viewer is asked
+@road("last_owner", example="apps/core/services/memberships.py::_refuse_orphaning_the_tenant")
+def list_owners_holding_at_root(*, tenant: Tenant) -> QuerySet[Membership]:
+    """The memberships that hold the tenant's ownership: on the root, `owner`, not withheld.
+
+    **The one algebra for "who owns this tenant"**, so the floor that refuses
+    the last owner's removal and the erasure path that refuses to orphan a
+    tenant ask one question rather than two that agree today. Ownership is
+    the reserved key `tenant.own`: `owner` is the only role that carries it
+    (no pattern, include row or `allow` grant may add it), a `withhold` grant
+    can take it away, and an owner of a BRANCH owns that branch rather than
+    the tenant — so the holders are exactly the ROOT memberships at
+    `OWNER_ROLE` that no `withhold` of the key names. One query, read through
+    `Membership`'s tenant scope.
+
+    No capability is asked: this is the platform's own invariant read inside
+    a service's transaction (the floor) and on the erasure path, never a
+    door's listing — no door calls it.
+    """
+    withheld = (
+        Grant.objects.for_tenant(tenant)
+        .filter(permission=OWNERSHIP_PERMISSION, effect=Grant.Effect.WITHHOLD)
+        .values("membership_id")
+    )
+    return (
+        Membership.objects.for_tenant(tenant)
+        .filter(organization=root_organization(tenant=tenant), role=OWNER_ROLE)
+        .exclude(pk__in=withheld)
+    )
 
 
 def list_organizations(
@@ -166,7 +183,7 @@ def list_organizations(
     # hide, so somebody without `organization.read` here hears that rather than
     # an empty page that looks like an empty tenant.
     require(actor, "organization.read")
-    # `for_tenant(None)` already returns nothing and `_subtree(None)` is an
+    # `for_tenant(None)` already returns nothing and `subtree_q(None)` is an
     # impossible predicate, so both halves fail closed without an early return
     # — and the read goes through the scoped manager, which is what house rule 8
     # is watching for.
@@ -212,6 +229,7 @@ def list_organizations_where(
 
 # read-open: a row's history is authorized by the ROW's own `<kind>.read`, asked
 # below at the row's node — the entries answer only what happened to that row.
+@road("history", example="apps/example/api.py::list_widget_history_route")
 def list_history(*, tenant: Tenant | None, actor: Actor, row: Any) -> QuerySet[AuditEntry]:
     """What happened to THIS row, newest first — the History card's read.
 
@@ -342,6 +360,24 @@ def get_invitation(
         raise NotFound()
     require(actor, "invitation.read", found)
     return found
+
+
+def list_pending_invitations_for(*, email: str) -> list[Invitation]:
+    """Every live invitation for an address, across tenants whose status is active.
+
+    # read-open: the sign-up adapter's read, before the person has a tenant to be asked in.
+    Rule 8's one cross-tenant exemption: narrowed by the address being established, nothing else.
+    Idempotent across callers: accepting moves the row out of `PENDING`.
+    A suspended or closed tenant's invitation is not live: it reappears on resume.
+    """
+    return list(
+        Invitation.objects.filter(
+            email=email.strip().lower(),
+            status=Invitation.Status.PENDING,
+            expires_at__gt=now(),
+            tenant__status=Tenant.Status.ACTIVE,
+        ).select_related("tenant")
+    )
 
 
 # --- The permission surface: roles, grants and the vocabulary (P5) ------------
@@ -514,6 +550,7 @@ def list_roles(*, tenant: Tenant | None, actor: Actor) -> list[RoleView]:
     `create_role` refuses a key `owner` or a declaration already owns — and is
     therefore total enough to page over.
     """
+    # hat-scoped: a read of a tenant-wide kind asks at the hat (rule 55) — until roles are homed
     require(actor, "role.read")
     deltas = _delta_rows_for(tenant)
     views = _declared_views(deltas=deltas)
@@ -540,6 +577,7 @@ def get_role(*, tenant: Tenant | None, key: str, actor: Actor) -> RoleView:
     be outside of: the reach question is the tenant scope, and a key this tenant
     cannot name is simply not there.
     """
+    # hat-scoped: a read of a tenant-wide kind asks at the hat (rule 55) — until roles are homed
     require(actor, "role.read")
     for view in list_roles(tenant=tenant, actor=actor):
         if view.key == key:
@@ -558,6 +596,7 @@ def list_grants(
     do they carry" are two things a credential can be trusted with separately.
     """
     membership = get_membership(tenant=tenant, org=org, membership_id=membership_id, actor=actor)
+    # hat-scoped: a read of a tenant-wide kind asks at the hat (rule 55) — until grants are homed
     require(actor, "grant.read", membership)
     return (
         Grant.objects.for_tenant(tenant)
@@ -594,11 +633,7 @@ def get_membership_permissions(
     """
     membership = get_membership(tenant=tenant, org=org, membership_id=membership_id, actor=actor)
     at = membership.organization
-    chain = [
-        row
-        for row in memberships_in(membership.user, tenant)
-        if is_descendant_path(at.path, row.organization.path)
-    ]
+    chain = list(chain_over(memberships_in(membership.user, tenant), at))
     grants: dict[Any, list[tuple[str, str]]] = {}
     for row_id, permission, effect in (
         Grant.objects.for_tenant(tenant)
@@ -669,5 +704,6 @@ def list_permissions(*, actor: Actor) -> list[Permission]:
     `role.read`: this list is what a role's collection is chosen FROM, and the
     person choosing is the person editing roles.
     """
+    # hat-scoped: a read of a tenant-wide kind asks at the hat (rule 55) — until roles are homed
     require(actor, "role.read")
     return sorted(vocabulary().values(), key=lambda word: word.action)

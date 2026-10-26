@@ -75,6 +75,7 @@ from django.shortcuts import render
 from django.urls import reverse
 
 from apps.accounts import qr, signin
+from apps.accounts.adapter import REALM_CLAIM
 from apps.accounts.selectors import get_platform_provider_id
 from apps.core.log import get_logger
 
@@ -300,7 +301,7 @@ PREFERRED: tuple[signin.FactorKind, ...] = (
 #: unknown value is a 400 rather than a re-rendered form: a page that answered
 #: a typo'd action with the sign-in screen would look like a refusal and be a
 #: bug, and there is no browser road that sends one.
-PASSWORD_ACTION = "password"  # pragma: allowlist secret
+PASSWORD_ACTION = "password"  # noqa: S105 — the form action value naming the password road  # pragma: allowlist secret
 CODE_ACTION = "code"
 #: Design J6's two. `passkey_start` is the affordance on J2-a — an address
 #: and a passkey, no password; `passkey` carries the assertion the browser
@@ -600,7 +601,7 @@ def _answer(
         # it is not, so there is nothing to re-draw: the ceremony ends and the
         # next one begins under the policy that is actually in force. The
         # ceremony is closed through the seam rather than abandoned, for the
-        # reason ADR ident-10 gives — every session it opens, it closes.
+        # reason ADR ident-12 gives — every session it opens, it closes.
         signin.cancel(request.session)
         return _restart(request, note=A_REFUSED_SKIP)
 
@@ -1176,14 +1177,21 @@ def _land(request: HttpRequest, checked: signin.SignIn, *, login_name: str = "")
     # a `SocialLogin` itself would be a second extractor, and the first field
     # it spelled differently would be a rule of `_platform_login`'s quietly
     # reading something else.
-    sociallogin = provider.sociallogin_from_response(
-        request,
-        {
-            "sub": person.subject,
-            "email": person.address,
-            "email_verified": person.verified,
-        },
-    )
+    #
+    # **And the realm the ceremony verified the person in**, under the claim
+    # the platform's own id_token uses for it (`adapter.REALM_CLAIM`): the
+    # session read named the person's organisation, so the realm is the
+    # platform's word and the adapter's first arm decides it — never the join
+    # row the subject already has, which a rollback can have left spelled
+    # `staff`.
+    claims: dict[str, Any] = {
+        "sub": person.subject,
+        "email": person.address,
+        "email_verified": person.verified,
+    }
+    if checked.realm:
+        claims[REALM_CLAIM] = checked.realm
+    sociallogin = provider.sociallogin_from_response(request, claims)
     state = SocialLogin.state_from_request(request)
     state["process"] = "login"
     # **The landing was decided before the password was proven** (V-184).
@@ -1307,7 +1315,7 @@ def _page(
         # the frame draws nothing at all when it does not** — no button, and
         # no script tag either. An IP address is not a relying-party id and
         # no browser will run a ceremony against one, which is exactly what
-        # the shipped `PUBLIC_BASE_URL` is, so this is the common case rather
+        # the shipped base URL's host is, so this is the common case rather
         # than the exotic one. The BROWSER's half of the answer is the static
         # file's: the button ships `hidden`.
         "passkey_road": frame == "sign_in" and signin.passkey_road_open(),

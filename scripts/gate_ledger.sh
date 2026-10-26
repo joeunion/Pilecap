@@ -13,7 +13,7 @@
 #     a TEMPORARY index so neither the real index nor the tree is touched, MINUS
 #     the paths a leg DECLARES it derives (`gate__derived_tree_paths`). On a
 #     clean tree with nothing declared — which is this repository today — it
-#     equals `git rev-parse HEAD^{tree}`, so a verdict earned before a commit
+#     equals HEAD's own tree object, so a verdict earned before a commit
 #     vouches for the commit after it; with a declaration live it equals that
 #     tree with the declared subtrees removed, which is the SAME key on every
 #     box rather than a different one on each.
@@ -21,9 +21,10 @@
 #     nothing (a red run re-explains itself every time); exit 2 records nothing
 #     and never can. Neither partial mode records a FULL verdict here: a partial
 #     run must never vouch for a whole tree. `--fast` records nothing anywhere
-#     at all; `--loop` banks a verdict of its OWN, at its own key, in THE LOOP
-#     LEDGER further down — a strictly narrower claim, in a different file, that
-#     nothing reading this section can mistake for one of these rows.
+#     at all; `--loop` banks a verdict of its OWN, at its own key and of its own
+#     KIND (`loop`, THE LOOP LEDGER section further down) — a strictly narrower
+#     claim that no reader of a `full` row can take for one, because every
+#     reader asks the one ledger for a kind.
 #  3. A VERDICT NAMES A TREE THAT STILL EXISTED WHEN THE RUN ENDED: measured at
 #     start AND end; if they differ (agents edit concurrently), the run's pass
 #     still prints but earns no carry-forward.
@@ -32,10 +33,12 @@
 # exactly as `git push --no-verify` is one flag away. The hooks were never a
 # security boundary; CI re-runs everything from a fresh checkout.
 #
-# The run log beside it answers "what happened to a full run that earned no
-# verdict" — a red leg, exit 2, a kill at the tool's ten-minute ceiling, or a
-# tree edited mid-run — one line per unsettled run, keyed by starting tree, so
-# the next agent reads what happened instead of guessing from an exit code.
+# The run log — rows of kind `run` in the same one ledger — answers "what
+# happened to a full run that earned no verdict": a red leg, exit 2, a kill at
+# the tool's ten-minute ceiling, or a tree edited mid-run — one row per
+# unsettled run, keyed by its starting tree, so the next agent reads what
+# happened instead of guessing from an exit code. THE ONE LEDGER section below
+# is the file, its grammar, its one writer and its one reader.
 
 # THE REFUSAL SEAM — scripts/gate_refuse.sh, sourced by this library's own
 # directory and guarded against a second source. This library refuses in notes
@@ -51,6 +54,9 @@ if [ -z "${GATE_REFUSE_SOURCED:-}" ]; then
 fi
 
 GATE_LEDGER_SCHEMA=v1
+
+#: The checkout this library was sourced from: the interpreter and the engine the literal-read census runs.
+GATE_LEDGER_HOME=$(cd "$(dirname -- "${BASH_SOURCE[0]:-$0}")/.." 2>/dev/null && pwd -P) || GATE_LEDGER_HOME=""
 
 # ---- who asked -------------------------------------------------------
 #
@@ -76,6 +82,7 @@ GATE_LEDGER_SCHEMA=v1
 #                 named exceptions).
 #   pm-bank       the PM banking a verdict for a tree ahead of a push or a merge
 #                 window.
+#   main-loop     `scripts/pm_main_loop.sh`'s `--loop` over main on a box, forwarded by `verifier_box.sh loop`.
 #   unstated      nobody said. The default, and NOT a synonym for "wrong" —
 #                 every line written before this field existed is this.
 #
@@ -86,7 +93,7 @@ GATE_LEDGER_SCHEMA=v1
 # WHERE IT IS NOT WRITTEN: `djb-gate-last-full`, which is a duration cache read
 # by `gate_run_announce`'s `grep ' green$'` and not part of the population being
 # censused. Named here rather than left to be discovered.
-GATE_CALLER_KINDS="push-wall quality-rung pm-bank unstated"
+GATE_CALLER_KINDS="push-wall quality-rung pm-bank main-loop unstated"
 
 # gate_caller — the caller kind for this run, always exactly one token from the
 # closed set above, on stdout.
@@ -148,8 +155,540 @@ gate_ledger_path() {
     fi
     gate_local_path djb-gate-verdicts
 }
-gate_runs_path() { gate_local_path djb-gate-runs; }
-gate_last_full_path() { gate_local_path djb-gate-last-full; }
+
+# ---- THE ONE LEDGER: one file, one row grammar, one writer, one reader ------
+#
+# WHAT IT REPLACED. Six verdict stores grew one at a time beside this file —
+# `djb-gate-verdicts` (full and drive rows, and the CI intent rows in a shape of
+# their own that carried no schema tag at all), `djb-loop-verdicts`,
+# `djb-partition-verdicts`, `djb-gate-runs`, `djb-gate-last-full` — each with
+# its own record function, its own lookup, its own override variable, and two
+# of the overrides accepted a relative path that this one refuses. Seven
+# writer/reader pairs over five files, three row shapes in one of them.
+#
+# NOW EVERY ROW IS ONE LINE OF ONE GRAMMAR IN ONE FILE (`gate_ledger_path`):
+#
+#   v1 <key> <kind> <stamp> [<subject>] name=value…
+#
+#   v1        GATE_LEDGER_SCHEMA. The tag every row carries, the intent row
+#             included.
+#   key       the thing a consult asks by: a measured tree (full, run, intent),
+#             a drive key, a partition key, a loop key (`loop-v1:<64 hex>` —
+#             the loop key keeps its own prefix, because LOOP_LEDGER_SCHEMA
+#             versions the key's INPUTS and the key is what a row is found by).
+#   kind      one of GATE_LEDGER_KINDS. A reader asks for a kind; no reader can
+#             take a row of another kind for one of its own, however the key
+#             was chosen (a drive key that IS a tree sha is the planted case).
+#   stamp     UTC, `YYYY-MM-DDTHH:MM:SSZ`.
+#   subject   ONE positional token, on the two kinds that always had one: a
+#             full row's leg set and a drive row's name. Kept positional
+#             because every banked row in every checkout of the family reads it
+#             there, and moving it would make each of them a miss — an
+#             eight-minute re-measure per tree — to buy a spelling.
+#   fields    `name=value` with NO WHITESPACE IN A VALUE. The one field that
+#             used to carry spaces, `sanction=`, is now percent-encoded by its
+#             one writer (`gate_sanction_field`); `leak-proof=` stays LAST
+#             because its value is itself `name=value` tokens its reader takes
+#             to the end of the line.
+#
+# ONE WRITER, `ledger_append`, AND ONE READER, `ledger_rows`, with `ledger_last`
+# as the reader's one-row form. Every record/lookup pair below is a caller of
+# those two; nothing else here opens the file.
+#
+# THE MIGRATION, DATED AND DOCUMENTED. A checkout family carries rows written
+# before this grammar: untagged `intent=ci …` rows, full rows whose sanction
+# holds spaces, and the four retired files. `ledger_rows` READS BOTH FORMS —
+# the retired files beside the ledger and the untagged intent rows inside it,
+# normalised to this grammar as they are read — until GATE_LEDGER_LEGACY_UNTIL,
+# and `ledger_migrate` rewrites a ledger into the one grammar in one step
+# (write-then-mv, the retired files folded in and removed). After the date the
+# tolerance stops: an unmigrated ledger's old rows are no longer read, and
+# `ledger_census` reds on them, which is the intended loudness on a dormant
+# checkout — the remedy is the one command it names.
+GATE_LEDGER_KINDS="full drive partition loop intent run"
+
+#: The day the tolerance for rows written before the one grammar ends. Chosen
+#: as the far side of the release after v2.5.0; a checkout that has run
+#: `ledger_migrate` never meets it.
+GATE_LEDGER_LEGACY_UNTIL="${DJB_GATE_LEDGER_LEGACY_UNTIL:-2026-11-15}"
+
+#: The day the one grammar began. A row stamped on or after it that does not
+#: parse is a defect in its writer, not history — `ledger_census` tolerates a
+#: malformed row only when it is older than this.
+GATE_LEDGER_GRAMMAR_FROM="2026-10-02"
+
+#: The one grammar, as a regular expression `ledger_census` holds every line
+#: to. ERE; one optional positional subject, then `name=value` tokens.
+GATE_LEDGER_ROW_RE='^v1 [^ ]+ (full|drive|partition|loop|intent|run) [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z( [^ =]+)?( [a-z][a-z_-]*=[^ ]*)*$'
+
+#: THE ONE BOX MARKER. A verifier box is the machine `/etc/djb/image-id` exists
+#: on, and the file carries a value (the image's id) where the other candidate
+#: (`/run/verifier`) carries none. `check.sh` reads this constant rather than a
+#: list of its own; the drive key's machine half reads it as its default.
+#: `DJB_GATE_BOX_MARKER` points it at a scratch file — the drives' seam, so a
+#: case can stand on a "box" that is a file it made.
+GATE_BOX_MARKER=${DJB_GATE_BOX_MARKER:-/etc/djb/image-id}
+export GATE_BOX_MARKER
+
+# gate_on_box — exit 0 on a verifier box (the one marker is there), 1 anywhere
+# else.
+# entry: none — no caller; kept as the `# road: box_marker` home until the shell ledger's strangler re-homes it.
+# road: box_marker — a verifier box is the machine GATE_BOX_MARKER (/etc/djb/image-id) exists on · example: quality/tests/test_ci_derive.py::test_the_one_walls_table_prices_the_ci_only_members_where_a_box_reads
+gate_on_box() {
+    [ -e "$GATE_BOX_MARKER" ]
+}
+
+# gate_ledger_legacy_live — exit 0 while the tolerance for pre-grammar rows
+# stands (today is before GATE_LEDGER_LEGACY_UNTIL).
+gate_ledger_legacy_live() {
+    [[ "$(date -u +%Y-%m-%d)" < "$GATE_LEDGER_LEGACY_UNTIL" ]]
+}
+
+# ledger_append <kind> <key> [<subject>] [name=value …] — one row, appended.
+#
+# Exit 0 written · 1 nothing written: an unknown kind, a key or a field with
+# whitespace in it, an empty field, or a file that would not take the line.
+# REFUSED RATHER THAN REPAIRED: a row this function had to fix would be a row
+# whose writer means something other than what it wrote.
+# road: ledger — the one writer of a ledger row, and `ledger_rows` (with `ledger_last`) its one reader · example: quality/tests/test_ledger.py::test_the_live_ledger_has_one_row_grammar
+ledger_append() {
+    local kind=${1:-} key=${2:-} path stamp f line
+    shift 2 2>/dev/null || {
+        echo "ledger_append: takes <kind> <key> [fields…]" >&2
+        return 1
+    }
+    case " $GATE_LEDGER_KINDS " in
+    *" $kind "*) ;;
+    *)
+        echo "ledger_append: '${kind}' is not a ledger kind (${GATE_LEDGER_KINDS}) — nothing recorded" >&2
+        return 1
+        ;;
+    esac
+    case "$key" in
+    '' | *[[:space:]]*)
+        echo "ledger_append: the key '${key}' is empty or holds whitespace — nothing recorded" >&2
+        return 1
+        ;;
+    esac
+    # THE STAMP IS NOW, unless the row is a CARRIED one: a row another machine
+    # measured (a box's loop row, its drive rows) keeps the moment it was
+    # measured, and the carrier says so through LEDGER_STAMP — held to the
+    # grammar's shape like every other field.
+    stamp=${LEDGER_STAMP:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
+    if ! [[ $stamp =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+        echo "ledger_append: the stamp '${stamp}' is not UTC YYYY-MM-DDTHH:MM:SSZ — nothing recorded" >&2
+        return 1
+    fi
+    line="${GATE_LEDGER_SCHEMA} ${key} ${kind} ${stamp}"
+    for f in "$@"; do
+        case "$f" in
+        '' | *[[:space:]]*)
+            echo "ledger_append: a ${kind} field is empty or holds whitespace ('${f}') — nothing recorded" >&2
+            return 1
+            ;;
+        esac
+        line="${line} ${f}"
+    done
+    path=$(gate_ledger_path) || return 1
+    printf '%s\n' "$line" >>"$path"
+}
+
+# ledger_rows <kind> — every row of that kind, oldest first, in the one grammar,
+# on stdout. Exit 0 always when the ledger's path resolves (no file is no rows);
+# 1 when it does not.
+#
+# THE LEGACY TOLERANCE LIVES HERE AND NOWHERE ELSE. While it stands, the
+# retired stores beside the ledger are read first (they are older than every
+# row of the one file that replaced them) and every legacy shape is normalised
+# into the grammar on the way out, so no reader below ever sees one: a loop row
+# loses its `loop-v1` row tag (its key keeps its prefix), a run row gains its
+# kind and `state=`, an untagged intent row gains the tag, its key and its
+# stamp. A reader reads one grammar whatever the file holds.
+ledger_rows() {
+    local kind=${1:-} path legacy=0
+    path=$(gate_ledger_path) || return 1
+    gate_ledger_legacy_live && legacy=1
+    {
+        [ "$legacy" = 0 ] || ledger__legacy_rows "$kind" "${path%/*}"
+        [ ! -f "$path" ] || cat "$path"
+    } | awk -v k="$kind" -v legacy="$legacy" "${GATE_LEDGER_AWK_LIB}"'
+        $1 == "v1" && $3 == k { print; next }
+        k == "loop" && legacy == "1" && $1 == "loop-v1" && $3 == "loop" { $1 = "v1"; print; next }
+        k == "intent" && legacy == "1" && $1 == "intent=ci" {
+            row = legacy_intent($0)
+            if (row != "") print row
+        }
+    '
+}
+
+#: THE NORMALISERS, ONE COPY, shared by the reader's tolerance and by
+#: `ledger_migrate`, so the two can never disagree about what an old row says.
+#:
+#:   enc(s)           percent-encode the three characters a value may not hold
+#:                    (`%`, tab, space) — the grammar's one escape.
+#:   sanction_kind(s) the kind a FREE-TEXT legacy sanction's words name.
+#:   sanction_of(s)   a free-text sanction as `<kind>:<who>:<reason>`, encoded.
+#:   legacy_intent(r) an untagged `intent=ci …` row in the grammar, or "".
+GATE_LEDGER_AWK_LIB='
+    function enc(s) { gsub(/%/, "%25", s); gsub(/\t/, "%09", s); gsub(/ /, "%20", s); return s }
+    function sanction_kind(s) {
+        if (s ~ /^push-wall/ || s ~ /^the push wall/) return "push-wall"
+        if (s ~ /^ci-verdict/) return "ci-verdict"
+        if (s ~ /^docs-only/) return "docs-only"
+        if (s ~ /^--bank/) return "bank"
+        if (s ~ /^CI /) return "ci"
+        return "typed"
+    }
+    function sanction_of(s,    k, who) {
+        k = sanction_kind(s)
+        who = "legacy"
+        if (k == "typed" && match(s, /^[^:]+: /)) {
+            who = substr(s, 1, RLENGTH - 2)
+            s = substr(s, RLENGTH + 1)
+            sub(/^DJB_GATE_SANCTION=/, "", who)
+        }
+        return k ":" enc(who) ":" enc(s)
+    }
+    function legacy_intent(r,    n, f, i, tree, at, stamp, head, s) {
+        n = split(r, f, " ")
+        tree = ""; at = ""
+        for (i = 2; i <= n; i++) {
+            if (f[i] ~ /^tree=/) tree = substr(f[i], 6)
+            if (f[i] ~ /^at=/) at = substr(f[i], 4)
+        }
+        if (tree == "" || at !~ /^[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z$/) return ""
+        stamp = substr(at, 1, 4) "-" substr(at, 5, 2) "-" substr(at, 7, 2) "T" substr(at, 10, 2) ":" substr(at, 12, 2) ":" substr(at, 14, 2) "Z"
+        head = r
+        s = ""
+        if (index(r, " sanction=")) {
+            s = substr(r, index(r, " sanction=") + 10)
+            head = substr(r, 1, index(r, " sanction=") - 1)
+        }
+        sub(/^intent=ci /, "", head)
+        return "v1 " tree " intent " stamp " " head (s == "" ? "" : " sanction=" sanction_of(s))
+    }
+'
+
+# ledger__legacy_rows <kind> <dir> — the retired store for that kind, in the
+# one grammar. Nothing for a kind no retired store held.
+ledger__legacy_rows() {
+    local kind=$1 dir=$2
+    case "$kind" in
+    loop)
+        [ ! -f "$dir/djb-loop-verdicts" ] ||
+            awk '$1 == "loop-v1" && $3 == "loop" { $1 = "v1"; print }' "$dir/djb-loop-verdicts"
+        ;;
+    partition)
+        [ ! -f "$dir/djb-partition-verdicts" ] ||
+            awk '$1 == "v1" && $3 == "partition"' "$dir/djb-partition-verdicts"
+        ;;
+    run)
+        # `v1 <tree> <stamp> <state> caller=<k>` → the run kind, the state named.
+        [ ! -f "$dir/djb-gate-runs" ] ||
+            awk '$1 == "v1" && NF >= 4 && $3 ~ /^[0-9]{4}-/ {
+                printf "v1 %s run %s state=%s", $2, $3, $4
+                for (i = 5; i <= NF; i++) printf " %s", $i
+                printf "\n"
+            }' "$dir/djb-gate-runs"
+        ;;
+    esac
+    return 0
+}
+
+# ledger_last <kind> <key> — the newest row of that kind at exactly that key,
+# exit 0; 1 when there is none.
+ledger_last() {
+    local kind=$1 key=$2 line
+    [ -n "$key" ] || return 1
+    line=$(ledger_rows "$kind" | awk -v key="$key" '$2 == key { last = $0 } END { if (last != "") print last }') || return 1
+    [ -n "$line" ] || return 1
+    printf '%s\n' "$line"
+}
+
+# ledger_census [<file>] — hold every line of the ledger (or of <file>) to the
+# one grammar. One line per finding on stdout; exit 0 clean · 1 a row that does
+# not parse and is not tolerated · 2 the file could not be read.
+#
+# TOLERATED, WHILE GATE_LEDGER_LEGACY_UNTIL STANDS: an untagged `intent=ci` row,
+# and a malformed row stamped before GATE_LEDGER_GRAMMAR_FROM. Each tolerated
+# row is COUNTED on the summary line, never silent; after the date every one of
+# them is a finding, and `ledger_migrate` is the remedy the line names.
+ledger_census() {
+    local file=${1:-} live=0
+    if [ -z "$file" ]; then
+        file=$(gate_ledger_path) || return 2
+    fi
+    [ -f "$file" ] || {
+        echo "ledger census: no ledger at ${file} — zero rows, nothing to hold to the grammar"
+        return 0
+    }
+    [ -r "$file" ] || return 2
+    gate_ledger_legacy_live && live=1
+    awk -v re="$GATE_LEDGER_ROW_RE" -v from="$GATE_LEDGER_GRAMMAR_FROM" -v live="$live" \
+        -v until="$GATE_LEDGER_LEGACY_UNTIL" -v f="$file" '
+        { n++ }
+        $0 ~ re { ok++; next }
+        {
+            old = 0
+            if ($1 == "intent=ci") old = 1
+            else if ($1 == "v1" && substr($4, 1, 10) < from) old = 1
+            if (old && live == "1") { tolerated++; next }
+            bad++
+            printf "ledger census: line %d does not parse as the one grammar%s: %s\n", NR, (old ? " (a pre-grammar row, and the tolerance ended " until ")" : ""), substr($0, 1, 160)
+        }
+        END {
+            printf "ledger census: %d rows in %s — %d in the one grammar, %d tolerated (pre-grammar, until %s), %d malformed\n", n, f, ok, tolerated, until, bad
+            if (bad > 0) {
+                print "ledger census: the remedy for a pre-grammar row is one command — . scripts/gate_ledger.sh && ledger_migrate"
+                exit 1
+            }
+        }
+    ' "$file"
+}
+
+# ledger_migrate — rewrite this ledger into the one grammar, once.
+#
+# WHAT IT DOES, in order, to a COPY that is then moved into place (a reader
+# never sees half a ledger): every row of the one file is kept, an untagged
+# intent row is rewritten in the grammar, a full row's free-text sanction is
+# percent-encoded under the kind its words name; then the four retired stores
+# are folded in, in the grammar, and removed. Printed: how many rows of each
+# kind, and what was removed. Idempotent: a migrated ledger migrates to itself.
+#
+# DECLARED BLIND SPOT: a checkout of this family still running scripts older
+# than the one grammar keeps writing the retired stores after a migration; the
+# tolerance in `ledger_rows` reads them until GATE_LEDGER_LEGACY_UNTIL, and a
+# second `ledger_migrate` folds them in.
+ledger_migrate() {
+    local path dir tmp k
+    path=$(gate_ledger_path) || return 1
+    dir=${path%/*}
+    tmp="${path}.migrate.$$"
+    {
+        [ ! -f "$path" ] || cat "$path"
+        for k in loop partition run; do
+            ledger__legacy_rows "$k" "$dir"
+        done
+    } | awk "${GATE_LEDGER_AWK_LIB}"'
+        $1 == "intent=ci" {
+            row = legacy_intent($0)
+            print (row == "" ? $0 : row)
+            next
+        }
+        $1 == "v1" && $3 == "full" && index($0, " sanction=") {
+            s = substr($0, index($0, " sanction=") + 10)
+            head = substr($0, 1, index($0, " sanction=") - 1)
+            tail = ""
+            # The fields appended AFTER the sanction, found from the right.
+            if (match(s, / (wall|waited)=[0-9]+ .*$/)) { tail = substr(s, RSTART); s = substr(s, 1, RSTART - 1) }
+            else if (match(s, / leak-proof=.*$/)) { tail = substr(s, RSTART); s = substr(s, 1, RSTART - 1) }
+            if (s !~ / / && s ~ /^(push-wall|ci-verdict|docs-only|bank|typed|ci):[^:]*:/) { print; next }
+            print head " sanction=" sanction_of(s) tail
+            next
+        }
+        { print }
+    ' >"$tmp" || {
+        rm -f "$tmp"
+        echo "!! ledger_migrate: the migrated copy could not be written beside ${path}; the ledger is untouched." >&2
+        return 1
+    }
+    mv -f "$tmp" "$path" || {
+        rm -f "$tmp"
+        echo "!! ledger_migrate: the migrated copy could not be moved into place; the ledger is untouched." >&2
+        return 1
+    }
+    # `djb-gate-last-full` held only the durations `gate_run_announce` read; its
+    # successor is the `wall=` field, so it is retired with nothing to fold.
+    for k in djb-loop-verdicts djb-partition-verdicts djb-gate-runs djb-gate-last-full; do
+        if [ -f "$dir/$k" ]; then
+            rm -f "$dir/$k" && echo "ledger_migrate: retired ${dir}/${k}"
+        fi
+    done
+    awk '{ c[$3]++ } END { for (k in c) printf "ledger_migrate: %d %s row(s)\n", c[k], k }' "$path" | LC_ALL=C sort
+    ledger_census "$path"
+}
+
+# ---- THE MEMBER WALLS: one table grammar, one reader, one writer ------------
+#
+# WHAT IT REPLACED. Two tables of the same thing — every gate member's wall, in
+# seconds — in two files with one machine each: `scripts/gate_member_durations.json`
+# (the Mac's, written by `--store-durations`) and `.ci.json` beside it (CI's,
+# harvested by the fold). The always-on derivation read the Mac file alone, so
+# fifteen members measured only in CI could never be selected as cheap — and a
+# product's fold wrote CI's walls into a template-owned path, which the
+# divergence census then had to call a divergence.
+#
+# ONE GRAMMAR, A MACHINE COLUMN PER ROW:
+#
+#   { "schema": "member-walls/2",
+#     "measured_at": { "<machine>": "<what was measured>", … },
+#     "members": { "<member>": { "<machine>": <seconds>, … }, … } }
+#
+# TWO HOMES, ONE READER: `scripts/gate_member_durations.json` is the TEMPLATE's
+# table — every machine the template itself measured; a product's own CI rows
+# live in its DRAWER, `scripts/local/gate_member_durations.ci.json`, the one
+# path a product's fold may write without diverging. `gate_member_walls_view`
+# merges the two by (member, machine), the drawer winning, and it is the one
+# reader: every consumer reads the VIEW it prints, one machine's walls in the
+# single-machine shape the gate's own parser has always read.
+#
+# THE MACHINES: `darwin` (this laptop), `ubuntu-latest` (a CI runner — the label
+# the fold harvests), `box` (a verifier box, `GATE_BOX_MARKER`). A view for one
+# machine FALLS BACK, member by member, to the next machine that measured it
+# (box → ubuntu-latest → darwin; darwin → ubuntu-latest; ubuntu-latest →
+# darwin), so a member one machine never measured is still priced — on a box,
+# by the CI runner, the nearest machine that did. `only` turns the fallback off
+# (the selftest partition asks for CI's walls and nothing else).
+#
+# A TABLE IN THE OLD SINGLE-MACHINE SHAPE IS READ AS ONE COLUMN, named by its
+# own `machine` field (a `Darwin …` label is `darwin`), so a home written
+# before this grammar is a table and not a refusal.
+#
+# WHAT IT DOES NOT COVER: whether a fallback price is representative (a CI
+# runner's wall is not a box's); a home that is not JSON at all (read as no
+# table, and the view says so on stderr).
+GATE_MEMBER_WALLS_TEMPLATE=scripts/gate_member_durations.json
+GATE_MEMBER_WALLS_DRAWER=scripts/local/gate_member_durations.ci.json
+
+# gate_member_walls_view <machine> [only] [<home>…] — one machine's walls, in
+# the single-machine shape (`measured_at`, `machine`, `members: {name: secs}`),
+# on stdout. Exit 0 with a table · 1 no home holds a wall for that machine.
+# The homes default to the template's table then the drawer; later wins.
+# road: member_walls — the one reader of the one member-walls table (a machine column per member; the template's table and a product's drawer merged by machine) · example: quality/tests/test_ci_derive.py::test_a_products_ci_walls_in_the_drawer_join_the_one_view
+gate_member_walls_view() {
+    local machine=${1:-} only=${2:-}
+    shift 2 2>/dev/null || shift $#
+    [ "$#" -gt 0 ] || set -- "$GATE_MEMBER_WALLS_TEMPLATE" "$GATE_MEMBER_WALLS_DRAWER"
+    python3 - "$machine" "$only" "$@" <<'PY'
+import json, sys
+machine, only, homes = sys.argv[1], sys.argv[2], sys.argv[3:]
+order = {"box": ["box", "ubuntu-latest", "darwin"], "darwin": ["darwin", "ubuntu-latest"],
+         "ubuntu-latest": ["ubuntu-latest", "darwin"]}.get(machine, [machine])
+if only == "only":
+    order = [machine]
+def column(label):
+    label = str(label or "")
+    return "darwin" if label.startswith("Darwin") else label
+walls, at = {}, {}
+for home in homes:
+    try:
+        doc = json.load(open(home))
+    except FileNotFoundError:
+        continue
+    except (OSError, ValueError) as e:
+        print(f"note: the walls table {home} would not read ({e}) — it adds nothing", file=sys.stderr)
+        continue
+    members = doc.get("members") or {}
+    if isinstance(doc.get("measured_at"), dict):
+        for m, v in doc["measured_at"].items():
+            at[m] = v
+        for name, row in members.items():
+            if isinstance(row, dict):
+                for m, v in row.items():
+                    walls.setdefault(name, {})[m] = v
+    else:
+        m = column(doc.get("machine"))
+        at[m] = doc.get("measured_at", "")
+        for name, v in members.items():
+            walls.setdefault(name, {})[m] = v
+out = {}
+for name in sorted(walls):
+    for m in order:
+        if m in walls[name]:
+            out[name] = walls[name][m]
+            break
+if not out:
+    sys.exit(1)
+basis = next((at[m] for m in order if m in at), "")
+lines = ["{", f'  "measured_at": "{basis}",', f'  "machine": "{machine}",', '  "members": {']
+names = sorted(out)
+for i, name in enumerate(names):
+    lines.append(f'    "{name}": {int(out[name])}' + ("," if i < len(names) - 1 else ""))
+lines += ["  }", "}"]
+print("\n".join(lines))
+PY
+}
+
+# gate_member_walls_label <path> — a walls path as a reader prints it: a view file as its table and column.
+# entry: quality/tests/test_legs_always_on.py's shell side — the frozen check.sh (shell_gate.SHELL_AT) calls it.
+gate_member_walls_label() {
+    local p=${1:-} b m
+    b=${p##*/}
+    case "$b" in
+    djb-member-walls-*.json)
+        m=${b#djb-member-walls-}
+        m=${m#*-}
+        m=${m%.json}
+        m=${m%-only}
+        printf '%s (the %s column, merged with any drawer)\n' "$GATE_MEMBER_WALLS_TEMPLATE" "$m"
+        ;;
+    *) printf '%s\n' "$p" ;;
+    esac
+}
+
+# gate_member_walls_write <home> <machine> <measured_at> — the one writer:
+# `<member>\t<seconds>` rows on stdin become <machine>'s column of <home>,
+# every other machine's column kept; a home in the old single-machine shape is
+# rewritten in this grammar. Sorted, one member per line, so two measurements
+# diff line by line. Exit 0 written · 1 no rows, or the home could not be
+# written (the old bytes stand: written beside it and moved into place).
+gate_member_walls_write() {
+    local home=$1 machine=$2 at=$3 rows tmp
+    rows=$(cat) || return 1
+    [ -n "$rows" ] || return 1
+    tmp="${home}.write.$$"
+    mkdir -p "$(dirname "$home")" || return 1
+    printf '%s\n' "$rows" >"${tmp}.rows" || return 1
+    if ! python3 - "$home" "$machine" "$at" "$tmp" "${tmp}.rows" <<'PY'; then
+import json, sys
+home, machine, at, tmp, rowsfile = sys.argv[1:6]
+def column(label):
+    label = str(label or "")
+    return "darwin" if label.startswith("Darwin") else label
+walls, ats = {}, {}
+try:
+    doc = json.load(open(home))
+except FileNotFoundError:
+    doc = {}
+members = doc.get("members") or {}
+if isinstance(doc.get("measured_at"), dict):
+    ats.update(doc["measured_at"])
+    for name, row in members.items():
+        for m, v in (row or {}).items():
+            walls.setdefault(name, {})[m] = v
+elif members:
+    m = column(doc.get("machine"))
+    ats[m] = doc.get("measured_at", "")
+    for name, v in members.items():
+        walls.setdefault(name, {})[m] = v
+for row in walls.values():
+    row.pop(machine, None)
+for line in open(rowsfile).read().splitlines():
+    name, _, secs = line.partition("\t")
+    if name and secs.strip().isdigit():
+        walls.setdefault(name, {})[machine] = int(secs)
+walls = {n: r for n, r in walls.items() if r}
+ats[machine] = at
+out = ["{", '  "schema": "member-walls/2",', '  "measured_at": {']
+keys = sorted(ats)
+out += [f'    "{k}": "{ats[k]}"' + ("," if i < len(keys) - 1 else "") for i, k in enumerate(keys)]
+out += ["  },", '  "members": {']
+names = sorted(walls)
+for i, n in enumerate(names):
+    cols = ", ".join(f'"{m}": {walls[n][m]}' for m in sorted(walls[n]))
+    out.append(f'    "{n}": {{{cols}}}' + ("," if i < len(names) - 1 else ""))
+out += ["  }", "}"]
+open(tmp, "w").write("\n".join(out) + "\n")
+PY
+        rm -f "$tmp" "${tmp}.rows"
+        return 1
+    fi
+    rm -f "${tmp}.rows"
+    mv -f "$tmp" "$home" || {
+        rm -f "$tmp"
+        return 1
+    }
+}
 
 # ---- the tracked paths a leg DERIVES ----------------------------------------
 #
@@ -216,6 +755,12 @@ GATE_TREE_DECL_END='<<< derived-tree-paths <<<'
 #: never a void.
 GATE_TREE_DECL_SOURCES='scripts/*.sh quality/*.py frontend/scripts/*.sh scripts/local/*.sh scripts/local/*/*.sh'
 
+# The product's R0 drawer is outside every verdict's key: product-owned, never
+# shipped (docs/product/build-contract.md:263), and read by no leg.
+# >>> derived-tree-paths >>>
+# docs/product/local — the product's own drawer, product-owned and never shipped
+# <<< derived-tree-paths <<<
+
 # gate__derived_tree_paths [root] — the declared derived paths, repository
 # relative, one per line, sorted and unique, on stdout.
 #
@@ -242,7 +787,7 @@ GATE_TREE_DECL_SOURCES='scripts/*.sh quality/*.py frontend/scripts/*.sh scripts/
 # status would let one misplaced line stop every gate on the box.
 #
 # THE SAME COMMENT-LINE TEST THE READER APPLIES, and that is what keeps the
-# drives out of it: `scripts/tests/test_loop_ledger.sh` writes the sentinel
+# drives out of it: `quality/tests/test_ledger.py` writes the sentinel
 # inside `echo` arguments when it plants a declaration, and an `echo` line is not
 # a comment line. A sweep that matched the bare string would report this
 # repository's own drive as a stray declaration on every single run.
@@ -318,6 +863,10 @@ gate__derived_tree_paths() {
             *[!A-Za-z0-9._/-]*) ;;
             *)
                 tracked=$(git -C "$dir" ls-files -- "$body" 2>/dev/null | awk 'END {print NR + 0}') || tracked=0
+                # The R0 drawer (build-contract.md:263) may be empty: subtracting it changes nothing.
+                case "$body/" in
+                docs/product/local/*) tracked=1 ;;
+                esac
                 if [ "${tracked:-0}" -gt 0 ]; then
                     paths="${paths}${body}
 "
@@ -389,11 +938,10 @@ EOF
 # spelled in this paragraph: a prose mention would be counted like code and
 # would break the census it is describing.
 #
-# gate__subtract_and_write <index-file> — the declared derived paths removed
-# from that index, and the resulting tree on stdout. Exit 1 if nothing could be
-# written. The index is the caller's to make and the caller's to remove.
+# gate__subtract_and_write <index-file> [<paths>] — the declared derived paths, and any newline-separated <paths>, removed from that index; the resulting tree on stdout.
+# Exit 1 if nothing could be written. The index is the caller's to make and the caller's to remove.
 gate__subtract_and_write() {
-    local idx="$1" root paths p tree
+    local idx="$1" more="${2:-}" root paths p tree
     # `--cached` never touches the working tree — a declared artefact stays on
     # disk, tracked, committed and reviewed; only this throwaway index forgets
     # it. `-f` because a declared path is by definition one whose disk bytes
@@ -401,6 +949,8 @@ gate__subtract_and_write() {
     # it. A refusal from the reader leaves `paths` empty and excludes nothing.
     root=$(git rev-parse --show-toplevel 2>/dev/null) || root=.
     paths=$(gate__derived_tree_paths "$root") || paths=""
+    paths="${paths}${more:+
+${more}}"
     while IFS= read -r p; do
         [ -n "$p" ] || continue
         GIT_INDEX_FILE="$idx" git -C "$root" rm -r -f --cached -q --ignore-unmatch -- "$p" \
@@ -413,28 +963,53 @@ EOF
     printf '%s\n' "$tree"
 }
 
-# The content address of the working state. GIT_INDEX_FILE points `git add` at
-# a scratch index, so the real index is untouched; `git add -A` honours
-# .gitignore, which makes the key "the content the gate can read" rather than
-# "the content plus every build artefact" — minus the paths a leg DECLARES it
-# derives, which makes it "the content the gate can read AND something it
-# measures reads back".
+# The content address of the working state. GIT_INDEX_FILE points the staging
+# at a scratch index, so the real index is untouched; the untracked listing
+# honours .gitignore, which makes the key "the content the gate can read"
+# rather than "the content plus every build artefact" — minus the paths a leg
+# DECLARES it derives, which makes it "the content the gate can read AND
+# something it measures reads back".
 gate_measured_tree() {
-    local idx tree
+    local idx tree base=HEAD
     idx=$(mktemp "${TMPDIR:-/tmp}/djb-gate-index.XXXXXX") || return 1
     rm -f "$idx" # git wants to create it, not inherit an empty one
-    if ! GIT_INDEX_FILE="$idx" git read-tree HEAD >/dev/null 2>&1; then
+    # No commit yet: the empty tree is the base, and the staging below adds every path.
+    git rev-parse -q --verify HEAD >/dev/null 2>&1 || ! git symbolic-ref -q HEAD >/dev/null 2>&1 || base=--empty
+    if ! GIT_INDEX_FILE="$idx" git read-tree "$base" >/dev/null 2>&1; then
         rm -f "$idx"
         return 1
     fi
-    if ! GIT_INDEX_FILE="$idx" git add -A >/dev/null 2>&1; then
-        rm -f "$idx"
+    gate__stage_all "$idx" || {
+        rm -f "$idx" "${idx}.others" "${idx}.stdin"
         return 1
-    fi
+    }
+    rm -f "${idx}.others" "${idx}.stdin"
     tree=$(gate__subtract_and_write "$idx") || tree=""
     rm -f "$idx"
     [ -n "$tree" ] || return 1
     printf '%s\n' "$tree"
+}
+
+# gate__stage_all <index-file> — `git add -A`'s index, staged so an untracked path unlinked after its listing is skipped.
+# Why not `add -A`: it lists, then dies on the lstat of a path a sibling unlinked between (`quality/tree.py::_stage_all`).
+# Invariant: the tree `add -A` writes; an untracked repo listed `sub/` is staged `sub`, a gitlink. Exit 1 names the step on stderr.
+gate__stage_all() {
+    local idx=$1 p
+    if ! GIT_INDEX_FILE="$idx" git add -u >/dev/null 2>&1; then
+        echo "  note: gate_measured_tree: add -u failed" >&2
+        return 1
+    fi
+    if ! GIT_INDEX_FILE="$idx" git ls-files -o --exclude-standard -z >"${idx}.others" 2>/dev/null; then
+        echo "  note: gate_measured_tree: ls-files -o --exclude-standard failed" >&2
+        return 1
+    fi
+    while IFS= read -r -d '' p; do
+        [ -n "$p" ] && printf '%s\0' "${p%/}"
+    done <"${idx}.others" >"${idx}.stdin"
+    if ! GIT_INDEX_FILE="$idx" git update-index --add --remove -z --stdin <"${idx}.stdin" >/dev/null 2>&1; then
+        echo "  note: gate_measured_tree: update-index --add --remove failed" >&2
+        return 1
+    fi
 }
 
 # ---- WHAT THE RUN ITSELF WROTE INTO THE TREE IT IS ABOUT TO VOUCH FOR ---------
@@ -582,7 +1157,7 @@ EOF
 # `git add -A` puts into the measured tree), one per line, sorted and unique.
 loop_tree__dirty_set() {
     local changed untracked
-    changed=$(git diff --name-only --no-renames HEAD -- 2>/dev/null) || return 1
+    changed=$(changed_between HEAD - 2>/dev/null) || return 1
     untracked=$(git ls-files --others --exclude-standard 2>/dev/null) || return 1
     printf '%s\n%s\n' "$changed" "$untracked" | awk 'NF' | LC_ALL=C sort -u
 }
@@ -723,8 +1298,9 @@ loop_tree_remember() {
 }
 
 # loop_ledger_tree_row <tree> [box] → the most recent loop row measured at
-# <tree> (`tree=<tree>`), exit 0; 1 when none (or no ledger). With `box`, only a
-# row a verifier box banked and `verifier_box.sh` harvested home (` box=<id>`).
+# <tree> (`tree=<tree>`) or at the same loop key tree (`key-tree=`, `loop_key_tree`), exit 0; 1 when none (or no ledger).
+# With `box`, only a row a verifier box banked and `verifier_box.sh` harvested home (` box=<id>`).
+# Invariant: a census that could not look narrows the match to `tree=` alone, and says so — never a hit on bytes nobody measured.
 #
 # A CONSULT BY TREE, AND WHO MAY ASK IT. The loop's own consult is by KEY, and
 # the key carries the environment the run measured in — a verifier box's image —
@@ -734,25 +1310,29 @@ loop_tree_remember() {
 # exact bytes, and the merge ritual asks whether the branch's head was measured
 # at all. Both print the row they found; neither writes one.
 loop_ledger_tree_row() {
-    local tree=$1 want=${2:-} path
+    local DJB_GATE_LEDGER="${DJB_GATE_LEDGER:-}"
+    loop_ledger_override
+    local tree=$1 want=${2:-} line ktree
     [ -n "$tree" ] || return 1
-    path=$(loop_ledger_path) || return 1
-    [ -r "$path" ] || return 1
-    awk -v t="tree=${tree}" -v want="$want" '
-        $3 == "loop" {
-            hit = 0
-            for (i = 5; i <= NF; i++) if ($i == t) hit = 1
+    ktree=$(loop_key_tree "$tree") || {
+        echo "  note: the loop key's prose census could not look — matching tree=${tree} alone" >&2
+        ktree=""
+    }
+    line=$(ledger_rows loop | awk -v t="tree=${tree}" -v kt="${ktree}" -v want="$want" '
+        {
+            hit = 0; rt = ""; rk = ""
+            for (i = 5; i <= NF; i++) {
+                if ($i == t) hit = 1
+                if (substr($i, 1, 5) == "tree=") rt = substr($i, 6)
+                if (substr($i, 1, 9) == "key-tree=") rk = substr($i, 10)
+            }
+            if (!hit && kt != "" && (rk == kt || (rk == "" && rt == kt))) hit = 1
             if (hit && (want == "" || index($0, " box="))) last = $0
         }
-        END { if (last == "") exit 1; print last }
-    ' "$path"
-}
-
-# loop_row_box <row> — the ` box=<id>` value of a harvested row, or nothing.
-loop_row_box() {
-    awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^box=/) { sub(/^box=/, "", $i); v = $i } } END { if (v != "") print v }' <<EOF
-$1
-EOF
+        END { if (last != "") print last }
+    ') || return 1
+    [ -n "$line" ] || return 1
+    printf '%s\n' "$line"
 }
 
 # gate_measured_tree_of <tree-ish> — THE SAME KEY, ASKED OF A REF.
@@ -782,6 +1362,12 @@ EOF
 # a ref whose declarations genuinely differ would be measured slightly wrong,
 # and the belt is that a wrong key is a MISS — a re-measure — and never a false
 # hit on a tree nobody looked at.
+#
+# AND IT IS THE ROAD: every reader that says "verdict" or "banked" about a tree
+# asks this (or `gate_measured_tree`, its working-tree form, one subtraction
+# site between them) — the pre-push wall, the merge's consult, the box wrapper's
+# narration, the docs-only road, the loop's reuse.
+# road: measured_tree — the one reading of "the tree a verdict is about": a ref's committed bytes minus every declared derived path (`gate_measured_tree` asks it of the working tree through the same subtraction) · example: quality/tests/test_fold.py::test_the_folded_tree_is_the_tree_a_verdict_keys_on
 gate_measured_tree_of() {
     local rev="${1:-HEAD}" idx tree
     idx=$(mktemp "${TMPDIR:-/tmp}/djb-gate-index.XXXXXX") || return 1
@@ -805,19 +1391,135 @@ gate_measured_tree_of() {
 # arrives with one, and a reason that is not written down is a reason that
 # existed for the length of one terminal session.
 #
-# So the sanction rides into the verdict row beside the caller. It is free text
-# by construction — `<rung-id>: <reason>` is a shape, not a vocabulary, and
-# whether the reason was a good one is a PM's read rather than a check. It goes
-# LAST on the line, after `caller=`, for two reasons: it is the only field that
-# can contain spaces, and appending keeps every pre-existing line parsing
-# exactly as it did (`gate_ledger_lookup` matches `" <tree> full "` and `^v1 `;
-# `gate_run_lookup` reads field 4). The schema tag stays `v1` because nothing
-# that could already parse a line stopped being able to.
+# So the sanction rides into the verdict row beside the caller — and it has ONE
+# WRITER, `gate_ledger_record` (through `gate_sanction_field`), where four
+# callers used to type their own phrase into the row: `check.sh` its header
+# sentence, `pm_push.sh` three of its own. The population that produced was
+# eight first words for five kinds (`sanction=the` was "the push wall (…)" cut
+# at its first space) and a shape check that passed a one-letter reason.
 #
-#: Set by `scripts/check.sh` before it records: one phrase naming what made this
-#: full run legal. Empty means nothing said, which is what every line written
+# THE FIELD IS `sanction=<kind>:<who>:<reason>`, AN ENUM AND TWO VALUES:
+#
+#   kind    GATE_SANCTION_KINDS, and the writer refuses anything else — a kind
+#           the enum does not hold is a caller this file has not met, and its
+#           row is refused rather than banked under a word nobody can group by.
+#   who     who is asking: the typed sanction's id, the program that banked.
+#   reason  why. For `typed` — the one kind a person writes — at least
+#           GATE_SANCTION_MIN_REASON characters: the valves' floor, the same
+#           number (`quality/reason_floor.py`'s MIN_REASON, held equal to this
+#           one by `quality/tests/test_ledger.py`).
+#
+# `who` and `reason` are PERCENT-ENCODED on the row (`%`, tab and space — the
+# grammar's one escape, `GATE_LEDGER_AWK_LIB`'s `enc`), so the field is one
+# token like every other and a reader decodes it (`gate_sanction_decode`).
+#
+#: The kinds a sanction may name. `ci` is a CI runner's own full run (exempt at
+#: the valve, `scripts/check.sh`); the rest are the four rituals and the person.
+GATE_SANCTION_KINDS="push-wall ci-verdict docs-only bank typed ci"
+#: The typed reason's floor, in characters.
+GATE_SANCTION_MIN_REASON=12
+
+#: The run's sanction, RAW: `<kind>:<who>:<reason>`, set by `gate_sanction_set`
+#: and nothing else. Empty means nothing said, which is what every line written
 #: before the valve existed says.
 GATE_RUN_SANCTION=""
+
+# gate_sanction_set <kind> <who> <reason> — set this run's sanction. Exit 0 set
+# · 2 refused, with the `!!` sentence on stderr and GATE_RUN_SANCTION untouched.
+gate_sanction_set() {
+    local kind=${1:-} who=${2:-} why=${3:-}
+    case " $GATE_SANCTION_KINDS " in
+    *" $kind "*) ;;
+    *)
+        echo "!! a sanction of kind '${kind}' is not one of: ${GATE_SANCTION_KINDS}." >&2
+        echo "   A kind the ledger does not know is a row nobody can group by. Nothing was judged." >&2
+        return 2
+        ;;
+    esac
+    case "$who" in
+    '' | *:* | *$'\n'*)
+        echo "!! a sanction's who ('${who}') is empty or holds a colon or a newline — it is the" >&2
+        echo "   field the reason is split from. Nothing was judged." >&2
+        return 2
+        ;;
+    esac
+    case "$why" in
+    *$'\n'*)
+        echo "!! a sanction's reason holds a newline — one row is one line. Nothing was judged." >&2
+        return 2
+        ;;
+    esac
+    if [ "$kind" = "typed" ] && [ "${#why}" -lt "$GATE_SANCTION_MIN_REASON" ]; then
+        echo "!! the sanction's reason is ${#why} character(s): '${why}'." >&2
+        echo "   A typed sanction's reason is at least ${GATE_SANCTION_MIN_REASON} characters — the valves' floor" >&2
+        echo "   (quality/reason_floor.py MIN_REASON): long enough to force a clause. Nothing was judged." >&2
+        return 2
+    fi
+    [ -n "$why" ] || {
+        echo "!! a sanction of kind '${kind}' carries no reason. Nothing was judged." >&2
+        return 2
+    }
+    GATE_RUN_SANCTION="${kind}:${who}:${why}"
+}
+
+# gate_sanction_typed <value> — a person's `DJB_GATE_SANCTION="<who>: <reason>"`
+# set as this run's sanction, or refused (exit 2, the sentence naming what it
+# wanted and the floor). The one reader of the typed shape.
+gate_sanction_typed() {
+    local v=${1:-}
+    if ! [[ $v =~ ^[^:]+:\ .+$ ]]; then
+        echo "!! DJB_GATE_SANCTION is set but is not a sanction." >&2
+        echo "   got:  ${v}" >&2
+        echo "   want: DJB_GATE_SANCTION=\"<rung-id>: <reason>\"" >&2
+        echo "         e.g. DJB_GATE_SANCTION=\"gate-rung: quality/** rung — the canary self-test is the point\"" >&2
+        echo "   A sanction that does not name who is asking and why is not a reason, and" >&2
+        echo "   a full gate is not run on one. Nothing was judged." >&2
+        return 2
+    fi
+    gate_sanction_set typed "${v%%:*}" "${v#*: }"
+}
+
+# gate_sanction_field — the row's ` sanction=<kind>:<who>:<reason>` from
+# GATE_RUN_SANCTION, encoded, on stdout (nothing when it is empty). Exit 1 —
+# no field, a note on stderr — when it is set and is not a sanction this file
+# set: `gate_ledger_record` then writes no row.
+gate_sanction_field() {
+    local raw=${GATE_RUN_SANCTION:-} kind rest who why
+    [ -n "$raw" ] || return 0
+    kind=${raw%%:*}
+    rest=${raw#*:}
+    who=${rest%%:*}
+    why=${rest#*:}
+    case " $GATE_SANCTION_KINDS " in
+    *" $kind "*) ;;
+    *)
+        echo "note: GATE_RUN_SANCTION='${raw}' is not <kind>:<who>:<reason> with a kind of: ${GATE_SANCTION_KINDS}" >&2
+        echo "  — set it through gate_sanction_set. NO ROW was written." >&2
+        return 1
+        ;;
+    esac
+    if [ "$rest" = "$raw" ] || [ "$why" = "$rest" ] || [ -z "$who" ]; then
+        echo "note: GATE_RUN_SANCTION='${raw}' has no who and reason — set it through gate_sanction_set. NO ROW was written." >&2
+        return 1
+    fi
+    printf ' sanction=%s:%s:%s' "$kind" "$(gate_ledger_enc "$who")" "$(gate_ledger_enc "$why")"
+}
+
+# gate_ledger_enc <value> — the grammar's one escape: `%`, tab and space.
+gate_ledger_enc() {
+    local v=${1//%/%25}
+    v=${v//$'\t'/%09}
+    printf '%s' "${v// /%20}"
+}
+
+# gate_sanction_decode <field value> — `<kind>:<who>:<reason>` with the escape
+# undone, on stdout.
+gate_sanction_decode() {
+    local v=${1:-}
+    v=${v//%20/ }
+    v=${v//%09/$'\t'}
+    printf '%s\n' "${v//%25/%}"
+}
 
 # ---- what the run COST, recorded beside what it judged ------------------
 #
@@ -942,131 +1644,65 @@ gate_ledger_proof_field() {
     printf ' leak-proof=%s' "$proof"
 }
 
-# gate_ledger_record <tree> <legs-csv> — one line, appended, schema first.
+# gate_ledger_record <tree> <legs-csv> — one full row, through `ledger_append`.
+#
+# THE FIELDS, IN ORDER: the leg set (the row's one positional subject),
+# `caller=`, `sanction=` (encoded — `gate_sanction_field`), `waited=`, `took=`,
+# `wall=` (this run's wall-clock seconds, when a full run armed the run log —
+# the successor of the retired `djb-gate-last-full`), and `leak-proof=` LAST,
+# because its value is two tokens its reader takes to the end of the line.
+# road: bank — the one writer of a verdict row and of its `sanction=` field · example: quality/tests/test_ledger.py::test_the_leak_proof_field_is_appended_last_or_the_row_is_refused
 gate_ledger_record() {
-    local tree=$1 legs=$2 path sanction proof
-    path=$(gate_ledger_path) || return 1
-    # Newlines would make one row into two, and a row nothing can parse is worse
-    # than a row that says nothing. check.sh's shape check already refuses them
-    # at the door; this is the ledger refusing to be the place it matters.
-    sanction=$(printf '%s' "${GATE_RUN_SANCTION:-}" | tr '\n' ' ')
-    # THE PROOF IS RESOLVED BEFORE A BYTE IS WRITTEN, and its refusal is the
-    # whole row's. Dropping just the field would bank a row that reads as
-    # "two passes, nothing to prove" — see the field's own argument above.
+    local tree=$1 legs=${2:-} sanction proof wall="" f
+    # THE SANCTION AND THE PROOF ARE RESOLVED BEFORE A BYTE IS WRITTEN, and
+    # either refusal is the whole row's. Dropping just the field would bank a
+    # row that reads as "nothing said" / "two passes, nothing to prove".
+    sanction=$(gate_sanction_field) || return 1
     proof=$(gate_ledger_proof_field) || return 1
-    if [ -n "$sanction" ]; then
-        printf '%s %s full %s %s caller=%s sanction=%s%s%s\n' \
-            "$GATE_LEDGER_SCHEMA" "$tree" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$legs" \
-            "$(gate_caller)" "$sanction" "$(gate_ledger_cost_fields)" "$proof" >>"$path"
-    else
-        printf '%s %s full %s %s caller=%s%s%s\n' \
-            "$GATE_LEDGER_SCHEMA" "$tree" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$legs" \
-            "$(gate_caller)" "$(gate_ledger_cost_fields)" "$proof" >>"$path"
+    if [ -n "${GATE_RUN_ARMED:-}" ] && [ -n "${GATE_RUN_T0:-}" ]; then
+        wall=" wall=$(($(date +%s) - GATE_RUN_T0))"
     fi
+    # The cost and proof fields are composed as ` name=value` strings by their
+    # own functions; split back into arguments for the one writer — on spaces
+    # only and with globbing off, because an encoded reason may hold a `*`.
+    local -a fields
+    read -r -a fields <<<"${legs:--} caller=$(gate_caller)${sanction}$(gate_ledger_cost_fields)${wall}${proof}"
+    ledger_append full "$tree" "${fields[@]}"
 }
 
-# gate_full_legs — the member set a FULL run covers, on stdout, comma-joined.
-# EMPTY when this directory has no gate to read one from — which is a checkout
-# with no `scripts/check.sh`, not a broken read: a place with no gate makes no
-# claim about a leg set.
-#
-# TWO READERS, AND THE PRODUCT-LEG DRAWER IS WHAT CHOOSES BETWEEN THEM.
-#
-#   NO DRAWER — `check.sh`'s own `FULL_LEGS=` assignment, exactly as this
-#   function has always read it. On such a tree the assignment IS the leg set:
-#   the listing would add only the drives the selftest leg walks, which a full
-#   run does walk and which the row already covers either way, and reading it
-#   would mean running the gate as a subprocess from the pre-push hook's
-#   consult — whose whole point is that honouring a banked row costs a lookup
-#   and not a gate. So the answer, the row and the cost are byte-identical to
-#   the tree that had never heard of a drawer.
-#
-#   A DRAWER — `./scripts/check.sh --list-legs`, column 4 flattened. For that
-#   tree the assignment is WRONG: a product declares its own legs in
-#   `scripts/local/legs/` and `check.sh` grows `FULL_LEGS` at runtime with one
-#   `local:<name>` per declared leg, so a reader of the text would bank and
-#   compare a set that silently omitted every one of them — the row would
-#   vouch for legs the bank never named. The listing is the gate saying what
-#   its units are made of, it is what `pm_push.sh --bank --on-boxes` plans
-#   from, and it is the one answer both sides of the wall then read.
-#
-# THE DRAWER ANSWER IS A SUPERSET OF THE ANNOUNCED LEGS, deliberately: a unit
-# that shards by a registered population names that population in its
-# `composed-of`, so the selftest drives are members there too. A full run walks
-# every one of them, so the row is a stronger and truer claim; and
-# `gate_ledger_lookup` compares by COVER, with both sides built by this one
-# function, so they cannot drift apart.
-
-#: Memoised for the process. The listing costs a whole shell startup of
-#: `check.sh`, and the pre-push hook asks this question once per pushed tree.
+#: Memoised for the process: the listing is a gate startup, and the pre-push
+#: consult asks once per pushed tree.
 GATE_FULL_LEGS_MEMO=""
+
+# gate_full_legs — the member set a FULL run covers, on stdout, comma-joined:
+# a stub gate's literal `FULL_LEGS=` line (`ledger.full_legs` reads the same
+# line), else column 4 of `./scripts/check.sh --list-legs`, flattened, first
+# naming kept. EMPTY when the checkout has no gate or its listing would not
+# answer, and an empty set switches `gate_ledger_lookup`'s leg comparison off.
+# road: leg_registration — a full run's leg set is the gate's `--list-legs` listing, which `ledger.full_legs` equals · example: quality/tests/test_list_legs.py::test_full_legs_equals_the_announced_full_sequence
 gate_full_legs() {
-    local listing rc=0 drawer f tmp
+    local rc=0 tmp literal
     [ -n "$GATE_FULL_LEGS_MEMO" ] && {
         printf '%s' "$GATE_FULL_LEGS_MEMO"
         return 0
     }
     [ -r scripts/check.sh ] || return 0
-    # THE DRAWER DECIDES WHICH READER ANSWERS, AND THAT IS THE WHOLE OF IT.
-    # A tree with no product leg in `scripts/local/legs/` has a leg set that IS
-    # the assignment — the listing would add only the drives the selftest leg
-    # walks, and every one of them is already covered by the row the gate
-    # writes — so the text is read, the answer is byte-identical to what it has
-    # always been, and NO SUBPROCESS RUNS. That last clause is not tidiness:
-    # this function is on the pre-push hook's consult path, whose whole point
-    # is that honouring a banked row costs a lookup and not a gate.
-    #
-    # A tree WITH a drawer pays the listing, because for that tree the text is
-    # wrong: `check.sh` grows `FULL_LEGS` at runtime with one `local:<name>`
-    # per declared leg, and a reader of the assignment would bank and compare a
-    # set that silently omitted every product leg — the row would vouch for
-    # legs the bank never named. The product pays for its own feature.
-    drawer="${DJB_LOCAL_LEGS_DIR:-scripts/local/legs}"
-    if [ -d "$drawer" ]; then
-        for f in "$drawer"/*.sh; do
-            [ -f "$f" ] || continue
-            case "${f##*/}" in _*) continue ;; esac
-            rc=0
-            # IN PROCESS WHEN THE GATE IS THE CALLER, A SUBPROCESS OTHERWISE —
-            # one listing, two doors to it. `check.sh` sources this file and
-            # defines `gate_list_legs` below its own unit table, so by the time
-            # the gate banks a row the function is here and the answer costs
-            # nothing; the pre-push hook and `pm_push.sh` source this file
-            # ALONE, and for them the listing is what the gate prints.
-            if command -v gate_list_legs >/dev/null 2>&1; then
-                listing=$(gate_list_legs 2>/dev/null) || rc=$?
-            else
-                # REDIRECTED TO A FILE AND READ BACK, NEVER CAPTURED. A command
-                # substitution IS a pipe and the gate refuses one outright
-                # (exit 2, "run it bare or redirect to a file") — which is why
-                # this is four lines rather than one, and why `pm_push.sh` and
-                # `ci.yml` spell it the same way.
-                tmp=$(mktemp "${TMPDIR:-/tmp}/djb-gate-legs.XXXXXX") || break
-                ./scripts/check.sh --list-legs >"$tmp" 2>/dev/null || rc=$?
-                listing=$(cat "$tmp")
-                rm -f "$tmp"
-            fi
-            if [ "$rc" = "0" ] && [ -n "$listing" ]; then
-                GATE_FULL_LEGS_MEMO=$(printf '%s\n' "$listing" |
-                    awk -F'\t' 'NF >= 4 { print $4 }' | tr ',' '\n' |
-                    awk 'NF && !($0 in seen) { seen[$0] = 1; printf "%s%s", (n++ ? "," : ""), $0 } END { print "" }')
-            fi
-            break
-        done
-    fi
-    if [ -z "$GATE_FULL_LEGS_MEMO" ]; then
-        # NO DRAWER, OR A LISTING THIS READER COULD NOT SPLIT INTO FOUR COLUMNS
-        # — a stub gate, an older one, a table that has lost its subject. Both
-        # land here rather than on an empty answer, and the difference is
-        # fail-closed against fail-open: an empty answer switches the leg
-        # comparison OFF and honours every row whatever it names.
-        #
-        # READ WHOLE, THEN SLICE. `sed` reads its input to the end, so it never
-        # closes the pipe under its producer; the first match is taken from the
-        # captured text rather than by an early-exiting reader.
-        listing=$(sed -n 's/^FULL_LEGS=//p' scripts/check.sh) || return 0
-        GATE_FULL_LEGS_MEMO="${listing%%$'\n'*}"
-    fi
+    literal=$(sed -n 's/^FULL_LEGS=//p' scripts/check.sh) || return 0
+    literal=${literal%%$'\n'*}
+    case "$literal" in
+    '' | '$('*) ;;
+    *)
+        GATE_FULL_LEGS_MEMO=$literal
+        printf '%s' "$GATE_FULL_LEGS_MEMO"
+        return 0
+        ;;
+    esac
+    # Redirected to a file and read back: the gate refuses a piped stdout, and a command substitution is one.
+    tmp=$(mktemp "${TMPDIR:-/tmp}/djb-gate-legs.XXXXXX") || return 0
+    ./scripts/check.sh --list-legs >"$tmp" 2>/dev/null </dev/null || rc=$?
+    [ "$rc" = "0" ] && GATE_FULL_LEGS_MEMO=$(awk -F'\t' 'NF >= 4 { print $4 }' "$tmp" | tr ',' '\n' |
+        awk 'NF && !($0 in seen) { seen[$0] = 1; printf "%s%s", (n++ ? "," : ""), $0 } END { print "" }')
+    rm -f "$tmp"
     printf '%s' "$GATE_FULL_LEGS_MEMO"
 }
 
@@ -1140,7 +1776,7 @@ GATE_ONEPASS_UNIT=pytest-x2
 # the field to support, so the field is ignored — and ignoring a field without
 # saying so is how the next reader learns it is load-bearing when it is not.
 gate_ledger_lookup() {
-    local tree=$1 path line required leg rowlegs
+    local tree=$1 line required leg rowlegs
     local proof member covered onepass unsanctioned proofgreen proofused
     # TWO GREEN FORMS AND NO THIRD: the acceptance box's whole-suite two-pass
     # run, and a CI run whose record `pm_push.sh --ci-verdict` judged whole,
@@ -1154,10 +1790,7 @@ gate_ledger_lookup() {
     # The one unit ADR gate-1's amendment lets run a single pass, named rather
     # than pattern-matched: the proof is a pytest run and vouches for pytest.
     local onepass_unit=$GATE_ONEPASS_UNIT
-    path=$(gate_ledger_path) || return 1
-    [ -f "$path" ] || return 1
-    line=$(grep -F " $tree full " "$path" | grep "^$GATE_LEDGER_SCHEMA " | tail -1)
-    [ -n "$line" ] || return 1
+    line=$(ledger_last full "$tree") || return 1
     required=$(gate_full_legs)
     if [ -n "$required" ]; then
         # Field 5 of the row, positionally — `<schema> <tree> full <date> <legs>`.
@@ -1309,7 +1942,7 @@ GATE_CI_MAX_AGE=86400
 GATE_CI_SKEW=600
 
 # gate_ci_artifact_name <attempt> — the artifact one attempt of a run publishes.
-gate_ci_artifact_name() { printf '%s-%s\n' "$GATE_CI_ARTIFACT" "$1"; }
+gate_ci_artifact_name() { gate_ledger_cli ci-artifact-name "$1"; }
 
 # gate_ci_epoch <YYYYMMDDTHHMMSSZ> → seconds since the epoch, or exit 1.
 #
@@ -1583,15 +2216,16 @@ gate_ci_listing() {
 #
 # `pm_push.sh --pr` pushes a `pm/*` train branch with NO local verdict: the
 # pull request's CI run is the measurement, and `--ci-verdict` writes the row
-# afterwards. Before the push it appends ONE line here, and the line is
-# deliberately NOT a verdict:
+# afterwards. Before the push it appends ONE row here, of the ledger's one
+# grammar and its own kind, and the row is deliberately NOT a verdict:
 #
-#   intent=ci run=pending tree=<40 hex> commit=<40 hex> branch=<pm/...>
-#     at=<YYYYMMDDTHHMMSSZ> epoch=<n> sanction=<the typed sanction, last>
+#   v1 <tree> intent <stamp> run=pending commit=<40 hex> branch=<pm/...>
+#     at=<YYYYMMDDTHHMMSSZ> epoch=<n> sanction=typed:<who>:<reason>
 #
-# It starts `intent=`, never `v1 `, and carries `tree=<hash>` rather than
-# ` <hash> full `, so `gate_ledger_lookup` (`^v1 ` rows by ` <tree> full `), the
-# docs-only walk and the drive-row readers never take it for anything of theirs.
+# Its KIND is `intent`, so `gate_ledger_lookup` (kind `full`), the docs-only
+# walk and the drive-row readers never take it for anything of theirs. Rows
+# written before the one grammar (`intent=ci …`, untagged) are read in this
+# shape by `ledger_rows` while its tolerance stands.
 #
 # ITS ONE READER IS `scripts/githooks/pre-push`, and the honour is the HOOK's:
 # the hook sees the pushed REFS, so it honours an intent only for a push whose
@@ -1606,29 +2240,36 @@ GATE_INTENT_MAX_AGE="${DJB_GATE_INTENT_MAX_AGE:-900}"
 # gate_ledger_intent_record <tree> <commit> <branch> <sanction> — one line,
 # appended. Exit 1 (nothing written) on any field that would not parse.
 gate_ledger_intent_record() {
-    local tree=$1 commit=$2 branch=$3 sanction path now
-    sanction=$(printf '%s' "${4:-}" | tr '\n' ' ')
+    local tree=$1 commit=$2 branch=$3 now saved=${GATE_RUN_SANCTION:-} field rc=0
     [[ $tree =~ ^[0-9a-f]{40}$ ]] && [[ $commit =~ ^[0-9a-f]{40}$ ]] || return 1
     case "$branch" in pm/?*) ;; *) return 1 ;; esac
     case "$branch" in *[[:space:]]*) return 1 ;; esac
-    [[ $sanction =~ ^[^:]+:\ .+$ ]] || return 1
-    path=$(gate_ledger_path) || return 1
+    # THE SANCTION GOES THROUGH THE ONE WRITER, as the full row's does: the
+    # typed shape and its floor (`gate_sanction_typed`), then the encoded field.
+    gate_sanction_typed "${4:-}" 2>/dev/null || {
+        GATE_RUN_SANCTION=$saved
+        return 1
+    }
+    field=$(gate_sanction_field) || rc=1
+    GATE_RUN_SANCTION=$saved
+    [ "$rc" = 0 ] || return 1
     now=$(date -u +%s)
-    printf 'intent=ci run=pending tree=%s commit=%s branch=%s at=%s epoch=%s sanction=%s\n' \
-        "$tree" "$commit" "$branch" "$(gate_ci_stamp_of "$now")" "$now" "$sanction" >>"$path"
+    ledger_append intent "$tree" run=pending "commit=${commit}" "branch=${branch}" \
+        "at=$(gate_ci_stamp_of "$now")" "epoch=${now}" "${field# }"
 }
 
 # gate_ledger_intent_lookup <tree> → the newest intent row for this tree on
 # stdout, exit 0, when it is within the window; exit 1 otherwise, with a note
 # on stderr when a row exists and is outside it.
 gate_ledger_intent_lookup() {
-    local tree=$1 path line epoch now age
-    path=$(gate_ledger_path 2>/dev/null) || return 1
-    [ -f "$path" ] || return 1
-    line=$(grep -F " tree=${tree} " "$path" | grep '^intent=ci run=pending ' | tail -1) || true
-    [ -n "$line" ] || return 1
-    epoch=$(printf '%s\n' "$line" | sed -n 's/.* epoch=\([0-9][0-9]*\) .*/\1/p')
-    [ -n "$epoch" ] || return 1
+    local tree=$1 line epoch now age
+    line=$(ledger_last intent "$tree" 2>/dev/null) || return 1
+    case "$line" in
+    *" run=pending "*) ;;
+    *) return 1 ;;
+    esac
+    epoch=$(gate_docs_only_row_field "$line" epoch)
+    case "$epoch" in '' | *[!0-9]*) return 1 ;; esac
     now=$(date -u +%s)
     age=$((now - epoch))
     if [ "$age" -lt "-${GATE_CI_SKEW}" ] || [ "$age" -gt "$GATE_INTENT_MAX_AGE" ]; then
@@ -1747,85 +2388,9 @@ gate_ci_consult() {
 
 # ---- the NIGHTLY LEAK PROOF, read ----------------------------------------------
 #
-# gate_nightly_read [<artifact dir>] — the nightly workflow's `leak_proof.txt`:
-#
-#   schema=leak-proof/1 at=<YYYYMMDDTHHMMSSZ> commit=<40 hex> tree=<40 hex>
-#     seed=<n> pass1=<…> pass2=<…> map=<…> rc=<n> run=<id> attempt=<n>
-#     where=nightly
-#
-# read into the one form a bank row carries, on stdout, exit 0:
-#
-#   nightly:<at> tree=<12 hex> rc=<n>    a nightly no older than 24 h (any rc —
-#                                        report-only; the teeth are at prod)
-#   nightly:stale:<at>                   one older than GATE_CI_MAX_AGE
-#   nightly:none                         no artifact (an empty argument)
-#
-# UNREADABLE IS NOT NONE: a directory that was handed in and holds no record,
-# or a record that will not parse, or a stamp in the future, is exit 2 with the
-# reason on stderr — the caller asked about an artifact that exists, and
-# "there was none" would be a lie about it.
-gate_nightly_read() {
-    local dir=${1:-} rec line tok name value now age epoch
-    local -a toks
-    local schema="" at="" commit="" tree="" seed="" pass1="" pass2="" map="" rc="" run="" attempt="" where=""
-    if [ -z "$dir" ]; then
-        echo "nightly:none"
-        return 0
-    fi
-    rec="${dir}/leak_proof.txt"
-    if [ ! -d "$dir" ]; then
-        echo "nightly: unreadable — ${dir} is not a directory" >&2
-        return 2
-    fi
-    if [ ! -s "$rec" ]; then
-        echo "nightly: unreadable — ${dir} holds no leak_proof.txt (or an empty one)" >&2
-        return 2
-    fi
-    line=$(awk 'NF { print; exit }' "$rec")
-    # AN ARRAY, NEVER AN UNQUOTED WORD LIST: a token carrying `*` would glob.
-    read -r -a toks <<<"$line"
-    for tok in ${toks[@]+"${toks[@]}"}; do
-        case "$tok" in *=*) ;; *)
-            echo "nightly: unreadable — '${tok}' is not name=value: ${line}" >&2
-            return 2
-            ;;
-        esac
-        name=${tok%%=*}
-        value=${tok#*=}
-        case "$name" in
-        schema | at | commit | tree | seed | pass1 | pass2 | map | rc | run | attempt | where)
-            if [ -n "${!name}" ]; then
-                echo "nightly: unreadable — '${name}=' appears twice: ${line}" >&2
-                return 2
-            fi
-            printf -v "$name" '%s' "$value"
-            ;;
-        *)
-            echo "nightly: unreadable — '${name}=' is not a field of leak-proof/1: ${line}" >&2
-            return 2
-            ;;
-        esac
-    done
-    if [ "$schema" != "leak-proof/1" ] || [ "$where" != "nightly" ] ||
-        ! [[ $commit =~ ^[0-9a-f]{40}$ ]] || ! [[ $tree =~ ^[0-9a-f]{40}$ ]] ||
-        ! [[ $rc =~ ^(0|[1-9][0-9]*)$ ]] || ! [[ $run =~ ^[1-9][0-9]*$ ]] ||
-        ! [[ $attempt =~ ^[1-9][0-9]*$ ]] || [ -z "$seed" ] || [ -z "$pass1" ] ||
-        [ -z "$pass2" ] || [ -z "$map" ] || ! epoch=$(gate_ci_epoch "$at"); then
-        echo "nightly: unreadable — the record is not leak-proof/1 (schema, stamp, hex, rc, run, attempt, where or a missing field): ${line}" >&2
-        return 2
-    fi
-    now=$(date -u +%s)
-    age=$((now - epoch))
-    if [ "$((-age))" -gt "$GATE_CI_SKEW" ]; then
-        echo "nightly: unreadable — at=${at} is $((-age)) s in the future of this clock" >&2
-        return 2
-    fi
-    if [ "$age" -gt "$GATE_CI_MAX_AGE" ]; then
-        echo "nightly:stale:${at}"
-        return 0
-    fi
-    echo "nightly:${at} tree=${tree:0:12} rc=${rc}"
-}
+# gate_nightly_read [<artifact dir>] — `nightly:<at> tree=<12 hex> rc=<n>`, `nightly:stale:<at>` or `nightly:none`.
+# Exit: 0 · 2 unreadable, the reason on stderr (`quality/djb/ledger.py::nightly_read`).
+gate_nightly_read() { gate_ledger_cli nightly-read "$@"; }
 
 # ---- the NIGHTLY LEAK PROOF, written, fetched and composed ------------------
 #
@@ -1859,29 +2424,7 @@ GATE_NIGHTLY_GH="gh"
 # `rc=` is the proof's own verdict: 0 both passes green, 1 a pass red, 2 the
 # proof could not look (it never reached a pass). A `where=nightly` record
 # names a real run (`run=`/`attempt=` from 1); any other `where=` writes 0 0.
-gate_nightly_line() {
-    local line re_st='^(0|[1-9][0-9]*|-)$' re_dec='^(0|[1-9][0-9]*)$'
-    if [ "$#" -ne 11 ]; then
-        echo "note: gate_nightly_line takes 11 fields; got $#." >&2
-        return 2
-    fi
-    if ! gate_ci_epoch "$1" >/dev/null ||
-        ! [[ $2 =~ ^[0-9a-f]{40}$ ]] || ! [[ $3 =~ ^[0-9a-f]{40}$ ]] ||
-        ! [[ $4 =~ ^[0-9]+$ ]] || ! [[ $5 =~ $re_st ]] || ! [[ $6 =~ $re_st ]] ||
-        ! [[ $7 =~ $re_st ]] || ! [[ $8 =~ ^[012]$ ]] ||
-        ! [[ $9 =~ $re_dec ]] || ! [[ ${10} =~ $re_dec ]] ||
-        ! [[ ${11} =~ ^(nightly|acceptance)$ ]]; then
-        echo "note: the leak-proof record would not parse, so NONE was written:" >&2
-        echo "  at=$1 commit=$2 tree=$3 seed=$4 pass1=$5 pass2=$6 map=$7 rc=$8 run=$9 attempt=${10} where=${11}" >&2
-        return 2
-    fi
-    if [ "${11}" = "nightly" ] && { [ "$9" = "0" ] || [ "${10}" = "0" ]; }; then
-        echo "note: a where=nightly record names the workflow run that wrote it; run=$9 attempt=${10} name none." >&2
-        return 2
-    fi
-    line="schema=${GATE_NIGHTLY_SCHEMA} at=$1 commit=$2 tree=$3 seed=$4 pass1=$5 pass2=$6 map=$7 rc=$8 run=$9 attempt=${10} where=${11}"
-    printf '%s\n' "$line"
-}
+gate_nightly_line() { gate_ledger_cli nightly-line "$@"; }
 
 # gate_nightly_fetch <sink> — the LATEST completed nightly run on
 # GATE_NIGHTLY_BRANCH, its artifact downloaded to `<sink>/nightly-<run>`.
@@ -1894,130 +2437,12 @@ gate_nightly_line() {
 # THE LATEST, NEVER THE LATEST GREEN: the nightly is a report, and a red last
 # night is the thing to say — a reader that walked back to an older green would
 # print a green over the run that went red.
-gate_nightly_fetch() {
-    local sink=$1 gh=$GATE_NIGHTLY_GH run view st attempt dir rec recattempt dlerr
-    if ! command -v "$gh" >/dev/null 2>&1; then
-        printf '%s\n' "no \`${gh}\` on PATH — the nightly's record is a workflow artifact and \`gh\` is its one reader"
-        return 2
-    fi
-    mkdir -p "$sink" || {
-        printf '%s\n' "could not make ${sink} to download the record into"
-        return 2
-    }
-    if ! run=$("$gh" run list --workflow "$GATE_NIGHTLY_WORKFLOW" --branch "$GATE_NIGHTLY_BRANCH" \
-        --status completed --limit 1 --json databaseId --jq '.[0].databaseId // empty' \
-        2>"${sink}/gh-nightly-list.err" </dev/null); then
-        printf '%s\n' "\`gh run list --workflow ${GATE_NIGHTLY_WORKFLOW}\` did not answer (${sink}/gh-nightly-list.err)"
-        return 2
-    fi
-    if [ -z "$run" ]; then
-        printf '%s\n' "no completed ${GATE_NIGHTLY_WORKFLOW} run on ${GATE_NIGHTLY_BRANCH}"
-        return 1
-    fi
-    if ! [[ $run =~ ^[1-9][0-9]*$ ]]; then
-        printf '%s\n' "\`gh run list\` answered '${run}', which is not a run id"
-        return 2
-    fi
-    if ! view=$("$gh" run view "$run" --json status,attempt --jq '"\(.status) \(.attempt)"' \
-        2>"${sink}/gh-nightly-view.err" </dev/null); then
-        printf '%s\n' "\`gh run view ${run}\` did not answer (${sink}/gh-nightly-view.err)"
-        return 2
-    fi
-    st=${view%% *}
-    attempt=${view##* }
-    if ! [[ $attempt =~ ^[1-9][0-9]*$ ]] || [ "$st" != "completed" ]; then
-        printf '%s\n' "\`gh run view ${run}\` answered '${view}', not a completed run and its attempt"
-        return 2
-    fi
-    dir="${sink}/nightly-${run}"
-    rm -rf "$dir"
-    if ! "$gh" run download "$run" --name "$GATE_NIGHTLY_ARTIFACT" --dir "$dir" \
-        >"${sink}/gh-nightly-download.log" 2>&1 </dev/null; then
-        dlerr=$(cat "${sink}/gh-nightly-download.log" 2>/dev/null || true)
-        case "$dlerr" in
-        *"no valid artifacts found"* | *"no artifact matches"*)
-            printf '%s\n' "nightly run ${run} (attempt ${attempt}) carries no ${GATE_NIGHTLY_ARTIFACT} artifact"
-            return 1
-            ;;
-        esac
-        printf '%s\n' "\`gh run download ${run} --name ${GATE_NIGHTLY_ARTIFACT}\` failed for a reason that is not a missing artifact (${sink}/gh-nightly-download.log)"
-        return 2
-    fi
-    rec="${dir}/${GATE_NIGHTLY_RECORD}"
-    # THE LATEST ATTEMPT'S RECORD OR NONE. The artifact name carries no attempt,
-    # so the record's own `attempt=` is what says whose it is — the consumer's
-    # N2257 (a reader that took an earlier attempt's green) is refused here.
-    recattempt=$(awk 'NF { for (i = 1; i <= NF; i++) if ($i ~ /^attempt=/) { sub(/^attempt=/, "", $i); print $i; exit } exit }' "$rec" 2>/dev/null || true)
-    if [ -s "$rec" ] && [ "$recattempt" != "$attempt" ]; then
-        printf '%s\n' "nightly run ${run}'s record says attempt=${recattempt:-<none>} and the latest attempt is ${attempt} — an earlier attempt's record is not the run's"
-        return 1
-    fi
-    printf '%s %s %s\n' "$run" "$attempt" "$dir"
-}
+gate_nightly_fetch() { gate_ledger_cli nightly-fetch "$1" --gh "$GATE_NIGHTLY_GH"; }
 
-# gate_nightly_source <sink> [<bank tree>] — what a bank row's `leak-proof=` field carries
-# under `--leak-proof nightly`, on stdout line 1 (one of the three forms
-# `gate_nightly_read` prints), and ONE human line on stdout line 2: the source
-# line the bank prints, in one of FOUR forms —
-#
-#   leak-proof: nightly run <id> attempt <n> green — <form>
-#     … and, when the night measured ANOTHER tree than the bank's:
-#     … green — <form> (measured <the night's 12 hex>, not this bank's <12 hex>: report-only)
-#   WARNING: leak-proof: the latest nightly (run <id>) is RED (rc=<n>) — <form> …
-#   WARNING: leak-proof: the latest nightly (run <id>) is older than 24 h — <form> …
-#   WARNING: leak-proof: no nightly leak proof (<why>) — nightly:none …
-#
-# ALWAYS EXIT 0: the bank honours every form (report-only) and the TEETH are at
-# prod, which refuses without a green nightly ≤ 24 h. So a nightly nobody could
-# read — no gh, gh failing, a record that will not parse — is `nightly:none`
-# with the reason in the warning: nothing stands behind the row, and the line
-# says why rather than claiming there was never a run.
-gate_nightly_source() {
-    local sink=$1 bank=${2:-} got rc=0 run attempt dir form why teeth ntree note=""
-    teeth="report-only: this bank is honoured; the deploy to prod refuses without a green nightly ≤ 24 h"
-    got=$(gate_nightly_fetch "$sink") || rc=$?
-    if [ "$rc" != "0" ]; then
-        if [ "$rc" = "2" ]; then why="could not look: ${got}"; else why=$got; fi
-        printf '%s\n' "nightly:none"
-        printf '%s\n' "WARNING: leak-proof: no nightly leak proof (${why}) — nightly:none; ${teeth}"
-        return 0
-    fi
-    run=${got%% *}
-    attempt=${got#* }
-    attempt=${attempt%% *}
-    dir=${got#* * }
-    rc=0
-    form=$(gate_nightly_read "$dir" 2>"${sink}/nightly-read.err") || rc=$?
-    if [ "$rc" != "0" ] || [ -z "$form" ]; then
-        why=$(tr '\n' ' ' <"${sink}/nightly-read.err" 2>/dev/null || true)
-        printf '%s\n' "nightly:none"
-        printf '%s\n' "WARNING: leak-proof: no nightly leak proof (run ${run}'s record is unreadable: ${why% }) — nightly:none; ${teeth}"
-        return 0
-    fi
-    case "$form" in
-    nightly:stale:*)
-        printf '%s\n' "$form"
-        printf '%s\n' "WARNING: leak-proof: the latest nightly (run ${run}, attempt ${attempt}) is older than 24 h — ${form}; ${teeth}"
-        ;;
-    *" rc=0")
-        # GREEN ON ANOTHER TREE IS NOT PLAIN GREEN. The night measured main as
-        # it stood last night; the bank keys on its own tree. The row keeps the
-        # night's `tree=` (what was measured), and the line says the two differ.
-        ntree=${form#* tree=}
-        ntree=${ntree%% *}
-        if [ -n "$bank" ] && [ "$ntree" != "${bank:0:12}" ]; then
-            note=" (measured ${ntree}, not this bank's ${bank:0:12}: report-only)"
-        fi
-        printf '%s\n' "$form"
-        printf '%s\n' "leak-proof: nightly run ${run} attempt ${attempt} green — ${form}${note}"
-        ;;
-    *)
-        printf '%s\n' "$form"
-        printf '%s\n' "WARNING: leak-proof: the latest nightly (run ${run}, attempt ${attempt}) is RED (${form##* }) — ${form}; ${teeth}"
-        ;;
-    esac
-    return 0
-}
+# gate_nightly_source <sink> [<bank tree>] — a bank row's `leak-proof=` form on
+# stdout line 1 and the source line the bank prints on line 2; exit 0 always.
+# entry: quality/tests/test_ledger.py's shell-twin case, which builds the name as `gate_nightly_<verb>`.
+gate_nightly_source() { gate_ledger_cli nightly-source "$1" "${2:-}" --gh "$GATE_NIGHTLY_GH"; }
 
 # ---- the DOCS-ONLY push path ------------------------------------------------
 #
@@ -2070,6 +2495,9 @@ gate_nightly_source() {
 #: `apps/core/views.py`, `quality/partition.yaml`), so a release still pays one
 #: bank. Widening this list is a ratified change and not a judgment call.
 GATE_DOCS_ONLY_PATHS='docs/** README.md CLAUDE.md .claude/skills/** scripts/test_impact.json'
+#: Carved out of the list above, by every matcher: each page under `docs/sdk/` is
+#: derived by `python -m quality.sdk --reference`, so a hand edit is measured, never admitted.
+GATE_DOCS_ONLY_EXCLUDED='docs/sdk/**'
 
 #: How far back the source walk looks along main's own first-parent line. A
 #: bound rather than the whole history: the population this exists for is the
@@ -2089,10 +2517,28 @@ GATE_DOCS_ONLY_N=""       # how many paths changed since M
 GATE_DOCS_ONLY_READERS="" # the derived readers, comma separated
 GATE_DOCS_ONLY_WHY=""     # the refusal, ending in "full bank"
 
-# gate_docs_only_admits <path> → 0 when the path is on the declared list.
-# ONE FUNCTION READS THE LIST, so "what is a docs-only path" has one answer.
+#: THE FOLD'S DERIVED OUTPUTS, ADMITTED BY DERIVATION — a ratified widening of
+#: the road, as the list above is. Not on that list, because a path is
+#: not what makes them docs-only — their DIFF is: a walls table whose every
+#: changed line is a member row or a measured stamp (a measurement of somebody's
+#: run, read by no assertion), and `quality/budgets.yaml` when every changed
+#: line LOWERS a ceiling (the shrink-only ratchet, applied — `pm_fold.sh`
+#: commits exactly that), and `.secrets.baseline` when its findings only moved
+#: (a stamp, a `line_number`, a file — a new or vanished hash is measured).
+#: Judged only when the caller hands the two ends of the diff; with none they
+#: are not admitted, which is the safe answer.
+GATE_DOCS_ONLY_DERIVED='scripts/gate_member_durations.json scripts/local/gate_member_durations.ci.json quality/budgets.yaml .secrets.baseline'
+
+# gate_docs_only_admits <path> [<from> <to>] → 0 when the path is docs-only.
+# ONE FUNCTION DECIDES, so "what is a docs-only path" has one answer, and the
+# places that used to answer it for themselves — the bank's road, the
+# `--loop`'s pytest reuse and its attributor's counter, `quality/djb/scope.py`'s
+# `inert` class — all ask it. A path is docs-only when it is on
+# GATE_DOCS_ONLY_PATHS, or when it is one of GATE_DOCS_ONLY_DERIVED and its diff
+# between <from> and <to> (commits or trees) is the derivation that list names.
+# road: docs_only — the one docs-only decider · example: quality/tests/test_ledger.py::test_the_three_docs_only_roads_answer_from_one_decider
 gate_docs_only_admits() {
-    local p=$1 pat noglob=0
+    local p=$1 from=${2:-} to=${3:-} pat noglob=0
     # THE LIST IS PATTERNS AND THE SHELL WOULD EXPAND THEM. `docs/**` in an
     # unquoted `for` is pathname expansion, and it QUIETLY becomes the
     # directories that happen to exist — so the declared list would mean
@@ -2102,6 +2548,14 @@ gate_docs_only_admits() {
     *f*) noglob=1 ;;
     esac
     set -f
+    for pat in $GATE_DOCS_ONLY_EXCLUDED; do
+        case "$p" in
+        "$pat" | "${pat%'/**'}"/*)
+            [ "$noglob" = 1 ] || set +f
+            return 1
+            ;;
+        esac
+    done
     for pat in $GATE_DOCS_ONLY_PATHS; do
         case "$pat" in
         *'/**')
@@ -2121,12 +2575,43 @@ gate_docs_only_admits() {
         esac
     done
     [ "$noglob" = 1 ] || set +f
-    return 1
+    case " $GATE_DOCS_ONLY_DERIVED " in
+    *" $p "*) ;;
+    *) return 1 ;;
+    esac
+    [ -n "$from" ] && [ -n "$to" ] || return 1
+    python3 -E -S -c "$GATE_DOCS_ONLY_DERIVED_CLI" "$GATE_LEDGER_HOME" "$p" "$from" "$to"
+}
+
+# The derived judgment is `quality/djb/ledger.py::docs_only_admits`'s, so the shell and CI admit alike.
+# Exit: 0 admitted · 1 not · 2 the module will not import (the `!!` sentence names why).
+GATE_DOCS_ONLY_DERIVED_CLI='import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv.pop(1))
+try:
+    from quality.djb.ledger import docs_only_admits
+except ImportError as exc:
+    print(f"!! COULD NOT LOOK: quality.djb.ledger would not import from {sys.path[0]} — {exc}", file=sys.stderr)
+    sys.exit(2)
+sys.exit(0 if docs_only_admits(*sys.argv[1:4], root=Path.cwd()) else 1)'
+
+# gate_docs_only_claims <head> [<base>] — every commit on <head>'s first-parent
+# line since <base> (or GATE_DOCS_ONLY_DEPTH commits back) whose SUBJECT claims
+# `[docs-only]` and whose own diff is not docs-only, as `<sha> <path>` lines on
+# stdout. Exit 0 always; empty is "no claim lied".
+#
+# THE TRAILER IS READ AS A CLAIM, AND A LIE IS REFUSED. A subject is not a measurement and the road never
+# decides on one; what this asks is narrower — did whoever wrote `[docs-only]`
+# describe their own commit truthfully — and the bank refuses when they did
+# not, because a convention that lies is worse than none.
+gate_docs_only_claims() {
+    gate_ledger_cli docs-only-claims "${1:-HEAD}" "${2:-}" --depth "$GATE_DOCS_ONLY_DEPTH" || true
+    return 0
 }
 
 # gate_docs_only_row_field <row> <name> → the value of `<name>=` on the row.
-# AN EOF READER, `drive_row_parts`'s shape and for its reason: no pipe whose
-# exit status anything branches on.
+# AN EOF READER, never a pipe into an early-exit awk: the shape
+# `quality/tests/test_pipefail_census.py` counts across this population.
 gate_docs_only_row_field() {
     awk -v k="$2" '
         { for (i = 1; i <= NF; i++) if (index($i, k "=") == 1) v = substr($i, length(k) + 2) }
@@ -2158,116 +2643,77 @@ EOF
 # second reader, and the day the two disagree is the day a reuse rests on a row
 # the lookup never approved.
 gate_docs_only_source() {
-    local head=$1 depth=0 c tree row note from hops
+    local out rc=0
+    gate_docs_only__reset
+    out=$(gate_ledger_cli docs-only-source "$1" --depth "$GATE_DOCS_ONLY_DEPTH") || rc=$?
+    gate_docs_only__globals "$out"
+    gate_docs_only__answer "$rc" || return 1
+    printf '%s\n' "$GATE_DOCS_ONLY_SOURCE"
+}
+
+# gate_docs_only__reset — the six plan globals emptied, so a refusal never leaves a stale value.
+gate_docs_only__reset() {
     GATE_DOCS_ONLY_SOURCE=""
     GATE_DOCS_ONLY_LEGS=""
     GATE_DOCS_ONLY_PROOF=""
-    while IFS= read -r c; do
-        [ -n "$c" ] || continue
-        depth=$((depth + 1))
-        # THE MEASURED TREE OF THE ANCESTOR, because that is the only key a
-        # full gate ever banks. Read raw, this lookup asks the ledger
-        # for a tree no row is keyed on the moment a product declares a
-        # derived path — so the walk finds nothing, the road refuses, and a
-        # documentation push costs a full bank forever.
-        tree=$(gate_measured_tree_of "${c}^{tree}" 2>/dev/null) || continue
-        row=$(gate_ledger_lookup "$tree" 2>/dev/null) || row=""
-        if [ -z "$row" ]; then
-            note=$(gate_ledger_lookup "$tree" 2>&1 >/dev/null) || true
-            if [ -n "$note" ]; then
-                GATE_DOCS_ONLY_WHY="docs-only? no — the nearest banked ancestor's row is not honoured — full bank"
-                printf '%s\n' "$note" >&2
-                return 1
-            fi
-            continue
-        fi
-        # A REUSE ROW NAMES THE MEASURED TREE IT RESTS ON, AND THAT IS THE
-        # SOURCE. Following `from=` is what keeps a chain of docs-only pushes
-        # diffed against the last MEASURED tree rather than against the last
-        # INHERITED one: without it, R2 would be diffed against R1, and a forged
-        # or mistaken R1 row would hand R2 a delta that never showed the
-        # `apps/` path R1 really carried.
-        hops=0
-        while :; do
-            from=$(gate_docs_only_row_field "$row" from)
-            [ -n "$from" ] || break
-            hops=$((hops + 1))
-            case "$from" in
-            *[!0-9a-f]* | "") from="" ;;
-            esac
-            if [ -z "$from" ] || [ "$hops" -gt 4 ]; then
-                GATE_DOCS_ONLY_WHY="docs-only? no — the nearest banked ancestor's row names a source this reader cannot follow — full bank"
-                return 1
-            fi
-            row=$(gate_ledger_lookup "$from" 2>/dev/null) || row=""
-            if [ -z "$row" ]; then
-                GATE_DOCS_ONLY_WHY="docs-only? no — the nearest banked ancestor's row names from=${from}, which carries no honoured row of its own — full bank"
-                return 1
-            fi
-            tree="$from"
-        done
-        GATE_DOCS_ONLY_SOURCE="$tree"
-        GATE_DOCS_ONLY_LEGS=$(printf '%s\n' "$row" | awk '{print $5}')
-        case "$row" in
-        *" leak-proof="*) GATE_DOCS_ONLY_PROOF=${row##*" leak-proof="} ;;
-        *) GATE_DOCS_ONLY_PROOF="" ;;
+    GATE_DOCS_ONLY_N=""
+    GATE_DOCS_ONLY_READERS=""
+    GATE_DOCS_ONLY_WHY=""
+}
+
+# gate_docs_only__globals <name=value lines> — the ledger verb's answer into the six globals.
+gate_docs_only__globals() {
+    local line
+    while IFS= read -r line; do
+        case "$line" in
+        source=*) GATE_DOCS_ONLY_SOURCE=${line#source=} ;;
+        legs=*) GATE_DOCS_ONLY_LEGS=${line#legs=} ;;
+        proof=*) GATE_DOCS_ONLY_PROOF=${line#proof=} ;;
+        n=*) GATE_DOCS_ONLY_N=${line#n=} ;;
+        readers=*) GATE_DOCS_ONLY_READERS=${line#readers=} ;;
+        why=*) GATE_DOCS_ONLY_WHY=${line#why=} ;;
         esac
-        printf '%s\n' "$tree"
-        return 0
     done <<EOF
-$(git rev-list --first-parent --skip=1 --max-count="$GATE_DOCS_ONLY_DEPTH" "$head" 2>/dev/null)
+$1
 EOF
-    GATE_DOCS_ONLY_WHY="docs-only? no — no honoured full row on any of the last ${GATE_DOCS_ONLY_DEPTH} first-parent ancestors (walked ${depth}) — full bank"
+}
+
+# gate_docs_only__answer <verb exit> — 0 the road · 1 measure, a verb that could not look named in WHY.
+gate_docs_only__answer() {
+    [ "$1" = 0 ] && return 0
+    [ -n "$GATE_DOCS_ONLY_WHY" ] ||
+        GATE_DOCS_ONLY_WHY="docs-only? no — the plan could not look (quality.djb.ledger exited $1) — full bank"
     return 1
 }
 
-# gate_docs_only_literal_reads <needle>… → `<file>:<line> <needle>` per hit.
-#
-# WHAT A *LITERAL READ* IS, AND WHY THE DEFINITION IS NARROWER THAN "MENTIONS".
-# The `--loop` reuse one mechanism over refuses on ANY mention of a docs path in
-# `apps/`, and that was measured: it refuses `docs/product/queue.md` and
-# `docs/product/architecture.md`, which are the two commits this path exists
-# for. So the question asked here is not "is this path spelled" but "does
-# anything OPEN it": a value in quotes (`"P"`, `'P'`, or the quoted basename) or
-# a YAML `file:` value or list item. A backtick mention and a comment are prose
-# — every one of the forty-odd hits in `apps/` today is one of those two — and
-# prose is admitted.
-#
-# THE DIRECTION OF EVERY DOUBT IS STILL CLOSED. A quoted mention inside a
-# docstring is judged a QUOTE, and a quote refuses unless the module itself says
-# it is not a read (`GATE_DOCS_ONLY_NONREAD`, below); a path assembled from
-# parts, reached by a glob or walked as a directory is judged prose and MISSED.
-# That second half is this path's declared blind spot, and the belt is the next
-# non-docs push.
-#
-# A QUOTE IS WHAT THIS JUDGE PROVES, NOT A READ. It sees the bytes of a string,
-# never an `open()`, so the refusal says "is quoted at" and never "is read" — a
-# message never names a cause it has not proven (measured: `test_drawer_seam.py`
-# quotes `docs/product/queue.md` as a string handed to the engine over
-# `tmp_path`, opens no file, and every ledger push was refused as a "literal
-# read" of it).
+# gate_docs_only_literal_reads <needle>… → `<file>:<line> <needle>` per quote, from the engine's census (`quality.loop_key.quotes`) over the cwd.
+# One scan: the loop key's `--prose` asks the same census, so the docs-only decider and the key cannot disagree.
+# Exit 0 · 2 could not look (no interpreter, or the census refused), the `!!` sentence on stderr.
+# A checkout whose library carries no census (`LOOP_KEY_PROSE_OWNER`) asks none, says so, and names no read — the loop key's `no-census`.
+# A quote is what the census proves, not an open: a value in quotes, a YAML `file:` value or list item; a backtick or a comment is prose.
+# does-not-cover: a path assembled from parts, reached by a glob or walked as a directory (rule 90).
 gate_docs_only_literal_reads() {
-    local roots="" r out n
-    local -a args=()
-    for r in apps config quality; do
-        if [ -d "$r" ]; then
-            roots="${roots}${roots:+ }${r}"
-        fi
-    done
-    [ -n "$roots" ] || return 0
-    for n in "$@"; do
-        args+=(-e "$n")
-    done
-    [ "${#args[@]}" -gt 0 ] || return 0
-    # `-I` because a binary that happens to contain the bytes is not a read, and
-    # the judge below would see a line it cannot parse. A grep that matched
-    # nothing exits 1, which is not an error here — it is the ordinary answer.
-    # shellcheck disable=SC2086
-    out=$(grep -rnI -F "${args[@]}" $roots 2>/dev/null) || out=""
-    [ -n "$out" ] || return 0
-    gate__docs_only_judge "$*" <<EOF
-$out
-EOF
+    local py="${GATE_LEDGER_HOME}/.venv/bin/python" rc=0
+    [ "$#" -gt 0 ] || return 0
+    if [ ! -f "${GATE_LEDGER_HOME}/${LOOP_KEY_PROSE_OWNER}" ]; then
+        echo "  note: no ${LOOP_KEY_PROSE_OWNER} beside this library (${GATE_LEDGER_HOME:-unresolved}) — no literal-read census, no read named" >&2
+        return 0
+    fi
+    [ -x "$py" ] || {
+        echo "!! COULD NOT LOOK: the literal-read census has no interpreter at ${py}" >&2
+        return 2
+    }
+    PYTHONPATH="$GATE_LEDGER_HOME" "$py" -c '
+import sys
+from pathlib import Path
+from quality.loop_key import quotes
+for q in quotes(Path.cwd(), frozenset(sys.argv[2:]), sys.argv[1]):
+    print(q.site, q.needle)
+' "$GATE_DOCS_ONLY_NONREAD" "$@" || rc=$?
+    [ "$rc" = 0 ] || {
+        echo "!! COULD NOT LOOK: the literal-read census exited ${rc}" >&2
+        return 2
+    }
 }
 
 # gate__docs_only_judge "<needle> …" < `<file>:<line>:<text>` lines
@@ -2328,6 +2774,9 @@ gate__docs_only_judge() {
 #: docs/product/*.md today), deferred until the first one does.
 GATE_DOCS_ONLY_NONREAD='names, never reads:'
 
+#: The declaration a `static` leg's `scripts/<module>` makes for a docs path its `--check` judges at every commit; read by `quality/loop_key.py` alone (rule 90).
+GATE_DOCS_ONLY_MEASURED_AT_COMMIT='measured at the commit:'
+
 # gate_docs_only_nonreads <file> → `<line> <path>` per declared path.
 gate_docs_only_nonreads() {
     awk -v m="$GATE_DOCS_ONLY_NONREAD" '
@@ -2352,55 +2801,7 @@ gate_docs_only_nonreads() {
 
 # gate_docs_only_nonread_covers <file> <needle> → 0 when the file's own
 # declaration names the needle, or a path whose basename the needle is.
-gate_docs_only_nonread_covers() {
-    local file=$1 needle=$2 lno d
-    while read -r lno d; do
-        [ -n "${d:-}" ] || continue
-        if [ "$d" = "$needle" ] || [ "${d##*/}" = "$needle" ]; then
-            return 0
-        fi
-    done <<EOF
-$(gate_docs_only_nonreads "$file")
-EOF
-    return 1
-}
-
-# gate_docs_only_stale_nonreads → `<file>:<line> <path>` per declared path the
-# declaring module does NOT quote, judged by the ONE judge above. A STALE VALVE
-# IS LOUD: a declaration that outlived its quote is a line that would silently
-# admit the next quote somebody writes there.
-gate_docs_only_stale_nonreads() {
-    local roots="" r f lno d hits judged
-    for r in apps config; do
-        if [ -d "$r" ]; then
-            roots="${roots}${roots:+ }${r}"
-        fi
-    done
-    [ -n "$roots" ] || return 0
-    while IFS= read -r f; do
-        [ -n "$f" ] || continue
-        while read -r lno d; do
-            [ -n "${d:-}" ] || continue
-            hits=$(grep -nIH -F -e "$d" -e "${d##*/}" "$f" 2>/dev/null) || hits=""
-            judged=""
-            if [ -n "$hits" ]; then
-                judged=$(gate__docs_only_judge "$d ${d##*/}" <<EOF
-$hits
-EOF
-)
-            fi
-            [ -n "$judged" ] && continue
-            printf '%s:%s %s\n' "$f" "$lno" "$d"
-        done <<EOF
-$(gate_docs_only_nonreads "$f")
-EOF
-    done <<EOF
-$(
-        # shellcheck disable=SC2086
-        grep -rlI -F -e "$GATE_DOCS_ONLY_NONREAD" $roots 2>/dev/null
-    )
-EOF
-}
+gate_docs_only_nonread_covers() { gate_ledger_cli docs-only-nonread-covers "$1" "$2"; }
 
 # gate_docs_only_covers <declared> <path> → 0 when the declaration covers it.
 gate_docs_only_covers() {
@@ -2414,43 +2815,6 @@ gate_docs_only_covers() {
     return 1
 }
 
-# gate_docs_only_drives <path>… → every drive whose declaration names one of
-# these paths, or a directory prefix of one, on stdout.
-#
-# THE DECLARATION IS THE DRIVE'S OWN, read through `drive_marker_line` — the
-# same line the selftest leg's reuse keys on, so a drive that declares what it
-# reads is selected here for free and a drive that does not is missed here
-# exactly as it is missed there. A `# cites:` line is NOT read: a citation is
-# explicitly not a subject (see `drive_cites_line`), and selecting on one would
-# re-drive a drive that never opens the file.
-gate_docs_only_drives() {
-    local f line tok p out="" noglob=0
-    case $- in
-    *f*) noglob=1 ;;
-    esac
-    for f in scripts/tests/test_*.sh; do
-        [ -f "$f" ] || continue
-        line=$(drive_marker_line "$f") || continue
-        line=${line#*drives:}
-        # A DECLARED TOKEN IS A PATH AND NEVER A GLOB HERE, for
-        # `gate_docs_only_admits`'s reason: a declaration carrying a `*` would
-        # otherwise be expanded against this checkout before it was compared.
-        set -f
-        for tok in $line; do
-            for p in "$@"; do
-                if gate_docs_only_covers "$tok" "$p"; then
-                    out="${out}${f}
-"
-                    break 2
-                fi
-            done
-        done
-        [ "$noglob" = 1 ] || set +f
-    done
-    [ -n "$out" ] || return 0
-    printf '%s' "$out" | LC_ALL=C sort -u
-}
-
 # gate_docs_only_plan <head-commit>
 #   0  every changed path since M is on the declared list and the readers are
 #      derived: GATE_DOCS_ONLY_SOURCE, _LEGS, _PROOF, _N and _READERS are set.
@@ -2461,104 +2825,11 @@ gate_docs_only_drives() {
 # (`scripts/pm_push.sh`), which is the one place in this system that already
 # runs the gate and answers its status.
 gate_docs_only_plan() {
-    local head=$1 tree delta p n=0 needles="" hit file engine=0 d readers measured
-    GATE_DOCS_ONLY_N=""
-    GATE_DOCS_ONLY_READERS=""
-    GATE_DOCS_ONLY_WHY=""
-    # MEASURED, NOT RAW — and the delta below is taken between two
-    # measured trees, so a churn in a DECLARED derived path is subtracted from
-    # both ends and never shows up as a changed path. That is the same
-    # sentence the declaration already makes: nothing measured reads those
-    # bytes back, so they are not part of what a verdict is about.
-    tree=$(gate_measured_tree_of "${head}^{tree}" 2>/dev/null) || tree=""
-    if [ -z "$tree" ]; then
-        GATE_DOCS_ONLY_WHY="docs-only? no — ${head} resolves to no tree — full bank"
-        return 1
-    fi
-    # THE KEY AND THE DELTA MUST BE ABOUT THE SAME BYTES. The row is keyed on
-    # the MEASURED tree (`gate_measured_tree`, which reads through `git add -A`
-    # and subtracts every declared derived path) and the delta above is taken
-    # between MEASURED trees too, so the only thing this equality can now catch
-    # is the thing it was always for: a DIRTY working tree, where `git add -A`
-    # sees bytes HEAD does not carry. It used to compare against HEAD's RAW
-    # tree, which on a declaring product can never equal the measured one — so
-    # the guard fired on every clean checkout that declared anything, and the
-    # road was closed to exactly the products it was built for. Asked rather
-    # than assumed, and now asked of the same arithmetic on both sides.
-    measured=$(gate_measured_tree 2>/dev/null) || measured=""
-    if [ "$measured" != "$tree" ]; then
-        GATE_DOCS_ONLY_WHY="docs-only? no — the measured WORKING tree (${measured:-unreadable}) is not HEAD's measured tree (${tree}), so there is an uncommitted byte in the delta the row would key on — full bank"
-        return 1
-    fi
-    gate_docs_only_source "$head" >/dev/null || return 1
-    delta=$(git diff-tree -r --name-only "$GATE_DOCS_ONLY_SOURCE" "$tree" 2>/dev/null) || delta=""
-    if [ -z "$delta" ]; then
-        GATE_DOCS_ONLY_WHY="docs-only? no — HEAD's tree IS the source tree ${GATE_DOCS_ONLY_SOURCE}, so there is nothing to reuse and a row already stands — full bank"
-        return 1
-    fi
-    while IFS= read -r p; do
-        [ -n "$p" ] || continue
-        case "$p" in
-        *[[:space:]]*)
-            GATE_DOCS_ONLY_WHY="docs-only? no — a changed path carries whitespace and this reader cannot name it — full bank"
-            return 1
-            ;;
-        esac
-        if ! gate_docs_only_admits "$p"; then
-            GATE_DOCS_ONLY_WHY="docs-only? no — ${p} is not a docs-only path — full bank"
-            return 1
-        fi
-        n=$((n + 1))
-        needles="${needles}${needles:+ }${p} ${p##*/}"
-    done <<EOF
-$delta
-EOF
-    if [ "$n" -eq 0 ]; then
-        GATE_DOCS_ONLY_WHY="docs-only? no — the delta could not be read — full bank"
-        return 1
-    fi
-    # THE READERS, DERIVED PER PATH. `static` ALWAYS: the adr-census,
-    # dangling-docs, goalpost-census, queue-index and archaeology legs all read
-    # `docs/`, and the house-rules engine reads its own `doc:` targets there.
-    readers="static"
-    while IFS= read -r hit; do
-        [ -n "$hit" ] || continue
-        file=${hit%%:*}
-        case "$file" in
-        apps/* | config/*)
-            # A QUOTE THE MODULE ITSELF DECLARES A NON-READ is admitted and
-            # derives no reader; every other quote still refuses, saying what
-            # was proven (a quote) and what is missing (the declaration).
-            if gate_docs_only_nonread_covers "$file" "${hit#* }"; then
-                continue
-            fi
-            GATE_DOCS_ONLY_WHY="docs-only? no — ${hit#* } is quoted at ${hit%% *} and nothing declares the quote a non-read — full bank"
-            return 1
-            ;;
-        quality/*) engine=1 ;;
-        esac
-    done <<EOF
-$(gate_docs_only_literal_reads $needles)
-EOF
-    while IFS= read -r hit; do
-        [ -n "$hit" ] || continue
-        GATE_DOCS_ONLY_WHY="docs-only? no — ${hit%% *} declares ${hit#* } a non-read and the module never quotes it — a stale declaration — full bank"
-        return 1
-    done <<EOF
-$(gate_docs_only_stale_nonreads)
-EOF
-    if [ "$engine" = "1" ]; then
-        readers="${readers},full-house-rules"
-    fi
-    while IFS= read -r d; do
-        [ -n "$d" ] || continue
-        readers="${readers},${d}"
-    done <<EOF
-$(gate_docs_only_drives $delta)
-EOF
-    GATE_DOCS_ONLY_N="$n"
-    GATE_DOCS_ONLY_READERS="$readers"
-    return 0
+    local out rc=0
+    gate_docs_only__reset
+    out=$(gate_ledger_cli docs-only-plan "$1" --depth "$GATE_DOCS_ONLY_DEPTH") || rc=$?
+    gate_docs_only__globals "$out"
+    gate_docs_only__answer "$rc"
 }
 
 # ---- a DRIVE's verdict, keyed on what the drive DRIVES ------------------
@@ -2604,12 +2875,12 @@ EOF
 #
 #   A PATH THAT IS NOT IN THE MEASURED TREE. A subject has to exist to be
 #   reached. Most drives spell paths that are PLANT NAMES inside a throwaway
-#   clone (`apps/widgets/models.py`, `scripts/plant.sh`) and a floor that
+#   clone (`apps/<widgets>/models.py`, `scripts/<plant>.sh`) and a floor that
 #   demanded those be declared would demand a declaration that expands to
 #   nothing, which is itself a refusal — a deadlock, not a belt.
 #
 #   AN OCCURRENCE PRECEDED BY `/`. `"$d/apps/example/models.py"` is a path
-#   inside somebody else's root; `scripts/loop_tier.sh` at the start of a word is
+#   inside somebody else's root; `quality/djb/scope.py` at the start of a word is
 #   this checkout's. The two are told apart by the character in front, which is
 #   the only signal on the line.
 #
@@ -2649,11 +2920,18 @@ DRIVE_MARKER_LINES=40
 # and the guarded one at the top (`gate_refuse.sh`). A superset is the safe
 # direction — an extra file in the key costs a re-key, a missing one costs a
 # reuse that lied.
+# A shim gate sources nothing: its package and the runner's `LIBRARIES` stand in (ledger.drive_parts).
 drive_check_sh_sources() {
-    local file=$1
+    local file=$1 found runner
     [ -r "$file" ] || return 1
-    sed -n 's|^[[:space:]]*\.[[:space:]]\{1,\}\(scripts/[A-Za-z0-9_./-]*\.sh\).*|\1|p' "$file" |
-        LC_ALL=C sort -u
+    found=$(sed -n 's|^[[:space:]]*\.[[:space:]]\{1,\}\(scripts/[A-Za-z0-9_./-]*\.sh\).*|\1|p' "$file" |
+        LC_ALL=C sort -u)
+    runner="${file%scripts/check.sh}quality/djb/legs/_run.py"
+    if [ -z "$found" ] && [ -r "$runner" ]; then
+        found=$(printf 'quality/djb/\n'
+            sed -n 's|^    "\(scripts/[A-Za-z0-9_./-]*\.sh\)",$|\1|p' "$runner" | LC_ALL=C sort -u)
+    fi
+    [ -n "$found" ] && printf '%s\n' "$found"
 }
 
 # ---- the machine half, and why a BOX declares an IMAGE ----------------------
@@ -2689,7 +2967,7 @@ drive_check_sh_sources() {
 # THE OVERRIDE IS THE DRIVES', AND IT IS REFUSED WHEN RELATIVE, for
 # `gate_ledger_path`'s reason one axis over: a machine file resolved against
 # whatever directory a caller left behind is a key input nobody can name.
-DRIVE_MACHINE_FILE_DEFAULT=/etc/djb/image-id
+DRIVE_MACHINE_FILE_DEFAULT=$GATE_BOX_MARKER # the one box marker, named once at the top of this file
 drive_machine_file() {
     if [ -n "${DJB_DRIVE_MACHINE_FILE:-}" ]; then
         case "${DJB_DRIVE_MACHINE_FILE}" in
@@ -2776,7 +3054,7 @@ drive_marker_line() {
 #
 # A CITATION IS NOT A SUBJECT, and the floor cannot tell them apart. The floor
 # reads paths the body SPELLS, and a drive that explains itself spells paths it
-# never touches: `test_rung_start.sh` names `scripts/tests/test_fe_leg.sh` as
+# never touches: `test_rung_start.sh` names `quality/tests/test_fe_leg.py` as
 # "the shim pattern it uses for the same reason", and `test_verify_start.sh`
 # names `scripts/check.sh` in three paragraphs about what a clone of a verifier
 # cannot run. Declared, those become key inputs: every rung that moves a byte in
@@ -2838,10 +3116,10 @@ drive__expand() {
 
 # drive_drawer_globs — the reserved DRAWER patterns, read from their ONE home.
 #
-# THE HOME IS `scripts/divergence_census.sh`'s `DRAWER_GLOBS`, and it says so
+# THE HOME IS `quality/djb/rituals/divergence.py`'s `DRAWER_GLOBS`, and it says so
 # itself: "one home for `which paths are the drawers`, not two of either". The
-# line is READ rather than sourced — the census is an executable whose body
-# runs a census — and it is read as TEXT, never expanded: every member is a
+# tuple is READ as text rather than imported — this library runs on the
+# stdlib floor with no package — and it is never expanded: every member is a
 # pathname pattern the shell would happily glob against the tree it is standing
 # in, which is the exact defect the census's own `set -f` exists to close.
 #
@@ -2849,41 +3127,26 @@ drive__expand() {
 # line must say so at exit 2, because the alternative — judging no path as a
 # drawer — is the silently-passing direction.
 drive_drawer_globs() {
-    [ -r scripts/divergence_census.sh ] || return 1
-    awk -F"'" '/^DRAWER_GLOBS=/ { print $2; exit }' scripts/divergence_census.sh |
-        grep . || return 1
+    [ -r quality/djb/rituals/divergence.py ] || return 1
+    awk -F'"' '/^DRAWER_GLOBS = \(/ { s = ""; for (i = 2; i < NF; i += 2) s = s (s == "" ? "" : " ") $i; print s; exit }' \
+        quality/djb/rituals/divergence.py | grep . || return 1
 }
 
 # drive_absorbed_paths — the fold's ABSORBED list, read from its one home.
 #
-# THE HOME IS `scripts/pm_fold.sh`'s `FOLD_ABSORBED_PATHS`, and the class it
+# THE HOME IS `quality/djb/rituals/fold.py`'s `ABSORBED_PATHS`, and the class it
 # names is exactly the one this reader wants: a derived file written from
 # OUTSIDE this checkout that no step of the fold can regenerate, so it is the
 # one kind of declared path that can legitimately be missing from a tree. The
-# assignment is READ rather than sourced — pm_fold is an executable whose body
-# folds — and the reader handles the one-line and the multi-line quoted form,
-# because `DERIVED_PATHS` beside it is already multi-line and this list is a
-# strict subset of that one.
+# tuple is READ as text rather than imported — this library runs on the
+# stdlib floor with no package — and it is a strict subset of the fold's derived paths.
 #
 # UNREADABLE IS NOT "EVERYTHING IS ABSORBED". The caller falls back to its
 # refusal when this answers nothing, which is the failing-closed direction.
 drive_absorbed_paths() {
-    [ -r scripts/pm_fold.sh ] || return 1
-    awk '
-    BEGIN { q = sprintf("%c", 39); pfx = "FOLD_ABSORBED_PATHS=" q }
-    {
-        line = $0
-        if (!inside) {
-            if (index(line, pfx) != 1) next
-            inside = 1
-            line = substr(line, length(pfx) + 1)
-        }
-        p = index(line, q)
-        if (p > 0) { line = substr(line, 1, p - 1); done = 1 }
-        if (length(line)) print line
-        if (done) exit
-    }
-    ' scripts/pm_fold.sh | grep . || return 1
+    [ -r quality/djb/rituals/fold.py ] || return 1
+    awk -F'"' '/^ABSORBED_PATHS = \(/ { for (i = 2; i < NF; i += 2) print $i; exit }' \
+        quality/djb/rituals/fold.py | grep . || return 1
 }
 
 # drive_absorbed_path <path> — true when that exact path is in the list above.
@@ -3031,6 +3294,78 @@ $1
 EOF
 }
 
+#: The module the `--loop` drives session runs every drive through: it, and what it loads, judge every drive.
+DRIVE_JUDGE_ENTRY=quality/tests/test_drives.py
+
+# drive_judge_paths <listing> — `<blob> <path>` of the judge: the entry, every non-test module and every fixture module under its
+# directory, and the `quality.*` modules they import, closed; nothing when the entry is not in the listing.
+# does-not-cover: pyproject.toml's pytest settings, a first-party import outside `quality.*` (`apps.core.roads`) and a relative import — the trigger is the judge's first `from .` line.
+drive_judge_paths() {
+    local listing=$1 dir have next blob path mods
+    dir=${DRIVE_JUDGE_ENTRY%/*}/
+    have=$(awk -F '\t' -v dir="$dir" -v entry="$DRIVE_JUDGE_ENTRY" '
+        { split($1, m, " "); p = $2 }
+        p == entry || (index(p, dir) == 1 && p ~ /\.py$/ && (p !~ /(^|\/)test_[^\/]*\.py$/ || index(p, dir "fixtures/") == 1)) { print m[3] " " p }
+    ' "$listing") || return 1
+    case "$have" in
+    *" ${DRIVE_JUDGE_ENTRY}"*) ;;
+    *) return 0 ;;
+    esac
+    next=$have
+    while [ -n "$next" ]; do
+        mods=""
+        while read -r blob path; do
+            git cat-file -e "$blob" 2>/dev/null || return 1
+            mods="${mods}$(git cat-file blob "$blob" | awk '
+                /^[ \t]*from quality(\.[A-Za-z0-9_]+)* import / || /^[ \t]*import quality(\.[A-Za-z0-9_]+)*/ { print $2 }
+                /^[ \t]*from quality(\.[A-Za-z0-9_]+)* import / { for (i = 4; i <= NF; i++) { w = $i; gsub(/[(),]/, "", w); if (w ~ /^[A-Za-z_]/ && $(i - 1) != "as") print $2 "." w } }
+            ')
+"
+        done <<JUDGE
+$next
+JUDGE
+        next=$(
+            {
+                printf '%s\n' "$mods" | awk 'NF {
+                    n = split($0, part, ".")
+                    stem = part[1]
+                    print "want " stem "/__init__.py"
+                    for (i = 2; i <= n; i++) { stem = stem "/" part[i]; print "want " stem "/__init__.py" }
+                    print "want " stem ".py"
+                }'
+                printf '%s\n' "$have" | awk 'NF { print "have " $0 }'
+                awk -F '\t' '{ split($1, m, " "); print "blob " m[3] " " $2 }' "$listing"
+            } | awk '
+                $1 == "want" { want[$2] = 1; next }
+                $1 == "have" { seen[$2 " " $3] = 1; next }
+                ($3 in want) && !(($2 " " $3) in seen) { print $2 " " $3 }'
+        )
+        [ -z "$next" ] || have=$(printf '%s\n%s\n' "$have" "$next")
+    done
+    printf '%s\n' "$have" | LC_ALL=C sort -k2
+}
+
+# drive_judge_digest <listing> — the digest of `drive_judge_paths`, `absent` when the listing has no judge.
+# Memoised through the environment on the listing's `quality/` lines, as `drive_machine_digest` is; call it once in the leg's own shell.
+DRIVE_JUDGE_MEMO=${DRIVE_JUDGE_MEMO:-}
+drive_judge_digest() {
+    local paths seen digest
+    seen=$(awk -F '\t' 'index($2, "quality/") == 1' "$1" | sha256_of) || return 1
+    if [ "${DRIVE_JUDGE_MEMO%% *}" = "$seen" ]; then
+        printf '%s\n' "${DRIVE_JUDGE_MEMO#* }"
+        return 0
+    fi
+    paths=$(drive_judge_paths "$1") || return 1
+    if [ -z "$paths" ]; then
+        digest=absent
+    else
+        digest=$(printf '%s\n' "$paths" | sha256_of) || return 1
+    fi
+    DRIVE_JUDGE_MEMO="${seen} ${digest}"
+    export DRIVE_JUDGE_MEMO
+    printf '%s\n' "$digest"
+}
+
 # drive_key <drive file> <tree> <listing> — `ok <key> <parts>` on stdout, or
 # `err <reason>`; exit 0 or 1.
 #
@@ -3064,8 +3399,10 @@ drive_key() {
     */*) preamble="${file%/*}/drive_preamble.sh" ;;
     *) preamble="drive_preamble.sh" ;;
     esac
+    # A drive outside scripts/tests/ (deploy/tests/) sources the checkout's one preamble, so that is the one in its key.
+    [ -r "$preamble" ] || preamble="scripts/tests/drive_preamble.sh"
     [ -r "$preamble" ] || {
-        printf 'err there is no drive_preamble.sh beside %s — it is always in the key\n' "$file"
+        printf 'err there is no drive_preamble.sh beside %s nor at scripts/tests/ — it is always in the key\n' "$file"
         return 1
     }
     # A DECLARATION OF `scripts/check.sh` CARRIES ITS LIBRARIES WITH IT. The
@@ -3093,7 +3430,7 @@ drive_key() {
     cites_line=$(drive_cites_line "$file") && cites=${cites_line#*cites:}
     cited_count=$(printf '%s' "$cites" | tr ' 	' '\n\n' | grep -c . || true)
     drawers=$(drive_drawer_globs) || {
-        printf 'err the reserved drawer globs could not be read from scripts/divergence_census.sh (`DRAWER_GLOBS=`) — the floor cannot judge a drawer path it cannot name, and judging none is the silently-passing direction\n'
+        printf 'err the reserved drawer globs could not be read from quality/djb/rituals/divergence.py (`DRAWER_GLOBS = (`) — the floor cannot judge a drawer path it cannot name, and judging none is the silently-passing direction\n'
         return 1
     }
     uncovered=$(drive__uncovered "$listing" "$decls $cites $file $preamble" "$file" "$drawers")
@@ -3146,6 +3483,14 @@ cites ${cites_line:-<none>}"
 ${label%%:*} ${one}"
         parts="${parts}${parts:+,}${label#*:}:$(printf '%s' "$one" | cut -c1-12)"
     done
+    # The judge is in every key, so a change to how a drive is judged re-runs every drive.
+    one=$(drive_judge_digest "$listing") || {
+        printf 'err the judge %s and what it loads could not be read from the measured tree\n' "$DRIVE_JUDGE_ENTRY"
+        return 1
+    }
+    text="${text}
+judge ${one}"
+    parts="${parts},${DRIVE_JUDGE_ENTRY%/*}/:$(printf '%s' "$one" | cut -c1-12)"
     # shellcheck disable=SC2086
     sorted=$(printf '%s\n' $decls | LC_ALL=C sort -u)
     for d in $sorted; do
@@ -3193,8 +3538,8 @@ ${d} ${digest}"
         return 1
     }
     # THE `parts` LABEL STAYS `machine:` AND CARRIES THE DIGEST'S FIRST 12 HEX,
-    # on a box exactly as on a laptop. `drive_moved_component` is an attributor
-    # over these pairs and knows `machine` by name; a label that changed shape
+    # on a box exactly as on a laptop. `quality/djb/ledger.py::_replay_drive`
+    # reads these pairs and knows `machine` by name; a label that changed shape
     # on a box would make "the machine moved" unreadable on exactly the machines
     # this change exists for. WHICH machine it is goes in the FIFTH field below,
     # where nothing keys on it.
@@ -3287,31 +3632,23 @@ EOF
     return "$rc"
 }
 
-# drive_ledger_record <key> <name> <took> <tree> <parts> — one appended line.
+# drive_ledger_record <key> <name> <took> <tree> <parts> — one row of kind
+# `drive`, through `ledger_append`; the drive's name is the row's positional
+# subject, as it always was.
 #
-# SAME FILE, NEW KIND IN FIELD 3. `gate_ledger_lookup` matches ` <tree> full `
-# and `gate_run_lookup` reads field 4 of a `full` row, so neither can reach one
-# of these however a key is chosen — including a key that IS a tree sha, which
-# `test_loop_ledger.sh` plants on purpose. The partition's separate file is
-# deliberately NOT the precedent here: one ledger, one `gate_local_path`, one
-# shared-across-worktrees rule.
+# THE KIND IS THE WALL BETWEEN POPULATIONS. `gate_ledger_lookup` asks for kind
+# `full` and `gate_run_lookup` for kind `run`, so neither can reach one of these
+# however a key is chosen — including a key that IS a tree sha, which
+# `test_loop_ledger.sh` plants on purpose.
 drive_ledger_record() {
-    local key=$1 name=$2 took=$3 tree=$4 parts=$5 path
-    path=$(gate_ledger_path) || return 1
-    printf '%s %s drive %s %s exit=0 took=%s tree=%s parts=%s\n' \
-        "$GATE_LEDGER_SCHEMA" "$key" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        "$name" "$took" "$tree" "$parts" >>"$path"
+    local key=$1 name=$2 took=$3 tree=$4 parts=$5
+    ledger_append drive "$key" "$name" exit=0 "took=${took}" "tree=${tree}" "parts=${parts}"
 }
 
 # drive_ledger_lookup <key> → the most recent drive row at this key, exit 0; 1
 # when nothing has been banked for it.
 drive_ledger_lookup() {
-    local key=$1 path line
-    path=$(gate_ledger_path) || return 1
-    [ -f "$path" ] || return 1
-    line=$(grep -F " ${key} drive " "$path" | grep "^$GATE_LEDGER_SCHEMA " | tail -1)
-    [ -n "$line" ] || return 1
-    printf '%s\n' "$line"
+    ledger_last drive "$1"
 }
 
 # drive_ledger_last_for <name> → the most recent drive row for this drive at ANY
@@ -3319,10 +3656,8 @@ drive_ledger_lookup() {
 # its parts: without a previous row there is nothing to diff, and the leg says
 # so rather than inventing a reason.
 drive_ledger_last_for() {
-    local name=$1 path line
-    path=$(gate_ledger_path) || return 1
-    [ -f "$path" ] || return 1
-    line=$(awk -v n="$name" '$1 == "v1" && $3 == "drive" && $5 == n { last = $0 } END { if (last != "") print last }' "$path")
+    local name=$1 line
+    line=$(ledger_rows drive | awk -v n="$name" '$5 == n { last = $0 } END { if (last != "") print last }') || return 1
     [ -n "$line" ] || return 1
     printf '%s\n' "$line"
 }
@@ -3336,12 +3671,10 @@ drive_ledger_last_for() {
 # another tree after a loop would read as "ran", and the drives a loop ran
 # green on this exact tree would read as "not" when an older row sorts later.
 drive_ledger_green_at() {
-    local name=$1 tree=$2 path
+    local name=$1 tree=$2 line
     [ -n "$name" ] && [ -n "$tree" ] || return 1
-    path=$(gate_ledger_path) || return 1
-    [ -f "$path" ] || return 1
-    awk -v n="$name" -v t="tree=${tree}" '
-        $1 == "v1" && $3 == "drive" && $5 == n {
+    line=$(ledger_rows drive | awk -v n="$name" -v t="tree=${tree}" '
+        $5 == n {
             green = 0; here = 0
             for (i = 6; i <= NF; i++) {
                 if ($i == "exit=0") green = 1
@@ -3349,44 +3682,10 @@ drive_ledger_green_at() {
             }
             if (green && here) last = $0
         }
-        END { if (last == "") exit 1; print last }
-    ' "$path"
-}
-
-# drive_row_parts <row> — the `parts=` field's value, or nothing.
-# AN EOF READER, NEVER A PIPE INTO AN EARLY-EXIT awk. The producer here is one
-# `printf` and could never fill a pipe buffer, and the shape is still the one
-# `scripts/tests/test_pipefail_readers.sh` counts across this whole population —
-# a census that admitted "this one is safe" would be a census nobody can read.
-drive_row_parts() {
-    awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^parts=/) { sub(/^parts=/, "", $i); v = $i } } END { if (v != "") print v }' <<EOF
-$1
-EOF
-}
-
-# drive_moved_component <old parts> <new parts> — the first key component whose
-# digest differs, by NAME, so the miss line can say which input moved. Every
-# component's name is a path (the drive file, the preamble beside it, each
-# declared path) except `machine`, which is bash/git/uname.
-drive_moved_component() {
-    awk -v oldp="$1" -v newp="$2" '
-    BEGIN {
-        no = split(oldp, o, ",")
-        for (i = 1; i <= no; i++) {
-            k = o[i]; sub(/:[^:]*$/, "", k)
-            v = o[i]; sub(/^.*:/, "", v)
-            od[k] = v
-        }
-        nn = split(newp, nw, ",")
-        for (i = 1; i <= nn; i++) {
-            k = nw[i]; sub(/:[^:]*$/, "", k)
-            v = nw[i]; sub(/^.*:/, "", v)
-            seen[k] = 1
-            if (!(k in od)) { print k; exit }
-            if (od[k] != v) { print k; exit }
-        }
-        for (k in od) if (!(k in seen)) { print k; exit }
-    }'
+        END { if (last != "") print last }
+    ') || return 1
+    [ -n "$line" ] || return 1
+    printf '%s\n' "$line"
 }
 
 # ---- the partition's verdicts -----------------------------------------
@@ -3405,9 +3704,12 @@ drive_moved_component() {
 # is a miss and never a partial match; and a key this file cannot parse is
 # EXIT 2, not a miss — a mistyped invocation is never a silent skip.
 #
-# `DJB_PARTITION_LEDGER` points these at a scratch file, which is how §8's
-# canaries forge a stale row without the forge ever being able to become a
-# banked verdict.
+# THE ROWS ARE THE ONE LEDGER'S, kind `partition`. `DJB_PARTITION_LEDGER`, the
+# override §8's canaries forge a stale row through, is honoured here as an
+# ALIAS of `DJB_GATE_LEDGER` for these two functions only — and refused when
+# relative, as that one is (the asymmetry that let this one accept a path
+# nobody could name closes). `quality/partition.py` still spells the old name;
+# when it spells `DJB_GATE_LEDGER` the alias goes, and with it the variable.
 
 #: `<64 hex>:<64 hex>` and nothing else. A row that is not this shape is not a
 #: row this gate wrote, and reading it as an ordinary miss would turn a corrupt
@@ -3415,51 +3717,39 @@ drive_moved_component() {
 #: also the direction in which nobody ever finds out.
 PARTITION_KEY_RE='^[0-9a-f]{64}:[0-9a-f]{64}$'
 
-partition_ledger_path() {
-    if [ -n "${DJB_PARTITION_LEDGER:-}" ]; then
-        printf '%s\n' "$DJB_PARTITION_LEDGER"
-        return 0
-    fi
-    gate_local_path djb-partition-verdicts
-}
-
-# partition_ledger_record <key> — one line, appended, schema first.
+# partition_ledger_record <key> — one row of kind `partition`.
 partition_ledger_record() {
-    local key=$1 path
+    local key=$1
+    local DJB_GATE_LEDGER="${DJB_GATE_LEDGER:-${DJB_PARTITION_LEDGER:-}}"
     # `grep PATTERN >/dev/null`, NEVER `| grep -q`, and this is a measured class
     # rather than a style note (GQ-1's reproduction). `-q` makes grep exit the
     # instant it matches, which closes the pipe under the producer; a producer
     # that has more than the 64KiB pipe buffer still to write then takes SIGPIPE
     # and dies 141, and `set -o pipefail` hands 141 to the caller — a MATCH
-    # reported as a failure, deterministically, above the buffer size. This
-    # producer is one key and could never reach 64KiB, so the fix here is the
-    # class being closed where it lives rather than a bug being repaired; the
-    # site that could reach it is the one this file's neighbour fixed beside it.
+    # reported as a failure, deterministically, above the buffer size.
     printf '%s' "$key" | grep -E "$PARTITION_KEY_RE" >/dev/null || {
         echo "partition_ledger_record: '$key' is not a partition key" >&2
         return 2
     }
-    path=$(partition_ledger_path) || return 1
-    printf '%s %s partition %s caller=%s\n' \
-        "$GATE_LEDGER_SCHEMA" "$key" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(gate_caller)" >>"$path"
+    ledger_append partition "$key" "caller=$(gate_caller)"
 }
 
 # partition_ledger_lookup <key> → the most recent matching line on stdout,
 # exit 0; exit 1 when this key has no verdict; exit 2 when the ledger holds a
 # line whose key is not a key.
 partition_ledger_lookup() {
-    local key=$1 path line bad
-    path=$(partition_ledger_path) || return 1
-    [ -f "$path" ] || return 1
-    # The unparseable clause first, and over the WHOLE file: a corrupt row is a
-    # statement about this ledger's health, not about the key being asked for,
-    # so it outranks both the hit and the miss.
-    bad=$(awk -v schema="$GATE_LEDGER_SCHEMA" '$1==schema && $3=="partition" && $2 !~ /^[0-9a-f]{64}:[0-9a-f]{64}$/ {print; exit}' "$path")
+    local key=$1 rows bad line
+    local DJB_GATE_LEDGER="${DJB_GATE_LEDGER:-${DJB_PARTITION_LEDGER:-}}"
+    rows=$(ledger_rows partition) || return 1
+    # The unparseable clause first, and over the WHOLE population: a corrupt
+    # row is a statement about this ledger's health, not about the key being
+    # asked for, so it outranks both the hit and the miss.
+    bad=$(awk '$2 !~ /^[0-9a-f]{64}:[0-9a-f]{64}$/ && NF { print; exit }' <<<"$rows")
     if [ -n "$bad" ]; then
         echo "partition_ledger_lookup: the ledger holds a row whose key cannot be parsed: $bad" >&2
         return 2
     fi
-    line=$(grep -F " $key partition " "$path" | grep "^$GATE_LEDGER_SCHEMA " | tail -1)
+    line=$(awk -v key="$key" '$2 == key { last = $0 } END { if (last != "") print last }' <<<"$rows")
     [ -n "$line" ] || return 1
     printf '%s\n' "$line"
 }
@@ -3494,7 +3784,7 @@ partition_ledger_lookup() {
 #   2. THE ENVIRONMENT FINGERPRINT — see `loop_env_fingerprint`. The suite runs
 #      against a database, a bucket and a set of installed distributions, and
 #      none of those is in the tree hash.
-#   3. THE CANONICAL SCOPE — `scripts/loop_tier.sh`'s `LOOP_SCOPE_CANONICAL`:
+#   3. THE CANONICAL SCOPE — `quality/djb/scope.py`'s `LOOP_SCOPE_CANONICAL`:
 #      the mode, the sorted scope labels and the digest of the always-on
 #      declaration. THIS FIELD IS THE ONE THAT MAKES THE CACHE SOUND. A `--loop`
 #      verdict is not a claim about a tree, it is a claim about a SELECTION over
@@ -3510,19 +3800,8 @@ partition_ledger_lookup() {
 # never hits once — a dead cache that still costs a hash. Adopted with its
 # reason, from the platform that measured it.
 #
-# WHAT `head=` BUYS THE KEY IS UNSTATED, AND THAT ABSENCE IS RECORDED RATHER
-# THAN PAPERED OVER. The paragraph above argues the MERGE-BASE and nothing
-# argues HEAD. Read against the other two inputs, HEAD looks like it can only
-# ever invalidate: the measured tree already carries the CONTENT (it is a
-# content address over a scratch index, working tree included), so two runs
-# whose HEADs differ and whose trees agree measured identical bytes — and the
-# key says miss anyway. The search for a reason was made on 2026-09-07 and came
-# back empty; removing it is a KEY change, which invalidates every banked row in
-# every checkout once and belongs to the partition-closure key redesign that
-# will pay that cost once and deliberately, not here. What this file does about
-# it TODAY is the attributor below: the row now carries the components, so the
-# attributor can say `tree` where the honest answer is `tree`, and the reader
-# stops being told two things moved when one did.
+# HEAD IS NOT IN THE KEY: the measured tree carries the content, so `head=` rides the row (the attributor's
+# distance) and a commit that keeps the tree keeps the verdict.
 #
 # WHAT THE `docs-only` COUNTER COUNTS, AND WHAT A SECOND OCCURRENCE LOOKS LIKE.
 # The attributor's `tree` token now carries a line saying how many paths moved
@@ -3586,18 +3865,26 @@ LOOP_ENV_COMPONENT_FIELDS='env-file excluded dists env-reads head merge-base'
 #: alongside one of the other three is two things moving and neither vouches.
 LOOP_ENV_REV_FIELDS='head merge-base'
 
-# `DJB_LOOP_LEDGER` points these at a scratch file, which is how the drive
-# forges rows — a stale one, a future-schema one, a corrupt one — without the
-# forge ever being able to become a banked verdict in the real checkout. The
-# same seam `DJB_PARTITION_LEDGER` is for the partition's rows, and for the same
-# reason: a drive that wrote into the real common git dir would be planting
-# verdicts in the tree it is testing.
-loop_ledger_path() {
-    if [ -n "${DJB_LOOP_LEDGER:-}" ]; then
-        printf '%s\n' "$DJB_LOOP_LEDGER"
-        return 0
-    fi
-    gate_local_path djb-loop-verdicts
+# THE ROWS ARE THE ONE LEDGER'S, kind `loop` (`ledger_append`/`ledger_rows`).
+# A drive forges them — a stale one, a future-schema one, a corrupt one — in a
+# scratch ledger through `DJB_GATE_LEDGER`, the one override, so the forge can
+# never become a banked verdict in the real checkout. The separate file this
+# section used to keep is retired; the forge and the verdict live in the one
+# file the one override moves.
+#
+# THE RETIRED OVERRIDE, `DJB_LOOP_LEDGER`, IS AN ALIAS OF THE ONE OVERRIDE FOR
+# THE LOOP KIND ALONE (`loop_ledger_override`), and refused when relative as
+# that one is — the asymmetry that let it name a file nobody could find closes.
+# It stays for the one consumer that still spells it, a drive another lane
+# owns (`quality/tests/test_scope.py`'s box-guard cases), and it goes
+# the day that drive spells `DJB_GATE_LEDGER`: an alias removed under a
+# consumer would point that consumer's reads at the REAL ledger.
+
+# loop_ledger_override — the one override, or the retired loop override as its
+# alias, for the length of the calling function (dynamic scope: every callee
+# reads it). Called as `local DJB_GATE_LEDGER; loop_ledger_override`.
+loop_ledger_override() {
+    DJB_GATE_LEDGER="${DJB_GATE_LEDGER:-${DJB_LOOP_LEDGER:-}}"
 }
 
 #: The sentinels a DERIVER puts beside itself to declare which `.env` keys it
@@ -3654,10 +3941,10 @@ LOOP_ENV_READS_OWNER='quality/partition.py'
 
 #: `DJB_LOOP_ENV_READS` — a file of names, one per line, exactly as the owner
 #: would print them. THE DRIVES' SEAM, the same pattern and the same disposition
-#: as `DJB_LOOP_LEDGER` above: a scratch checkout carries no `quality/` tree, so
+#: as `DJB_GATE_LEDGER` (the one ledger override): a scratch checkout carries no `quality/` tree, so
 #: without it no case could drive the value folding at all. It is a cache seam
 #: and not a boundary — this whole ledger is a cache and never a security
-#: boundary, which `scripts/tests/test_loop_ledger.sh` states in its own header.
+#: boundary, which `quality/tests/test_ledger.py` states in its own header.
 
 # loop_env_reads — a digest of the EFFECTIVE value of every name the suite reads
 # from the environment, on stdout, or the literal `no-census`.
@@ -3689,7 +3976,7 @@ LOOP_ENV_READS_OWNER='quality/partition.py'
 #     answer is never an empty answer: no key is derived and nothing is reused,
 #     the same disposition the distribution census takes below.
 loop_env_reads() {
-    local names python env_file digest
+    local names python env_file digest said
     if [ -n "${DJB_LOOP_ENV_READS:-}" ]; then
         [ -f "$DJB_LOOP_ENV_READS" ] || return 1
         names=$(cat "$DJB_LOOP_ENV_READS") || return 1
@@ -3701,7 +3988,14 @@ loop_env_reads() {
         # requirement two blocks down, where zero distributions is could-not-look.
         python=.venv/bin/python
         [ -x "$python" ] || return 1
-        names=$("$python" -m quality.partition env-reads 2>/dev/null) || return 1
+        said=$(mktemp "${TMPDIR:-/tmp}/env-reads.XXXXXX") || return 1
+        if ! names=$("$python" -m quality.partition env-reads 2>"$said"); then
+            echo "!! quality.partition env-reads did not answer" >&2
+            gate_tool_said "$said"
+            rm -f "$said"
+            return 1
+        fi
+        rm -f "$said"
     else
         printf 'no-census\n'
         return 0
@@ -3779,7 +4073,7 @@ loop_env_reads() {
 #     stands on: `read_env(overwrite=False)` lets an exported name win over it,
 #     so a key that hashed only the file was blind to every variable a terminal
 #     exported. This is the component that is neither the file nor the tree.
-#   * HEAD, and the MERGE-BASE with `refs/heads/main` — see the header.
+#   * the MERGE-BASE with `refs/heads/main` — see the header; HEAD is printed beside it, never hashed.
 loop_env_fingerprint() {
     local env_file=.env keys excluded dists head base venv site env_digest reads
     keys=$(loop_env_derived_keys)
@@ -3858,8 +4152,9 @@ loop_env_fingerprint() {
     # coordinates, which `LOOP_ENV_REV_FIELDS` keeps at the end.
     LOOP_ENV_COMPONENTS=$(printf 'env-file=%s excluded=%s dists=%s env-reads=%s head=%s merge-base=%s' \
         "$env_digest" "$excluded" "$dists" "$reads" "$head" "$base")
-    LOOP_ENV_FINGERPRINT=$(printf 'env=%s excluded=%s dists=%s reads=%s head=%s merge-base=%s\n' \
-        "$env_digest" "$excluded" "$dists" "$reads" "$head" "$base" |
+    # head= is printed and never hashed: a commit that keeps the tree keeps the verdict.
+    LOOP_ENV_FINGERPRINT=$(printf 'env=%s excluded=%s dists=%s reads=%s merge-base=%s\n' \
+        "$env_digest" "$excluded" "$dists" "$reads" "$base" |
         sha256_of)
     [ -n "$LOOP_ENV_FINGERPRINT" ] || return 1
     printf '%s\n' "$LOOP_ENV_FINGERPRINT"
@@ -3979,13 +4274,135 @@ loop_env_sync() {
 #: `loop-v1:<64 hex>` and nothing else.
 LOOP_KEY_RE='^loop-v1:[0-9a-f]{64}$'
 
-# loop_ledger_key <measured tree> <canonical scope> — the key on stdout.
-# Exit 0 derived · 1 could not look (which every caller turns into "no reuse and
-# no record", never into a gate verdict).
+#: The census whose `--prose` paths the loop key leaves out (rule 90); a checkout without it keys its whole tree.
+LOOP_KEY_PROSE_OWNER='quality/loop_key.py'
+
+#: The prose cache's bound (principle 10): each write evicts every entry older than this many days.
+LOOP_KEY_PROSE_MAX_AGE_DAYS=14
+
+# loop_key_prose — the paths the loop key leaves out, one per line; `no-census` where the checkout carries no census.
+# Exit 0 read · 2 could not look, with the `!!` sentence on stderr — never the whole tree, never an empty exclusion.
+# Invariant: a read is cached per measured tree (`djb-loop-key-prose/<tree>`); a refusal never is.
+# The cache is the census's answer, keyed by the tree it read, so it never goes stale — only old; it is evicted by age.
+# does-not-cover: a prose path a drive declares by EXACT name, or a leg reads by glob, is subtracted; a drive's directory or glob `# drives:` entry is kept (`loop_key_keep`, read from the tree).
+loop_key_prose() {
+    local top py tree cache="" out rc=0
+    top=$(git rev-parse --show-toplevel 2>/dev/null) || {
+        echo "!! COULD NOT LOOK: the loop key's prose census found no checkout here — no key" >&2
+        return 2
+    }
+    if [ ! -f "$top/$LOOP_KEY_PROSE_OWNER" ]; then
+        printf 'no-census\n'
+        return 0
+    fi
+    tree=$(cd "$top" && gate_measured_tree 2>/dev/null) || tree=""
+    if [ -n "$tree" ] && cache=$(cd "$top" && gate_local_path djb-loop-key-prose); then
+        cache="${cache}/${tree}"
+        if [ -f "$cache" ]; then
+            cat "$cache"
+            return 0
+        fi
+    fi
+    py="$top/.venv/bin/python"
+    [ -x "$py" ] || {
+        echo "!! COULD NOT LOOK: ${LOOP_KEY_PROSE_OWNER} has no interpreter at ${py} — no loop key" >&2
+        return 2
+    }
+    out=$(cd "$top" && "$py" -m quality.loop_key --prose) || rc=$?
+    [ "$rc" = 0 ] || {
+        echo "!! COULD NOT LOOK: python -m quality.loop_key --prose exited ${rc} — no loop key" >&2
+        return 2
+    }
+    if [ -n "$cache" ] && mkdir -p "${cache%/*}" 2>/dev/null; then
+        printf '%s\n' "$out" >"${cache}.$$" && mv -f "${cache}.$$" "$cache"
+        find "${cache%/*}" -type f -mtime "+${LOOP_KEY_PROSE_MAX_AGE_DAYS}" -exec rm -f {} + 2>/dev/null || true
+    fi
+    printf '%s\n' "$out"
+}
+
+# loop_key_keep <tree> <prose> — the prose paths a drive in <tree> (`scripts/tests`, `deploy/tests`) reaches by a
+# directory or glob entry on its `# drives:` line, one per line; read from the tree alone, so every consult derives it.
+# Exit 1 when the tree could not be listed.
+loop_key_keep() {
+    local tree=$1 prose=$2 dirs decls
+    dirs=$(git ls-tree -r -d --name-only "$tree" 2>/dev/null) || return 1
+    # One batch read of every drive's header; a `# drives:` line's entries, one per line.
+    decls=$(git ls-tree -r --name-only "$tree" -- scripts/tests deploy/tests 2>/dev/null |
+        awk -v t="$tree" '/\/test_[^\/]*\.sh$/ { print t ":" $0 }' |
+        git cat-file --batch 2>/dev/null |
+        awk -v n="$DRIVE_MARKER_LINES" '
+            /^[0-9a-f]+ blob [0-9]+$/ { line = 0; done = 0; next }
+            { line++ }
+            !done && line <= n && /^#[[:space:]]*drives:/ {
+                done = 1
+                sub(/^#[[:space:]]*drives:/, "")
+                m = split($0, w, /[ \t]+/)
+                for (i = 1; i <= m; i++) if (w[i] != "") print w[i]
+            }') || return 1
+    DJB_KEEP_DIRS="$dirs" DJB_KEEP_DECLS="$decls" awk '
+        function to_ere(p,   out, i, ch) {
+            sub(/\/$/, "", p); out = ""
+            for (i = 1; i <= length(p); i++) {
+                ch = substr(p, i, 1)
+                if (ch == "*") { if (substr(p, i + 1, 1) == "*") { out = out ".*"; i++ } else out = out "[^/]*" }
+                else if (index(".[]^$+?(){}|\\", ch) > 0) out = out "\\" ch
+                else out = out ch
+            }
+            return out
+        }
+        BEGIN {
+            nd = split(ENVIRON["DJB_KEEP_DIRS"], d, "\n"); for (i = 1; i <= nd; i++) isdir[d[i]] = 1
+            nk = split(ENVIRON["DJB_KEEP_DECLS"], k, "\n")
+            for (i = 1; i <= nk; i++) {
+                x = k[i]
+                if (x == "") continue
+                if (x ~ /\/$/ || index(x, "*") || (x in isdir)) re[++nr] = "^" to_ere(x) "(/|$)"
+            }
+        }
+        NF { for (j = 1; j <= nr; j++) if ($0 ~ re[j]) { print; break } }
+    ' <<<"$prose" | LC_ALL=C sort -u
+}
+
+# loop_key_tree <tree> — the loop key's tree: <tree> minus `loop_key_prose`, through the one subtraction site.
+# Exit 0 · 2 could not look (the census, or a tree this repository cannot read).
+loop_key_tree() {
+    local tree=$1 prose idx kt keep
+    [ -n "$tree" ] || return 2
+    prose=$(loop_key_prose) || return 2
+    # A glob is not a quote: prose a drive reaches by a directory or glob on its `# drives:` line stays in the key.
+    if [ "$prose" != no-census ] && [ -n "$prose" ]; then
+        keep=$(loop_key_keep "$tree" "$prose") || return 2
+        if [ -n "$keep" ]; then
+            prose=$(printf '%s\n' "$prose" | DJB_LOOP_KEY_KEEP="$keep" awk '
+                BEGIN { n = split(ENVIRON["DJB_LOOP_KEY_KEEP"], k, "\n"); for (i = 1; i <= n; i++) if (k[i] != "") drop[k[i]] = 1 }
+                !($0 in drop) { print }')
+        fi
+    fi
+    if [ "$prose" = no-census ] || [ -z "$prose" ]; then
+        printf '%s\n' "$tree"
+        return 0
+    fi
+    idx=$(mktemp "${TMPDIR:-/tmp}/djb-loop-key-index.XXXXXX") || return 2
+    rm -f "$idx"
+    if ! GIT_INDEX_FILE="$idx" git read-tree "$tree" >/dev/null 2>&1; then
+        rm -f "$idx"
+        echo "!! COULD NOT LOOK: tree ${tree} would not read — no loop key" >&2
+        return 2
+    fi
+    kt=$(gate__subtract_and_write "$idx" "$prose") || kt=""
+    rm -f "$idx"
+    [ -n "$kt" ] || return 2
+    printf '%s\n' "$kt"
+}
+
+# loop_ledger_key <measured tree> <canonical scope> — the key on stdout: `loop_key_tree`, the environment, the scope.
+# Exit 0 derived · 1 could not look (every caller: no reuse and no record) · 2 the prose census could not look.
+# The full gate keys the measured tree whole: its verdict names the tree pushed, and the docs-only road narrows its work, never its key.
 loop_ledger_key() {
     local tree=$1 scope=$2 fingerprint digest
     [ -n "$tree" ] || return 1
     [ -n "$scope" ] || return 1
+    tree=$(loop_key_tree "$tree") || return 2
     # An always-on declaration nobody could read must never become a hit. It
     # still produces a key — a non-deterministic one would be worse — and the
     # RECORD path below refuses it, so no row carrying it can ever exist.
@@ -3994,6 +4411,65 @@ loop_ledger_key() {
         sha256_of)
     [ -n "$digest" ] || return 1
     printf '%s:%s\n' "$LOOP_LEDGER_SCHEMA" "$digest"
+}
+
+# gate_docs_only_delta <from> <to> — `docs <path>` or `code <path>` for every path changed between two trees or commits:
+# docs only when the declared list admits it AND the loop key's prose census (this checkout) has it as prose — the one
+# decider every by-tree consult asks. Exit 2 when the delta or the census could not be read.
+gate_docs_only_delta() {
+    local from=$1 to=$2 delta prose p
+    delta=$(changed_between "$from" "$to" 2>/dev/null) || return 2
+    prose=$(loop_key_prose 2>/dev/null) || return 2
+    while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        if gate_docs_only_admits "$p" "$from" "$to" &&
+            { [ "$prose" = no-census ] || grep -xF -- "$p" >/dev/null <<<"$prose"; }; then
+            printf 'docs %s\n' "$p"
+        else
+            printf 'code %s\n' "$p"
+        fi
+    done <<<"$delta"
+}
+
+# gate_ledger_cli <verb> [args…] — `python -m quality.djb.ledger <verb>` from beside this library, under the stdlib floor.
+# Exit: the verb's · 2 when the module will not import (the `!!` sentence names why).
+GATE_LEDGER_CLI='import sys
+sys.path.insert(0, sys.argv.pop(1))
+try:
+    from quality.djb.ledger import main
+except ImportError as exc:
+    print(f"!! COULD NOT LOOK: quality.djb.ledger would not import from {sys.path[0]} — {exc}", file=sys.stderr)
+    sys.exit(2)
+sys.exit(main())'
+gate_ledger_cli() { python3 -E -S -c "$GATE_LEDGER_CLI" "$GATE_LEDGER_HOME" "$@"; }
+
+# loop_key_derive <tree> <scope> — `loop_ledger_key` into LOOP_LEDGER_KEY_DERIVED in THIS shell; on its exit 2 the
+# census's own `!!` cause into LOOP_KEY_CANNOT. Exit: `loop_ledger_key`'s. Its stderr is passed through.
+LOOP_LEDGER_KEY_DERIVED=""
+LOOP_KEY_CANNOT=""
+loop_key_derive() {
+    local err rc=0
+    LOOP_LEDGER_KEY_DERIVED=""
+    LOOP_KEY_CANNOT=""
+    err=$(mktemp "${TMPDIR:-/tmp}/djb-loop-key-err.XXXXXX") || {
+        LOOP_KEY_CANNOT="no scratch file to hold the key derivation's refusal"
+        return 2
+    }
+    LOOP_LEDGER_KEY_DERIVED=$(loop_ledger_key "$1" "$2" 2>"$err") || rc=$?
+    cat "$err" >&2
+    if [ "$rc" = 2 ]; then
+        LOOP_KEY_CANNOT=$(sed -n 's/^!! COULD NOT LOOK: //p' "$err" | sed -n '1p')
+        [ -n "$LOOP_KEY_CANNOT" ] || LOOP_KEY_CANNOT="the loop key's census exited 2 and said nothing"
+    fi
+    rm -f "$err"
+    return "$rc"
+}
+
+# loop_key_cannot_banner — the `!!` line a `--loop` prints where its key could not look, naming LOOP_KEY_CANNOT.
+# The cache could not look; the legs' verdict stands and nothing was consulted or banked (the consult never exits 2).
+loop_key_cannot_banner() {
+    echo "!! COULD NOT LOOK: no loop key — ${LOOP_KEY_CANNOT:-unstated}"
+    echo "   The ledger was neither consulted nor banked; the legs' own verdict stands."
 }
 
 # loop_key_moved <tree0> <env0> <parts0> <tree1> <env1> <parts1> <scope>
@@ -4080,7 +4556,9 @@ loop_key_moved() {
 # bytes" is found by walking `reuse=` to the first row that has none. A reader
 # counting `passes=` across rows is counting claims, never pytest invocations.
 loop_ledger_record() {
-    local key=$1 scope=$2 passes=${3:-1} tree=${4:-} env=${5:-} reuse=${6:-} path
+    local DJB_GATE_LEDGER="${DJB_GATE_LEDGER:-}"
+    loop_ledger_override
+    local key=$1 scope=$2 passes=${3:-1} tree=${4:-} env=${5:-} reuse=${6:-}
     printf '%s' "$key" | grep -E "$LOOP_KEY_RE" >/dev/null || {
         echo "loop_ledger_record: '$key' is not a loop key — nothing recorded" >&2
         return 2
@@ -4095,7 +4573,6 @@ loop_ledger_record() {
         return 2
         ;;
     esac
-    path=$(loop_ledger_path) || return 1
     # `tree=` AND `env=` GO AFTER `passes=`, for the reason `passes=` itself
     # went after `scope=`: appending leaves every pre-existing line parsing
     # exactly as it did, so a row written before this field existed is still a
@@ -4140,17 +4617,18 @@ loop_ledger_record() {
     # Nothing limits that chain's length; the row says what it stands on and the
     # readouts reader can walk it.
     #
-    # THE THIRD FIELD STAYS THE LITERAL `loop`, and that is not decoration:
-    # `scripts/verify_start.sh`'s LOOP SEED matches `^loop-v1 loop-v1:<64> loop `
-    # before it copies a row into a verifier's clone, so a reuse row spelled
-    # into that position would be a row no verifier could ever inherit.
-    local components="${LOOP_ENV_COMPONENTS:-}"
-    printf '%s %s loop %s caller=%s scope=%s passes=%s tree=%s env=%s%s%s%s\n' \
-        "$LOOP_LEDGER_SCHEMA" "$key" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(gate_caller)" \
-        "$(printf '%s' "$scope" | tr '\n ' '__')" "$passes" \
-        "${tree:-unstated}" "${env:-unstated}" \
-        "${components:+ $components}" "$(gate_ledger_cost_fields)" \
-        "${reuse:+ reuse=$reuse}" >>"$path"
+    # THE KIND IS `loop`, and that is not decoration: `scripts/verify_start.sh`'s
+    # LOOP SEED copies exactly the rows of this kind into a verifier's clone, so
+    # a reuse row of any other kind would be a row no verifier could inherit.
+    # `key-tree=` last, and only where the key's tree is not `tree=`: what `loop_ledger_tree_row` matches a prose-only move on.
+    local components="${LOOP_ENV_COMPONENTS:-}" ktree=""
+    if [ -n "$tree" ]; then
+        ktree=$(loop_key_tree "$tree" 2>/dev/null) || ktree=""
+        [ "$ktree" != "$tree" ] || ktree=""
+    fi
+    local -a fields
+    read -r -a fields <<<"caller=$(gate_caller) scope=$(printf '%s' "$scope" | tr '\n ' '__') passes=${passes} tree=${tree:-unstated} env=${env:-unstated}${components:+ $components}$(gate_ledger_cost_fields)${reuse:+ reuse=$reuse}${ktree:+ key-tree=$ktree}"
+    ledger_append loop "$key" "${fields[@]}"
 }
 
 # loop_component_value <fields line> <name> — the value of ` <name>=<v>` on
@@ -4225,16 +4703,11 @@ loop_components_malformed() {
 # ledger saying how many rows it arrived with and where from; without that note
 # the seeded count is 0 and the sentence says so rather than guessing.
 loop_ledger_census() {
+    local DJB_GATE_LEDGER="${DJB_GATE_LEDGER:-}"
+    loop_ledger_override
     local path rows note seeded source
-    path=$(loop_ledger_path) || return 1
-    # `grep -c` PRINTS the count and EXITS 1 when the count is zero, so a
-    # `|| printf '0'` fallback appends a second zero and the census reads "0 0".
-    # Measured on the first draft of this function. The status is what the
-    # fallback must catch, never the output.
-    rows=0
-    if [ -f "$path" ]; then
-        rows=$(grep -c "^$LOOP_LEDGER_SCHEMA " "$path" 2>/dev/null) || rows=0
-    fi
+    path=$(gate_ledger_path) || return 1
+    rows=$(ledger_rows loop | awk 'END { print NR }') || rows=0
     note="${path}-seed"
     if [ -f "$note" ]; then
         seeded=$(sed -n 's/^seeded=\([0-9][0-9]*\).*/\1/p' "$note" | tail -1)
@@ -4281,7 +4754,7 @@ loop_attribute_head_detail() {
         printf 'since banked head: not derivable (%s is not an ancestor of HEAD)\n' "$short"
         return 0
     fi
-    files=$(git diff --name-only "$h" HEAD 2>/dev/null) || {
+    files=$(changed_between "$h" HEAD 2>/dev/null) || {
         printf 'since banked head: not derivable (git diff %s HEAD could not run)\n' "$short"
         return 0
     }
@@ -4290,10 +4763,7 @@ loop_attribute_head_detail() {
     while IFS= read -r p; do
         [ -n "$p" ] || continue
         n=$((n + 1))
-        case "$p" in
-        docs/*) ;;
-        *) docs=no ;;
-        esac
+        gate_docs_only_admits "$p" "$h" HEAD || docs=no
     done <<EOF
 $files
 EOF
@@ -4430,17 +4900,12 @@ loop_attribute_nearer() {
 # be a second way for a cache to break a gate, and every path above answers with
 # a sentence rather than a status.
 loop_ledger_attribute() {
-    local tree=$1 env=$2 scope=$3 path rows canon
-    path=$(loop_ledger_path) || {
-        printf 'no-ledger\n'
-        return 0
-    }
-    if [ ! -f "$path" ]; then
-        printf 'no-ledger\n'
-        return 0
-    fi
-    rows=$(grep -c "^$LOOP_LEDGER_SCHEMA " "$path" 2>/dev/null) || rows=0
-    if [ "${rows:-0}" = "0" ]; then
+    local DJB_GATE_LEDGER="${DJB_GATE_LEDGER:-}"
+    loop_ledger_override
+    local tree=$1 env=$2 scope=$3 rows canon loops
+    loops=$(ledger_rows loop 2>/dev/null) || loops=""
+    rows=$(awk 'END { print NR }' <<<"$loops")
+    if [ -z "$loops" ] || [ "${rows:-0}" = "0" ]; then
         printf 'no-ledger\n'
         return 0
     fi
@@ -4452,7 +4917,7 @@ loop_ledger_attribute() {
     # shape work for every field, which is cheaper than a special case that has
     # to move whenever a field is appended.
     local padded
-    padded=$(sed 's/$/ /' "$path")
+    padded=$(sed 's/$/ /' <<<"$loops")
 
     # --- the component pass, over rows of equal scope that carry components ---
     #
@@ -4470,7 +4935,7 @@ loop_ledger_attribute() {
         local tree_row="" tree_dist="" env_row="" env_dist="" env_diffs=""
         while IFS= read -r row; do
             case "$row" in
-            "$LOOP_LEDGER_SCHEMA "*) ;;
+            "$GATE_LEDGER_SCHEMA "*) ;;
             *) continue ;;
             esac
             case "$row" in
@@ -4682,10 +5147,10 @@ LOOP_REUSE_N=""
 #: cheap and was declined on purpose.
 LOOP_REUSE_WHY=""
 
-#: The prefix, cited rather than re-listed — `loop_attribute_head_detail`'s own
-#: `docs/` and for its reasons. One constant so the counter and the reuse can
-#: never disagree about what "docs" means.
-LOOP_DOCS_PREFIX='docs/'
+#: WHAT "DOCS" MEANS HERE IS `gate_docs_only_admits`'s ANSWER, never a prefix
+#: of this section's own: the counter in `loop_attribute_head_detail` and the
+#: reuse below ask the one decider the bank's road asks, judging each path over
+#: the banked head..HEAD diff, so the three can never disagree about a path.
 
 # loop_docs_only_reuse <the attributor's token> <the attributor's detail>
 #   0  the banked pytest verdict may stand in; LOOP_REUSE_TREE and
@@ -4710,7 +5175,7 @@ loop_docs_only_reuse() {
     # ancestor of HEAD is a row from another line of development, and
     # `git diff A B` between two such points is not "what happened since".
     git merge-base --is-ancestor "$head" HEAD >/dev/null 2>&1 || return 1
-    files=$(git diff --name-only "$head" HEAD 2>/dev/null) || return 1
+    files=$(changed_between "$head" HEAD 2>/dev/null) || return 1
     # NO COMMIT SINCE THE BANKED HEAD means the tree moved in the WORKING tree,
     # which is a builder editing its own checkout — deliberately not the shape
     # this reuse covers, and the same rule `loop_attribute_head_detail` states.
@@ -4718,10 +5183,7 @@ loop_docs_only_reuse() {
     n=0
     while IFS= read -r p; do
         [ -n "$p" ] || continue
-        case "$p" in
-        "$LOOP_DOCS_PREFIX"*) ;;
-        *) return 1 ;;
-        esac
+        gate_docs_only_admits "$p" "$head" HEAD || return 1
         n=$((n + 1))
     done <<EOF
 $files
@@ -4733,7 +5195,7 @@ EOF
     # how a builder's half-finished `apps/` change would ride in under a docs
     # commit's cover. `*.log` files are ignored and so are invisible here,
     # which is why the gate's own transcript does not refuse its own reuse.
-    if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+    if tree_is_dirty 2>/dev/null; then
         LOOP_REUSE_WHY="docs-only delta, but the WORKING TREE is not clean: an uncommitted edit is not a delta anyone can name — measuring"
         return 1
     fi
@@ -4770,7 +5232,7 @@ EOF
     # tree was clean when the bank was taken.
     #
     # AND THE LOCAL IS NOT CALLED `head_tree`, WHICH COST A GATE LEG TO LEARN.
-    # `scripts/tests/test_pipefail_readers.sh`'s census matches `\| *head` over
+    # `quality/tests/test_pipefail_census.py`'s census matches `\| *head` over
     # the shipped lines, so `|| head_tree=""` reads as a pipe into `head` and
     # the line reds as an early-exit reader that is not there. Renaming is the
     # fix; a valve would be spending a declared escape on a coincidence.
@@ -4820,13 +5282,11 @@ EOF
 # exit 1 on ANY doubt at all. There is deliberately no exit 2 on this path: a
 # cache that can break a gate is worse than no cache.
 loop_ledger_lookup() {
-    local key=$1 path line
+    local DJB_GATE_LEDGER="${DJB_GATE_LEDGER:-}"
+    loop_ledger_override
+    local key=$1
     printf '%s' "$key" | grep -E "$LOOP_KEY_RE" >/dev/null || return 1
-    path=$(loop_ledger_path) || return 1
-    [ -f "$path" ] || return 1
-    line=$(grep -F " $key loop " "$path" | grep "^$LOOP_LEDGER_SCHEMA " | tail -1)
-    [ -n "$line" ] || return 1
-    printf '%s\n' "$line"
+    ledger_last loop "$key" 2>/dev/null
 }
 
 # ---- the run log ------------------------------------------------------------
@@ -4863,73 +5323,32 @@ gate_run_note() {
     [ -n "$GATE_RUN_ARMED" ] || return 0
     [ -z "$GATE_RUN_SETTLED" ] || return 0
     GATE_RUN_SETTLED=1
-    local path
-    path=$(gate_runs_path) || path="<no git directory>"
-    if ! printf '%s %s %s %s caller=%s\n' "$GATE_LEDGER_SCHEMA" "$GATE_RUN_TREE" \
-        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$GATE_RUN_CALLER" >>"$path"; then
-        printf 'run log could not be written to %s: %s is unrecorded\n' "$path" "$1" >&2 || true
+    local wall=""
+    [ -z "$GATE_RUN_T0" ] || wall="wall=$(($(date +%s) - GATE_RUN_T0))"
+    # A row of kind `run` in the one ledger — the successor of the retired
+    # `djb-gate-runs`. The key is the tree the run STARTED on.
+    if ! ledger_append run "$GATE_RUN_TREE" "state=$1" "caller=$GATE_RUN_CALLER" ${wall:+"$wall"}; then
+        printf 'run log could not be written to %s: %s is unrecorded\n' "$(gate_ledger_path 2>/dev/null || echo '<no git directory>')" "$1" >&2 || true
     fi
 }
 
-gate_run_verdict_written() {
-    [ -n "$GATE_RUN_ARMED" ] || return 0
-    GATE_RUN_SETTLED=1
-}
-
-# The duration of a COMPLETED full run, for the next run's announcement.
-gate_run_last_full() {
-    [ -n "$GATE_RUN_ARMED" ] || return 0
-    [ -n "$GATE_RUN_T0" ] || return 0
-    local path
-    path=$(gate_last_full_path) || return 0
-    printf '%s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        "$(($(date +%s) - GATE_RUN_T0))" "$1" >>"$path" || true
-}
-
-# From the full gate's EXIT trap: decide the outcome when the gate has not
-# already said. 129/130/143 without a settlement is a KILL that hit a leg's
-# child — it must never be relabelled red.
-gate_run_finish() {
-    [ -n "$GATE_RUN_ARMED" ] || return 0
-    local rc=${1:-0}
-    case "$rc" in
-    0) gate_run_note "unsettled" ;;
-    2) gate_run_note "exit-2:${GATE_RUN_LEG:-before-first-leg}" ;;
-    129 | 130 | 143) gate_run_note "killed:${GATE_RUN_LEG:-before-first-leg}" ;;
-    *) gate_run_note "red:${GATE_RUN_LEG:-before-first-leg}" ;;
-    esac
-    case "$rc" in
-    0) gate_run_last_full green ;;
-    2) gate_run_last_full exit-2 ;;
-    129 | 130 | 143) : ;; # a killed run's length is the killer's choice
-    *) gate_run_last_full red ;;
-    esac
-}
-
-# From the full gate's TERM/INT/HUP trap: name the leg, write the line, exit
-# 143 so the EXIT trap still runs. PIPE ignored first — after a kill the reader
-# is usually already gone.
-gate_run_killed() {
-    trap '' PIPE
-    gate_run_note "killed:${GATE_RUN_LEG:-before-first-leg}"
-    exit 143
-}
+# THE DURATION OF A RUN IS A FIELD NOW, NOT A FILE. A green full run's wall
+# rides its verdict row (`wall=`, written by `gate_ledger_record`) and every
+# other settled run's rides its `run` row (`gate_run_note`); the retired
+# `djb-gate-last-full` held nothing else. `gate_run_announce` reads it back.
 
 # gate_run_lookup <tree> → the OUTCOME word of the most recent run-log line for
 # that tree, so a reader can tell a red run from a killed one.
 gate_run_lookup() {
-    local tree=$1 path line
-    path=$(gate_runs_path) || return 1
-    [ -f "$path" ] || return 1
-    line=$(grep -F " $tree " "$path" | grep "^$GATE_LEDGER_SCHEMA " | tail -1)
-    [ -n "$line" ] || return 1
-    awk '{print $4}' <<<"$line"
+    local line
+    line=$(ledger_last run "$1") || return 1
+    gate_docs_only_row_field "$line" state
 }
 
 # Printed by the full gate before its first leg: what happened to the previous
 # run on THIS tree, and a measured time estimate.
 gate_run_announce() {
-    local path secs line prior
+    local secs prior
     # The caller this run will record, said out loud before the first leg.
     # A field nobody can see at the time it is written is a field nobody
     # notices going wrong.
@@ -4954,11 +5373,11 @@ gate_run_announce() {
         *) echo "- the previous run on this tree ended: $prior" ;;
         esac
     fi
-    path=$(gate_last_full_path) || return 0
-    line=""
-    [ -f "$path" ] && line=$(grep ' green$' "$path" | tail -1 || true)
-    if [ -n "$line" ]; then
-        secs=$(awk '{print $2}' <<<"$line")
+    # The newest GREEN full row that carries its wall — a bank's rows carry
+    # none (no full run armed the log), so they are passed over rather than
+    # announced as zero.
+    secs=$(ledger_rows full 2>/dev/null | awk '{ for (i = 6; i <= NF; i++) if ($i ~ /^wall=[0-9]+$/) w = substr($i, 6) } END { if (w != "") print w }') || secs=""
+    if [ -n "$secs" ]; then
         echo "- full gate — the last green run here took $((secs / 60))m$((secs % 60))s"
     fi
 }

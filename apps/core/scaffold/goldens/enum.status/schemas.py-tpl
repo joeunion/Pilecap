@@ -1,0 +1,10 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "before", "text": "class WidgetPage(ActsPage):"}
+    status: str = Field(json_schema_extra=example("active"))
+
+
+class WidgetTransitionIn(StrictIn):
+    """The status a widget moves to: one step along its chain from where it is."""
+
+    status: str = Field(json_schema_extra=example("active"))
+
+

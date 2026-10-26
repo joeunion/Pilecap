@@ -48,8 +48,7 @@ from .conftest import archive_bytes
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from apps.core.models import Tenant
-
-    from .conftest import World
+    from apps.core.tests.permissions_world import World
 
 pytestmark = pytest.mark.django_db
 
@@ -72,7 +71,7 @@ def archive_of(recorded_workflow_starts: None, archive_bucket: str) -> Any:
     def build(
         *, world: World, scope: str, hat: Organization
     ) -> tuple[dict[str, Any], dict[str, list[dict[str, Any]]], str]:
-        actor = world.owner_actor if hat is world.root else world.region_actor
+        actor = world.owner if hat is world.root else world.admin_at_a
         export = create_export(tenant=world.tenant, actor=actor, scope=scope)
         version, manifest = _write_the_archive(export=export, hat=hat, actor=actor)
         assert version.size_bytes and version.size_bytes > 0
@@ -146,7 +145,9 @@ def test_the_manifest_the_archive_and_the_database_agree_model_by_model(
     # is what the walk itself passes (Phase R: the archive asks `<kind>.read`
     # per model). `system_actor` would answer True at `allows`' first step and
     # this count would stop being the same read the walk made.
-    reader = actor_for(user=world.owner, tenant=world.tenant, org=world.root, kind="agent")
+    reader = actor_for(
+        user=world.user(world.owner), tenant=world.tenant, org=world.root, kind="agent"
+    )
 
     for label, disposition in dispositions().items():
         # Counted through the selector the walk itself reads through, and that is
@@ -180,7 +181,7 @@ def test_the_archive_holds_real_rows_and_not_an_agreement_about_zero(
     assert len(rows["example.Widget"]) == 4
     assert len(rows["example.WidgetEntry"]) == 4
     assert len(rows["core.Membership"]) >= 2
-    assert len(rows["core.Organization"]) == 4
+    assert len(rows["core.Organization"]) == 5  # root, A, A1, A1X, B
 
 
 # --- The anti-oracle -----------------------------------------------------------
@@ -225,12 +226,10 @@ def test_a_region_export_carries_its_branch_and_nothing_beside_or_above_it(
     neither the sibling's nor the root's. Getting this wrong in either direction
     is a leak inside one customer, between its own customers.
     """
-    _manifest, rows, _key = archive_of(
-        world=world, scope=Export.Scope.ORGANIZATION, hat=world.region
-    )
+    _manifest, rows, _key = archive_of(world=world, scope=Export.Scope.ORGANIZATION, hat=world.a)
 
     names = {str(row["name"]) for row in rows["example.Widget"]}
-    assert names == {"Widget at region", "Widget at branch"}
+    assert names == {"Widget at a", "Widget at a1"}
 
 
 def test_a_subtree_export_says_which_tables_it_could_not_carry(
@@ -242,9 +241,7 @@ def test_a_subtree_export_says_which_tables_it_could_not_carry(
     from a tenant that never had one, and the reader is somebody who is leaving
     and cannot ask.
     """
-    manifest, rows, _key = archive_of(
-        world=world, scope=Export.Scope.ORGANIZATION, hat=world.region
-    )
+    manifest, rows, _key = archive_of(world=world, scope=Export.Scope.ORGANIZATION, hat=world.a)
 
     carried, skipped = plan(tenant_wide=False)
     assert {str(one["label"]) for one in manifest["models"]} == set(carried)
@@ -295,10 +292,10 @@ def test_the_walk_costs_one_query_per_model_however_many_rows_there_are(
     export = Export.objects.create(
         tenant=world.tenant,
         organization=world.root,
-        requested_by=world.owner,
+        requested_by=world.user(world.owner),
         scope=Export.Scope.TENANT,
     )
-    actor = world.owner_actor
+    actor = world.owner
 
     with CaptureQueriesContext(connection) as small:
         _write_the_archive(export=export, hat=world.root, actor=actor)
@@ -307,8 +304,8 @@ def test_the_walk_costs_one_query_per_model_however_many_rows_there_are(
     for index in range(40):
         Widget.objects.create(
             tenant=world.tenant,
-            organization=world.region,
-            owner=world.owner,
+            organization=world.a,
+            owner=world.user(world.owner),
             name=f"Bulk {index}",
         )
 
@@ -354,6 +351,6 @@ def test_membership_rows_reach_the_people_they_name(
     _manifest, rows, _key = archive_of(world=world, scope=Export.Scope.TENANT, hat=world.root)
 
     user_ids = {str(row["user"]) for row in rows["core.Membership"]}
-    assert str(world.owner.pk) in user_ids
+    assert str(world.user(world.owner).pk) in user_ids
     assert "accounts.User" not in rows
     assert Membership.objects.filter(tenant=world.tenant).count() == len(rows["core.Membership"])

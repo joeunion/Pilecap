@@ -75,6 +75,24 @@
       }
     },
     {
+      "Sid": "RetagAPooledVerifierBoxOnClaim",
+      "Effect": "Allow",
+      "Action": "ec2:CreateTags",
+      "Resource": "arn:aws:ec2:${REGION}:${ACCOUNT_ID}:instance/*",
+      "Condition": {
+        "StringEquals": {
+          "ec2:ResourceTag/djb:role": "verifier",
+          "ec2:ResourceTag/djb:namespace": "${NAMESPACE}",
+          "ec2:ResourceTag/djb:for": "pool"
+        },
+        "ForAllValues:StringEquals": {
+          "aws:TagKeys": [
+            "djb:for"
+          ]
+        }
+      }
+    },
+    {
       "Sid": "TerminateOnlyVerifierTaggedInstances",
       "Effect": "Allow",
       "Action": "ec2:TerminateInstances",

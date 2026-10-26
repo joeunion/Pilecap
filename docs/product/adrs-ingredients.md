@@ -12,7 +12,10 @@
 > the PM landing-order assignment: 31 = lifecycle declarations (P5's) ·
 > 32 = the storage wall · 33 = the search fence · 34 = the model door.
 
-# ADRs — THE INGREDIENTS (ING-1..5, the ratified twelfth pillar)
+# THE INGREDIENTS (ING-1..5, the ratified twelfth pillar) — the design record
+
+This file is the ingredients' long-form design record and no ADR home: their five decisions
+(files-2, search-2, completions-1, comms-9, usage-1) are files in `docs/product/adrs/`.
 
 **Status: DESIGNED (ING-0, architect). The five designs are the
 engineering lead's; each STACK RULING is the owner's to ratify async — a
@@ -49,35 +52,7 @@ dependent rung dispatches.
 > under delegation #3 and stands untouched: the re-cut changes the object
 > model *above* the seam, never the seam.
 
-**ADR files-2 (ING-1D design pair, owner-directed; supersedes
-files-1's body — files-1's stack ruling stands ratified, and its two-phase
-upload, `store_bytes` seam, archive-not-delete, tenant-settings policy and
-wall posture all survive intact below) · context:** every product needs
-object storage with the walls already built (a first consuming product: issued documents,
-papers, template artifacts, digests of "the bytes *we stored*"), file
-handling is the single most leak-prone surface a product improvises, and
-the owner ruled versioning into v1: "replace this document" is a
-first-class act, and a platform that models a file as one mutable blob
-answers it with an overwrite — history destroyed, audit orphaned, and a
-presigned URL whose meaning changes after issuance. **decision:**
-`apps/files` with a two-model aggregate — `StoredFile` (the document:
-identity, name, purpose, the walls) owning `FileVersion` rows (the bytes:
-one **immutable object key per version**, digest, size, its own two-phase
-lifecycle) — bytes never transit Django (presigned URLs both directions,
-TTLs declared in settings), every issuance an audited service call,
-"replace" = a new version finalized and promoted, never an overwrite;
-stored bytes counted on ING-5's ledger at finalize. **rejected:** a
-`version` column mutated in place on one row (replace rewrites
-digest/size under every audit row and export manifest that cited them —
-D9's exact target, applied to bytes); latest-pointer object keys and S3
-bucket-versioning as the mechanism (both reasoned below);
-`FileField`/media on domain models, public buckets or ACLs in any
-configuration, and a generic-FK attachments framework (files-1's
-rejections, all standing — the domain owns the edge: a product model
-points at `StoredFile` with `PROTECT`, never the reverse). **trigger to
-revisit:** direct-to-browser multipart uploads > 5 GB → S3 multipart
-presigning grows inside `apps/files/storage.py`, same seam, per-part URLs
-under the same wall.
+The decision is `docs/product/adrs/files-2.md`.
 
 ### App/module map (A1, A2, B1)
 
@@ -298,7 +273,7 @@ the call site) → `record_stored` (the service; closes its run per rule
 expires `PENDING` versions past TTL; a file left with no `STORED` version
 is archived by the sweep, with the audit row saying so. Object **purge**
 on archive/erasure/close stays the dated residual (§ exclusions) —
-archive is soft (D7) and the object stays until purge lands.
+archive is soft (D7) and the object stays; no object purge is built.
 
 **No silent fallback, stated (the search-2 posture):** the storage seam
 has no degradation engine — an unreachable backend refuses loudly
@@ -345,7 +320,7 @@ there.
   is a product decision built on the ledger and the threshold event.
   Trigger: a product asks → its own services, its own ADR.
 - **Object purge** — the dated residual, kept: objects persist behind
-  archive/erasure until purge lands; the rule-31 declaration below is
+  archive/erasure, with no purge built; the rule-31 declaration below is
   honest about it today. Trigger: retention demand or the first tenant
   close.
 - **Multipart > 5 GB** — the ADR's trigger-to-revisit above.
@@ -374,7 +349,7 @@ there.
   itself **purged-by-callable** through the P5 registry —
   `delete_tenant_objects(*, tenant)` (prefix delete on `t/<tenant_pk>/`),
   reached from `close_tenant`'s walk by discovery, never hand-listed (the
-  ING-2 Meili-documents posture, verbatim). Until purge lands, the
+  ING-2 Meili-documents posture, verbatim). While no purge is built, the
   declaration carries the honest interim retention line (the dated
   residual above). `StoredFile`/`FileVersion` rows are ordinary ORM
   populations, dispositioned by the export census like the rest.
@@ -592,32 +567,7 @@ moves to a named later line; P5's export rung consumes F2's
 > engine-agnostic contract — are the design below, done properly rather than
 > by amendment prose.
 
-**ADR search-2 (ING-2D design pair, owner-directed; supersedes
-search-1's engine ruling — search-1's per-model pg shape survives intact as
-the fallback engine) · context:** every product needs "find the thing", and
-search is where scoping quietly dies — an external index that does not carry
-the walls is a probing oracle, which is exactly why search-1 refused an
-engine and why this design's center of gravity is the filter injection, not
-the engine. **decision:** Meilisearch self-hosted in the compose stack (the
-ClickStack/Zitadel/MinIO posture); **one shared index per searchable kind**
-with `tenant_id` + `org_id` as filterable attributes and the scope filter
-resolved in Postgres per request and injected by one chokepoint; a
-**rule-33 fencing rule** (the rule-27 shape) walls the Meili client
-into `apps/search/engine.py`; the **indexer rides the events spine**
-(outbox, at-least-once, replay-safe, mirroring `push_realtime` to the
-letter); **pg FTS + trigram stays behind the same engine-agnostic protocol**
-as the designed degradation — Meili down means slower and plainer, never
-dead. **rejected:** index-per-tenant (below, reasoned); Meili tenant tokens
-/ browser-direct search (below); a central `SearchEntry` shadow table
-(search-1's rejection stands — the *engine's* documents are not a shadow
-authz copy because no authorization decision is ever made from them: the
-filter is computed in Postgres every request and the fencing rule means no
-other path exists); OpenSearch/Elasticsearch (ops weight + the same sync
-work for relevance gains no product at this scale needs — search-1's
-rejection, unchanged). **trigger to revisit:** the P6 harness measuring the
-visible-org-id list as a real ceiling at seeded scale (the named risk of
-list-not-path filtering), or a product needing semantic similarity (its own
-ADR, adjacent ING-3 — not folded in here).
+The decision is `docs/product/adrs/search-2.md`.
 
 ### The document model (A5, D7; rules 8, 24)
 
@@ -975,7 +925,7 @@ T0 track, so no collision is expected, and if the windows overlap the
 format P5's declarations rule lands — if R-c arrives first, it ships the
 callable + docstring truth and the declaration joins the registry in P5's
 own rung. Migrations: **none in `apps/search`** (still no models);
-`apps/example/migrations/0010_widget_search_vector` in the adoption rung
+`apps/example/migrations/0011_widget_search_vector.py` in the adoption rung
 (current leaf `0009_widget_policy_and_entry`); none in `apps/events`.
 
 **Size: 5 rungs** (was 2 under search-1) — the decomposition below.
@@ -1070,7 +1020,7 @@ G3; rules 13, 22 (none — no migrations), the lifecycle-declarations rule.
 5. **Erased-absence**: after `erase_user` + outbox drain, no document in
    any index contains the pre-erasure email or name — the erasure probe,
    extended to the index; it fails against a build that skips the drain
-   and passes once the drain lands.
+   and passes against one that drains.
 6. Backup honesty: the recovery story (`search_reindex`, no volume
    backup) is stated in the module docstring; the restore drill's search
    leg runs the command and asserts document-count parity with Postgres.
@@ -1145,32 +1095,9 @@ an app.
 
 ---
 
-## ING-3 · LLM primitives — `apps/completions`
+## ING-3 · LLM primitives — a `completions` app
 
-**ADR completions-1 · context:** products will call models
-(a first consuming product: `draft_reintro` — draft a re-introduction for a dormant contact);
-un-platformed, every product grows its own key handling, retry logic,
-unaudited prompts and unmetered spend. **decision:** a new platform app
-`apps/completions`. Aggregate: `Completion` — one model call as a row
-(status `QUEUED → RUNNING → SUCCEEDED | FAILED`, D4), org-scoped, carrying
-the rendered prompt, the output, the model id, and the usage figures.
-**Every provider call is a Temporal activity** (rule 9 — the constraint is
-constitutional, not optional): the `run_completion` service writes the row
-and starts `RunCompletion` on commit (C2); no service or door ever holds a
-provider socket open inside a transaction. Prompts are **versioned config**
-per D9/D10: `Prompt(TenantScopedModel)` — immutable `key`, `version`,
-body, variables schema — `create/revise/retire`, mirroring
-`comms.MessageTemplate` (the named precedent); a `Completion` records
-`prompt_key` + `prompt_version` denormalized (the durable answer to "what
-was this drafted under", D10). **rejected:** synchronous provider calls in
-services (C2 — a provider hiccup rolls back a legitimate row; rule 9 the
-other side); LiteLLM/LangChain as the abstraction (a large dependency whose
-retry/fallback logic fights Temporal's — retries are the workflow's job;
-the registry protocol is ~50 lines of ours, comms `providers.py` is the
-worked shape); prompts as code constants (unversioned config a tenant
-cannot see or audit — D9's exact target). **trigger to revisit:** streaming
-token-by-token to sockets → a `realtime` bridge from the activity, designed
-then (the row-based contract survives underneath).
+The decision is `docs/product/adrs/completions-1.md`.
 
 ### App/module map
 
@@ -1268,7 +1195,7 @@ signature in `apps/usage/services.py`, in-tree before ING-3 dispatches
 
 - **Rule 34 — one door to the model** (renumbered from 32 per the PM
   landing-order assignment; mirror of 25/27/32): no module under
-  `apps/` outside `apps/completions/providers/` imports the provider SDK
+  `apps/` outside the `completions` app's `providers/` imports the provider SDK
   (`anthropic`) or names the key setting (`config/settings/` excepted).
   Canaries: planted import in a domain app; planted settings name.
   `does_not_cover` (declared): a raw `httpx` call to a provider URL — the
@@ -1307,51 +1234,18 @@ runs on Claude).
 ### Dependencies & size
 
 **ING-5 before ING-3's result rung** (the seam above). No other edges in.
-Migrations: `apps/completions/migrations/0001_initial` (leaf).
+Migrations: `completions`' `0001_initial` (leaf).
 
 **Size: 4 rungs** — L1 models (`Completion`, `Prompt` D9 trio) + schemas;
 L2 provider registry + `anthropic` adapter + rule 34; L3 services +
 `RunCompletion` + metering seam + events; L4 doors (REST + MCP parity) +
-census + criteria. All in `apps/completions`, sequential.
+census + criteria. All in the `completions` app, sequential.
 
 ---
 
 ## ING-4 · comms tracking + channels — `apps/comms` grows
 
-**ADR comms-9 · context:** the C1-1c residue — opened/clicked
-tracking and real SMS/push vendors were deferred *with the tracking rung,
-named* (queue C1-1); the status contract and the consent wall now stand
-(P2's R2, ADR comms-8: bounce-driven auto-suppression in-transaction,
-wall re-run at the transport edge). **decision:** grow `apps/comms` —
-no new app (the aggregate is still `Message`; A1 holds). Two halves.
-**(a) Engagement:** `MessageEngagement(OrgScopedModel)` —
-**`append_only = True`** (rule 20 population, by declaration, no yaml
-edit — the ADR core-6 dividend): FK `Message` (`CASCADE` — owned child of
-the aggregate, D2), `kind` (`TextChoices`: `OPENED`, `CLICKED`), `url`
-(clicked only), `occurred_at`, `provider_event_id`, unique on
-`(message, provider_event_id, kind)` (idempotent webhook redelivery, C4);
-`derive_org_from = "message"` (C9 — the engagement lands where its message
-lives, never where a webhook handler's hat points). Recorded by
-`record_engagement` (service, `system` actor — comms-8's A5b shape), fed by
-the **existing signed provider webhook receiver** through
-`normalize_status`'s sibling `normalize_engagement` on the provider
-protocol. **An engagement never mutates `Message.status`** — an "open" is a
-provider-attested inference (Apple MPP fires false opens), witnessed
-history in one population, delivery truth in another; folding them would
-launder an inference into a fact. **(b) Channels:** the `SMS` and `PUSH`
-kinds in the existing `Channel` enum get one reference transport each,
-riding `ConnectionChannel` (provider = a `connections` row, comms-6's
-kind-vs-vendor split intact). Push needs `Device(OrgScopedModel)`: FK
-`Recipient` (`CASCADE`), `token`, `platform` (`TextChoices`), `last_seen_at`,
-`invalidated_at`; `derive_org_from = "recipient"` (C9). *Rejected:* push
-tokens in `Recipient`'s address fields (tokens are plural per person,
-rotate, and expire — an address is one and stable); a first-party tracking
-pixel/redirect endpoint (BYO-frontend; the ESP does it; trigger: a product
-that must not use ESP tracking domains); deriving `DELIVERED` from an open
-(the laundering above); OneSignal (its own consent model competes with the
-wall — two walls is no wall). **trigger to revisit:** a provider contract
-distinguishing per-link click metadata worth modeling → `url` grows
-structure then.
+The decision is `docs/product/adrs/comms-9.md`.
 
 ### The honest wall, extended (comms-8 riding)
 
@@ -1482,59 +1376,7 @@ mapping, rule 25 growth, census extension); T3 push (FCM adapter, `Device`
 
 ## ING-5 · usage metering — `apps/usage`
 
-**ADR usage-1 · context:** the platform is about to spend
-money on behalf of tenants (ING-3 tokens; later SMS, storage), and a
-number that surfaces on an invoice or a dashboard months later must be a
-ledger, not a counter someone can bump. **decision:** a new platform app
-`apps/usage`, **metering only** — invoicing stays product-layer until a
-product asks (the scope ruling, recorded here). Aggregate:
-`UsageEntry(OrgScopedModel)` with **`append_only = True`** (rule 20
-population, by declaration): `meter` (charfield, grammar
-`<app>.<noun>.<unit>` — e.g. `completions.tokens.input`), `quantity`
-`Decimal(19,4)` (rule 15 — never Float, even for counts), `occurred_at`,
-`ref` (source model label + id), `idempotency_key` (unique per tenant —
-C4: a retried activity never double-meters), and the D8 correction pair:
-`supersedes` FK (self, `PROTECT`) + `superseded_because` — a wrong entry
-is answered, never edited. Meter names are **declared vocabulary**:
-`apps/<x>/meters.py` (discovered, the `events.py` pattern — a literal at a
-call site is a violation the same way an event literal is), validated
-against the grammar at import time. The write door is one service:
-`record_usage(*, tenant, actor, meter, quantity, ref, idempotency_key,
-occurred_at=None)` — callable from activities under the run's actor;
-`# authz: recording is the platform's witnessed side-effect of an
-already-authorized action; the actor is carried for audit, not asked for
-permission` (rule 13's escape hatch, used with its reason). The read is
-`get_usage(*, tenant, actor, period, meters=None)` returning per-meter
-**`MeasuredOut`** (E10): `value` = the period total, `basis.formula` =
-`"sum(day_totals)"`, `basis.inputs` = ISO-date → Decimal day subtotals —
-**re-addable by a reader**, the honest basis, checked by criterion.
-**rejected:** stored per-tenant counter rows (see stack ruling); per-entry
-events (an outbox row per LLM call doubles the write volume of the
-hottest path for zero subscribers; the ledger IS the record; trigger:
-a quota/threshold feature → threshold events then — **the trigger has since fired**,
-see § events below: the crossing gets an event, the entry still never
-does); a `Meter` model
-(meters are code-declared vocabulary like events, not tenant data).
-**trigger to revisit:** a product asks for invoicing → a product-layer
-app reading this ledger (the ledger's shape — Decimal, ref, supersedes —
-is designed so that day needs no migration here).
-
-**TRIGGER — buffered ingestion (ratified alongside this ADR's criteria
-amendments): the first per-REQUEST meter.** Every meter this ADR names
-is **per-activity** — a completion that ran, an upload that finalised — so one
-`record_usage` per unit of durable work, at the rate a worker does work. The
-day a meter is recorded **per request** (an API call counted, a page served, a
-tool invocation billed), the arithmetic changes shape: U1 measured one recording
-at **13 statements** on a tenant with no thresholds configured
-(`apps/usage/tests/test_services.py::RECORD_QUERY_BUDGET`, and nine of the
-thirteen are `full_clean` plus the transaction and audit machinery every
-`@service` pays), which is unremarkable per activity and is a second write
-transaction on every request in the product. That is when buffered ingestion
-gets its own ADR — a batched or queued write path in front of this ledger, with
-the durability question answered out loud, because a buffer that loses rows is a
-bill that is wrong in the customer's favour and a buffer that blocks is an
-outage. **Nothing is built for it now**, deliberately: the shape of the buffer
-depends on which per-request meter arrives first and what it may lose.
+The decision is `docs/product/adrs/usage-1.md`.
 
 ### App/module map
 
@@ -1631,7 +1473,7 @@ at a measured trigger (P3 harness).**
   since the owner holds ClickHouse Cloud: the ledger stays in Postgres;
   ClickStack keeps observing it like everything else.
 - Recommended default's own price, stated: the read is O(period rows)
-  until rollups land; the trigger is named and the index is designed for
+  while no rollup exists; the trigger is named and the index is designed for
   the interim.
 
 ### Dependencies & size
@@ -1688,7 +1530,7 @@ declarations (P5's) · 32 = the storage wall · 33 = the search fence ·
 | 31 lifecycle declarations (P5's rule, referenced) | ING-1, ING-2 | off-ORM populations declared purged-by-callable via the discovered registry (`delete_tenant_objects`, `delete_tenant_documents`) — no hand-list in any erasure/close walk | gate (lands with P5) |
 | 32 bytes-through-the-store | ING-1 | import/settings wall around `apps/files/storage.py`; no-public-ACL clause; `storage_audit` tripwire for the console blind spot | gate |
 | 33 one-door-to-the-index | ING-2 | import/settings wall around `apps/search/engine.py` + engine-importer allow-list; settings-as-code overwrite for the Meili console blind spot | gate |
-| 34 one-door-to-the-model | ING-3 | import/settings wall around `apps/completions/providers/` | gate |
+| 34 one-door-to-the-model | ING-3 | import/settings wall around the `completions` app's `providers/` | gate |
 | 25 (grows) | ING-4 | SMS/push SDK modules join the sender wall's list; canaries re-planted | gate |
 | 20 (grows by declaration) | ING-4, ING-5 | `MessageEngagement`, `UsageEntry` join the append-only population — zero yaml edits | gate |
 | census tests (R2-7 pattern) | ING-1, ING-3, ING-4 | presign chokepoint (status+prefix check); metered-invoke chokepoint; transport chokepoints ×3 | in-app, promotion triggers named |

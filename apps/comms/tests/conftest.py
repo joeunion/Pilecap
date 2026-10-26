@@ -257,3 +257,11 @@ def branches(tenant: Tenant, owner: User) -> Branches:
         manager=manager,
         clerk=clerk,
     )
+
+
+@pytest.fixture(autouse=True)
+def _handler_runs_at_the_receipt(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The receiver's handler run, done at the receipt: these tests read its effect at the 202."""
+    from apps.connections.tests.handler_runs import run_handlers_at_the_receipt
+
+    run_handlers_at_the_receipt(monkeypatch)

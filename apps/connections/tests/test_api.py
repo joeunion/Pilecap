@@ -11,12 +11,15 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import importlib
 import inspect
 import json
 import re
-from collections.abc import Mapping
+import threading
+import uuid
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from datetime import datetime, timedelta
+from types import ModuleType
 from typing import Any
 
 import pytest
@@ -26,19 +29,23 @@ from django.test import Client
 from django.urls import reverse
 
 from apps.accounts.models import User
+from apps.connections import api as connections_api
 from apps.connections import providers
 from apps.connections.api import (
     SIGNATURE_HEADER,
     SIGNATURE_PREFIX,
     SIGNATURE_V2_HEADER,
     receive_webhook,
-    signature_matches,
     signature_v2_tolerance,
 )
-from apps.connections.events import CONNECTION_CREDENTIALS_UPDATED
+from apps.connections.events import (
+    CONNECTION_CREDENTIALS_UPDATED,
+    CONNECTION_SIGNATURE_SCHEME_UPDATED,
+)
 from apps.connections.models import Connection, InboundWebhook
 from apps.connections.services import create_connection
 from apps.connections.tests.conftest import WEBHOOK_SECRET
+from apps.core import bridge
 from apps.core.actor import Actor
 from apps.core.exceptions import Forbidden
 from apps.core.models import Tenant
@@ -49,11 +56,11 @@ pytestmark = pytest.mark.django_db
 LIST_URL = "/api/v1/connections/"
 JSON = "application/json"
 
-# The spine is reached by name and never imported: `test_discovery`'s
+# The spine is never imported: `test_discovery`'s
 # `test_nothing_in_this_app_imports_apps_events` reads every file under
 # `apps/connections` — this one included — because the layer contract makes the
-# two apps siblings and the coupling a runtime lookup.
-EVENTS_RECEIVERS = "apps.events.receivers"
+# two apps siblings. Its functions are reached through `core.bridge`, the way the
+# app itself reaches them, and its model through the app registry.
 
 
 def _events_model() -> Any:
@@ -62,15 +69,35 @@ def _events_model() -> Any:
 
 
 def _receiver() -> Any:
-    """`verify_and_store`, likewise by name."""
-    return importlib.import_module(EVENTS_RECEIVERS).verify_and_store
+    """`verify_and_store`, through the bridge name the events app registers."""
+    return bridge.get(bridge.VERIFY_AND_STORE)
 
 
-# Measured, not guessed, at ten rows: the session row + the user row (session
-# authentication) + 1 SAVEPOINT (ATOMIC_REQUESTS) + the membership lookup
-# TenantMiddleware makes for the tenant + the one it makes for the acting org
-# (the hierarchy's standing per-request cost) + COUNT + the page + 1 RELEASE
-# SAVEPOINT.
+def _verifier_module() -> ModuleType:
+    """The module the one verifier lives in, reached through the bridge — never imported."""
+    module = inspect.getmodule(bridge.get(bridge.SIGNATURE_V2_MATCHES))
+    assert module is not None
+    return module
+
+
+@contextmanager
+def _unregistered(*names: str) -> Iterator[None]:
+    """The bridge with these names absent, restored afterwards whatever happens."""
+    saved = bridge.registered()
+    bridge.clear()
+    for name, fn in saved.items():
+        if name not in names:
+            bridge.register(name, fn)
+    try:
+        yield
+    finally:
+        bridge.clear()
+        for name, fn in saved.items():
+            bridge.register(name, fn)
+
+
+# Measured, not guessed, at ten rows: the session row + the user row + the tenant and acting-org
+# membership lookups TenantMiddleware makes + the page, and the +3 below.
 # ADR core-18 took one statement OFF this pin: the default list issues no
 # COUNT any more — `has_more` comes from fetching one row more than asked
 # for. `?include_count=true` puts it back, and costs exactly one more.
@@ -96,7 +123,7 @@ def _receiver() -> Any:
 # entirely therefore changed nothing HERE; what it changed is the number a
 # BRANCH-hat request pays, which used to be one more, once per request. The hat
 # this budget runs under is the root, said here rather than inferred.
-LIST_QUERY_BUDGET = 10
+LIST_QUERY_BUDGET = 8
 
 
 def _body(response: Any) -> dict[str, Any]:
@@ -208,7 +235,7 @@ def test_creating_a_connection_returns_201_without_echoing_the_credential(
     assert response.status_code == 201
     assert "sk-live-nope" not in response.content.decode()
     assert _body(response)["has_credentials"] is True
-    assert Connection.objects.for_tenant(tenant).get(name="New").access_token == "sk-live-nope"
+    assert Connection.objects.for_tenant(tenant).get(name="New").access_token == "sk-live-nope"  # noqa: S105 — the fake value the test planted, read back
 
 
 def test_a_plain_member_is_refused_403_by_the_service_not_the_route(
@@ -220,6 +247,23 @@ def test_a_plain_member_is_refused_403_by_the_service_not_the_route(
     )
     assert response.status_code == 403
     assert _body(response)["code"] == "forbidden"
+
+
+def test_a_person_with_no_membership_is_refused_no_acting_scope(api: Client) -> None:
+    """The door's one resolver answers a request that resolved no tenant, before any service."""
+    from apps.accounts.services import create_user
+
+    password = "a-long-enough-pass-1234"  # noqa: S105 — a throwaway password a test user is made with  # pragma: allowlist secret
+    nobody = create_user(email="nobody@example.com", password=password)
+    api.force_login(nobody)
+    for response in (
+        api.get(LIST_URL),
+        api.post(
+            LIST_URL, data=json.dumps({"provider": "example", "name": "x"}), content_type=JSON
+        ),
+    ):
+        assert response.status_code == 403, response.content
+        assert _body(response)["code"] == "no_acting_scope", response.content
 
 
 def test_another_tenants_connection_is_404_not_403(
@@ -248,6 +292,63 @@ def test_revoking_through_the_door(
     assert _body(response)["has_credentials"] is False
 
 
+def test_a_new_connection_requires_v2_and_says_so(
+    api: Client, owner: User, v2_connection: Connection
+) -> None:
+    api.force_login(owner)
+    response = api.get(f"{LIST_URL}{v2_connection.pk}/")
+    assert response.status_code == 200
+    assert _body(response)["is_signature_v2_required"] is True
+
+
+def test_the_signature_scheme_is_flipped_through_the_door_once(
+    api: Client, tenant: Tenant, owner: User, v2_connection: Connection
+) -> None:
+    api.force_login(owner)
+    url = reverse("api:connection-signature-scheme", kwargs={"connection_id": v2_connection.pk})
+    body = json.dumps({"is_signature_v2_required": False})
+
+    first = api.post(url, data=body, content_type=JSON)
+    again = api.post(url, data=body, content_type=JSON)
+
+    assert first.status_code == again.status_code == 200
+    assert _body(first)["is_signature_v2_required"] is False
+    v2_connection.refresh_from_db()
+    assert v2_connection.is_signature_v2_required is False
+    events = _events_model().objects
+    flipped = events.for_tenant(tenant).filter(name=CONNECTION_SIGNATURE_SCHEME_UPDATED)
+    assert flipped.count() == 1, "a repeat changes nothing and says nothing"
+
+
+def test_a_plain_member_cannot_flip_the_signature_scheme(
+    api: Client, member: User, v2_connection: Connection
+) -> None:
+    api.force_login(member)
+    response = api.post(
+        f"{LIST_URL}{v2_connection.pk}/signature-scheme/",
+        data=json.dumps({"is_signature_v2_required": False}),
+        content_type=JSON,
+    )
+    assert response.status_code == 403
+    v2_connection.refresh_from_db()
+    assert v2_connection.is_signature_v2_required is True
+
+
+def test_the_signature_scheme_body_is_strict(
+    api: Client, owner: User, v2_connection: Connection
+) -> None:
+    api.force_login(owner)
+    response = api.post(
+        f"{LIST_URL}{v2_connection.pk}/signature-scheme/",
+        data=json.dumps({"require_v2": False}),
+        content_type=JSON,
+    )
+    assert response.status_code == 422, response.content
+    assert _body(response)["code"] == "invalid_body"
+    v2_connection.refresh_from_db()
+    assert v2_connection.is_signature_v2_required is True
+
+
 # --- OAuth ----------------------------------------------------------------------
 
 
@@ -274,8 +375,8 @@ def test_the_oauth_handshake_end_to_end_with_the_bundled_provider(
     assert _body(returned)["has_credentials"] is True
 
     connection.refresh_from_db()
-    assert connection.access_token == "example-access-token-for-the-code"
-    assert connection.credentials["refresh_token"] == "example-refresh-token-for-the-code"
+    assert connection.access_token == "example-access-token-for-the-code"  # noqa: S105 — the fake value the test planted, read back
+    assert connection.credentials["refresh_token"] == "example-refresh-token-for-the-code"  # noqa: S105 — the fake value the test planted, read back
     assert connection.status == Connection.Status.CONNECTED
 
 
@@ -297,13 +398,52 @@ def test_a_state_works_exactly_once(
     assert first.status_code == 200
     assert second.status_code == 400
     connection.refresh_from_db()
-    assert connection.access_token == "example-access-token-for-a"
+    assert connection.access_token == "example-access-token-for-a"  # noqa: S105 — the fake value the test planted, read back
+
+
+class _ReadersMeet:
+    """The cache, with every `get` held until two readers have both read: the race, forced."""
+
+    def __init__(self) -> None:
+        self.barrier = threading.Barrier(2, timeout=10)
+
+    def get(self, key: str) -> Any:
+        stored = cache.get(key)
+        self.barrier.wait()
+        return stored
+
+    def delete(self, key: str) -> bool:
+        return bool(cache.delete(key))
+
+
+def test_two_callbacks_racing_on_one_state_consume_it_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both read the parked state before either deletes it; only one may take it."""
+    state = "a-state-two-callbacks-race-for"
+    cache.set(connections_api._state_key(state), {"connection_id": "x"}, 60)
+    monkeypatch.setattr(connections_api, "cache", _ReadersMeet())
+    taken: list[dict[str, Any] | None] = []
+
+    def callback() -> None:
+        taken.append(connections_api._consume_state(state))
+
+    threads = [threading.Thread(target=callback) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=15)
+
+    assert len(taken) == 2
+    assert sum(1 for value in taken if value is not None) == 1, taken
 
 
 def test_an_unknown_state_is_refused(api: Client, owner: User) -> None:
     api.force_login(owner)
     response = api.get(f"{LIST_URL}oauth/callback/?code=a&state=never-issued")
     assert response.status_code == 400
+    assert _body(response)["code"] == "invalid"
+    assert set(_body(response)["errors"]) == {"state"}
 
 
 def test_a_state_issued_for_another_tenant_is_refused(
@@ -328,6 +468,7 @@ def test_a_state_issued_for_another_tenant_is_refused(
     api.force_login(owner)
     response = api.get(f"{LIST_URL}oauth/callback/?code=a&state=borrowed")
     assert response.status_code == 400
+    assert set(_body(response)["errors"]) == {"state"}
 
 
 def test_a_connection_whose_provider_has_no_adapter_cannot_start(
@@ -428,7 +569,7 @@ def test_a_member_starts_the_handshake_and_the_callback_is_the_wall(
     assert finished.status_code == 200
     assert _body(finished)["has_credentials"] is True
     connection.refresh_from_db()
-    assert connection.access_token == "example-access-token-for-the-owners-code"
+    assert connection.access_token == "example-access-token-for-the-owners-code"  # noqa: S105 — the fake value the test planted, read back
     assert events.for_tenant(tenant).filter(name=CONNECTION_CREDENTIALS_UPDATED).count() == 1
 
 
@@ -469,10 +610,102 @@ def test_a_wrongly_signed_delivery_is_refused(
         _webhook_url(connection),
         data=body,
         content_type=JSON,
-        headers={SIGNATURE_HEADER: _signature(body, secret="the-wrong-secret")},
+        headers={SIGNATURE_HEADER: _signature(body, secret="the-wrong-secret")},  # noqa: S106 — a signing secret the test both signs and verifies with
     )
     assert response.status_code == 401
     assert not InboundWebhook.objects.for_tenant(tenant).exists()
+
+
+def _hex(body: bytes, secret: str = WEBHOOK_SECRET) -> str:
+    return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+
+
+@pytest.mark.parametrize(
+    "spell",
+    [
+        pytest.param(lambda digest: "sha256=" + digest, id="prefixed-lowercase"),
+        pytest.param(lambda digest: "sha256=" + digest.upper(), id="prefixed-uppercase-hex"),
+        pytest.param(lambda digest: "SHA256=" + digest.upper(), id="uppercase-prefix"),
+        pytest.param(lambda digest: digest, id="bare-lowercase"),
+        pytest.param(lambda digest: digest.upper(), id="bare-uppercase"),
+    ],
+)
+def test_every_spelling_of_the_right_digest_is_accepted(
+    api: Client, tenant: Tenant, connection: Connection, spell: Any
+) -> None:
+    """The route publishes one sentence — `sha256=<hex>` or bare hex, either case — and keeps it.
+
+    The door verifies with the ONE verifier in `apps.events.receivers`, through
+    the bridge; the copy this app used to carry, and the disagreement about an
+    upper-case digest between the two, are gone together.
+    """
+    body = b'{"event": "thing.happened"}'
+    response = api.post(
+        _webhook_url(connection),
+        data=body,
+        content_type=JSON,
+        headers={SIGNATURE_HEADER: spell(_hex(body))},
+    )
+    assert response.status_code == 202
+    assert InboundWebhook.objects.for_tenant(tenant).count() == 1
+
+
+def test_an_uppercase_wrong_digest_is_still_refused(
+    api: Client, tenant: Tenant, connection: Connection
+) -> None:
+    """Accepting a spelling is not accepting a forgery."""
+    body = b'{"event": "x"}'
+    wrong = _hex(body, secret="the-wrong-secret")  # noqa: S106 — a signing secret the test both signs and verifies with  # pragma: allowlist secret
+    response = api.post(
+        _webhook_url(connection),
+        data=body,
+        content_type=JSON,
+        headers={SIGNATURE_HEADER: "SHA256=" + wrong.upper()},
+    )
+    assert response.status_code == 401
+    assert not InboundWebhook.objects.for_tenant(tenant).exists()
+
+
+def test_this_app_keeps_no_verifier_of_its_own() -> None:
+    """The copy is deleted, not merely unused: the reach is the bridge."""
+    assert not hasattr(connections_api, "signature_matches")
+    assert not hasattr(connections_api, "expected_signature")
+    assert not hasattr(connections_api, "signature_v2_matches")
+
+
+@pytest.mark.parametrize("scheme", ["v1", "v2"])
+def test_an_unregistered_verifier_refuses_and_never_falls_through(
+    api: Client, tenant: Tenant, connection: Connection, scheme: str, settings: Any
+) -> None:
+    """With no verifier on the bridge a correctly signed delivery is refused.
+
+    Outside production the bridge's no-op answers `None`, and the door reads
+    anything but `True` as not verified — there is no second check to fall
+    through to, which is exactly the fail-open shape two verifiers used to have.
+    """
+    settings.BRIDGE_STRICT = False  # opt-out: the non-production no-op is the subject
+    body = b'{"event": "x"}'
+    if scheme == "v1":
+        name, headers = bridge.SIGNATURE_MATCHES, {SIGNATURE_HEADER: _signature(body)}
+    else:
+        name = bridge.SIGNATURE_V2_MATCHES
+        headers = {SIGNATURE_V2_HEADER: _sign_v2_header(body, timestamp=_unix(now()))}
+    with _unregistered(name):
+        response = api.post(_webhook_url(connection), data=body, content_type=JSON, headers=headers)
+    assert response.status_code == 401
+    assert not InboundWebhook.objects.for_tenant(tenant).exists()
+
+
+def test_an_unregistered_verifier_is_a_refusal_to_serve_in_production(
+    api: Client, connection: Connection, settings: Any
+) -> None:
+    """Strict (production): the name nobody registered raises rather than answering."""
+    settings.BRIDGE_STRICT = True
+    body = b'{"event": "x"}'
+    with _unregistered(bridge.SIGNATURE_MATCHES), pytest.raises(bridge.BridgeNotRegistered):
+        connections_api._signature_verified(
+            connection=connection, body=body, headers={SIGNATURE_HEADER: _signature(body)}
+        )
 
 
 def test_a_signature_over_a_different_body_is_refused(
@@ -487,6 +720,26 @@ def test_a_signature_over_a_different_body_is_refused(
     )
     assert response.status_code == 401
     assert not InboundWebhook.objects.for_tenant(tenant).exists()
+
+
+def test_an_unknown_connection_answers_exactly_as_a_bad_signature(
+    api: Client, connection: Connection
+) -> None:
+    """An id that names nothing is `401 invalid_signature`, byte-equal to a bad signature."""
+    body = b'{"event": "x"}'
+    unknown = api.post(
+        f"{LIST_URL}{uuid.uuid4()}/webhook/",
+        data=body,
+        content_type=JSON,
+        headers={SIGNATURE_HEADER: _signature(body)},
+    )
+    wrong = _signature(body, secret="not-the-secret")  # noqa: S106 — a signing secret the test both signs and verifies with  # pragma: allowlist secret
+    forged = api.post(
+        _webhook_url(connection), data=body, content_type=JSON, headers={SIGNATURE_HEADER: wrong}
+    )
+    assert unknown.status_code == forged.status_code == 401, unknown.content
+    assert _body(unknown)["code"] == "invalid_signature", unknown.content
+    assert _body(unknown) == _body(forged)
 
 
 def test_a_revoked_connection_stops_accepting_deliveries(
@@ -505,17 +758,8 @@ def test_a_revoked_connection_stops_accepting_deliveries(
         content_type=JSON,
         headers={SIGNATURE_HEADER: signature},
     )
-    assert response.status_code == 404
-
-
-def test_an_unknown_connection_id_is_404_and_says_nothing_else(api: Client) -> None:
-    response = api.post(
-        f"{LIST_URL}00000000-0000-7000-8000-000000000000/webhook/",
-        data=b"{}",
-        content_type=JSON,
-        headers={SIGNATURE_HEADER: _signature(b"{}")},
-    )
-    assert response.status_code == 404
+    assert response.status_code == 401
+    assert _body(response)["code"] == "invalid_signature"
 
 
 def test_the_receiver_needs_no_session_and_no_token(
@@ -716,7 +960,9 @@ def test_a_foreign_row_verifies_and_stores_entirely_within_its_own_tenant(
     body = b'{"id": "evt_cross_tenant"}'
     signature = SIGNATURE_PREFIX + hmac.new(b"their-own-secret", body, hashlib.sha256).hexdigest()
 
-    event = verify_and_store(body, signature, source=theirs, name="example.thing.received")
+    event = verify_and_store(
+        request_body=body, signature=signature, source=theirs, name="example.thing.received"
+    )
 
     assert event.tenant_id == other_tenant.pk, "the row's tenant, and only ever the row's"
     assert event_model.objects.for_tenant(other_tenant).filter(pk=event.pk).exists()
@@ -733,7 +979,12 @@ def test_a_foreign_row_verifies_and_stores_entirely_within_its_own_tenant(
     )
     mine_signature = SIGNATURE_PREFIX + hmac.new(b"my-own-secret", body, hashlib.sha256).hexdigest()
     with pytest.raises(Forbidden):
-        verify_and_store(body, mine_signature, source=theirs, name="example.thing.received")
+        verify_and_store(
+            request_body=body,
+            signature=mine_signature,
+            source=theirs,
+            name="example.thing.received",
+        )
     assert mine.webhook_secret != theirs.webhook_secret
 
 
@@ -752,6 +1003,7 @@ def test_a_second_connection_may_reuse_a_delivery_id(
         provider="example",
         name="Second account",
         credentials={"webhook_secret": WEBHOOK_SECRET},
+        is_signature_v2_required=False,
     )
     body = b'{"event": "thing.happened"}'
     headers = {SIGNATURE_HEADER: _signature(body), "X-Delivery-Id": "shared-id-1"}
@@ -793,13 +1045,11 @@ def test_a_redelivery_hands_off_once(api: Client, tenant: Tenant, connection: Co
 # own outbound signer closed that on the way out; these tests are the way in.
 #
 # The scheme is `apps.events`' — the same envelope the signer in `apps.events.activities` sends —
-# and everything about it except the header NAME is read across the border at
-# call time (`services._events_attr`). So is everything here: the tolerance the
+# and everything about it except the header NAME is reached across the border at
+# call time through `core.bridge`. So is everything here: the tolerance the
 # assertions use, the signer's own header constant, and the verifier whose
 # source the constant-time test reads. Nothing in this file imports the events
 # app, for the reason `test_discovery` states.
-
-EVENTS_ACTIVITIES = "apps.events.activities"
 
 
 def _sign_v2_header(body: bytes, *, timestamp: int, secret: str = WEBHOOK_SECRET) -> str:
@@ -901,7 +1151,7 @@ def test_the_same_delivery_replayed_past_the_window_is_refused_and_stores_nothin
 
     replayed = api.post(_webhook_url(connection), data=body, content_type=JSON, headers=headers)
     assert replayed.status_code == 401
-    assert _body(replayed)["detail"] == "Invalid signature."
+    assert _body(replayed)["code"] == "invalid_signature"
     assert InboundWebhook.objects.for_tenant(tenant).count() == 1, "nothing new was stored"
 
 
@@ -918,7 +1168,7 @@ def test_a_delivery_signed_before_the_window_is_refused(
         headers={SIGNATURE_V2_HEADER: _sign_v2_header(body, timestamp=_unix(stale))},
     )
     assert response.status_code == 401
-    assert _body(response)["detail"] == "Invalid signature."
+    assert _body(response)["code"] == "invalid_signature"
     assert not InboundWebhook.objects.for_tenant(tenant).exists()
 
 
@@ -1017,7 +1267,7 @@ def test_a_malformed_v2_header_is_refused(
         headers={SIGNATURE_V2_HEADER: value},
     )
     assert response.status_code == 401, label
-    assert _body(response)["detail"] == "Invalid signature."
+    assert _body(response)["code"] == "invalid_signature"
     assert not InboundWebhook.objects.for_tenant(tenant).exists()
 
 
@@ -1025,7 +1275,7 @@ def test_a_fresh_v2_delivery_signed_with_the_wrong_secret_is_refused(
     api: Client, tenant: Tenant, connection: Connection
 ) -> None:
     body = b'{"event": "x"}'
-    forged = _sign_v2_header(body, timestamp=_unix(now()), secret="the-wrong-secret")
+    forged = _sign_v2_header(body, timestamp=_unix(now()), secret="the-wrong-secret")  # noqa: S106 — a signing secret the test both signs and verifies with
     response = api.post(
         _webhook_url(connection),
         data=body,
@@ -1110,10 +1360,7 @@ def test_a_connection_with_no_secret_refuses_a_v2_delivery(
 def test_a_v1_only_delivery_still_verifies_exactly_as_before(
     api: Client, tenant: Tenant, connection: Connection
 ) -> None:
-    """The expand half: a sender that never heard of the new scheme is untouched.
-
-    `scripts/mail_demo.py` is one such sender and stays on the v1-only path.
-    """
+    """The expand half: a connection flagged `is_signature_v2_required=False` still takes v1."""
     body = b'{"event": "thing.happened"}'
     response = api.post(
         _webhook_url(connection),
@@ -1122,6 +1369,54 @@ def test_a_v1_only_delivery_still_verifies_exactly_as_before(
         headers={SIGNATURE_HEADER: _signature(body)},
     )
     assert response.status_code == 202
+    assert InboundWebhook.objects.for_tenant(tenant).count() == 1
+
+
+def test_a_body_only_signature_is_refused_where_the_connection_requires_v2(
+    api: Client, tenant: Tenant, v2_connection: Connection
+) -> None:
+    """The sender no longer chooses the weaker scheme: the connection does."""
+    body = b'{"event": "thing.happened"}'
+    response = api.post(
+        _webhook_url(v2_connection),
+        data=body,
+        content_type=JSON,
+        headers={SIGNATURE_HEADER: _signature(body)},
+    )
+    assert response.status_code == 401, response.content
+    refused = _body(response)
+    assert refused["code"] == "timestamped_signature_required"
+    assert SIGNATURE_V2_HEADER in json.dumps(refused), "the body names the scheme to send"
+    assert not InboundWebhook.objects.for_tenant(tenant).exists()
+
+
+def test_a_wrong_body_only_signature_on_a_v2_connection_learns_nothing(
+    api: Client, tenant: Tenant, v2_connection: Connection
+) -> None:
+    """Only a holder of the secret is told which scheme is required."""
+    body = b'{"event": "x"}'
+    response = api.post(
+        _webhook_url(v2_connection),
+        data=body,
+        content_type=JSON,
+        headers={SIGNATURE_HEADER: _signature(body, secret="the-wrong-secret")},  # noqa: S106 — a signing secret the test both signs and verifies with
+    )
+    assert response.status_code == 401
+    assert _body(response)["code"] == "invalid_signature"
+    assert not InboundWebhook.objects.for_tenant(tenant).exists()
+
+
+def test_a_v2_delivery_is_accepted_where_the_connection_requires_v2(
+    api: Client, tenant: Tenant, v2_connection: Connection
+) -> None:
+    body = b'{"event": "thing.happened"}'
+    response = api.post(
+        _webhook_url(v2_connection),
+        data=body,
+        content_type=JSON,
+        headers={SIGNATURE_V2_HEADER: _sign_v2_header(body, timestamp=_unix(now()))},
+    )
+    assert response.status_code == 202, response.content
     assert InboundWebhook.objects.for_tenant(tenant).count() == 1
 
 
@@ -1143,7 +1438,7 @@ def test_a_valid_v1_cannot_rescue_a_stale_v2_header(
         headers={SIGNATURE_HEADER: _signature(body), SIGNATURE_V2_HEADER: stale},
     )
     assert response.status_code == 401
-    assert _body(response)["detail"] == "Invalid signature."
+    assert _body(response)["code"] == "invalid_signature"
     assert not InboundWebhook.objects.for_tenant(tenant).exists()
 
 
@@ -1172,7 +1467,7 @@ def test_a_fresh_v2_is_enough_on_its_own_with_a_wrong_v1_beside_it(
         data=body,
         content_type=JSON,
         headers={
-            SIGNATURE_HEADER: _signature(body, secret="the-wrong-secret"),
+            SIGNATURE_HEADER: _signature(body, secret="the-wrong-secret"),  # noqa: S106 — a signing secret the test both signs and verifies with
             SIGNATURE_V2_HEADER: _sign_v2_header(body, timestamp=_unix(now())),
         },
     )
@@ -1271,14 +1566,15 @@ def test_the_v2_header_name_is_the_signers_own() -> None:
     window, the element grammar, the comparison) is read across the border at
     call time.
     """
-    signer = importlib.import_module(EVENTS_ACTIVITIES)
+    signer = inspect.getmodule(_verifier_module().sign_v2)
+    assert signer is not None
     assert SIGNATURE_V2_HEADER == signer.SIGNATURE_V2_HEADER
 
 
 def test_the_window_is_the_events_constant_and_not_a_second_copy() -> None:
     """`signature_v2_tolerance()` is a read, never a redeclaration."""
-    receivers = importlib.import_module(EVENTS_RECEIVERS)
-    assert signature_v2_tolerance() is receivers.SIGNATURE_V2_TOLERANCE
+    assert signature_v2_tolerance() is _verifier_module().SIGNATURE_V2_TOLERANCE
+    assert signature_v2_tolerance() is bridge.get(bridge.SIGNATURE_V2_TOLERANCE)()
 
 
 def test_the_published_window_is_the_constant_in_minutes() -> None:
@@ -1310,6 +1606,5 @@ def test_the_v2_comparison_is_constant_time() -> None:
     byte-by-byte comparison that returns early leaks, over enough requests, how
     much of a forged signature was right.
     """
-    receivers = importlib.import_module(EVENTS_RECEIVERS)
-    assert "hmac.compare_digest" in inspect.getsource(receivers.signature_v2_matches)
-    assert "hmac.compare_digest" in inspect.getsource(signature_matches)
+    for name in (bridge.SIGNATURE_V2_MATCHES, bridge.SIGNATURE_MATCHES):
+        assert "hmac.compare_digest" in inspect.getsource(bridge.get(name))

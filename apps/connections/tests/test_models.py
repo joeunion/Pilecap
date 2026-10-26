@@ -142,3 +142,34 @@ def test_the_field_cannot_be_talked_into_returning_plaintext() -> None:
     assert field.to_python({"a": 1}) == {"a": 1}
     with pytest.raises(ValidationError):
         field.to_python("plainly-not-a-token")
+
+
+# --- The signature scheme's expand migration ------------------------------------
+
+
+def _migrate_connections_to(name: str) -> Any:
+    """Drive `connections` to `name` inside this test's transaction; answer that state's apps."""
+    from django.db.migrations.executor import MigrationExecutor
+
+    with db_connection.cursor() as cursor:
+        cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
+    executor = MigrationExecutor(db_connection)
+    executor.loader.build_graph()
+    executor.migrate([("connections", name)])
+    executor.loader.build_graph()
+    return executor.loader.project_state([("connections", name)]).apps
+
+
+def test_rows_older_than_the_scheme_keep_v1_and_new_rows_require_v2(
+    tenant: Tenant, owner_actor: Actor
+) -> None:
+    before = _migrate_connections_to("0004_inbound_webhook_handled_statuses")
+    old = before.get_model("connections", "Connection").objects.create(
+        tenant_id=tenant.pk, provider="example", name="Older than 2.5.0"
+    )
+
+    _migrate_connections_to("0005_connection_signature_scheme")
+
+    assert Connection.objects.get(pk=old.pk).is_signature_v2_required is False
+    made_now = create_connection(tenant=tenant, actor=owner_actor, provider="example", name="New")
+    assert made_now.is_signature_v2_required is True

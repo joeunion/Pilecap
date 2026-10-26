@@ -43,8 +43,10 @@ from django.conf import settings
 from django.db import close_old_connections
 from temporalio import activity
 
-from apps.accounts import services, zitadel
-from apps.accounts.models import IdentityBranding, SsoConnection, User
+from apps.accounts import realms, services, zitadel
+from apps.accounts.models import STAFF_REALM, IdentityBranding, SsoConnection, User
+from apps.accounts.realm import LoginPolicy, ProviderRef
+from apps.accounts.selectors import get_realm_ref, get_tenant_realm, get_workforce_domains
 from apps.accounts.types import (
     KIND_IDENTITY_BRANDING,
     KIND_IDENTITY_REVOCATION,
@@ -52,17 +54,75 @@ from apps.accounts.types import (
     KIND_WORKFORCE_PROVIDER,
     IdentityConfigApplied,
     IdentityConfigSync,
+    IdentityHomeApplied,
+    IdentityHomeAsk,
     InvitedIdentity,
     InvitedPerson,
 )
 from apps.core import bridge
 from apps.core.actor import system_actor
+from apps.core.context import current_actor
 from apps.core.exceptions import NotFound
 from apps.core.log import get_logger
-from apps.core.models import Organization, Tenant
+from apps.core.models import Invitation, Tenant
+from apps.core.surfaces import surface_for_role
 from apps.core.time import now
 
 log = get_logger(__name__)
+
+
+class RealmNotReady(RuntimeError):
+    """The tenant's realm is not made yet; the run retries until the home run lands it.
+
+    Not a `DomainError`: nobody asked a door for anything, so there is no caller
+    to refuse — it is the same retry-until-it-lands shape as the platform being
+    briefly unreachable, and Temporal's retry policy owns it.
+    """
+
+
+def _login_policy(*, enforced: bool) -> LoginPolicy:
+    """What a realm's sign-in says: the password, or — while `enforced` — the provider only."""
+    return LoginPolicy(password_allowed=not enforced, provider_required=enforced)
+
+
+@activity.defn(name="ensure_identity_home", no_thread_cancel_exception=True)
+def ensure_identity_home(payload: IdentityHomeAsk) -> IdentityHomeApplied:
+    """Make one tenant's realm, grant it the platform, set its policy, and record it.
+
+    **Every step idempotent through the realm port**, so a retry — the normal
+    case under Temporal — leaves one realm, one grant and one policy: the port
+    searches before it creates. **A platform run** (`_platform_scope`): the
+    realm is the deployment's identity configuration, so the tenant is named in
+    the payload and read here, and a tenant-stamped invocation is refused.
+
+    The policy is the tenant's current intent: the password, unless one of its
+    connections already enforces with its provider landed — which is only ever
+    true for a tenant whose realm was lost and is being made again.
+    """
+    close_old_connections()
+    try:
+        _platform_scope("identity_home")
+        tenant = Tenant.objects.filter(slug=payload.tenant_slug).first()
+        if tenant is None:
+            raise NotFound(f"No tenant {payload.tenant_slug!r} to make a realm for.")
+        port = realms.current()
+        realm = port.ensure_realm(tenant=tenant)
+        port.grant_platform(realm=realm)
+        enforcing = (
+            SsoConnection.objects.for_tenant(tenant)
+            .filter(
+                status=SsoConnection.Status.ACTIVE,
+                enforced=True,
+                sync_state=SsoConnection.SyncState.APPLIED,
+            )
+            .exists()
+        )
+        port.set_login_policy(realm=realm, policy=_login_policy(enforced=enforcing))
+        services.sync_identity_home(tenant=tenant, actor=system_actor(tenant), realm_id=realm.id)
+        log.info("accounts.identity_home.materialised", tenant=tenant.slug, realm_id=realm.id)
+        return IdentityHomeApplied(tenant_slug=tenant.slug, realm_id=realm.id)
+    finally:
+        close_old_connections()
 
 
 @activity.defn(name="apply_identity_config", no_thread_cancel_exception=True)
@@ -79,7 +139,7 @@ def apply_identity_config(payload: IdentityConfigSync) -> IdentityConfigApplied:
     the web UI by anybody who can open a run.
 
     **The scope is resolved per kind, and that is the shape rather than a
-    micro-optimisation** (ADR workflows-3; rung W7). Two of the three kinds are
+    micro-optimisation** (ADR workflows-3). Two of the three kinds are
     **platform** runs — the deployment's workforce door, and the revocation of
     an erased person's Zitadel credential — started with `tenant=None` under a
     `platform:` id, and neither has a tenant to restore or a row scoped to one
@@ -107,12 +167,8 @@ def apply_identity_config(payload: IdentityConfigSync) -> IdentityConfigApplied:
                 f"apply_identity_config does not know the config kind {payload.kind!r}. "
                 "The vocabulary is apps/accounts/types.py's KIND_* constants."
             )
-        # Through the bridge, for the same reason the service starts the run
-        # through it: `apps.workflows` sits above `apps.accounts`, and an
-        # upward import here would be the layer violation the bridge exists to
-        # invert. THREE values — tenant, user id and the acting hat.
-        tenant, _user_id, org = bridge.get(bridge.WORKFLOW_CONTEXT)()
-        return _apply_sso_connection(payload, tenant=tenant, org=org)
+        tenant, _user_id, _org = bridge.get(bridge.WORKFLOW_CONTEXT)()
+        return _apply_sso_connection(payload, tenant=tenant)
     finally:
         close_old_connections()
 
@@ -124,7 +180,7 @@ def _platform_scope(kind: str) -> tuple[Any, Any, Any]:
     workflow id, no acting hat (`_start_identity_run` passes `org=None` and
     `check_org_agreement` refuses one beside a null tenant). Until ADR core-9
     they resolved nothing, because the accessor that answers this question lives
-    in `apps.workflows`, which sits **above** this app — so rung W7's builder
+    in `apps.workflows`, which sits **above** this app — so the builder
     reported the gap rather than smuggling an upward import, and these two ran
     under whatever headers they happened to arrive with, checking neither.
 
@@ -159,45 +215,68 @@ def _apply_sso_connection(
     payload: IdentityConfigSync,
     *,
     tenant: Tenant | None,
-    org: Organization | None,
 ) -> IdentityConfigApplied:
-    """One customer's identity provider, materialised as a Zitadel external IdP."""
+    """One customer's identity provider, materialised inside the tenant's own realm.
+
+    **In the tenant's realm, through the realm port** (identity option B): the
+    provider is made there and linked to that realm's login policy, and the
+    realm's policy says what `enforced` means — the password off and the
+    provider the one way in while it is on, the password back while it is off.
+    Every other realm, the staff realm included, is untouched: nobody else's
+    password goes anywhere.
+
+    **Refused while the tenant has no realm yet** — a `pending` home — and
+    Temporal retries until it lands: a provider made anywhere else would be a
+    provider in the wrong population.
+
+    **The second wall.** A connection that enforces is only written as
+    provider-required once the realm reads the provider back as linked; if it
+    does not, the run FAILS naming it rather than locking the realm's people out
+    behind a door that is not there.
+
+    **A disabled row is a provider taken off the realm's sign-in**, and the
+    realm's password back: the pinned build has no deactivation for the
+    provider templates this tree makes (measured: the legacy
+    `/idps/{id}/_deactivate` answers `400 Errors.Org.IDPConfig.NotActive` on an
+    ACTIVE one, and `/idps/templates/{id}/_deactivate` answers 404), so the
+    realm port's `detach_provider` — the provider unlinked from the realm's
+    login policy — is the release. The object and its user links stay, so a
+    customer who re-enables tomorrow does not find everybody unlinked.
+    """
     connection = SsoConnection.objects.for_tenant(tenant).filter(pk=UUID(payload.key)).first()
     if connection is None:
         raise NotFound("This SSO connection no longer exists.")
-
-    if connection.is_active:
-        resource = zitadel.ensure_oidc_identity_provider(
-            name=_idp_name(connection),
-            issuer=connection.issuer,
-            client_id=connection.client_id,
-            client_secret=connection.client_secret,
-            existing_id=connection.zitadel_idp_id,
+    realm = get_tenant_realm(connection.tenant)
+    if realm is None:
+        raise RealmNotReady(
+            f"Tenant {connection.tenant.slug!r} has no realm of its own yet, so there is "
+            "nowhere to put its identity provider; the identity-home run has to land first."
         )
+    port = realms.current()
+    if connection.is_active and not connection.enforced:
+        # The policy first: a provider is only linked on a realm that owns its
+        # login policy, and this one says the password stays.
+        port.set_login_policy(realm=realm, policy=_login_policy(enforced=False))
+        resource_id = port.attach_provider(realm=realm, connection=connection).id
+    elif connection.is_active:
+        # The provider first, then the wall — never the wall before its door.
+        provider = port.attach_provider(realm=realm, connection=connection)
+        if provider.id not in {one.id for one in port.facts(realm=realm).providers}:
+            raise NotFound(
+                "This connection's identity provider is not on its realm's sign-in, so "
+                "requiring it would leave nobody able to sign in; nothing was enforced."
+            )
+        port.set_login_policy(realm=realm, policy=_login_policy(enforced=True))
+        resource_id = provider.id
     else:
-        # **A disabled row materialises as a deactivated provider**, and this is
-        # the half W2-R5 owed: before it, `disable_sso_connection` stopped our
-        # own callback and left Zitadel perfectly willing to sign the same people
-        # in. The object and its links stay, for the reason the service gives
-        # about the row — a customer mid-migration who re-enables tomorrow must
-        # not find everybody unlinked.
-        resource = zitadel.deactivate_identity_provider(idp_id=connection.zitadel_idp_id)
-    applied = IdentityConfigApplied(
-        kind=payload.kind,
-        key=payload.key,
-        resource_id=resource.id,
-        created=resource.created,
-    )
-    # The write-back goes through the service, like every other write in this
-    # repository (house rule 10). The activity learned a fact; the service is
-    # what is allowed to record it, audit it and log it.
+        if connection.zitadel_idp_id:
+            port.detach_provider(realm=realm, provider=ProviderRef(id=connection.zitadel_idp_id))
+        port.set_login_policy(realm=realm, policy=_login_policy(enforced=False))
+        resource_id = connection.zitadel_idp_id
+    applied = IdentityConfigApplied(kind=payload.kind, key=payload.key, resource_id=resource_id)
     services.sync_identity_config(
         tenant=connection.tenant,
-        # Nobody clicked this. Attributing it to whoever created the
-        # connection last week would make the audit trail read plausibly and
-        # be false. The hat still rides on it, so the audit row says which
-        # part of the network the work was done for.
-        actor=system_actor(connection.tenant, org),
+        actor=current_actor(kind="system"),
         connection=connection,
         applied=applied,
     )
@@ -241,15 +320,13 @@ def _apply_workforce_provider(payload: IdentityConfigSync) -> IdentityConfigAppl
     be materialising what the environment said when the ask was made rather than
     what it says now.
     """
-    if not [
-        one for one in (getattr(settings, "GOOGLE_WORKSPACE_DOMAINS", []) or []) if str(one).strip()
-    ]:
+    if not get_workforce_domains():
         return _take_the_workforce_door_down(payload)
 
     client_id = str(getattr(settings, "GOOGLE_OAUTH_CLIENT_ID", "") or "").strip()
     client_secret = str(getattr(settings, "GOOGLE_OAUTH_CLIENT_SECRET", "") or "").strip()
     resource = zitadel.ensure_google_identity_provider(
-        name=str(getattr(settings, "GOOGLE_WORKFORCE_IDP_NAME", WORKFORCE_IDP_NAME)),
+        name=zitadel.workforce_idp_name(),
         client_id=client_id,
         client_secret=client_secret,
     )
@@ -258,12 +335,7 @@ def _apply_workforce_provider(payload: IdentityConfigSync) -> IdentityConfigAppl
         resource_id=resource.id,
         created=resource.created,
     )
-    return IdentityConfigApplied(
-        kind=payload.kind,
-        key=payload.key,
-        resource_id=resource.id,
-        created=resource.created,
-    )
+    return IdentityConfigApplied(kind=payload.kind, key=payload.key, resource_id=resource.id)
 
 
 def _take_the_workforce_door_down(payload: IdentityConfigSync) -> IdentityConfigApplied:
@@ -276,7 +348,7 @@ def _take_the_workforce_door_down(payload: IdentityConfigSync) -> IdentityConfig
     it swallows Zitadel's own already-in-that-state refusal — plus the search by
     name, which is the only handle either side has on this provider.
     """
-    name = str(getattr(settings, "GOOGLE_WORKFORCE_IDP_NAME", WORKFORCE_IDP_NAME))
+    name = zitadel.workforce_idp_name()
     provider = zitadel.find_identity_provider(name=name)
     if provider is None:
         log.info("accounts.workforce.already_absent", name=name)
@@ -287,7 +359,6 @@ def _take_the_workforce_door_down(payload: IdentityConfigSync) -> IdentityConfig
         kind=payload.kind,
         key=payload.key,
         resource_id=resource.id,
-        created=False,
     )
 
 
@@ -333,7 +404,6 @@ def _apply_identity_branding(payload: IdentityConfigSync) -> IdentityConfigAppli
         kind=payload.kind,
         key=payload.key,
         resource_id=resource.id,
-        created=resource.created,
     )
     # The write-back goes through the service, like every other write in this
     # repository (house rule 10) and exactly as `_apply_sso_connection` above
@@ -376,21 +446,32 @@ def _apply_identity_revocation(payload: IdentityConfigSync) -> IdentityConfigApp
     key, put there by `erase_user` inside its transaction, so there is no caller
     input to widen.
 
-    A user with no `zitadel_sub` is a person who never signed in through the
-    platform: there is nothing to deactivate, and reporting that as an empty
-    resource id is the truth rather than a failure.
+    A user with no subject in the identity join is a person who never signed in
+    through the platform: there is nothing to deactivate, and reporting that as
+    an empty resource id is the truth rather than a failure.
+
+    **Every subject the person holds, each in its own realm**, through the
+    realm port's `deactivate_person` — a person in two tenants is two platform
+    accounts, and one left live is a person erased in one workspace who signs
+    in to the other. The staff realm's account also loses its federation links
+    first (the deployment-level client call it always made); a tenant realm's
+    account is deactivated, which no link can sign in through.
     """
     user = User.objects.filter(pk=UUID(payload.key)).first()
     if user is None:
         raise NotFound("That person's row no longer exists.")
-    subject = str(user.zitadel_sub or "").strip()
-    if not subject:
+    joined = list(user.sso_identities.filter(connection__isnull=True).order_by("created_at"))
+    if not joined:
         return IdentityConfigApplied(kind=payload.kind, key=payload.key, resource_id="")
-    # Links first, then the account. The other order leaves a window in which a
-    # deactivated account still carries live federation links, and the whole
-    # point of this run is that no window is left open.
-    removed = zitadel.remove_identity_provider_links(user_id=subject)
-    resource = zitadel.deactivate_user(user_id=subject)
+    port = realms.current()
+    removed = 0
+    for row in joined:
+        if row.realm == STAFF_REALM:
+            # Links first, then the account. The other order leaves a window in
+            # which a deactivated account still carries live federation links.
+            removed += zitadel.remove_identity_provider_links(user_id=row.subject)
+        port.deactivate_person(realm=get_realm_ref(row.realm), subject=row.subject)
+    subject = joined[0].subject
     # **And the sockets, from here rather than from `workflows.py`** (ADR
     # realtime-2 d; house rule 9). The bridge lookup and the `group_send` behind
     # it are I/O, and a workflow module may not do I/O — it has to replay
@@ -409,100 +490,78 @@ def _apply_identity_revocation(payload: IdentityConfigSync) -> IdentityConfigApp
         "accounts.identity.revoked",
         zitadel_user_id=subject,
         links_removed=removed,
-        deactivated=resource.created,
+        realms=len(joined),
     )
-    return IdentityConfigApplied(
-        kind=payload.kind,
-        key=payload.key,
-        resource_id=resource.id,
-        created=resource.created,
-    )
-
-
-# What the workforce provider is called inside Zitadel. A constant rather than a
-# derived name because there is exactly one of these per instance and its name is
-# the only handle `ensure_google_identity_provider` has to find it by — the
-# deployment has no row to record an id on. Overridable by a setting so two
-# deployments against one Zitadel instance do not collide, the same reason
-# `ZITADEL_PROJECT_NAME` is a setting.
-WORKFORCE_IDP_NAME = "Workforce Google"
-
-
-def _idp_name(connection: SsoConnection) -> str:
-    """What this connection is called inside Zitadel.
-
-    The tenant's slug and the connection's primary key, because the name is the
-    second net `ensure_oidc_identity_provider` falls back to when our recorded
-    id is gone — and a name derived from anything renamable would stop matching
-    the day somebody renamed it, silently creating a second provider. The
-    connection's display name is not in it for exactly that reason.
-    """
-    return f"{connection.tenant.slug}:{connection.pk}"
+    return IdentityConfigApplied(kind=payload.kind, key=payload.key, resource_id=subject)
 
 
 @activity.defn(name="provision_invited_identity", no_thread_cancel_exception=True)
 def provision_invited_identity(payload: InvitedPerson) -> InvitedIdentity:
-    """Give an invited person an account they can set a password on. **Both calls.**
+    """Give an invited person an account in the tenant's realm, and the link to set a password.
 
-    The second activity in this app that reaches the identity platform, and it
-    reaches it the only way anything may (house rule 27): through
-    `accounts.zitadel`, from an activity, where a management failure is a
-    Temporal retry rather than a request nobody gets an answer to.
+    **In the tenant's own realm, through the realm port** (identity option B):
+    the invited person is one of that tenant's people, so their account is made
+    there, and the link that lets them choose a password lands on **the host of
+    the surface their role belongs to** (`core.surfaces.surface_for_role`) — a
+    customer's mail carries the customer host, a staff member's the staff one.
+    The role is read off the invitation row, the one place it is written.
 
-    Two calls and deliberately one activity. Splitting them would put a retry
-    boundary between "the account exists" and "the account has a code", and the
-    second half is the half that is not idempotent — a retry of a
-    `create_invite_code` activity mints a second code and supersedes the first,
-    so a run that succeeded at minting and failed at recording would email a
-    code that a retry had already invalidated. Together, they retry as a unit:
-    `ensure_invited_user` finds the account the previous attempt made, and the
-    fresh code is the one that goes out.
+    **Refused while the tenant has no realm yet**, and Temporal retries until the
+    identity-home run lands: an account made in any other realm would be an
+    account in the wrong population.
 
-    **Touches no model of ours, and needs none.** Everything it is told is in
-    the payload, and everything it learns goes back in the return value — so
-    unlike this module's other activity there is no row to read, no principal to
-    restore for a query, and no `close_old_connections` to owe the pool. That is
-    an absence worth stating rather than a line missing: the invitation row is
-    already written and committed by the time this runs.
+    One activity, because the account and its code retry as a unit: the port's
+    `provision_person` finds the account the previous attempt made, and the
+    fresh code — which supersedes the last on every call — is the one that goes
+    out. A person who already set credentials gets no link, and the mail says
+    "sign in" instead.
 
     **The code is never logged.** The one log line names the account and the
     branch taken; `set_credentials_url` embeds the code and does not appear in
     it. `tests/test_invited_provisioning.py` asserts that over the captured
     records rather than trusting this paragraph.
     """
-    first_name, last_name = _invited_person_names(payload.email)
-    user = zitadel.ensure_invited_user(
-        email=payload.email,
-        first_name=first_name,
-        last_name=last_name,
-    )
+    close_old_connections()
     try:
-        code = zitadel.create_invite_code(user_id=user.id)
-    except zitadel.ZitadelError as error:
-        if not zitadel.is_already_initialized(error):
-            raise
+        tenant, _user_id, _org = bridge.get(bridge.WORKFLOW_CONTEXT)()
+        key = UUID(payload.invitation_id)
+        # rule-24: this run's own invitation, by the key it was started with, read
+        # for its role alone; the row was written by the service that asked for
+        # the run, and the hat that wrote it is not on a platform-shaped read.
+        invitation = Invitation.objects.for_tenant(tenant).filter(pk=key).first()
+        realm = get_tenant_realm(tenant) if tenant is not None else None
+        if realm is None:
+            raise RealmNotReady(
+                "This invitation's tenant has no realm of its own yet, so there is nowhere to "
+                "make the person; the identity-home run has to land first."
+            )
+        surface = surface_for_role(invitation.role if invitation is not None else "")
+        person = realms.current().provision_person(
+            realm=realm,
+            email=payload.email,
+            names=_invited_person_names(payload.email),
+            surface=surface.key,
+        )
+    finally:
+        close_old_connections()
+    if not person.set_credentials_url:
         # Not a failure: they already sign in here. The email will say so.
         log.info(
             "accounts.invitation.identity_already_initialized",
             invitation_id=payload.invitation_id,
-            zitadel_user_id=user.id,
+            zitadel_user_id=person.subject,
         )
-        return InvitedIdentity(
-            zitadel_user_id=user.id,
-            created=user.created,
-            already_initialized=True,
-        )
+        return InvitedIdentity(zitadel_user_id=person.subject, already_initialized=True)
     lifetime = zitadel.invite_code_lifetime()
     log.info(
         "accounts.invitation.identity_provisioned",
         invitation_id=payload.invitation_id,
-        zitadel_user_id=user.id,
-        created=user.created,
+        zitadel_user_id=person.subject,
+        surface=surface.key,
     )
     return InvitedIdentity(
-        zitadel_user_id=user.id,
-        created=user.created,
-        set_credentials_url=zitadel.invite_url(user_id=user.id, code=code),
+        zitadel_user_id=person.subject,
+        set_credentials_url=person.set_credentials_url,
         link_expires_on=(now() + lifetime).date().isoformat() if lifetime is not None else "",
     )
 
@@ -530,4 +589,8 @@ def _invited_person_names(email: str) -> tuple[str, str]:
     return first, last
 
 
-ACTIVITIES: list[Callable[..., Any]] = [apply_identity_config, provision_invited_identity]
+ACTIVITIES: list[Callable[..., Any]] = [
+    apply_identity_config,
+    provision_invited_identity,
+    ensure_identity_home,
+]

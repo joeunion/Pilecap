@@ -1,0 +1,32 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "end", "text": ""}
+"""The shapes that cross the workflow boundary: standard-library dataclasses only (rule 9)."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+
+
+@dataclass
+class WidgetReminder:
+    """What `WidgetReminderWorkflow` is started with: the row, never its moment."""
+
+    widget_id: str
+
+
+@dataclass
+class WidgetMoment:
+    """The row's `due_at` as epoch seconds; `None` once it is cleared."""
+
+    widget_id: str
+    until: float | None
+
+
+@dataclass
+class WidgetReminded:
+    """What the reminder returns; `reminded_at` is empty when the moment was cleared first."""
+
+    widget_id: str
+    reminded_at: str
+
+

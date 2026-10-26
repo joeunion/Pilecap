@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "$(dirname -- "${BASH_SOURCE:-$0}")/../scripts/bash_only.sh" || exit 2
 # The release sequence, as one script that owns its exit status.
 #
 #   deploy/release.sh                    integrations, migrate, grants, alerts, restart, readyz
@@ -77,10 +78,10 @@
 #     materialised by one activity (house rule 27); it is not a release act.
 #
 # THE READYZ WAIT IS BOUNDED AND THE BOUND IS RECORDED, NEVER GATED.
-# 24 attempts, 5 seconds apart — two minutes — over the same target, the same
-# `--connect-to` and the same certificate posture the `readyz-prober` container
-# already probes with (deploy/compose.yaml). The probe runs INSIDE that
-# container rather than from the operator's shell, so a laptop stack (where
+# 24 attempts, 5 seconds apart — two minutes — each one the `readyz-prober`
+# container's own probe (`prober.sh --once`, deploy/observability/alerts/):
+# its target, its socket override and its certificate posture. The probe runs
+# INSIDE that container rather than from the operator's shell, so a laptop stack (where
 # PROBE_CONNECT_TO points the socket at Caddy) and a box (where the value is
 # empty and public DNS is genuinely in the path) are the same command with no
 # branch in this file.
@@ -90,40 +91,23 @@ set -euo pipefail
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 set +x  # never; see deploy/entrypoint.sh for the same line and the same reason
 
-# --- it refuses to be piped ---------------------------------------------------
-# check.sh's detection and check.sh's CI exemption, deliberately identical
-# (scripts/check.sh:38-64, scripts/pm_merge.sh:91-96). A pipe replaces this
+# THE SCAFFOLD — `die`, `say`, `usage`, the act harness — is deploy/lib.sh's,
+# and the pipe guard is the seam's `refuse_if_piped`: a pipe replaces this
 # script's exit status with the filter's, and this script's exit status is the
 # only thing that says whether the release happened. Redirect to a file and read
-# the file; nothing is lost.
-if [ -z "${CI:-}" ] && { [ -p /dev/fd/1 ] || [ -p /dev/stdout ]; }; then
-    echo "!! release refuses pipes — a filter replaces the exit status of the release" >&2
-    echo "   with the filter's, and the exit status is the whole verdict. Run" >&2
-    echo "   it bare or redirect to a file." >&2
-    exit 2
-fi
-
-die() {
-    # 2 is "could not get as far as releasing". An act that was never attempted
-    # must never share an exit code with an act that ran and failed.
-    echo "!! release: $*" >&2
-    echo "   Nothing was released; no act ran." >&2
-    exit 2
-}
-
-say() { echo "release: $*"; }
-
-usage() {
-    # The three invocation lines and no more. `provision.sh` prints its whole
-    # header here because that header IS its subcommand table; this file's is
-    # seventy lines of reasoning, and burying a one-word typo under seventy
-    # lines is how a person learns to stop reading the output. The reasoning is
-    # in the file, where somebody who wants it will be.
-    sed -n '2,6p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
-    echo ""
-    echo "The header of ${BASH_SOURCE[0]} says what each act is and why."
-    exit 2
-}
+# the file; nothing is lost. `die` is exit 2, "could not get as far as
+# releasing": an act never attempted must not share an exit code with an act
+# that ran and failed (`stopped`, exit 1).
+DEPLOY_NAME=release
+DEPLOY_NOTHING="Nothing was released; no act ran."
+DEPLOY_USAGE_LINES=5
+DEPLOY_USAGE_TAIL="The header of ${BASH_SOURCE[0]} says what each act is and why."
+DEPLOY_RECOVERY="Fix the cause and RE-RUN THIS SCRIPT FROM THE TOP: every act is
+idempotent, so the acts that already succeeded will repeat harmlessly
+rather than double."
+# shellcheck source=deploy/lib.sh
+. "$HERE/lib.sh" || exit 2
+refuse_if_piped "$DEPLOY_NAME"
 
 # --- the acts, and the one place their names live -----------------------------
 # Named once, counted from the list, and printed from it. An eighth act added
@@ -135,42 +119,16 @@ ACTS=(
     "grants generate — the release SQL, from the model declarations"
     "grants apply — the app role's privileges, and the append-only revokes"
     "alerts apply — the alert route reconciled to the census"
-    "recreate — web and worker, onto the new image and the migrated schema"
+    "recreate — every image service, onto the new image and the migrated schema"
     "readyz — wait until the deployment says it is ready"
 )
 TOTAL="${#ACTS[@]}"
-ACT_INDEX=0
-ACT_NAME=""
-
-act() {
-    ACT_INDEX=$((ACT_INDEX + 1))
-    ACT_NAME="${ACTS[$((ACT_INDEX - 1))]%% —*}"
-    echo ""
-    echo "release: [${ACT_INDEX}/${TOTAL}] ${ACTS[$((ACT_INDEX - 1))]}"
-}
-
-# The one failure path. Every act routes through it, so the sentence a human
-# reads after a failed release is the same sentence every time, and it always
-# names WHICH act stopped and what is safe to do next.
-stopped() {
-    local status="$1"
-    echo "" >&2
-    echo "!! release: STOPPED at act ${ACT_INDEX}/${TOTAL} — ${ACT_NAME} (exit ${status})." >&2
-    echo "   No act after this one ran." >&2
-    echo "   Fix the cause and RE-RUN THIS SCRIPT FROM THE TOP: every act is" >&2
-    echo "   idempotent, so the acts that already succeeded will repeat harmlessly" >&2
-    echo "   rather than double." >&2
-    exit 1
-}
 
 WITHOUT_ALERTS=""
 DRY_RUN=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
-    -h | --help)
-        sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//'
-        exit 0
-        ;;
+    -h | --help) usage 0 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --without-alerts) WITHOUT_ALERTS=1; shift ;;
     *)
@@ -357,7 +315,7 @@ compose() { docker compose --env-file "$HERE/.env" -f "$HERE/compose.yaml" "$@";
 # entrypoint, `DJB_SERVICE_NAME: oneoff`, and NO `depends_on` — which is why the
 # acts below no longer carry `--no-deps`. There is nothing to skip.
 #
-# `deploy/tests/test_release.sh`'s compose-run census reads this file and the
+# `quality/tests/deploy/test_release.py`'s compose-run census reads this file and the
 # runbooks and refuses a surviving `run … web`, so the population stays closed
 # rather than being a list somebody has to remember to extend.
 
@@ -458,7 +416,10 @@ if [ -n "${DJB_IMAGE_TAG:-}" ] && [ "$DJB_IMAGE_TAG" != "$IMAGE_TAG" ]; then
     exit 2
 fi
 
-RELEASE_SERVICES=(web worker)
+# The image services are provision.sh's one list, never typed here.
+release_services="$("$HERE/provision.sh" image-services)" || exit 2
+read -r -a RELEASE_SERVICES <<<"$release_services"
+[ "${#RELEASE_SERVICES[@]}" -gt 0 ] || die "deploy/provision.sh image-services named no service"
 RELEASE_REFS=()
 RELEASE_DIGESTS=()
 for release_service in "${RELEASE_SERVICES[@]}"; do
@@ -508,7 +469,6 @@ done
 
 READYZ_ATTEMPTS="${DJB_READYZ_ATTEMPTS:-24}"
 READYZ_INTERVAL="${DJB_READYZ_INTERVAL:-5}"
-READYZ_TARGET="${PROBE_TARGET:-https://${SITE_ADDRESS}/readyz}"
 
 # --- --dry-run: the plan, and nothing else ------------------------------------
 if [ -n "$DRY_RUN" ]; then
@@ -522,7 +482,7 @@ if [ -n "$DRY_RUN" ]; then
         say "image        ${RELEASE_REFS[$release_i]}"
         say "             ${RELEASE_DIGESTS[$release_i]}  (the registry's answer; act 6 pins it into TREE)"
     done
-    say "readyz       ${READYZ_TARGET}  (up to ${READYZ_ATTEMPTS} attempts, ${READYZ_INTERVAL}s apart)"
+    say "readyz       the readyz-prober's own target  (up to ${READYZ_ATTEMPTS} attempts, ${READYZ_INTERVAL}s apart)"
     if [ "$ACCEPTED_COUNT" -gt 0 ]; then
         say "accepted     ${ACCEPTED_COUNT} fake(s) named in DJB_ACCEPTED_FAKES: ${ACCEPTED_KEYS[*]}"
         say "             act 1 will refuse any of them that is not FAKE right now."
@@ -811,10 +771,26 @@ for release_i in "${!RELEASE_REFS[@]}"; do
     say "  ${RELEASE_DIGESTS[$release_i]}"
 done
 set +e
-compose up -d --no-deps web worker
+compose up -d --no-deps "${RELEASE_SERVICES[@]}"
 rc=$?
 set -e
 [ "$rc" = "0" ] || stopped "$rc"
+
+# THE EDGE RE-READS ITS FILE, keyed on the file. `ship.sh` swaps the whole tree,
+# so the running Caddy holds the bind-mounted Caddyfile of the tree it started
+# on; a path split that moved reaches it only by a restart.
+set +e
+compose exec -T caddy cat /etc/caddy/Caddyfile 2>/dev/null | cmp -s - "$HERE/Caddyfile"
+edge_same=$?
+set -e
+if [ "$edge_same" != "0" ]; then
+    set +e
+    compose restart caddy
+    rc=$?
+    set -e
+    [ "$rc" = "0" ] || stopped "$rc"
+    say "  caddy restarted onto $HERE/Caddyfile"
+fi
 
 # THE PIN, and it belongs INSIDE this act rather than beside it. `TREE` records
 # what this box RELEASED — so it is written after the containers are actually on
@@ -835,7 +811,7 @@ if [ -f "$HERE/../TREE" ]; then
         set -e
         [ "$rc" = "0" ] || stopped "$rc"
     done
-    say "  pinned both digests into $(cd "$HERE/.." && pwd)/TREE"
+    say "  pinned ${#RELEASE_SERVICES[@]} digests into $(cd "$HERE/.." && pwd)/TREE"
 else
     say "  no TREE marker beside $HERE — this is a checkout, not a shipped box; nothing pinned"
 fi
@@ -847,26 +823,23 @@ fi
 # ran" into "the deployment answers". A release whose last act is `restart` is a
 # release that reports success while the container is in a crash loop.
 #
-# PROBED FROM INSIDE `readyz-prober`, with that container's own target, its own
-# `--connect-to` and its own certificate posture (deploy/compose.yaml). Not a
+# PROBED BY THE PROBER ITSELF: `prober.sh --once` inside `readyz-prober` is the
+# one readyz probe — that container's target (defaulted once, in
+# deploy/compose.yaml), its socket override and its certificate posture. Not a
 # second description of where the deployment lives: the prober's is the one the
-# alert route already watches, so this act and the 3am page agree by
+# alert route already watches, so this act, stage.sh's and the 3am page agree by
 # construction rather than by review.
 act
+READYZ_PROBE=(compose exec -T readyz-prober sh /alerts/prober.sh --once)
+READYZ_TARGET="the readyz-prober's PROBE_TARGET"
 say "  ${READYZ_TARGET} (up to ${READYZ_ATTEMPTS} attempts, ${READYZ_INTERVAL}s apart)"
-# `if` rather than `[ … ] && …`: under `set -e` a bare AND-list whose test is
-# false is a failed statement, and the release would end here with no message at
-# all on any deployment that does not skip certificate verification.
-curl_args=(-sS -o /dev/null -w '%{http_code}' --max-time 10)
-if [ "${PROBE_INSECURE:-0}" = "1" ]; then curl_args+=(-k); fi
-if [ -n "${PROBE_CONNECT_TO:-}" ]; then curl_args+=(--connect-to "$PROBE_CONNECT_TO"); fi
 
 attempt=0
 ready=""
 while [ "$attempt" -lt "$READYZ_ATTEMPTS" ]; do
     attempt=$((attempt + 1))
     set +e
-    code="$(compose exec -T readyz-prober curl "${curl_args[@]}" "$READYZ_TARGET" 2>/dev/null)"
+    code="$("${READYZ_PROBE[@]}" 2>/dev/null)"
     set -e
     if [ "$code" = "200" ]; then
         ready=1
@@ -878,14 +851,12 @@ while [ "$attempt" -lt "$READYZ_ATTEMPTS" ]; do
 done
 
 if [ -z "$ready" ]; then
-    echo "" >&2
-    echo "!! release: STOPPED at act ${ACT_INDEX}/${TOTAL} — ${ACT_NAME}." >&2
-    echo "   ${READYZ_TARGET} did not answer 200 within ${READYZ_ATTEMPTS} attempts" >&2
-    echo "   (${READYZ_INTERVAL}s apart). The migration, the grants and the alert route" >&2
-    echo "   were applied; the deployment is not serving." >&2
-    echo "   Look at: docker compose -f $HERE/compose.yaml logs --tail 50 web worker" >&2
-    echo "   Re-running this script from the top is safe and is the usual next move." >&2
-    exit 1
+    DEPLOY_RECOVERY="${READYZ_TARGET} did not answer 200 within ${READYZ_ATTEMPTS} attempts
+(${READYZ_INTERVAL}s apart). The migration, the grants and the alert route
+were applied; the deployment is not serving.
+Look at: docker compose -f $HERE/compose.yaml logs --tail 50 web worker
+Re-running this script from the top is safe and is the usual next move."
+    stopped 1
 fi
 
 echo ""

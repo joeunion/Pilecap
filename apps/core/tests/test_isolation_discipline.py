@@ -28,11 +28,14 @@ beside this and was built first.
 from __future__ import annotations
 
 import ast
+import subprocess
 from pathlib import Path
 
+import pytest
 from django.conf import settings
 
 from apps.core.tests.tree_census import source_tree
+from quality import tree as measured
 from quality.partition import tree_paths
 
 BASE_DIR = Path(str(settings.BASE_DIR))
@@ -84,6 +87,78 @@ HOME = "apps/core/tests/isolation.py"
 
 def _population() -> list[str]:
     return [path for path in tree_paths() if _in_a_tests_tree(path) and path != HOME]
+
+
+#: git's own death for a path listed, then unlinked before its stat (measured, `git add -A`).
+STAT_DEATH = "fatal: unable to stat '{path}': No such file or directory\n"
+
+
+def _repo_with_a_plant(root: Path) -> str:
+    def run(*argv: str) -> None:
+        subprocess.run(["git", "-C", str(root), *argv], check=True, capture_output=True)  # noqa: S603, S607 — argv list built here; `git` on PATH, as the gate runs it; no shell
+
+    run("init", "-q")
+    (root / "apps").mkdir()
+    (root / "apps" / "kept.py").write_text("KEPT = 1\n")
+    run("add", "apps/kept.py")
+    run("-c", "user.email=r@vanish", "-c", "user.name=r", "commit", "-qm", "kept")
+    plant = "apps/zzz_vanisher_r2.py"
+    (root / plant).write_text("VALUE = 1\n")
+    return plant
+
+
+def _a_sibling_unlinks_at_the_listing(
+    monkeypatch: pytest.MonkeyPatch, root: Path, plant: str
+) -> list[str]:
+    """The plant is unlinked as the reader lists it; inside `add -A` is git's measured death."""
+    real = subprocess.run
+    fired: list[str] = []
+
+    def run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if fired:
+            return real(argv, **kwargs)  # type: ignore[call-overload,no-any-return]
+        if list(argv[-2:]) == ["add", "-A"]:
+            fired.append(plant)
+            (root / plant).unlink()
+            return subprocess.CompletedProcess(argv, 128, "", STAT_DEATH.format(path=plant))
+        listed = real(argv, **kwargs)  # type: ignore[call-overload]
+        if "-o" in argv and "ls-files" in argv:
+            fired.append(plant)
+            (root / plant).unlink()
+        return listed  # type: ignore[no-any-return]
+
+    monkeypatch.setattr(subprocess, "run", run)
+    return fired
+
+
+def test_the_walk_reads_the_tree_when_a_plant_vanishes_inside_the_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The walk's reader survives a sibling's plant unlinked between its listing and its stat."""
+    plant = _repo_with_a_plant(tmp_path)
+    fired = _a_sibling_unlinks_at_the_listing(monkeypatch, tmp_path, plant)
+    read = measured.read_tree(tmp_path)
+    assert fired == [plant]
+    assert read.why == "", read.why
+    assert set(read.blobs) == {"apps/kept.py"}
+
+
+def test_a_staging_failure_that_is_not_a_vanish_stays_loud(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A staging step that fails for any other reason is the reader's refusal, naming the step."""
+    _repo_with_a_plant(tmp_path)
+    real = subprocess.run
+
+    def run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if "update-index" in argv or list(argv[-2:]) == ["add", "-A"]:
+            return subprocess.CompletedProcess(argv, 128, "", "fatal: index.lock exists\n")
+        return real(argv, **kwargs)  # type: ignore[call-overload,no-any-return]
+
+    monkeypatch.setattr(subprocess, "run", run)
+    read = measured.read_tree(tmp_path)
+    assert read.blobs == {}
+    assert "exited 128 — fatal: index.lock exists" in read.why, read.why
 
 
 def test_the_census_reads_a_real_population() -> None:

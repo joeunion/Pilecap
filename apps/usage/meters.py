@@ -1,70 +1,16 @@
-"""The meter vocabulary — and the registry every other app's meters live in.
+"""The meter vocabulary: `<app>.<noun>.<unit>`, declared in each app's `meters.py` (ADR usage-1).
 
-A **meter** is what is being counted: `completions.tokens.input`,
-`files.storage.bytes`. The grammar is `<app>.<noun>.<unit>` and the first
-segment is the **declaring app's label**, which is what makes "declared by the
-app that spends it" a check rather than a hope.
-
-**Meter names are declared vocabulary, exactly as event names are** (ADR
-usage-1; house rule 16's reasoning, applied to a second published contract). An
-app that meters something declares its meters as uppercase string constants in
-its own `apps/<x>/meters.py`; this module discovers them the way
-`apps/events/events.py::declared_names` discovers event names, and
-`services.record_usage` refuses a meter that no installed app declares.
-
-**Why a literal at a call site is the defect this exists to prevent.** A meter
-name reaches an invoice line, a dashboard series and a `(meter, period,
-quantity)` threshold in a tenant's settings. A typo at the call site accrues
-money under a name nothing else in the deployment knows about — no aggregate
-sums it, no threshold matches it, and nobody notices until a customer asks why
-their bill is short. The static half of this (rule 16's `undeclared_event` diff
-check, over event literals) has no meter equivalent in `quality/` yet, and the
-runtime half here is strictly stronger for the case that matters: a literal at a
-call site either spells a declared name — in which case it is the constant, and
-harmless — or it is refused before a row is written.
-
-**A `meters.py` holds meter names and NOTHING ELSE that is an uppercase
-string.** `declared_meters()` below reads every uppercase, non-underscored `str`
-attribute of the module as a declared meter — that is what keeps the registry
-free of a hand-list, and it is also a booby trap: a constant of any other kind
-declared in one of these modules becomes a meter, and the boot check then
-refuses the whole vocabulary because it is not `<app>.<noun>.<unit>`. It
-happened once, in this module, and the constant moved to `types.py`
-(where its own comment says so). The rule to carry away: anything a
-meter-shaped module needs to say that is not a meter name is said somewhere
-else, and an import into this namespace counts — `dir()` does not care how a
-name got here, which is why `types` is imported as a module below and never
-`from ... import METERS_DESTINATION`.
-
-**Why this is a module and not a section of `services.py`.** The same reason
-rule 27 gives about `accounts/zitadel.py` and rule 11's whitelist gives about
-`exports/census.py`: a file is what makes "the one place this is decided" a
-thing a check can see. `services.py` decides what is recorded; this decides what
-may be recorded AT ALL, and the two questions have different answers and
-different readers — an integrator reading `manage.py introspect` wants the
-vocabulary without the writes around it.
-
-**The discovery walk is a registry join, and it is deliberate.** This module
-imports `apps.<other>.meters` through `importlib`, which is a sideways reach no
-`depends_on` declares and no static import graph can see. It is the same join
-`apps/events/events.py` makes over every app's `events.py` and
-`apps/core/lifecycle.py` makes over every app's `lifecycle.py`: a central
-`ALL_METERS` dict would be one file every app in a parallel wave has to edit,
-which is the collision this whole template is shaped around avoiding. What it
-imports is a module of string constants — never a model, never a service — so
-the reach cannot become a dependency in the direction that matters.
+A `meters.py` holds meter names and nothing else that is an uppercase string: every one counts.
 """
 
 from __future__ import annotations
 
-import importlib
-import importlib.util
 import re
 from collections.abc import Iterable
 
-from django.apps import apps as django_apps
 from django.core.exceptions import ImproperlyConfigured
 
+from apps.core.discovery import imported
 from apps.core.exceptions import Invalid, Remedy
 from apps.usage import types as usage_types
 
@@ -84,22 +30,12 @@ MAX_METER_LENGTH = 128
 
 
 def declared_meters() -> dict[str, frozenset[str]]:
-    """Every installed app's declared meter names, keyed by app label.
+    """Every installed app's declared meter names, keyed by app label — read live, never cached.
 
-    Read from the live app registry, never cached — the same decision
-    `apps/events/events.py::declared_names` records and for the same reasons:
-    the number of apps is small, the modules are already in `sys.modules` after
-    the first import, and a cache would be one more thing to invalidate in a
-    test that plants a module.
+    Every uppercase, non-underscored `str` of the module is a meter, an imported name included.
     """
     found: dict[str, frozenset[str]] = {}
-    for config in django_apps.get_app_configs():
-        if not config.name.startswith("apps."):
-            continue
-        module_name = f"{config.name}.meters"
-        if importlib.util.find_spec(module_name) is None:
-            continue
-        module = importlib.import_module(module_name)
+    for config, module in imported("meters"):
         names = {
             value
             for attribute in dir(module)

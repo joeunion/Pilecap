@@ -7,16 +7,21 @@ between them:
 
 * **the platform** (`SocialAccountAdapter._platform_login`) — Zitadel, which
   hosts every interactive authentication including the passwords of local users
-  (ADR ident-4), and which is where the `User.zitadel_sub` join is written;
-* **workforce** (`SocialAccountAdapter._workforce_login`) — Google Workspace,
-  restricted to the organisation's own domains. The domain restriction stays
-  ours (ADR ident-6): W2-R5 materialises the same credentials as a Zitadel
-  org-level IdP so the platform door offers the same button, and
-  `GOOGLE_WORKSPACE_DOMAINS` is still checked here, because a restriction
-  expressed only in somebody else's console is one we cannot test;
+  (ADR ident-4), and which is where the identity join is written — one
+  subject per realm, `(realm, subject)` → our `User`;
+* **workforce** — Google Workspace, restricted to the organisation's own
+  domains. **It is not a door of its own any more**: the deployment's Google
+  credentials are materialised as an org-level IdP *inside Zitadel*
+  (`services.sync_workforce_identity_config`), so a workforce person arrives
+  through the platform provider like everybody else and leaves a subject in
+  the identity join behind. The domain restriction stays ours: `_platform_login`
+  refuses a NEW person whose address is outside `GOOGLE_WORKSPACE_DOMAINS`
+  (the workforce wall), because a restriction expressed only in somebody
+  else's console is one we cannot test. An empty list is the door OFF, and
+  the wall then admits no stranger at all;
 * **customers** (`SocialAccountAdapter._customer_login`) — a tenant's own
   OpenID Connect provider, with just-in-time provisioning. **It is no longer a
-  door of its own** (ADR ident-6, W2-R5): Zitadel fronts every customer IdP, the
+  door of its own** (ADR ident-6): Zitadel fronts every customer IdP, the
   assertion arrives through the platform provider like everybody else's, and
   `SsoDomain` — the row that always held the routing decision — is what says
   which connection a given address belongs to. The per-connection allauth apps
@@ -57,6 +62,7 @@ default: self-service tenant creation is a product decision, not a template's.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from http import HTTPStatus
 from typing import Any
 
@@ -67,44 +73,105 @@ from allauth.socialaccount.models import SocialAccount
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import render
 
-from apps.accounts.models import User, domain_of
+from apps.accounts.middleware import stamp
+from apps.accounts.models import SsoIdentity, User, domain_of
+from apps.accounts.policies import is_workforce_email
+from apps.accounts.realms.zitadel import SIGN_IN_SCOPES
 from apps.accounts.selectors import (
+    AssertedRealm,
     get_connection_for_email,
+    get_dormant_claim_tenant,
+    get_enforcing_connection_for,
+    get_first_admin_vouch,
+    get_platform_issuer,
     get_platform_provider_id,
-    is_workforce_email,
-    sso_enforced_for,
+    get_realm_of_assertion,
 )
 from apps.accounts.services import (
     INACTIVE_SENTENCE,
+    mark_first_admin_vouch_spent,
     provision_sso_identity,
-    record_zitadel_identity,
+    record_identity,
 )
 from apps.core import context
 from apps.core.actor import actor_for, system_actor
 from apps.core.exceptions import DomainError
 from apps.core.log import get_logger
-from apps.core.services import accept_invitation, pending_invitations_for
+from apps.core.selectors import list_pending_invitations_for
+from apps.core.services import accept_invitation
 
 log = get_logger(__name__)
 
-# allauth's own id for the Google provider. Named once so the two places that
-# branch on it cannot disagree.
-GOOGLE_PROVIDER = "google"
+# What a person refused by the workforce wall reads. It names no domain and no
+# vendor: the page is reachable by anybody the identity platform will vouch for,
+# and the address it refused may have arrived through Google, a Zitadel-hosted
+# password, or anything else Zitadel fronts.
+NOT_OF_THIS_ORGANISATION = (
+    "That account is not part of this organisation, so it cannot be used to sign in here."
+)
 
 
-def _may_be_introduced_by_address(candidate: User | None, subject: str) -> bool:
-    """May this assertion proceed, when our column does not hold its subject?
+# What a person reads when their organization's sign-in is switched off; it names no tenant.
+CLAIM_DORMANT = (
+    "Your organization's single sign-on is switched off, so this address cannot sign in "
+    "here. Sign in from your organization's own sign-in page."
+)
 
-    Reached only on the branch where `User.zitadel_sub` knows nobody by this
-    subject. `candidate` is whoever holds the asserted ADDRESS, and may be
+
+#: The claim that names the realm an assertion came from. MEASURED on the
+#: pinned build (2026-09-30): an authorize carrying a realm's scope answers an
+#: id_token and a userinfo with `urn:zitadel:iam:user:resourceowner:id` — the
+#: organisation the person lives in — and one without it carries no realm claim
+#: at all, which is why `selectors.get_realm_of_assertion` has an answer for both.
+REALM_CLAIM = "urn:zitadel:iam:user:resourceowner:id"
+
+#: The scope that asks the platform to NAME the realm without confining the
+#: sign-in to it. MEASURED on the pinned build (2026-09-30): an authorize with
+#: no realm's org scope that asks this one answers an id_token and a userinfo
+#: carrying `REALM_CLAIM` (and the org's `:name` and `:primary_domain`), and the
+#: person still signs in whichever realm they live in; without it neither
+#: carries a realm at all.
+RESOURCE_OWNER_SCOPE = "urn:zitadel:iam:user:resourceowner"
+
+
+def asserted_realm(sociallogin: Any, *, subject: str, email: str) -> AssertedRealm:
+    """The realm this sign-in's assertion came from, and its tenant."""
+    return get_realm_of_assertion(
+        realm_id=_claimed_realm(sociallogin), subject=subject, email=email
+    )
+
+
+def _claimed_realm(sociallogin: Any) -> str:
+    """The realm claim, wherever the provider put the claims. `""` when none names one.
+
+    allauth's OpenID Connect callback stores its claims NESTED —
+    `{"id_token": {...}, "userinfo": {...}}` (the provider's own `_pick_data`
+    reads the same two, userinfo first) — and the ours door's landing, built
+    from a flat response, stores them FLAT. A reader of the top level alone
+    reads nothing off a real round trip, which is what it did until the
+    round trip's own claims were driven.
+    """
+    extra: Mapping[str, Any] = getattr(sociallogin.account, "extra_data", {}) or {}
+    for claims in (extra, extra.get("userinfo"), extra.get("id_token")):
+        if isinstance(claims, Mapping) and claims.get(REALM_CLAIM):
+            return str(claims[REALM_CLAIM])
+    return ""
+
+
+def _may_be_introduced_by_address(candidate: User | None, subject: str, realm: str) -> bool:
+    """May this assertion proceed, when the join does not hold its subject in its realm?
+
+    Reached only on the branch where the identity join knows nobody by this
+    subject in this realm. `candidate` is whoever holds the asserted ADDRESS, and may be
     `None` — nobody does, so the assertion is on its way to becoming a new
     person. Both cases ask the same two tables, which is why they are one
     function and not two.
 
-    * **our column** — a `zitadel_sub` already set on the candidate means this
-      person is known to the platform under a different subject, and an
-      assertion carrying a new one is a claim on their account.
-      `record_zitadel_identity` refuses it too; asking here as well is what
+    * **our join** — a subject the candidate already holds IN THIS REALM means
+      this person is known to the realm under a different subject, and an
+      assertion carrying a new one is a claim on their account. A subject in
+      ANOTHER realm is the same person in a second tenant and introduces them
+      here. `record_identity` refuses the first too; asking here as well is what
       turns a 500-shaped refusal into the page the door owns, and what keeps the
       refusal ahead of every write.
     * **allauth's row** — **ANY `SocialAccount` holding this subject refuses the
@@ -112,34 +179,54 @@ def _may_be_introduced_by_address(candidate: User | None, subject: str) -> bool:
       row is not advisory: allauth's own `(provider, uid)` lookup runs AFTER
       this adapter and signs the bearer in as its owner without consulting
       anything here. So a row this door does not refuse is a session this door
-      did not decide. Two shapes reach it — a row from before the column
+      did not decide. Two shapes reach it — a row from before the join
       existed, and one an operator's `unlink_identity` left behind (R2F2; the
       service now deletes those, and this is the belt that does not depend on
       it) — and the fatal variant carried an address NOBODY holds, where there
       was no candidate to vote on at all and the new-person branch handed
       allauth the decision.
-    * a subject held by the candidate's OWN row and by no column of ours is
+    * **the one exception: the candidate's own join already holds this subject,
+      in another realm, and allauth's row is theirs too.** Then the two tables
+      agree on who, and only the realm spelling differs — the stale row a
+      rollback leaves (it re-spells a tenant-realm row `staff`) — so the person
+      is introduced to the realm the platform named. allauth's row belonging to
+      anybody else still refuses.
+    * a subject held by the candidate's OWN row and by no join row of ours is
       refused too, and that is deliberate rather than collateral: we cannot tell
       it apart from the survivor of a cut join, and the operator's road back
       (`unlink_identity`, which now takes those rows with it) is one command.
 
-    Three tables can name a subject — `User.zitadel_sub`, `SocialAccount.uid`
-    and `SsoIdentity.subject`. The first two must agree, and this is where they
-    are made to; the third is per-connection and is `provision_sso_identity`'s,
+    Three places can name a subject — the identity join, `SocialAccount.uid`
+    and a per-connection `SsoIdentity.subject`. The first two must agree, and
+    this is where they are made to; the third is `provision_sso_identity`'s,
     deliberately separate (one subject through two connections is two isolated
     identities, and that is the design).
 
     The subject is compared **as asserted**, unstripped, because that is the
-    string allauth would match its own row on. `record_zitadel_identity`
+    string allauth would match its own row on. `record_identity`
     normalises before it writes, so an assertion differing from a stored subject
     only by whitespace passes here and meets the writer's refusal instead —
     which is the one road left into `_platform_login`'s last refusal.
     """
-    if candidate is not None and candidate.zitadel_sub:
+    if (
+        candidate is not None
+        and candidate.sso_identities.filter(connection__isnull=True, realm=realm).exists()
+    ):
         return False
-    return not SocialAccount.objects.filter(
-        provider=get_platform_provider_id(), uid=subject
-    ).exists()
+    holders = SocialAccount.objects.filter(provider=get_platform_provider_id(), uid=subject)
+    if (
+        candidate is not None
+        and candidate.sso_identities.filter(connection__isnull=True, subject=subject).exists()
+        and not holders.exclude(user=candidate).exists()
+    ):
+        # The join and allauth already agree on WHO this subject is — the
+        # candidate — and only the realm the join spells it in differs. A
+        # platform subject lives in one realm, and the assertion names it, so
+        # the join's row is the stale one (a rollback re-spells a tenant-realm
+        # row `staff`): the person is introduced to the realm the platform
+        # named, never a second person to their account.
+        return True
+    return not holders.exists()
 
 
 def accept_pending_invitations(user: User) -> None:
@@ -156,7 +243,7 @@ def accept_pending_invitations(user: User) -> None:
     the staleness a reader trusts. It is a function rather than a method because the property
     it carries ("an invited address lands in the invited tenant at the invited
     role") belongs to *arriving*, not to any one of the doors it can happen
-    through, and W2-R3 moved the door out from under it.
+    through, and ADR ident-4 moved the door out from under it.
 
     **Signing up is no longer the only way in.** The signup hook alone
     was the whole of this for as long as an invitation could only ever precede
@@ -172,12 +259,12 @@ def accept_pending_invitations(user: User) -> None:
     command ever creates and cannot tell that apart from somebody arriving.
 
     An invitation that expired or was withdrawn between the email and the login
-    simply does not apply: `pending_invitations_for` filters on both, and the
+    simply does not apply: `list_pending_invitations_for` filters on both, and the
     person still gets their account. Everything is written through the service,
     so it gets the same validation, authorization and audit row a membership
     added any other way gets.
     """
-    for invitation in pending_invitations_for(email=user.email):
+    for invitation in list_pending_invitations_for(email=user.email):
         try:
             accept_invitation(
                 tenant=invitation.tenant,
@@ -241,7 +328,7 @@ class AccountAdapter(DefaultAccountAdapter):  # type: ignore[misc]
         `test_password_door_retired.py` pins that. It stays because the property
         it carries is a customer's ("this account is out of password reach") and
         because deleting the belt is what makes reopening local accounts a
-        security change nobody notices. W2-R5 materialises the same `enforced`
+        security change nobody notices. ADR ident-6 materialises the same `enforced`
         flag as a Zitadel login policy, which is where it becomes load-bearing
         again.
 
@@ -264,7 +351,7 @@ class AccountAdapter(DefaultAccountAdapter):  # type: ignore[misc]
         email = str(credentials.get("email") or credentials.get("username") or "")
         if not email:
             return
-        connection = sso_enforced_for(email)
+        connection = get_enforcing_connection_for(email)
         if connection is None:
             return
         log.info(
@@ -302,12 +389,17 @@ class AccountAdapter(DefaultAccountAdapter):  # type: ignore[misc]
         accept_pending_invitations(saved)
         return saved
 
+    def login(self, request: HttpRequest, user: User) -> None:
+        """Sign in, and stamp the idle window inside the session write login already makes."""
+        super().login(request, user)
+        stamp(request)
+
 
 # --- The identity providers ---------------------------------------------------
 # Everything below runs *between* an identity provider saying "this is who they
 # are" and this product deciding whether that becomes a session. It is the one
-# place both doors — the workforce's Google Workspace and a customer's own IdP —
-# are gated, so the two cannot drift apart.
+# place every assertion — the workforce's Google Workspace and a customer's own
+# IdP, both fronted by Zitadel — is gated, so they cannot drift apart.
 
 
 def asserted_email(sociallogin: Any) -> tuple[str, bool]:
@@ -361,7 +453,11 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):  # type: ignore[misc]
     2. **`is_open_for_signup`** is the second lock on the same door, for the
        signup path specifically.
 
-    **`list_apps` is gone** (ADR ident-6, W2-R5). It built an unsaved
+    And one thing it adds to the platform's authorize, in `get_app`: the scope
+    that makes the assertion name its realm (`RESOURCE_OWNER_SCOPE`), so the
+    realm a person signed in from is the platform's word on every road.
+
+    **`list_apps` is gone** (ADR ident-6). It built an unsaved
     `SocialApp` per `SsoConnection` so that a tenant's IdP was a row rather than
     a deploy — and it is retired because the row is now materialised *inside
     Zitadel* instead, by `sync_identity_config` and one activity, which is the
@@ -369,14 +465,32 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):  # type: ignore[misc]
     now one place holding every customer's client secret instead of two.
     """
 
+    def get_app(self, request: HttpRequest, provider: Any, client_id: Any = None) -> Any:
+        """The platform's app, asking the platform to name the realm on every unconfined authorize.
+
+        allauth reads an app's `scope` before its provider's default, so this is
+        the one place every start of the round trip — the login page's button,
+        `selectors.get_platform_login_url`, a hint — asks for the realm claim.
+        The provider's default scopes stay; a realm's own `authorize_params`
+        still replace them where a sign-in is confined, and that scope already
+        names the realm.
+        """
+        app = super().get_app(request, provider, client_id=client_id)
+        if getattr(app, "provider_id", "") == get_platform_provider_id():
+            settings_of = dict(app.settings or {})
+            if "scope" not in settings_of:
+                settings_of["scope"] = [*SIGN_IN_SCOPES, RESOURCE_OWNER_SCOPE]
+                app.settings = settings_of
+        return app
+
     def is_open_for_signup(self, request: HttpRequest, sociallogin: Any) -> bool:
         """The second lock, on the signup half of the flow.
 
         `pre_social_login` has already refused everything it is going to refuse,
-        so in a correct flow this only ever says yes to a workforce address. It
-        is here because "already refused" is a claim about control flow, and a
-        control-flow claim is the kind that stops being true when somebody adds
-        a branch.
+        so in a correct flow this only ever says yes to a verified address the
+        workforce wall admits (`_may_sign_up`). It is here because "already
+        refused" is a claim about control flow, and a control-flow claim is the
+        kind that stops being true when somebody adds a branch.
 
         A customer's person never signs up through allauth's own path either —
         `_platform_login` has already created and connected them through
@@ -386,17 +500,15 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):  # type: ignore[misc]
         through one has a bug rather than a new user.
         """
         provider_id = str(sociallogin.account.provider)
-        if provider_id == GOOGLE_PROVIDER:
-            email, _ = asserted_email(sociallogin)
-            return is_workforce_email(email)
         if provider_id == get_platform_provider_id():
             # Zitadel is where everybody signs in now (ADR ident-4), so this is
             # the ordinary signup path rather than an exception to it. It still
             # answers on the assertion rather than unconditionally: an address
-            # the IdP has not marked verified never becomes an account, and
-            # `_platform_login` has already refused that flow before this runs.
-            _, verified = asserted_email(sociallogin)
-            return verified
+            # the IdP has not marked verified never becomes an account, nor
+            # does one the workforce wall does not admit, and `_platform_login`
+            # has already refused both flows before this runs.
+            email, verified = asserted_email(sociallogin)
+            return verified and self._may_sign_up(email)
         return False
 
     def pre_social_login(self, request: HttpRequest, sociallogin: Any) -> None:
@@ -411,16 +523,45 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):  # type: ignore[misc]
         if provider_id == get_platform_provider_id():
             self._platform_login(request, sociallogin)
             return
-        if provider_id == GOOGLE_PROVIDER:
-            self._workforce_login(request, sociallogin)
-            return
-        # **And nothing else is ours** (ADR ident-6). Until W2-R5 a third branch
+        # **And nothing else is ours** (ADR ident-6). Before then a third branch
         # resolved a `SsoConnection` from the provider id, because each one was
         # its own allauth app; now every customer's IdP sits behind Zitadel and
-        # arrives on the platform branch above. A provider id this deployment
-        # does not register is a login it has no opinion about.
+        # arrives on the platform branch above — and so does the workforce's
+        # Google, whose direct allauth provider is gone for the same reason. A
+        # provider id this deployment does not register is a login it has no
+        # opinion about.
 
     # --- The platform: Zitadel, where everybody signs in ---------------------
+
+    @staticmethod
+    def _may_sign_up(email: str) -> bool:
+        """May the platform door turn this verified address into a NEW person?
+
+        **The workforce wall** (`architecture.md`, "Workforce: Google federated
+        through Zitadel, domain-restricted"). By the time this is asked, everybody
+        somebody already vouched for has been resolved elsewhere — an existing
+        account by its subject or its address, a customer's person by the
+        `SsoDomain` their address falls under — so what is left is a stranger the
+        platform would mint, and the platform mints only three kinds:
+
+        * a person at one of the deployment's own workforce domains
+          (`GOOGLE_WORKSPACE_DOMAINS`, through `policies.is_workforce_email`);
+        * a person a tenant INVITED, whose first sign-in is the arrival the
+          invitation exists for — refusing it would make every invitation to a new
+          address a dead letter;
+        * the first human `zitadel_first_admin` vouched for (`get_first_admin_vouch`).
+
+        **An empty domain list FAILS CLOSED**: no workforce door is configured, so
+        no stranger becomes an account (`is_workforce_email` answers `False` for
+        every address). The open reading — everyone the identity platform vouches
+        for quietly becoming a user — is the failure that looks exactly like
+        success.
+        """
+        return (
+            is_workforce_email(email)
+            or bool(list_pending_invitations_for(email=email))
+            or get_first_admin_vouch(email=email) is not None
+        )
 
     def _platform_login(self, request: HttpRequest, sociallogin: Any) -> None:
         """One assertion from the deployment's own IdP, turned into a session.
@@ -437,7 +578,8 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):  # type: ignore[misc]
            owner, somebody invited last month, a superuser made by
            `createsuperuser`. All of them predate this door and none of them
            should end up with a second account the first time they use it;
-        3. **the subject is recorded**, through `services.record_zitadel_identity`
+        3. **the subject is recorded** in the realm that asserted it, through
+           `services.record_identity`
            and nowhere else. For a person who already exists it happens here; for
            a person who does not, it happens in `save_user`, after allauth has
            written the row — the same service, called from the one place that
@@ -451,13 +593,13 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):  # type: ignore[misc]
         to a different account of ours, the assertion names two of our people at
         once and there is no reading of it that is safe to act on. Likewise a
         subject we do not know may be linked to the account at its address only
-        while nothing already speaks for either: not our column, and not
+        while nothing already speaks for either: not our join, and not
         allauth's own row. Resolving by address first is what let a fresh
         subject carrying somebody's verified address walk into their account,
         and it is the shape this order exists to make impossible.
 
         **AND ALLAUTH NEVER DECIDES ALONE.** A `SocialAccount` holding the
-        asserted subject while our column holds it for nobody is refused
+        asserted subject while our join holds it for nobody is refused
         *whatever address the assertion carried* — including an address no
         account here holds, which is the case that used to fall through this
         method untouched and be resolved by allauth's own `(provider, uid)`
@@ -468,13 +610,27 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):  # type: ignore[misc]
 
         There are two more, and neither is a grant this door decided. The
         **third** is a customer's connection claiming the address's domain,
-        which W2-R5 added; the **fourth** is an invitation already standing for
+        which ADR ident-6 added; the **fourth** is an invitation already standing for
         this address, which `accept_pending_invitations` turns into the
         membership it names. A login with neither lands with no
         `Membership` at all and, tenancy failing closed, sees nothing until
         somebody invites them. An IdP answers *who*, never *what they may do*;
         a `SsoConnection`'s `default_role` is the one place a *role* is ever
         read from configuration, and it applies to a new membership only.
+
+        **And the workforce wall.** A NEW person — nobody's subject, nobody's
+        address, no customer's domain — is minted only at a workforce domain or
+        on an invitation (`_may_sign_up`); anybody else is refused with
+        `domain_not_allowed` before allauth's signup step can write a row.
+
+        **No refusal here writes an audit row. That is a decision**, and it is
+        the same precedent every door refusal follows: door refusals leave
+        no audit row BY DESIGN. `@service` is the audit population's one writer,
+        and a refusal here is a door turning somebody away *before any write
+        exists* — there is no service call to audit and no row for one to be
+        about. What a refused login leaves instead is its structured log line
+        (`accounts.platform.refused`, house rule 19) with the request's bound
+        context already on it, and a `reason` naming which wall held.
         """
         subject = str(sociallogin.account.uid or "")
         email, verified = asserted_email(sociallogin)
@@ -503,13 +659,20 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):  # type: ignore[misc]
         # This used to be a single lookup by address, and that made the account
         # the address's rather than the subject's: anybody who could make the
         # trusted issuer assert a chosen verified address under a FRESH subject
-        # was handed the session standing at that address, and our column was
+        # was handed the session standing at that address, and our join was
         # re-pointed on the way past. An org-level customer IdP behind the
         # platform is a party that mints exactly that assertion.
         #
         # Three steps, and the order is the whole fix:
+        realm = asserted_realm(sociallogin, subject=subject, email=email)
+        if realm.tenant is None and get_dormant_claim_tenant(email) is not None:
+            # A switched-off connection's verified claim still says whose person this is: their
+            # tenant's realm admits them, the staff realm does not.
+            log.warning("accounts.platform.refused", reason="claim_dormant")
+            raise ImmediateHttpResponse(refusal_response(request, CLAIM_DORMANT))
         at_this_address = User.objects.filter(email=email).first()
-        existing = User.objects.filter(zitadel_sub=subject).first()
+        joined = SsoIdentity.objects.in_realm(realm=realm.realm, subject=subject)
+        existing = joined.user if joined is not None else None
         if existing is not None:
             # (1) THE SUBJECT KNOWS THIS PERSON. Their address at the platform
             # may since have changed and they are still them — that is the whole
@@ -546,7 +709,7 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):  # type: ignore[misc]
             # as whoever held the surviving `SocialAccount`. A session nobody
             # here decided is the one outcome this door exists to prevent.
             existing = at_this_address
-            if not _may_be_introduced_by_address(existing, subject):
+            if not _may_be_introduced_by_address(existing, subject, realm.realm):
                 log.warning("accounts.platform.refused", reason="subject_mismatch")
                 raise ImmediateHttpResponse(
                     refusal_response(
@@ -558,8 +721,24 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):  # type: ignore[misc]
             # A new person. allauth's signup step creates the row and
             # `save_user` records the subject on it — this branch has nothing to
             # link and deliberately writes nothing. A person who does not exist
-            # yet cannot be switched off, so the refusal below is on the other
-            # branch only and its absence here is a statement.
+            # yet cannot be switched off, so the inactive refusal below is on the
+            # other branch only and its absence here is a statement.
+            #
+            # **THE WORKFORCE WALL.** Everybody somebody vouched for has been
+            # resolved above — a customer's person by `SsoDomain`, an existing
+            # account by its subject or its address — so a stranger is what is
+            # left, minted only on a workforce domain, an invitation or the first-admin
+            # vouch (`_may_sign_up`). Refused BEFORE allauth's signup, the one writer.
+            # **Not an `AuditEntry`** (this method's docstring says why); the
+            # domain rides on the log line as a fact about the assertion — the
+            # address never does.
+            if not self._may_sign_up(email):
+                log.warning(
+                    "accounts.platform.refused",
+                    reason="domain_not_allowed",
+                    domain=domain_of(email),
+                )
+                raise ImmediateHttpResponse(refusal_response(request, NOT_OF_THIS_ORGANISATION))
             return
 
         if not existing.is_active:
@@ -577,8 +756,13 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):  # type: ignore[misc]
             raise ImmediateHttpResponse(refusal_response(request, INACTIVE_SENTENCE))
 
         try:
-            record_zitadel_identity(
-                user=existing, subject=subject, tenant=None, actor=system_actor(tenant=None)
+            record_identity(
+                user=existing,
+                realm=realm.realm,
+                subject=subject,
+                tenant=realm.tenant,
+                actor=system_actor(tenant=realm.tenant),
+                issuer=get_platform_issuer(),
             )
         except DomainError as exc:
             # The subject belongs to somebody else's account. Refusing is the
@@ -614,10 +798,22 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):  # type: ignore[misc]
         a membership — and then the subject lands on the row that now exists.
 
         Only the platform provider writes the join: a customer connection's
-        people are keyed on `SsoIdentity.subject` against *their* IdP, and the
-        Google door's are not Zitadel subjects either. Both of those are handled
-        before allauth ever reaches here, and neither belongs in this column.
+        people are keyed on `SsoIdentity.subject` against *their* IdP, and are
+        handled before allauth ever reaches here. The workforce's Google people
+        arrive through the platform provider, so they DO land in the join —
+        which is what gives erasure's platform revocation and the MCP resource
+        server a subject to key on for them.
         """
+        platform = str(sociallogin.account.provider) == get_platform_provider_id()
+        subject = str(sociallogin.account.uid or "")
+        # The realm is read BEFORE the row is written and the invitations are
+        # accepted: an invited person's first, unconfined sign-in is placed in
+        # the realm of the invitation that is about to be spent.
+        realm = (
+            asserted_realm(sociallogin, subject=subject, email=asserted_email(sociallogin)[0])
+            if platform
+            else None
+        )
         user: User = super().save_user(request, sociallogin, form=form)
         # **The invitation join lives here, not only on the account adapter.**
         # allauth delegates the user write to `AccountAdapter.save_user` only
@@ -626,114 +822,25 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):  # type: ignore[misc]
         # longer has. Calling it from both is safe rather than doubled: accepting
         # moves the row out of `PENDING`, so the second call finds nothing.
         accept_pending_invitations(user)
-        if str(sociallogin.account.provider) == get_platform_provider_id():
-            record_zitadel_identity(
+        if platform and get_first_admin_vouch(email=user.email) is not None:
+            mark_first_admin_vouch_spent(user=user, tenant=None, actor=system_actor())
+        if realm is not None:
+            record_identity(
                 user=user,
-                subject=str(sociallogin.account.uid or ""),
-                tenant=None,
-                actor=system_actor(tenant=None),
+                realm=realm.realm,
+                subject=subject,
+                tenant=realm.tenant,
+                actor=system_actor(tenant=realm.tenant),
+                issuer=get_platform_issuer(),
             )
         return user
-
-    # --- Workforce: Google Workspace, restricted to the org's own domains ----
-
-    def _workforce_login(self, request: HttpRequest, sociallogin: Any) -> None:
-        """Google authenticates the people who build this product. It grants nothing.
-
-        Two refusals and one link, in that order:
-
-        * an address outside `GOOGLE_WORKSPACE_DOMAINS` is refused outright, and
-          **no `User` row is written** — the refusal happens before allauth's
-          signup step, which is the only thing that would have created one. An
-          empty domain list refuses everything, because empty means the provider
-          is off (`config/settings/base.py`);
-        * an address Google has not marked verified is refused even when the
-          domain matches, because the linking below turns "the IdP says this is
-          their address" into "this is that local account", and an unverified
-          assertion is not a fact;
-        * an address that already has a local account is **linked** to it, so
-          somebody who signed up with a password before the workforce door
-          existed does not end up with a second account.
-
-        What does not happen here is any membership. A fresh workforce login
-        lands with no `Membership` at all and — tenancy failing closed, with no
-        superuser exemption — sees nothing until somebody invites them. That is
-        the contract: an IdP answers *who*, never *what they may do*.
-
-        **And neither refusal writes an audit row. That is a decision**, and
-        it is the same precedent applied to this door: door refusals leave
-        no audit row BY DESIGN. `@service` is the
-        audit population's one writer, and a refusal here is a door turning
-        somebody away *before any write exists* — there is no service call to
-        audit and no row for one to be about. Auditing it would mean a second
-        writer of `AuditEntry`, which is the thing ADR core-8 exists to prevent.
-        What a refused login leaves instead is its structured log line
-        (`accounts.workforce.refused`, house rule 19) with the request's bound
-        context — door, request id, correlation id — already on it, which is
-        where a refusal that nobody was refused *anything* belongs. The reasons
-        are `domain_not_allowed` and `email_not_verified`; the domain rides on
-        the first because it is a fact about the assertion and not about a
-        person, and the address never rides on either.
-        """
-        email, verified = asserted_email(sociallogin)
-
-        if not is_workforce_email(email):
-            # Deliberately says nothing about which domains are allowed: this
-            # page is reachable by anybody with a Google account.
-            log.warning(
-                "accounts.workforce.refused",
-                reason="domain_not_allowed",
-                domain=domain_of(email),
-                # `door` and the correlation ids are already bound by
-                # `core.middleware.ContextMiddleware` — this login lands on an
-                # ordinary HTTP path, so the line carries `door="rest"`.
-            )
-            # **Not an `AuditEntry`**: no, by design, same precedent as above.
-            # The reasoning is in this method's docstring rather than repeated
-            # here, because it
-            # is a property of the door and not of this one branch.
-            raise ImmediateHttpResponse(
-                refusal_response(
-                    request,
-                    "That Google account is not part of this organisation, so it "
-                    "cannot be used to sign in here.",
-                )
-            )
-
-        if not verified:
-            log.warning("accounts.workforce.refused", reason="email_not_verified")
-            raise ImmediateHttpResponse(
-                refusal_response(
-                    request,
-                    "Google did not confirm that this email address is verified, so "
-                    "it cannot be used to sign in here.",
-                )
-            )
-
-        existing = User.objects.filter(email=email).first()
-        if existing is not None:
-            if not existing.is_active:
-                # BEFORE THE LINK. allauth refuses an inactive account of its
-                # own accord — at the END, after every write this method and the
-                # signup step make. A wall that holds only after the damage is a
-                # wall somebody walked through.
-                log.warning("accounts.workforce.refused", reason="inactive")
-                raise ImmediateHttpResponse(refusal_response(request, INACTIVE_SENTENCE))
-            # **Verified-email trust, and why the check above is not optional.**
-            # Linking on address alone would mean: whoever can make an IdP assert
-            # an address owns the local account at that address. Google verifies
-            # the addresses in a Workspace domain it controls, which is what
-            # makes the link sound — and the `verified` flag is how we know this
-            # particular assertion is one of those.
-            sociallogin.connect(request, existing)
-            log.info("accounts.workforce.linked", user_id=str(existing.pk))
 
     # --- Customers: one tenant, one IdP, just-in-time provisioning -----------
 
     def _customer_login(self, request: HttpRequest, sociallogin: Any, connection: Any) -> None:
         """One assertion for an address a customer's connection claims.
 
-        **Not a door of its own since W2-R5** (ADR ident-6): `_platform_login`
+        **Not a door of its own** (ADR ident-6): `_platform_login`
         calls this once `SsoDomain` has said whose person the address is. The
         assertion is Zitadel's, the subject is Zitadel's, and the customer's own
         IdP sits behind it as a Zitadel external provider — which is why nothing
@@ -772,14 +879,20 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):  # type: ignore[misc]
                 raise ImmediateHttpResponse(refusal_response(request, exc.detail)) from exc
 
         # The platform join, for a customer's person too: they signed in through
-        # Zitadel like everybody else, so the one column that says which Zitadel
+        # Zitadel like everybody else, so the join that says which Zitadel
         # subject they are gets written by the one writer. A subject already
         # claimed by a different account refuses here exactly as it does on the
         # ordinary platform path — a silent re-point is an account takeover with
         # an extra step.
+        realm = asserted_realm(sociallogin, subject=subject, email=email)
         try:
-            record_zitadel_identity(
-                user=identity.user, subject=subject, tenant=None, actor=system_actor(tenant=None)
+            record_identity(
+                user=identity.user,
+                realm=realm.realm,
+                subject=subject,
+                tenant=realm.tenant,
+                actor=system_actor(tenant=realm.tenant),
+                issuer=get_platform_issuer(),
             )
         except DomainError as exc:
             log.warning("accounts.sso.refused", reason="subject_already_linked")

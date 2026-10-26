@@ -1,8 +1,12 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { act, fireEvent, render } from "@testing-library/react";
 import axe from "axe-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { REQUIRED_STORY_EXPORTS } from "@/screens/state";
+import { WIDGET_IMPORT_COLUMNS } from "@pilecap/copy/widget";
+import { REQUIRED_STORY_EXPORTS } from "@pilecap/ui/state";
 import * as stories from "@/screens/widget/widget-import.stories";
 import {
     Empty,
@@ -94,13 +98,14 @@ describe("the worked widget import page: every authored state renders", () => {
         expect(container.querySelectorAll('[data-weight="primary"]')).toHaveLength(0);
     });
 
-    it("refused whole: Couldn't import under the head, the server's sentence, the file field and Import alive", () => {
+    it("the apply refused, the file refused whole: Couldn't import under the head, the server's code, the preview and its primary alive", () => {
         const { container } = render(<RefusedImport />);
         const alert = container.querySelector('[role="alert"]') as HTMLElement;
         expect(alert.getAttribute("data-seat")).toBe("list-head");
         expect(alert.querySelector("p")?.textContent).toBe("Couldn't import");
-        expect(container.querySelector('input[type="file"]')).not.toBeNull();
-        expect(container.querySelector('[data-act="import"]')).not.toBeNull();
+        expect(alert.querySelector("code")?.textContent).toBe("import_invalid");
+        expect(container.querySelector(".widget-counts")).not.toBeNull();
+        expect(container.querySelector('[data-weight="primary"]')).not.toBeNull();
     });
 
     it.each([...REQUIRED_STORY_EXPORTS])("%s has no axe violations", async (name) => {
@@ -108,5 +113,23 @@ describe("the worked widget import page: every authored state renders", () => {
         const { container } = render(<Story />);
         const results = await axe.run(container, { rules: { region: { enabled: false } } });
         expect(results.violations.map((violation) => violation.id)).toEqual([]);
+    });
+});
+
+/** The importer row's columns as the document publishes them, or `undefined` while `DjbImportRowOut.data` is untyped. */
+function wireColumns(): readonly string[] | undefined {
+    const document = JSON.parse(readFileSync(resolve(process.cwd(), "openapi.json"), "utf8")) as {
+        readonly components: { readonly schemas: Readonly<Record<string, { readonly properties?: Readonly<Record<string, { readonly properties?: Readonly<Record<string, unknown>> }>> }>> };
+    };
+    const data = document.components.schemas.DjbImportRowOut?.properties?.data?.properties;
+    return data === undefined ? undefined : Object.keys(data);
+}
+
+const COLUMNS = wireColumns();
+
+describe("the import page's columns are the importer's row schema", () => {
+    // Skipped while the document types no row schema; it runs, unedited, the day the importer's door publishes one.
+    it.skipIf(COLUMNS === undefined)("every column the page names is a field of the importer's row, and every field is named", () => {
+        expect(Object.keys(WIDGET_IMPORT_COLUMNS).sort()).toEqual([...(COLUMNS ?? [])].sort());
     });
 });

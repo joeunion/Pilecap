@@ -102,6 +102,24 @@ def no_dialling(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
     assert reached == [], "this test dialled Temporal (ADR ident-5: --loop is Temporal-free)"
 
 
+@pytest.fixture
+def tenant(db: None) -> Tenant:
+    """The module's tenant, born without a dial.
+
+    Creating a tenant asks for its realm on commit (the identity home's run),
+    and under `transaction=True` that hook fires for real — so the tenant is
+    made with the hook's dispatch stood down for the length of the creation
+    and nothing longer: the realm run is not this module's subject, and every
+    dial the sentinel above records after it is a dial this module made.
+    """
+    from apps.core.services import create_tenant
+    from apps.workflows import services as workflow_services
+
+    with pytest.MonkeyPatch.context() as creating:
+        creating.setattr(workflow_services, "run_async", lambda _factory: None)
+        return create_tenant(name="Acme", slug="acme", actor=system_actor())
+
+
 class _StartedRun:
     """What the stub hands back where a Temporal handle would be."""
 
@@ -458,7 +476,7 @@ def test_the_write_back_goes_through_the_service(label: LabelPolicy, operator: A
         tenant=None,
         branding=row,
         applied=IdentityConfigApplied(
-            kind=KIND_IDENTITY_BRANDING, key=str(row.pk), resource_id="1", created=False
+            kind=KIND_IDENTITY_BRANDING, key=str(row.pk), resource_id="1"
         ),
     )
 

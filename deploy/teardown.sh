@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "$(dirname -- "${BASH_SOURCE:-$0}")/../scripts/bash_only.sh" || exit 2
 # The other half of provision.sh, and a first-class one (ADR deploy-1:
 # teardown-friendly; the environments contract: prod is EPHEMERAL, provisioned
 # by the runbook for R1 and torn down after evidence).
@@ -27,8 +28,10 @@ set -euo pipefail
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 set +x
 
-die() { echo "!! teardown: $*" >&2; exit 2; }
-say() { echo "teardown: $*"; }
+# `die` and `say` are deploy/lib.sh's.
+DEPLOY_NAME=teardown
+# shellcheck source=deploy/lib.sh
+. "$HERE/lib.sh" || exit 2
 
 ENVIRONMENT="${1:-}"
 FLAG="${2:-}"
@@ -99,11 +102,9 @@ resolve_project() {
     fi
     if [ -f "$HERE/.env" ]; then
         local from_file
-        # `sed -n '1p'`, never `head -n1`: an early-exit reader closes the pipe
-        # and orphans the producer under this file's `set -o pipefail` once its
-        # output passes the kernel's 64 KiB pipe buffer. An EOF reader closes
-        # nothing, so the producer's own status is what reaches `set -e`.
-        from_file="$(sed -n "s/^COMPOSE_PROJECT_NAME='\{0,1\}\([^']*\)'\{0,1\}$/\1/p" "$HERE/.env" | sed -n '1p')"
+        # deploy/envfile.py is the file's one reader (the same one provision.sh
+        # asks), so a double-quoted or `export`ed line reads here as it does there.
+        from_file="$("${PYTHON_BIN:-python3}" "$HERE/envfile.py" get "$HERE/.env" COMPOSE_PROJECT_NAME)"
         if [ -n "$from_file" ]; then
             printf '%s' "$from_file"
             return
@@ -451,7 +452,7 @@ fi
 # THE NAMESPACE IS CONFIGURATION AND HAS NO DEFAULT, and it matters more here
 # than anywhere else in this deployment: `provision.sh` under a guessed
 # namespace CREATES things in somebody else's account; this script DELETES them.
-# `deploy/dns.sh:33-34`'s grammar, and the refusal is before the summary because
+# the grammar of `deploy/dns.sh`'s `DJB_ZONE_ID` refusal, and the refusal is before the summary because
 # the summary is the list of what would be destroyed.
 #
 # The laptop branches above have already exited: `local` and `--all-mine`
@@ -461,13 +462,17 @@ NAMESPACE="${DJB_DEPLOY_NAMESPACE:-}"
 [ -n "$NAMESPACE" ] || die "DJB_DEPLOY_NAMESPACE is required — this deployment's namespace, the slug every resource this would destroy is named from. There is no default: a guessed namespace is a DELETE against somebody else's resources. It is a slot in this environment's env file (deploy/env.staging.example); on a box 'set -a; . deploy/.env; set +a' exports it."
 REGION="${AWS_REGION:-us-east-1}"
 NAME="${NAMESPACE}-$ENVIRONMENT"
+ACCOUNT="$(aws sts get-caller-identity --query Account --output text)" \
+    || die "cannot read the AWS account id — is the session live? Nothing was destroyed."
+MEDIA="$(bucket_name media "$ENVIRONMENT" "$ACCOUNT")"
+BACKUPS="$(bucket_name backups "$ENVIRONMENT" "$ACCOUNT")"
 
 cat <<SUMMARY
 teardown: about to DESTROY $NAME in $REGION
 
     EC2       instances tagged Name=$NAME (terminated)
     RDS       $NAME-db (final snapshot taken first)
-    S3        s3://$NAME-media, s3://$NAME-backups  (emptied, then deleted)
+    S3        s3://$MEDIA, s3://$BACKUPS  (emptied, then deleted)
     Secrets   ${NAMESPACE}/$ENVIRONMENT/env  (scheduled for deletion, 7-day window)
     SG        $NAME-web, $NAME-db
     DNS       NOT touched — deploy/dns.sh owns records; run it with 'delete'
@@ -477,6 +482,23 @@ secret window.
 SUMMARY
 
 [ "$FLAG" = "--confirm" ] || die "refusing without --confirm"
+
+# exists <what> <aws argv…> — 0 AWS answered that it stands · 1 AWS answered that it
+# does not (a NotFound or a 404) · anything else is could-not-look: exit 2 with
+# AWS's own lines, never a skip, because a skipped deletion is a resource left
+# standing under a teardown that finished green (an SSO token expires mid-run).
+exists() {
+    local what=$1 err rc=0
+    shift
+    err="$("$@" 2>&1 >/dev/null)" || rc=$?
+    [ "$rc" = "0" ] && return 0
+    case "$err" in
+    *NotFound* | *"(404)"*) return 1 ;;
+    esac
+    gate_die "teardown stopped here: what is above was deleted, what is below was not looked at." \
+        "${DEPLOY_NAME}: COULD NOT LOOK — the probe for $what failed (exit $rc), so whether it stands is unknown." \
+        "AWS said: ${err:-(nothing)}"
+}
 
 # Order matters and it is the reverse of creation: instances before the security
 # group they reference, the bucket's objects before the bucket, the database
@@ -492,7 +514,7 @@ if [ -n "$INSTANCES" ]; then
     aws ec2 wait instance-terminated --region "$REGION" --instance-ids $INSTANCES
 fi
 
-if aws rds describe-db-instances --region "$REGION" --db-instance-identifier "$NAME-db" >/dev/null 2>&1; then
+if exists "RDS $NAME-db" aws rds describe-db-instances --region "$REGION" --db-instance-identifier "$NAME-db"; then
     SNAPSHOT="$NAME-final-$(date -u +%Y%m%d%H%M%S)"
     say "deleting RDS with final snapshot $SNAPSHOT"
     aws rds delete-db-instance --region "$REGION" \
@@ -502,8 +524,8 @@ if aws rds describe-db-instances --region "$REGION" --db-instance-identifier "$N
     say "final snapshot: $SNAPSHOT (it survives this teardown; delete it deliberately)"
 fi
 
-for BUCKET in "$NAME-media" "$NAME-backups"; do
-    if aws s3api head-bucket --bucket "$BUCKET" >/dev/null 2>&1; then
+for BUCKET in "$MEDIA" "$BACKUPS"; do
+    if exists "s3://$BUCKET" aws s3api head-bucket --bucket "$BUCKET"; then
         say "emptying and deleting s3://$BUCKET"
         # Versioned buckets keep every delete marker; `s3 rm --recursive`
         # leaves the versions behind and `delete-bucket` then fails with a
@@ -518,7 +540,7 @@ for BUCKET in "$NAME-media" "$NAME-backups"; do
     fi
 done
 
-if aws secretsmanager describe-secret --secret-id "${NAMESPACE}/$ENVIRONMENT/env" >/dev/null 2>&1; then
+if exists "the secret ${NAMESPACE}/$ENVIRONMENT/env" aws secretsmanager describe-secret --secret-id "${NAMESPACE}/$ENVIRONMENT/env"; then
     # 7 days, not `--force-delete-without-recovery`. A teardown that turns out
     # to have been premature is recoverable for a week; one that shredded the
     # Fernet key is not recoverable at all, and every tenant credential the key
@@ -528,13 +550,36 @@ if aws secretsmanager describe-secret --secret-id "${NAMESPACE}/$ENVIRONMENT/env
         --recovery-window-in-days 7 >/dev/null
 fi
 
-for GROUP in "$NAME-web" "$NAME-db"; do
+# A network interface can outlive `instance-terminated` by seconds, so a
+# DependencyViolation is retried a bounded few times; any other refusal is not.
+delete_group() {
+    local group=$1 id=$2 attempt=1 tries=6 err
+    while ! err="$(aws ec2 delete-security-group --region "$REGION" --group-id "$id" 2>&1 >/dev/null)"; do
+        case "$err" in
+        *DependencyViolation*) ;;
+        *) die "could not delete security group $group ($id): $err" ;;
+        esac
+        [ "$attempt" -lt "$tries" ] \
+            || die "security group $group ($id) still refuses after $tries attempts: $err"
+        say "security group $group ($id) still has a dependent object (attempt $attempt of $tries); retrying in 10s"
+        sleep 10
+        attempt=$((attempt + 1))
+    done
+}
+
+# $NAME-db's ingress rule names $NAME-web as its source: the referencing group goes first.
+PROBE_SAID="$(mktemp "${TMPDIR:-/tmp}/teardown-probe.XXXXXX")" || die "no scratch file for AWS's answer"
+trap 'rm -f "$PROBE_SAID"' EXIT
+for GROUP in "$NAME-db" "$NAME-web"; do
     ID="$(aws ec2 describe-security-groups --region "$REGION" \
         --filters "Name=group-name,Values=$GROUP" \
-        --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || echo None)"
+        --query 'SecurityGroups[0].GroupId' --output text 2>"$PROBE_SAID")" ||
+        gate_die "teardown stopped here: what is above was deleted, $GROUP and what follows were not." \
+            "${DEPLOY_NAME}: COULD NOT LOOK — the probe for security group $GROUP failed." \
+            "AWS said: $(cat "$PROBE_SAID")"
     if [ "$ID" != "None" ] && [ -n "$ID" ]; then
         say "deleting security group $GROUP ($ID)"
-        aws ec2 delete-security-group --region "$REGION" --group-id "$ID" >/dev/null
+        delete_group "$GROUP" "$ID"
     fi
 done
 

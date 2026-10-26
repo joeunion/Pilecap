@@ -25,19 +25,21 @@ What the store actually does with a URL — expiry, tampering, the belt — is
 from __future__ import annotations
 
 import json
+import uuid
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from apps.core.actor import actor_for
 from apps.core.audit import AuditEntry
+from apps.core.tests.wire import REQUEST_FIXED_QUERIES
 from apps.files.models import FileVersion, StoredFile
 from apps.files.services import archive_file, create_file, record_stored
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from django.test import Client
 
-    from .conftest import World
+    from apps.core.tests.permissions_world import World
 
 pytestmark = pytest.mark.django_db
 
@@ -49,42 +51,11 @@ DOWNLOAD_URL = "/api/v1/files/{}/download-url/"
 ARCHIVE_URL = "/api/v1/files/{}/archive/"
 JSON = "application/json"
 
-#: Measured, not guessed, at seeded scale. The page itself plus the middleware and
-#: session work an authenticated request pays: the list issues no `COUNT` (ADR
-#: core-18 — `has_more` comes from fetching one row more than asked for), and
-#: `select_related("organization", "uploaded_by")` is what keeps the two relations
-#: `StoredFileOut` walks off the per-row path. Removing either would move this
-#: number, which is the point.
-#:
-#: **7 → 10 in Phase R, and the three are named.** `file.read` is asked at the
-#: hat inside `selectors.list_files`, and resolving what one person holds at one
-#: node reads exactly three tables — their memberships in the tenant, the grants
-#: on those memberships, the role-delta rows for the role keys — once per actor.
-#: Once, not once per key: the actor carries the memo (PR0).
-#:
-#: **10 → 17 for `allowed_acts`, and the seven are named** (`ActsPagination`,
-#: `core.verbs.with_allowed_acts`, measured on this fixture's three documents at
-#: three nodes). The paginator resolves its own actor from the request, so the
-#: collection the route's `file.read` memoized is read again — memberships,
-#: grants, role keys (3). **17 → 13:** the four membership reads that followed —
-#: one per NODE the page's rows sat at, and one at the hat for the list's own
-#: `create` — were `membership_for` asking afresh, and it reads the actor's memo
-#: now; and no row is offered `update` or `delete`, which have no door here. It
-#: grows with nothing: not the nodes, not the rows.
-LIST_QUERY_BUDGET = 13
+#: The request's fixed cost plus the page; `file.read` and the acts ride the request's memo.
+LIST_QUERY_BUDGET = REQUEST_FIXED_QUERIES + 1
 
-#: The same for one document's version history. One statement more than the
-#: document list, and the extra one is the document itself: the route resolves the
-#: parent through the scoped selector before it lists anything, because a version
-#: list for a document this hat cannot see has to answer `not_found` rather than
-#: an empty page.
-#:
-#: **8 → 11 in Phase R, and it is the SAME three, once.** The route asks
-#: `file.read` twice — once resolving the document, once listing its versions,
-#: because a version is authorized as its document — and pays for one: the memo
-#: is the actor's, so the second `require` reads no table. A door that had lost
-#: the memo would be at 14 here and this number is what would say so.
-VERSION_LIST_QUERY_BUDGET = 11
+#: One more than the document list: the parent document, resolved before its versions.
+VERSION_LIST_QUERY_BUDGET = REQUEST_FIXED_QUERIES + 2
 
 DIGEST = "beadbead" * 8
 
@@ -93,7 +64,7 @@ def _file_at(world: World, org: Any, *, filename: str, purpose: str = "upload") 
     """One document filed at a named node of the tree, through the real service."""
     ticket = create_file(
         tenant=world.tenant,
-        actor=actor_for(user=world.owner, tenant=world.tenant, org=org),
+        actor=actor_for(user=world.user(world.owner), tenant=world.tenant, org=org),
         filename=filename,
         content_type="application/pdf",
         size_bytes=1024,
@@ -113,7 +84,7 @@ def _stored(world: World, file: StoredFile, *, version: int = 1) -> FileVersion:
     row = FileVersion.objects.for_tenant(world.tenant).get(file=file, version=version)
     return record_stored(
         tenant=world.tenant,
-        actor=actor_for(user=world.owner, tenant=world.tenant, org=file.organization),
+        actor=actor_for(user=world.user(world.owner), tenant=world.tenant, org=file.organization),
         version=row,
         sha256=DIGEST,
         size_bytes=1024,
@@ -125,8 +96,8 @@ def documents(world: World, named_bucket: str, recorded_workflow_starts: None) -
     """Three documents across the tree: one at the root, one at the region, one below."""
     return [
         _file_at(world, world.root, filename="root-invoice.pdf"),
-        _file_at(world, world.region, filename="region-invoice.pdf", purpose="contract"),
-        _file_at(world, world.branch, filename="branch-notes.txt"),
+        _file_at(world, world.a, filename="region-invoice.pdf", purpose="contract"),
+        _file_at(world, world.a1, filename="branch-notes.txt"),
     ]
 
 
@@ -137,7 +108,7 @@ def test_the_list_answers_in_the_cursor_envelope(
     api: Client, world: World, documents: list[StoredFile]
 ) -> None:
     """ADR core-18's envelope, and `count` null until somebody asks for it."""
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
 
     response = api.get(LIST_URL)
 
@@ -152,7 +123,7 @@ def test_the_list_answers_in_the_cursor_envelope(
 def test_include_count_is_what_puts_the_total_on_the_wire(
     api: Client, world: World, documents: list[StoredFile]
 ) -> None:
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
 
     body = api.get(LIST_URL, {"include_count": "true"}).json()
 
@@ -175,7 +146,7 @@ def test_another_tenants_documents_are_absent(
         size_bytes=10,
         purpose="upload",
     )
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
 
     body = api.get(LIST_URL).json()
 
@@ -192,9 +163,9 @@ def test_a_branch_admin_sees_its_own_subtree_and_nothing_above_it(
     does not see the root's — even though all three are in one tenant and all three
     are that tenant's own documents.
     """
-    api.force_login(world.region_admin)
+    api.force_login(world.user(world.admin_at_a))
 
-    body = api.get(LIST_URL, headers={"X-Org": world.region.slug}).json()
+    body = api.get(LIST_URL, headers={"X-Org": world.a.slug}).json()
 
     names = {one["filename"] for one in body["items"]}
     assert names == {"region-invoice.pdf", "branch-notes.txt"}
@@ -211,8 +182,8 @@ def test_archived_documents_leave_the_list_and_stay_readable_by_id(
     read as "this never existed" about a row that plainly did.
     """
     archived = documents[0]
-    archive_file(tenant=world.tenant, actor=world.owner_actor, file=archived)
-    api.force_login(world.owner)
+    archive_file(tenant=world.tenant, actor=world.owner, file=archived)
+    api.force_login(world.user(world.owner))
 
     listed = api.get(LIST_URL).json()
     assert str(archived.pk) not in {one["id"] for one in listed["items"]}
@@ -232,7 +203,7 @@ def test_the_purpose_filter_is_exact_and_the_filename_filter_is_not(
     substring match would make `?purpose=contract` quietly mean
     `contract-amendment` too. `filename` is what a person remembers half of.
     """
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
 
     assert len(api.get(LIST_URL, {"purpose": "contract"}).json()["items"]) == 1
     assert api.get(LIST_URL, {"purpose": "contr"}).json()["items"] == []
@@ -243,7 +214,7 @@ def test_an_ordering_this_list_does_not_accept_is_refused(
     api: Client, world: World, documents: list[StoredFile]
 ) -> None:
     """Refused with the registry's envelope rather than quietly ignored."""
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
 
     response = api.get(LIST_URL, {"ordering": "current_version"})
 
@@ -255,7 +226,7 @@ def test_the_list_query_budget(
     api: Client, world: World, documents: list[StoredFile], django_assert_num_queries: Any
 ) -> None:
     """The pin that turns a lost `select_related` into a failure, not a slow page."""
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
 
     with django_assert_num_queries(LIST_QUERY_BUDGET):
         assert api.get(LIST_URL).status_code == 200
@@ -272,7 +243,7 @@ def test_the_version_list_shows_what_we_measured_and_what_we_have_not(
     A zero size would read as a measurement of an empty object, and an empty object
     is a real thing somebody can upload.
     """
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
 
     body = api.get(VERSIONS_URL.format(documents[0].pk)).json()
 
@@ -282,10 +253,26 @@ def test_the_version_list_shows_what_we_measured_and_what_we_have_not(
     assert body["items"][0]["sha256"] == ""
 
 
+def test_the_version_list_refuses_an_ordering_it_does_not_accept_and_publishes_it(
+    api: Client, world: World, documents: list[StoredFile]
+) -> None:
+    """The route answers `invalid` and the published document carries it (rule 47)."""
+    from config.api import api as mounted
+
+    api.force_login(world.user(world.owner))
+
+    response = api.get(VERSIONS_URL.format(documents[0].pk), {"ordering": "filename"})
+
+    assert response.status_code == 400, response.content
+    assert response.json()["code"] == "invalid"
+    operation = mounted.get_openapi_schema()["paths"]["/api/v1/files/{file_id}/versions/"]
+    assert "invalid" in operation["get"]["responses"][400]["x-refusal-codes"]
+
+
 def test_the_version_list_query_budget(
     api: Client, world: World, documents: list[StoredFile], django_assert_num_queries: Any
 ) -> None:
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
 
     with django_assert_num_queries(VERSION_LIST_QUERY_BUDGET):
         assert api.get(VERSIONS_URL.format(documents[0].pk)).status_code == 200
@@ -303,7 +290,7 @@ def test_filing_a_document_answers_with_a_ticket_and_a_signed_url(
     present: an `upload_url` that carried no `X-Amz-Signature` would be a link
     every client would follow and every store would refuse.
     """
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
 
     response = api.post(
         LIST_URL,
@@ -337,7 +324,7 @@ def test_an_unknown_field_in_the_body_is_refused_naming_it(
     The failure this closes is the worst shape a platform whose callers are agents
     can have — a healthy `201` for a request that did not do what it said.
     """
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
 
     response = api.post(
         LIST_URL,
@@ -368,7 +355,7 @@ def test_the_same_idempotency_key_files_one_document(
     that matters: a second signature for the same key would be a second write
     credential handed out for one act.
     """
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
     payload = json.dumps(
         {"filename": "once.pdf", "content_type": "application/pdf", "size_bytes": 10}
     )
@@ -400,7 +387,7 @@ def test_every_write_route_honours_the_idempotency_key(
     the first, and the world afterwards has one of whatever the first call made.
     """
     document = documents[0]
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
     versions_before = FileVersion.objects.for_tenant(world.tenant).count()
 
     calls = {
@@ -446,7 +433,7 @@ def test_replacing_adds_a_version_beside_the_old_one(
 ) -> None:
     """The replace verb: version 2 arrives, version 1 is exactly where it was."""
     document = documents[0]
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
 
     response = api.post(
         VERSIONS_URL.format(document.pk),
@@ -467,8 +454,8 @@ def test_replacing_an_archived_document_is_refused_archived(
 ) -> None:
     """Archiving is what stops new versions arriving; this is that fence, at the door."""
     document = documents[0]
-    archive_file(tenant=world.tenant, actor=world.owner_actor, file=document)
-    api.force_login(world.owner)
+    archive_file(tenant=world.tenant, actor=world.owner, file=document)
+    api.force_login(world.user(world.owner))
 
     response = api.post(
         VERSIONS_URL.format(document.pk),
@@ -492,7 +479,7 @@ def test_confirming_answers_202_and_starts_one_run(
     from apps.workflows.models import WorkflowRun
 
     document = documents[0]
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
 
     response = api.post(
         CONFIRM_URL.format(document.pk, 1),
@@ -510,7 +497,7 @@ def test_confirming_with_a_blank_key_is_refused(
     api: Client, world: World, documents: list[StoredFile]
 ) -> None:
     """A confirm with no key is a caller who has not thought about their own retries."""
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
 
     response = api.post(
         CONFIRM_URL.format(documents[0].pk, 1),
@@ -543,7 +530,7 @@ def test_every_route_answers_not_found_for_another_tenants_document(
         size_bytes=10,
         purpose="upload",
     ).file
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
     body = json.dumps({"content_type": "application/pdf", "size_bytes": 1})
 
     answers = {
@@ -573,13 +560,13 @@ def test_a_sibling_branchs_document_is_not_found_either(
     `403 forbidden` here would say "there is a document at this id and you may not
     have it", which is precisely the fact the scoping was hiding.
     """
-    api.force_login(world.region_admin)
+    api.force_login(world.user(world.admin_at_a))
 
     response = api.post(
         DOWNLOAD_URL.format(documents[0].pk),
         data="{}",
         content_type=JSON,
-        headers={"X-Org": world.region.slug},
+        headers={"X-Org": world.a.slug},
     )
 
     assert response.status_code == 404, response.content
@@ -596,7 +583,7 @@ def test_asking_for_bytes_that_have_not_landed_is_not_found(
     nothing to fetch" and nothing else.
     """
     document = documents[0]
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
 
     current = api.post(DOWNLOAD_URL.format(document.pk), data="{}", content_type=JSON)
     pending = api.post(
@@ -626,7 +613,7 @@ def test_issuing_a_link_audits_the_version_it_signed_for(
     """
     document = documents[0]
     stored = _stored(world, document)
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
 
     response = api.post(DOWNLOAD_URL.format(document.pk), data="{}", content_type=JSON)
 
@@ -665,7 +652,7 @@ def test_a_refused_issuance_leaves_no_audit_row_and_no_url(
         size_bytes=10,
         purpose="upload",
     ).file
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
 
     response = api.post(DOWNLOAD_URL.format(theirs.pk), data="{}", content_type=JSON)
 
@@ -691,7 +678,7 @@ def test_a_link_issued_for_an_old_version_still_names_that_version(
     """
     document = documents[0]
     first = _stored(world, document)
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
     api.post(
         VERSIONS_URL.format(document.pk),
         data=json.dumps({"content_type": "application/pdf", "size_bytes": 2048}),
@@ -725,14 +712,14 @@ def test_archiving_takes_a_role_and_a_member_is_refused(
     `404 not_found` on purpose: the member CAN see the document, so pretending it
     is not there would be a lie they can disprove in the next request.
     """
-    document = _file_at(world, world.region, filename="region-only.pdf")
-    api.force_login(world.plain_member)
+    document = _file_at(world, world.a, filename="region-only.pdf")
+    api.force_login(world.user(world.clerk))
 
     response = api.post(
         ARCHIVE_URL.format(document.pk),
         data="{}",
         content_type=JSON,
-        headers={"X-Org": world.region.slug},
+        headers={"X-Org": world.a.slug},
     )
 
     assert response.status_code == 403, response.content
@@ -747,9 +734,9 @@ def test_an_administrator_may_archive_and_doing_it_twice_is_quiet(
     """The affirmative half, and the retry: one event, one timestamp, no refusal."""
     from apps.events.models import Event
 
-    document = _file_at(world, world.region, filename="region-only.pdf")
-    api.force_login(world.region_admin)
-    headers = {"X-Org": world.region.slug}
+    document = _file_at(world, world.a, filename="region-only.pdf")
+    api.force_login(world.user(world.admin_at_a))
+    headers = {"X-Org": world.a.slug}
 
     first = api.post(ARCHIVE_URL.format(document.pk), data="{}", content_type=JSON, headers=headers)
     second = api.post(
@@ -761,3 +748,14 @@ def test_an_administrator_may_archive_and_doing_it_twice_is_quiet(
     assert first.json()["archived_at"] == second.json()["archived_at"]
     events = Event.objects.for_tenant(world.tenant).filter(name="files.file.archived")
     assert events.count() == 1, "a retried archive must not put a second event on the spine"
+
+
+def test_a_person_with_no_membership_is_refused_no_acting_scope(api: Client) -> None:
+    """The door's one resolver answers a request that resolved no tenant, reads included."""
+    from apps.accounts.services import create_user
+
+    password = "a-long-enough-pass-1234"  # noqa: S105 — a throwaway password a test user is made with  # pragma: allowlist secret
+    api.force_login(create_user(email="nobody@example.com", password=password))
+    for response in (api.get(LIST_URL), api.get(f"{LIST_URL}{uuid.uuid4()}/")):
+        assert response.status_code == 403, response.content
+        assert response.json()["code"] == "no_acting_scope", response.content

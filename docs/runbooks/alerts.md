@@ -15,9 +15,12 @@ The definitions are `deploy/observability/alerts/`; this file is the human half.
 
 The alert set is not a list. It is
 
-    { one alert per declared transition-event pair } ∪ { the two prober alerts }
+    { one alert per declared transition-event pair }
+  ∪ { one alert per declared spike }
+  ∪ { the two trace alerts }
+  ∪ { the two prober alerts }
 
-and both halves come from ADR obs-2 as amended. **The two halves
+and every part comes from ADR obs-2 as amended. **The two halves
 are DERIVED DIFFERENTLY, and that is deliberate.** The event half is read out of
 `apps/*/events.py` by AST and grows without an edit. The probe half is **named
 explicitly** in `census.py`, because its two members are not events at all: they
@@ -39,25 +42,38 @@ Today it prints:
 ```
 ALERT CENSUS (derived, closed — ADR obs-2)
 
-Read from: apps/comms/events.py, apps/connections/events.py, apps/events/events.py, apps/example/events.py
+Read from: apps/accounts/events.py, apps/comms/events.py, apps/connections/events.py, apps/core/events.py, apps/djb_imports/events.py, apps/djb_notes/events.py, apps/djb_tags/events.py, apps/events/events.py, apps/example/events.py, apps/example_portal/events.py, apps/exports/events.py, apps/files/events.py, apps/search/events.py, apps/usage/events.py
 Recovery verbs: recovered
 
-Transition pairs declared: 1
+Transition pairs declared: 2
   comms.suppression.surged  ->  comms.suppression.recovered
+  search.engine.degraded  ->  search.engine.recovered
+
+Spikes declared: 1
+  accounts.signin.refused >= 20 in 5m (where=log; 12 call site(s); apps/accounts/events.py:17)
+
+Trace alerts (deployment-wide, over server spans): 2
+  latency >= 1 in 5m
+  error_rate >= 12 in 5m
 
 Probes: 2
   probe.readyz.failed (N consecutive /readyz failures; delivered by ClickStack)
   probe.sink.deaf (N consecutive windows of lost telemetry; delivered by the prober's own POST)
 
-ALERTS = 1 pair(s) x 2 + 2 probes = 4
+ALERTS = 2 pair(s) x 2 + 1 spike(s) + 2 trace alert(s) + 2 probes = 9
   [transition] comms.suppression degraded  (delivered by clickstack)
   [recovery] comms.suppression recovered  (delivered by clickstack)
+  [transition] search.engine degraded  (delivered by clickstack)
+  [recovery] search.engine recovered  (delivered by clickstack)
+  [spike] accounts.signin.refused spike  (delivered by clickstack)
   [probe] readyz outage  (delivered by clickstack)
+  [traces] latency  (delivered by clickstack)
+  [traces] error_rate  (delivered by clickstack)
   [probe] sink deaf  (delivered by prober)
 ```
 
-**`delivered_by` is a field, not a footnote.** Two of the three members are
-ClickStack's to deliver; the third is the prober's own POST. `apply.py`
+**`delivered_by` is a field, not a footnote.** Every member but one is
+ClickStack's to deliver; the sink-deaf probe is the prober's own POST. `apply.py`
 reconciles the `clickstack` members and **prints a `[skip]` line** for the
 other, and `export.py` expects only the `clickstack` members back — otherwise a
 portability check would report a permanent "MISSING FROM THE SINK" for an alert
@@ -68,8 +84,50 @@ read.
 `events.py` — `<app>.<noun>.<degraded-verb>` and `<app>.<noun>.recovered` — and
 that is all. `census.py` finds them because it reads the same files the gate
 does, `apply.py` creates the saved search and the alert, and nobody edits a
-list. search-2's planned `search.engine.degraded` / `search.engine.recovered`
-is the next member and needs no edit here.
+list. `search.engine.degraded` / `search.engine.recovered` (ADR search-2) joined
+exactly that way, and nothing here was edited for it.
+
+**How a spike joins.** A spike is a count of one LOG key — a key the app
+writes with `log.<level>("<key>", ...)`, not an event name — inside one window.
+The app that writes the key declares it in its own `events.py`:
+
+```python
+SPIKES: tuple[dict[str, str | int], ...] = (
+    {"key": "accounts.signin.refused", "threshold": 20, "window": "5m",
+     "reason": "twenty refused sign-ins in five minutes is a credential-stuffing shape; ..."},
+)
+```
+
+`census.py` reads it by AST, finds the `log.<level>("<key>"` calls in the
+app (test modules are not emitters), and derives one alert of kind `spike`;
+`definitions.json`'s `spike` shape gives it a saved search on that key, the
+declared window as its interval and the declared count as its threshold. A key
+no call writes, a window the sink cannot check (`1m 5m 15m 30m 1h 6h 12h 1d`), a
+threshold under 1, a key outside the declaring app's own namespace or a reason
+carrying a quote or a brace is a **WARNING**, and `apply.py` refuses to run. The
+auth-failure spike is the worked instance; its 20 in 5 minutes is the worked
+example's number, and a product declares its own in its own app.
+
+**The two trace alerts, and why they are named rather than declared.**
+`latency` and `error_rate` read the Traces source's server spans — one per
+request, at every door — so their population is the route table, closed, and
+no app declares them; they are named in `census.py`'s `TRACES` like the probes.
+They are kind `traces`, and a `traces` member is a **dashboard tile alert**,
+not a saved search: ClickStack's saved-search alert can only count rows, while
+its tile alert runs the tile's own select, which is what lets `latency` carry
+`quantile(0.95)`. `apply.py` keeps one dashboard (`<namespace>-alerts-traces`)
+with one tile per member, the tile id the member's key, the alert embedded in
+the tile; `export.py` matches them as `tile:<name>`. `latency`'s value is the
+p95 **over its budget**, per class: server spans are grouped read
+(`GET`/`HEAD`) or write, each class's p95 is divided by its budget, and the
+alert opens at 1 (`>=`) — exact per class, because inside one class the divisor
+is constant. A class holding fewer than `MIN_SPANS` spans in the window reads 0.
+The method and status are read under both HTTP semantic conventions
+(`http.request.method` / `http.response.status_code`, else `http.method` /
+`http.status_code`), because the instrumentation exports the old keys until the
+stable opt-in is set. A kind in `census.KINDS` with no shape in
+`definitions.json`, or a shape of no kind, is a refusal: `apply.py` exits 2
+naming it.
 
 **The one line that could hide a pair.** `RECOVERY_VERBS` in `census.py` is the
 closed tuple `("recovered",)`. A circuit that spells its recovery `restored` or
@@ -288,6 +346,33 @@ and there is no third behaviour in `checkAlerts`. The three options, priced:
 - **A slow drip.** `SURGE_THRESHOLD = 25` addresses per tenant per trailing hour
   (`apps/comms/services.py`); twenty-four an hour, for ever, is invisible. That
   is the wall's declared blind spot, inherited here.
+- **A slow spray under the threshold.** The auth-failure spike opens at 20
+  refused sign-ins inside one 5-minute window; nineteen every five minutes, for
+  ever, is invisible, and so is a spray spread across windows. It also counts
+  lines, not tenants: twenty refusals at one tenant and one at each of twenty
+  tenants are the same alert, because the saved search groups nothing.
+- **A logging outage reads as calm.** A spike counts the log lines the app
+  wrote; an app that stopped writing them looks exactly like an app nobody is
+  attacking. The probe half watches the sink, not the app's emission.
+- **A deployment that exports no server spans reads as calm.** Both trace
+  alerts count server spans. Under uvicorn the Django instrumentor makes one
+  only when `opentelemetry-instrumentation-asgi` is installed (pinned in
+  `pyproject.toml` since `f634a9556`); a deployment that drops it exports client
+  spans and **no server spans at all**, and both alerts are silent by
+  construction. Measured 2026-10-21: 1331 client spans and 0 server spans
+  without it; 81 server spans and both alerts opened with it.
+- **A p95 over too few spans.** A class with fewer than `MIN_SPANS` (20, the
+  load drive's `MIN_WINDOW_SAMPLES`) server spans in a 5-minute window reads 0,
+  so a quiet deployment's slowness is invisible rather than noise: three slow
+  requests in five minutes never page.
+- **An error the span never records.** A connection refused at Caddy, a request
+  killed before Django's middleware runs, a worker that died mid-request: no
+  server span, no count. `/readyz`'s probe is the guard for the box-level
+  shapes.
+- **A share, rather than a count.** `error_rate` counts 5xx; it does not divide
+  by traffic. A busy deployment reaches 12 at a smaller share than a quiet one,
+  and a quiet one can sit at 50% errors under 12 a window. The ratio is a
+  chart, not this alert.
 - **Slack accepting the message.** The laptop dummy proves the POST leaves
   ClickStack with the right body. Only the real destination proves Slack
   takes it.
@@ -329,11 +414,22 @@ apply time and a rotated secret does not reach it by itself.
 | `SINK_DEAF_WINDOWS` | **3** consecutive windows | the same 3-of-N shape as the outage alert, for the same reason: one blip never pages |
 | **Declared detection window — deaf sink** | **3 × 15 s = 45 s, and no check latency at all** | the prober POSTs directly, so there is no sink-side interval between detection and delivery — the one advantage of the alert that cannot ride the sink |
 | Deaf-sink re-ping cadence | **none: one POST to open, one to recover** | the prober holds the state in its own loop, so a one-hour outage is two POSTs |
+| Auth-failure spike threshold | **20** `accounts.signin.refused` lines in a window (`>=`) | `apps/accounts/events.py`'s `SPIKES` — the worked example's number; a product declares its own |
+| Auth-failure spike interval | **5 min** | the declared window; ClickStack checks it as the alert's `interval` |
+| **Declared detection window — auth-failure spike** | **≤ 5 min for the window to hold 20 + up to 60 s of check latency** | recorded, **never gated** |
+| Latency budgets | **500 ms** p95 reads (`GET`/`HEAD`), **1000 ms** p95 writes, over server spans | the acceptable tier's bar (`census.py` `READ_BUDGET_MS`, `WRITE_BUDGET_MS`); the alert's value is p95 over budget, opening at 1 (`>=`) |
+| Latency interval | **5 min** | one window of the tier's measurement; `MIN_SPANS` = **20** spans per class per window, or the class reads 0 |
+| **Declared detection window — latency** | **≤ 5 min for the window to close + up to 60 s of check latency** | recorded, **never gated**; a window is judged after it closes |
+| Error-count threshold | **12** server spans answering 5xx in a window (`>=`) | `ERROR_COUNT`: 0.5% of the tier's floor load, eight closed-loop clients at one request a second or more for 300 s |
+| Error-count interval | **5 min** | the same window as latency |
+| **Declared detection window — error count** | **≤ 5 min + up to 60 s of check latency** | recorded, **never gated** |
 | `SURGE_THRESHOLD` | 25 distinct addresses / tenant / trailing hour | `apps/comms/services.py`, ADR comms-9 — not this file's to set |
 
 ---
 
 ## Installing the route
+
+**Precondition for the two trace alerts:** `opentelemetry-instrumentation-asgi` is in `pyproject.toml`; without it the app under uvicorn exports no server spans and both trace alerts are silent.
 
 ```bash
 # 1. The values. The delivery URL comes from the slot, on the box, under the
@@ -416,8 +512,14 @@ alert must not fire — the app was never down. Two alerts, two questions.
 when the sink went deaf, plus one scrape. Expected, and the reason the declared
 number is recorded rather than gated.
 
-**The census prints three members** — `1 pair(s) + 2 probes = 3` — and
-`apply.py` creates two of them, printing for the third:
+**The census prints its members and their total**, derived here from
+`deploy/observability/alerts/census.py` itself:
+
+<!-- derived: alert-census -->
+`ALERTS = 2 pair(s) x 2 + 1 spike(s) + 2 trace alert(s) + 2 probes = 9`
+<!-- /derived -->
+
+`apply.py` creates every member but the one the prober delivers, printing for it:
 
 ```
 [skip] sink deaf: delivered by prober, not by this sink (deploy/observability/alerts/prober.sh)

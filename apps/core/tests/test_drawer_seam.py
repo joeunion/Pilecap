@@ -28,7 +28,7 @@ a real `quality/local/rules.yaml` would move the working tree a concurrent
 gate's verdict is keyed on.
 """
 
-# names, never reads: docs/product/queue.md — a path outside the roots, handed to the engine over tmp_path  # noqa: E501
+# names, never reads: docs/product/queue.md docs/product/architecture.md — paths handed to the engine's own functions as values (a finding's path over tmp_path, a subject `override_reaches` judges); no file is opened  # noqa: E501
 
 from __future__ import annotations
 
@@ -57,6 +57,14 @@ def _swap(module: ModuleType, name: str, value: Any) -> Any:
     """
     was = getattr(module, name)
     setattr(module, name, value)
+    return was
+
+
+def _refill(shared: dict[Any, Any], value: dict[Any, Any]) -> dict[Any, Any]:
+    """Refill a dict the engine modules share, in place; hand back a copy of what was there."""
+    was = dict(shared)
+    shared.clear()
+    shared.update(value)
     return was
 
 
@@ -99,9 +107,8 @@ def test_a_product_kind_may_not_reuse_a_template_kinds_name() -> None:
 
 def test_the_scope_kinds_the_engine_reads_are_the_union() -> None:
     """A drawer kind joins `SCOPE_KINDS`, so `kind_roots` reads the product's roots."""
-    saved = _swap(
-        _GATE,
-        "LOCAL_DOC",
+    saved = _refill(
+        _GATE.LOCAL_DOC,
         {
             "scope_kinds": {
                 "ledgers": {"roots": ["docs"], "suffixes": [".md"], "comment": "<!--"},
@@ -115,22 +122,23 @@ def test_the_scope_kinds_the_engine_reads_are_the_union() -> None:
     try:
         kinds = _GATE._scope_kinds()
     finally:
-        _swap(_GATE, "LOCAL_DOC", saved)
-    # The template's four (`compose` and `workflows` are rules 61's and 62's
-    # subjects) plus the drawer's one; the clashing `py` is not a fifth.
-    assert set(kinds) == {"py", "js", "compose", "workflows", "ledgers"}, sorted(kinds)
+        _refill(_GATE.LOCAL_DOC, saved)
+    # The template's five (`compose` and `workflows` are rules 61's and 62's
+    # subjects, `sh` rule 84's) plus the drawer's one; the clashing `py` is not
+    # a sixth.
+    assert set(kinds) == {"py", "js", "compose", "workflows", "sh", "ledgers"}, sorted(kinds)
     assert _WORLDS.kind_roots({"kind": "ledgers"}, kinds) == ["docs"]
-    assert _WORLDS.kind_roots({"kind": "py"}, kinds) == ["apps", "config"]
+    assert _WORLDS.kind_roots({"kind": "py"}, kinds) == ["apps", "config", "pilecap"]
 
 
 def test_the_outside_roots_refusal_names_the_drawer_key_for_a_local_rule() -> None:
     """The refusal was right and mute; the remedy rides only on a DRAWER rule."""
-    saved = _swap(_GATE, "LOCAL_RULE_IDS", frozenset({"acme-1"}))
+    saved = _swap(_GATE.world_module(), "LOCAL_RULE_IDS", frozenset({"acme-1"}))
     try:
         remedy = _GATE.drawer_roots_remedy("acme-1")
         assert _GATE.drawer_roots_remedy("1") == ""
     finally:
-        _swap(_GATE, "LOCAL_RULE_IDS", saved)
+        _swap(_GATE.world_module(), "LOCAL_RULE_IDS", saved)
     assert "scope_kinds:" in remedy and "quality/local/rules.yaml" in remedy, remedy
     try:
         _CHECK_V1._refuse_outside_roots(
@@ -168,18 +176,18 @@ def _merge(
 ) -> Any:
     """`_merge_local_ratchets` over injected rules. (problems, rules, drawer classes)."""
     by_id = {str(rule["id"]): rule for rule in rules}
-    was_doc = _swap(_GATE, "LOCAL_DOC", {"ratchets": ratchets})
-    was_rules = _swap(_GATE, "RULES_BY_ID", by_id)
-    was_local = _swap(_GATE, "LOCAL_RULE_IDS", local_ids)
+    was_doc = _refill(_GATE.LOCAL_DOC, {"ratchets": ratchets})
+    was_rules = _refill(_GATE.RULES_BY_ID, by_id)
+    was_local = _swap(_GATE.world_module(), "LOCAL_RULE_IDS", local_ids)
     was_classes = set(_GATE.DRAWER_RATCHET_CLASSES)
     try:
         _GATE.DRAWER_RATCHET_CLASSES.clear()
         problems = _GATE._merge_local_ratchets()
         return problems, by_id, set(_GATE.DRAWER_RATCHET_CLASSES)
     finally:
-        _swap(_GATE, "LOCAL_DOC", was_doc)
-        _swap(_GATE, "RULES_BY_ID", was_rules)
-        _swap(_GATE, "LOCAL_RULE_IDS", was_local)
+        _refill(_GATE.LOCAL_DOC, was_doc)
+        _refill(_GATE.RULES_BY_ID, was_rules)
+        _swap(_GATE.world_module(), "LOCAL_RULE_IDS", was_local)
         _GATE.DRAWER_RATCHET_CLASSES.clear()
         _GATE.DRAWER_RATCHET_CLASSES.update(was_classes)
 
@@ -220,6 +228,34 @@ def test_a_class_that_is_neither_an_app_nor_a_declared_class_is_refused() -> Non
     assert by_id["50"]["ratchets"] == {"literal": 0, "barrel": 0}
 
 
+def test_a_frozen_class_is_never_offered_to_the_drawer() -> None:
+    """`frozen:` — a class whose number may only fall is fixed or declared, never a debt."""
+    rule = {"id": "84", "ratchets": {"private_twin": 46}, "frozen": ["second_road"]}
+    assert not _GATE.drawer_ratchetable_class("84", "second_road", rule)
+    assert _GATE.drawer_ratchetable_class("84", "private_twin", rule)
+    findings = [_GATE.Finding("apps/acme/services.py", 3, "a second road", "second_road")]
+    out = _GATE.apply_ratchets(dict(rule), findings)
+    assert [f.path for f in out] == ["apps/acme/services.py"], [f.msg for f in out]
+    assert not any("RECORD YOURS" in f.msg for f in out)
+
+
+def test_a_drawer_that_records_a_frozen_class_is_refused_and_not_merged() -> None:
+    rule = {"id": "84", "ratchets": {"private_twin": 24}, "frozen": ["private_twin"]}
+    problems, by_id, drawer = _merge({"84": {"private_twin": 1}}, [rule])
+    assert len(problems) == 1 and "'private_twin' is frozen" in problems[0], problems
+    assert by_id["84"]["ratchets"] == {"private_twin": 24}
+    assert ("84", "private_twin") not in drawer
+
+
+def test_rule_84_freezes_every_class_and_records_none_at_zero() -> None:
+    rule = _GATE.RULES_BY_ID["84"]
+    frozen = _GATE.frozen_classes(rule)
+    assert {"second_road", "conditional_road"} <= frozen
+    recorded = rule.get("ratchets") or {}
+    assert set(recorded) <= frozen
+    assert all(int(count) > 0 for count in recorded.values()), recorded
+
+
 # --- R4 · a directory the engine plants into -------------------------------------
 
 
@@ -232,16 +268,15 @@ def test_an_engine_planted_directory_is_claimed_and_an_undeclared_one_is_not(
     (canary / "partition" / "x.py").write_text("# planted by the engine\n")
     (canary / "nobodys").mkdir()
     (canary / "nobodys" / "x.py").write_text("# planted by nothing\n")
-    saved = _swap(
-        _GATE,
-        "ENGINE_FIXTURES",
+    saved = _refill(
+        _GATE.ENGINE_FIXTURES,
         {_GATE.CANARY_DIR / "partition" / "x.py": "the partition census plants it"},
     )
     try:
         assert _GATE.engine_fixture_dirs() == {"partition"}
         found = _GATE.fixture_dir_findings((("canary", canary),))
     finally:
-        _swap(_GATE, "ENGINE_FIXTURES", saved)
+        _refill(_GATE.ENGINE_FIXTURES, saved)
     assert not [line for line in found if "partition" in line], found
     assert [line for line in found if "nobodys" in line], found
 
@@ -252,9 +287,8 @@ def test_an_engine_planted_directory_is_claimed_and_an_undeclared_one_is_not(
 def test_a_file_root_is_its_own_walk_in_the_inputs_census() -> None:
     """HIGH-1: `.env.example` as a root was `--selftest-inputs` exit 2 (an emptied walk)."""
     assert (ROOT / ".env.example").is_file()
-    saved = _swap(
-        _GATE,
-        "SCOPE_KINDS",
+    saved = _refill(
+        _GATE.SCOPE_KINDS,
         {
             **_GATE.SCOPE_KINDS,
             "ledgers": {"roots": [".env.example"], "suffixes": [".md"], "comment": "#"},
@@ -263,7 +297,7 @@ def test_a_file_root_is_its_own_walk_in_the_inputs_census() -> None:
     try:
         paths, problems = _GATE.selftest_inputs_for(_GATE.RULES)
     finally:
-        _swap(_GATE, "SCOPE_KINDS", saved)
+        _refill(_GATE.SCOPE_KINDS, saved)
     assert problems == [], problems
     assert ".env.example" in paths
 
@@ -287,9 +321,8 @@ def test_an_untracked_root_is_refused_at_the_drawer_and_not_four_readers_later(
 
 def test_a_product_kind_never_attributes_a_valve_to_a_template_rule() -> None:
     """HIGH-2: the walk is the union; the ATTRIBUTION is one rule's own roots."""
-    saved = _swap(
-        _GATE,
-        "SCOPE_KINDS",
+    saved = _refill(
+        _GATE.SCOPE_KINDS,
         {
             **_GATE.SCOPE_KINDS,
             "ledgers": {"roots": ["docs"], "suffixes": [".md"], "comment": "#"},
@@ -299,13 +332,12 @@ def test_a_product_kind_never_attributes_a_valve_to_a_template_rule() -> None:
         # Rule 13 is a `py` rule: docs/ is not its subject, whatever a line of
         # prose there happens to look like.
         assert not _GATE.override_reaches("13", "docs/product/architecture.md")
-        assert _GATE.override_reaches("13", "apps/core/services.py")
+        assert _GATE.override_reaches("13", "apps/core/services/memberships.py")
         # An id no rule claims is kept — it is some other census's finding.
         assert _GATE.override_reaches("99", "docs/product/architecture.md")
-        saved_ids = _swap(_GATE, "LOCAL_RULE_IDS", frozenset({"acme-2"}))
-        saved_rules = _swap(
-            _GATE,
-            "RULES_BY_ID",
+        saved_ids = _swap(_GATE.world_module(), "LOCAL_RULE_IDS", frozenset({"acme-2"}))
+        saved_rules = _refill(
+            _GATE.RULES_BY_ID,
             {**_GATE.RULES_BY_ID, "acme-2": {"id": "acme-2", "kind": "ledgers"}},
         )
         try:
@@ -313,10 +345,10 @@ def test_a_product_kind_never_attributes_a_valve_to_a_template_rule() -> None:
             # that makes the union walk worth having.
             assert _GATE.override_reaches("acme-2", "docs/product/architecture.md")
         finally:
-            _swap(_GATE, "RULES_BY_ID", saved_rules)
-            _swap(_GATE, "LOCAL_RULE_IDS", saved_ids)
+            _refill(_GATE.RULES_BY_ID, saved_rules)
+            _swap(_GATE.world_module(), "LOCAL_RULE_IDS", saved_ids)
     finally:
-        _swap(_GATE, "SCOPE_KINDS", saved)
+        _refill(_GATE.SCOPE_KINDS, saved)
 
 
 def test_a_finding_class_over_its_ceiling_prints_the_line_to_paste() -> None:
@@ -352,3 +384,59 @@ def test_a_summed_ceiling_says_which_half_is_whose() -> None:
     header = out[0]
     assert header.path == "quality/local/rules.yaml", header
     assert "(template 1 + drawer 3)" in header.msg, header.msg
+
+
+# --- the check tag: the id's fourth spelling, read by the django leg ------------
+
+
+def test_the_django_leg_reads_the_trees_namespace_as_well_as_djb() -> None:
+    """A product's `<ns>.E0xx` line is a finding; the template reads `djb.` only.
+
+    The leg and the self-test's django probe read ONE compiled pattern, derived
+    from the template prefix and the drawer's namespace the way the valve's id
+    half is. A leg that read `(djb.` alone gave a product's rule a clean scan
+    and every one of its django canaries a `CANARY DEAD`.
+    """
+    template, product = "?: (djb.E013) x", "?: (acme.E001) x"
+    saved = _swap(_GATE.world_module(), "RULE_ID_NAMESPACE", "acme")
+    try:
+        under_namespace = _GATE.django_id_pattern()
+    finally:
+        _swap(_GATE.world_module(), "RULE_ID_NAMESPACE", saved)
+    assert under_namespace.search(template).group(1) == "djb.E013"
+    assert under_namespace.search(product).group(1) == "acme.E001"
+    bare = _GATE.django_id_pattern(None)
+    assert bare.search(template).group(1) == "djb.E013"
+    assert bare.search(product) is None
+    # This tree's pattern: the bare one on the template, the namespace's on a product.
+    declared = _GATE.world_module().RULE_ID_NAMESPACE
+    assert _reads_the_declared_namespace(_GATE.DJANGO_ID_RE.pattern, declared)
+    assert (_GATE.DJANGO_ID_RE.pattern == bare.pattern) is (declared is None)
+
+
+def _reads_the_declared_namespace(pattern: str, declared: str | None) -> bool:
+    """Whether `pattern` is the check-tag pattern a tree declaring `declared` reads with."""
+    derived: str = _GATE.django_id_pattern(declared).pattern
+    return pattern == derived
+
+
+def test_a_products_check_tag_pattern_is_the_one_its_namespace_derives() -> None:
+    """Planted: a product's compiled pattern holds the pin; the template's bare one does not."""
+    product = _GATE.django_id_pattern("acme").pattern
+    bare = _GATE.django_id_pattern(None).pattern
+    assert _reads_the_declared_namespace(product, "acme")
+    assert not _reads_the_declared_namespace(bare, "acme")
+    assert _reads_the_declared_namespace(bare, None)
+
+
+# --- the engine's own three roads ----------------------------------------------
+
+
+def test_the_blind_spot_refusal_is_one_sentence_the_consistency_pass_records() -> None:
+    assert _GATE.require_blind_spot({"id": "99", "does_not_cover": "  "}) == (
+        "rule 99: no does_not_cover — an undeclared blind spot"
+    )
+    assert _GATE.require_blind_spot({"id": "99"}) == (
+        "rule 99: no does_not_cover — an undeclared blind spot"
+    )
+    assert _GATE.require_blind_spot({"id": "99", "does_not_cover": "a blind spot"}) is None

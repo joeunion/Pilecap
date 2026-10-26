@@ -1,0 +1,21 @@
+from pilecap import Policy, may_archive
+
+# golden: noun end
+
+
+# golden: noun begin
+POLICIES: dict[str, Policy] = {
+    # golden: noun begin
+    "widget.archive": may_archive,
+    "widget.restore": may_archive,
+    # golden: noun end
+    # golden: noun begin
+}
+# golden: noun end
+
+
+# golden: noun begin
+ACTION_PROSE: dict[str, str] = {
+    # golden: noun begin
+}
+# golden: noun end

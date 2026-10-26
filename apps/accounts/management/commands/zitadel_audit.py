@@ -78,23 +78,27 @@ from typing import Any, NamedTuple
 from django.conf import settings
 from django.core.management.base import CommandError
 
-from apps.accounts import zitadel
+from apps.accounts import realms, zitadel
 
 # The DECLARED values this section compares against, imported from the command
 # that writes them rather than restated here: the whole of the comparison is
 # "does Zitadel still hold what the seed declares", and a second copy of those
 # constants would be the one thing the comparison cannot afford. A command
 # importing a command is cheap — neither module touches the ORM or Temporal at
-# import time — where a command importing an ACTIVITY is what `idp_name_for`
-# above declines.
+# import time — where a command importing an ACTIVITY would drag Temporal into
+# a shell process.
 from apps.accounts.management.commands import zitadel_seed as seed
-from apps.accounts.models import IdentityBranding, SsoConnection
+from apps.accounts.models import IdentityBranding, IdentityHome, SsoConnection
+from apps.accounts.realm import LoginPolicy
+from apps.accounts.selectors import get_tenant_realm, get_workforce_domains
 from apps.accounts.types import (
     KIND_IDENTITY_BRANDING,
     KIND_SSO_CONNECTION,
     KIND_WORKFORCE_PROVIDER,
 )
 from apps.core.management import BaseCommand
+from apps.core.models import Tenant
+from apps.core.surfaces import surface_base_urls
 
 # --- what a section answers with ---------------------------------------------
 #
@@ -148,6 +152,12 @@ LOGIN_CLIENT_KIND = "login client"
 # reconciler carries this string so it can name the remedy in words instead of
 # leaving a delta looking unattended.
 ENV_COPY_KIND = "env copies"
+
+# A tenant's realm. Asked for through `services.start_identity_home` — the
+# reconciler's road for a tenant whose realm is missing, pending or gone — and
+# a workflow of its own rather than a `types.py` `KIND_*` of the configuration
+# sync, which is why it is spelled here.
+IDENTITY_HOME_KIND = "identity_home"
 
 
 class Finding(NamedTuple):
@@ -209,43 +219,6 @@ class Report(NamedTuple):
         audit prints them and exits on the drift count, as it always has.
         """
         return tuple(one for one in self.findings if one.verdict == UNREADABLE)
-
-
-# What an SSO connection is called inside Zitadel. The same derivation
-# `apps/accounts/activities.py` uses, restated here rather than imported,
-# because a command importing an activity would drag Temporal into a shell
-# process for one f-string. `apps/accounts/tests/test_zitadel.py` pins
-# the two against each other, so a change to one fails a test rather than
-# silently making the audit compare the wrong names.
-def idp_name_for(connection: SsoConnection) -> str:
-    return f"{connection.tenant.slug}:{connection.pk}"
-
-
-# The workforce provider's name, restated here for the same reason
-# `idp_name_for` is: a command may not import an activity. It has no row at all
-# — its intent is the environment — so this constant is the *only* handle either
-# side has on it, which makes the restatement more load-bearing here than there.
-# `test_zitadel_workforce_audit.py` pins the two together.
-WORKFORCE_IDP_NAME = "Workforce Google"
-
-
-def workforce_idp_name() -> str:
-    return str(getattr(settings, "GOOGLE_WORKFORCE_IDP_NAME", WORKFORCE_IDP_NAME))
-
-
-def workforce_domains() -> list[str]:
-    """The domains this deployment's workforce door is configured for.
-
-    **The switch, not a decoration.** Empty means the door is off entirely —
-    `config/settings/base.py` and `services.sync_workforce_identity_config` both
-    read it that way — which is what makes "empty here, a live provider there"
-    a disagreement worth a line.
-    """
-    return [
-        str(one).strip().lower()
-        for one in (getattr(settings, "GOOGLE_WORKSPACE_DOMAINS", []) or [])
-        if str(one).strip()
-    ]
 
 
 class Command(BaseCommand):
@@ -323,6 +296,13 @@ def read_report(*, tenant_slug: str) -> Report:
     lines.append(f"idps in zitadel {len(providers)}")
     lines.append("")
 
+    # Every tenant's realm first: a connection's provider lives in its tenant's
+    # realm, so a missing realm explains the connection lines below it.
+    homes = realms_section(tenant_slug=tenant_slug)
+    lines.extend(homes.lines)
+    drift += homes.drift
+    findings.extend(homes.findings)
+
     connections = connections_section(tenant_slug=tenant_slug, providers=providers)
     lines.extend(connections.lines)
     drift += connections.drift
@@ -381,11 +361,96 @@ def read_report(*, tenant_slug: str) -> Report:
     # because what they narrow is exactly what that paragraph declares. The
     # org's name is passed down rather than re-read: this report already
     # printed it at the top, and a second GET could disagree with the first.
-    console = console_section(org_name=str(org.get("name", "?")))
+    console = console_section(
+        org_name=str(org.get("name", "?")),
+        homed=sum(1 for one in homes.findings if one.verdict == AGREES),
+        tenants=len(homes.findings),
+    )
     lines.extend(console.lines)
     findings.extend(console.findings)
 
     return Report(lines=lines, drift=drift, findings=tuple(findings))
+
+
+def realms_section(*, tenant_slug: str) -> Section:
+    """Every tenant's realm — made, granted, and there — read through the realm port.
+
+    One finding per tenant, and the population is the tenants themselves: a
+    tenant with no home, a `pending` home, a realm the platform no longer has
+    (a removed organisation reads as none — `zitadel.ORG_STATE_ACTIVE`) and a
+    realm the platform's project is not granted to are each a DRIFT the
+    reconciler repairs by asking for the tenant's home again; a realm that is
+    all three is `agrees`. The count of those is the orgs line's `n of n
+    tenants homed`.
+    """
+    lines: list[str] = [""]
+    findings: list[Finding] = []
+    drift = 0
+    tenants = Tenant.objects.order_by("slug")
+    if tenant_slug:
+        tenants = tenants.filter(slug=tenant_slug)
+    port = realms.current()
+    for tenant in tenants:
+        home = IdentityHome.objects.for_tenant(tenant).first()
+        realm = get_tenant_realm(tenant)
+        if realm is None:
+            said = "has no home" if home is None else "is pending — its realm is not made yet"
+            line = f"DRIFT       realm {tenant.slug} — {said}; its people cannot sign in"
+        else:
+            facts = port.facts(realm=realm)
+            if not facts.exists:
+                line = f"DRIFT       realm {tenant.slug} — org {realm.id} is gone at the platform"
+            elif not facts.granted:
+                line = (
+                    f"DRIFT       realm {tenant.slug} — org {realm.id} is not granted the project"
+                )
+            else:
+                line = f"agrees      realm {tenant.slug} — org {realm.id}, granted"
+                lines.append(line)
+                findings.append(Finding(AGREES, IDENTITY_HOME_KIND, tenant.slug, line))
+                continue
+        lines.append(line)
+        findings.append(Finding(DRIFT, IDENTITY_HOME_KIND, tenant.slug, line))
+        drift += 1
+    return Section(lines=lines, drift=drift, findings=tuple(findings))
+
+
+def enforced_line(connection: SsoConnection) -> Finding | None:
+    """Whether the tenant realm's login policy says what the connection's `enforced` says.
+
+    `None` for a connection with nothing to compare — not enforcing, and its
+    realm's policy not requiring a provider either. Otherwise the realm is read
+    through the port: enforcing means the password off, the provider required
+    and THIS provider linked; anything else is drift the configuration sync
+    repairs.
+    """
+    realm = get_tenant_realm(connection.tenant)
+    if realm is None:
+        return None
+    facts = realms.current().facts(realm=realm)
+    policy = facts.policy or LoginPolicy(password_allowed=True, provider_required=False)
+    linked = connection.zitadel_idp_id in {one.id for one in facts.providers}
+    label = f"{connection.tenant.slug}/{connection.name}"
+    said = f"org {realm.id} policy allowUsernamePassword={str(policy.password_allowed).lower()}"
+    if policy.provider_required:
+        said += " allowExternalIdp=true"
+    wanted = connection.enforced and connection.is_active
+    if not wanted and not policy.provider_required:
+        return None
+    if wanted == (policy.provider_required and linked):
+        return Finding(
+            AGREES,
+            KIND_SSO_CONNECTION,
+            str(connection.pk),
+            f"agrees      enforced — {said} ({label})",
+        )
+    return Finding(
+        DRIFT,
+        KIND_SSO_CONNECTION,
+        str(connection.pk),
+        f"DRIFT       enforced — our row says {'on' if wanted else 'off'}, {said} ({label})"
+        f"{'' if linked or not wanted else ', provider not linked'}",
+    )
 
 
 def claimed_idp_ids(*, tenant_slug: str) -> set[str]:
@@ -456,6 +521,13 @@ def connections_section(*, tenant_slug: str, providers: list[dict[str, Any]]) ->
             continue
 
         remote = by_id.get(connection.zitadel_idp_id)
+        realm = get_tenant_realm(connection.tenant)
+        if remote is None and realm is not None:
+            # A tenant's provider lives in its realm, invisible from the staff
+            # org's list — read by id there.
+            remote = zitadel.get_identity_provider(
+                idp_id=connection.zitadel_idp_id, org_id=realm.id
+            )
         if remote is None:
             remote = zitadel.get_identity_provider(idp_id=connection.zitadel_idp_id)
         if remote is None:
@@ -468,7 +540,7 @@ def connections_section(*, tenant_slug: str, providers: list[dict[str, Any]]) ->
             drift += 1
             continue
 
-        expected = idp_name_for(connection)
+        expected = connection.idp_name
         actual = str(remote.get("name", ""))
         if actual != expected:
             line = f"DRIFT       {label} — idp is named {actual!r}, our row expects {expected!r}"
@@ -491,6 +563,11 @@ def connections_section(*, tenant_slug: str, providers: list[dict[str, Any]]) ->
         line = f"agrees      {label} — idp {connection.zitadel_idp_id}"
         lines.append(line)
         findings.append(Finding(AGREES, KIND_SSO_CONNECTION, key, line))
+        enforced = enforced_line(connection)
+        if enforced is not None:
+            lines.append(enforced.line)
+            findings.append(enforced)
+            drift += enforced.verdict == DRIFT
 
     return Section(lines=lines, drift=drift, findings=tuple(findings))
 
@@ -726,7 +803,7 @@ def _posture_line(label: str, *, expected: object, actual: object) -> tuple[int,
     return 0, f"agrees      posture {label} — {actual!r}", AGREES
 
 
-def console_section(*, org_name: str) -> Section:
+def console_section(*, org_name: str, homed: int = 0, tenants: int = 0) -> Section:
     """The console's own surfaces: printed, and deliberately **not judged**.
 
     **Why observed rather than reconciled.** Every other line in this report
@@ -795,9 +872,9 @@ def console_section(*, org_name: str) -> Section:
         observed(
             "smtp        ",
             _smtp_line(smtp),
-            verdict=FOREIGN if _is_foreign(smtp) else OBSERVED,
+            verdict=FOREIGN if zitadel.is_foreign(smtp) else OBSERVED,
         )
-        if _is_foreign(smtp):
+        if zitadel.is_foreign(smtp):
             # **A second line, not a longer one.** The observed line above says
             # what is configured; this one says what follows from it, and it is
             # the sentence somebody scanning for a left-hand keyword will find.
@@ -816,7 +893,7 @@ def console_section(*, org_name: str) -> Section:
     except zitadel.ZitadelError as error:
         observed("orgs        ", f"could not be read — {error}")
     else:
-        observed("orgs        ", _orgs_line(orgs, owned=org_name))
+        observed("orgs        ", _orgs_line(orgs, owned=org_name, homed=homed, tenants=tenants))
 
     return Section(lines=lines, drift=0, findings=tuple(findings))
 
@@ -842,22 +919,6 @@ def smtp_owner(smtp: dict[str, Any]) -> str:
     return description
 
 
-def _is_foreign(smtp: dict[str, Any]) -> bool:
-    """Whether the sender belongs to somebody other than this product.
-
-    The test is the DESCRIPTION naming `PRODUCT_NAME`, not the sender address:
-    a shared instance's mail goes out under one address whoever configured it,
-    and the address is the fact we are trying to attribute rather than the
-    evidence. An empty configuration is nobody's and is not foreign — there is
-    nothing there to belong to anyone.
-    """
-    if not smtp:
-        return False
-    product = str(getattr(settings, "PRODUCT_NAME", "") or "").strip().lower()
-    description = str(smtp.get("description", "") or "").strip().lower()
-    return not product or product not in description
-
-
 def applications_section() -> Section:
     """The deployment's own project and applications, compared against settings.
 
@@ -871,7 +932,7 @@ def applications_section() -> Section:
 
     **The intent is settings, and the road is the seed's writers.** There is no
     row: the project's name, the application names and the URIs are all derived
-    from `config/settings` and `PUBLIC_BASE_URL`, so this section compares
+    from `config/settings` and the surfaces' base URLs, so this section compares
     against the same values `manage.py zitadel_seed` declares — imported from
     that command rather than restated, because a restatement here would be a
     second copy of the one thing the comparison is about.
@@ -989,12 +1050,15 @@ def applications_section() -> Section:
 
     browser = by_name.get(expected_names[0])
     if browser is not None:
-        base_url = str(getattr(settings, "PUBLIC_BASE_URL", "") or "").rstrip("/")
+        # The seed's own list — `core.surfaces.surface_base_urls`, one derivation
+        # — so a second surface's callback is declared here exactly as it is
+        # registered there, and never reads as drift the seed would re-write.
+        bases = surface_base_urls()
         live = zitadel.oidc_app_config_of(browser)
         declared = {
-            "redirectUris": [f"{base_url}{seed.BROWSER_CALLBACK_PATH}"],
-            "postLogoutRedirectUris": [f"{base_url}{seed.BROWSER_LOGOUT_PATH}"],
-            "devMode": base_url.startswith("http://"),
+            "redirectUris": [f"{base}{seed.BROWSER_CALLBACK_PATH}" for base in bases],
+            "postLogoutRedirectUris": [f"{base}{seed.BROWSER_LOGOUT_PATH}" for base in bases],
+            "devMode": bases[0].startswith("http://"),
         }
         disagreements = [
             f"{key}: live {live.get(key)!r}, declared {value!r}"
@@ -1064,7 +1128,7 @@ def _login_versions(*, by_name: dict[str, dict[str, Any]]) -> tuple[list[str], i
     OIDC config at all, and reporting a login version on an object nobody logs
     in through would be a finding nobody can act on.
     """
-    base_url = str(getattr(settings, "PUBLIC_BASE_URL", "") or "").rstrip("/")
+    base_url = surface_base_urls()[0]
     declared = zitadel.login_version_declaration(seed.declared_login_base_uri(base_url))
     stated = _login_version_words(declared)
 
@@ -1350,7 +1414,7 @@ def _login_policy_line(policy: dict[str, Any]) -> str:
     )
 
 
-def _orgs_line(orgs: list[dict[str, Any]], *, owned: str) -> str:
+def _orgs_line(orgs: list[dict[str, Any]], *, owned: str, homed: int = 0, tenants: int = 0) -> str:
     """How many organisations this instance holds, and which one is ours.
 
     The count first, because the count is the whole news: one is the shape
@@ -1364,7 +1428,10 @@ def _orgs_line(orgs: list[dict[str, Any]], *, owned: str) -> str:
         return "no organisations in the answer"
     names = [str(row.get("name", "?")) for row in orgs]
     shown = ", ".join(names[:5]) + (f", … (+{len(names) - 5})" if len(names) > 5 else "")
-    return f"{len(orgs)} on this instance (observed; the seed owns {owned}) — {shown}"
+    return (
+        f"{len(orgs)} on this instance (observed; the seed owns {owned}; "
+        f"{homed} of {tenants} tenants homed) — {shown}"
+    )
 
 
 def _smtp_line(smtp: dict[str, Any]) -> str:
@@ -1446,7 +1513,7 @@ def workforce_provider(providers: list[dict[str, Any]]) -> dict[str, Any] | None
     Zitadel — which is why the section can return the house `(lines, drift)`
     shape instead of smuggling an id out beside it.
     """
-    name = workforce_idp_name()
+    name = zitadel.workforce_idp_name()
     return next((row for row in providers if str(row.get("name", "")) == name), None)
 
 
@@ -1474,20 +1541,21 @@ def workforce_section(providers: list[dict[str, Any]]) -> Section:
     **What is not compared, and why it cannot be.** The domain *list* is not
     in Zitadel at all, deliberately (ADR ident-6, `ensure_google_identity_
     provider`): `GOOGLE_WORKSPACE_DOMAINS` stays ours and is enforced by
-    `selectors.is_workforce_email` at the moment an assertion arrives,
-    because a restriction expressed only in somebody else's console is a
-    restriction we cannot test. So there is no per-domain set to diff — the
-    report prints the list beside the provider and says where it is
-    enforced, which is the true thing to print rather than a comparison
-    against a field that does not exist.
+    the platform door's workforce wall (`accounts.adapter`, a NEW person at
+    sign-up, through `policies.is_workforce_email`), because a restriction
+    expressed only in somebody else's console is a restriction we cannot
+    test. So there is no per-domain set to diff — the report prints the list
+    beside the provider and says where it is enforced, which is the true
+    thing to print rather than a comparison against a field that does not
+    exist.
 
     **Every line here carries the same `key`**, and there is only one thing it
     could be: the digest the service builds from the environment. The key is
     rebuilt by the service at ask time rather than carried from here, because
     the environment is the intent and this section is a reader of it.
     """
-    name = workforce_idp_name()
-    domains = workforce_domains()
+    name = zitadel.workforce_idp_name()
+    domains = sorted(get_workforce_domains())
     provider = workforce_provider(providers)
     lines: list[str] = [""]
 
@@ -1549,7 +1617,7 @@ def workforce_section(providers: list[dict[str, Any]]) -> Section:
 
     line = (
         f"agrees      workforce — idp {provider_id}, domains {', '.join(domains)} "
-        "(enforced here, not in Zitadel — ADR ident-6)"
+        "(enforced by this deployment's sign-in door at sign-up, not in Zitadel — ADR ident-6)"
     )
     lines.append(line)
     return Section(

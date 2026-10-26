@@ -1,0 +1,14 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "imports", "text": ""}
+from apps.example.api import transition_widget_route, widget_transition
+
+# golden-anchor: {"nth": 0, "scope": ["register"], "side": "before", "text": "@server.tool(name=\"archive_widget\", description=contract_of(archive_widget_route))"}
+    @server.tool(name="transition_widget", description=contract_of(transition_widget_route))
+    def transition_widget_tool(ctx: Context[Any], widget_id: UUID, status: str) -> WidgetOut:
+        with tool_call(ctx) as acting:
+            return widget_transition(
+                tenant=acting_tenant(acting),
+                actor=acting.actor(),
+                widget_id=widget_id,
+                status=status,
+            )
+

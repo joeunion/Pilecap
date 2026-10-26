@@ -19,10 +19,10 @@ WHAT COUNTS, per `image:` line in each compose file it is handed:
   this file — one declaration, never a second list here).
 * VALVED — `# pin-exception: <reason>` on the line, or in the contiguous
   comment block directly above it. Counted and returned as a target, so the
-  engine prints how many exceptions stand; a reason under 12 characters is its
-  own finding. An interpolated reference (`${…}`) can only ever be valved: its
-  digest is resolved by whatever supplies the variables, and the valve says
-  where.
+  engine prints how many exceptions stand; a reason under the one floor
+  (`quality.reason_floor.MIN_REASON`) is its own finding. An interpolated
+  reference (`${…}`) can only ever be valved: its digest is resolved by
+  whatever supplies the variables, and the valve says where.
 * anything else — a FINDING, classed `unpinned` (a tag, or an interpolation
   with no valve), `registry` (a digest from a registry not on the list) or
   `short_reason`.
@@ -45,10 +45,12 @@ from pathlib import Path
 
 import yaml
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from quality.reason_floor import MIN_REASON  # noqa: E402  (stdlib only, the one floor)
+
 _RULES_YAML = "quality/rules.yaml"
 _THIS = "quality/runners/compose_image_pin.py"
 
-MIN_REASON = 12
 
 IMAGE_LINE = re.compile(r"^(?P<indent>\s*)image:\s*(?P<rest>.*)$")
 DIGEST = re.compile(r"@sha256:[0-9a-f]{64}$")
@@ -61,7 +63,10 @@ def allow_registries(root: Path) -> list[str]:
     for rule in doc.get("rules") or []:
         argv = (rule.get("runner") or {}).get("argv") or []
         if _THIS in [str(a) for a in argv]:
-            return [str(r) for r in (rule.get("allow_registries") or [])]
+            return [
+                str(entry.get("registry") if isinstance(entry, dict) else entry)
+                for entry in (rule.get("allow_registries") or [])
+            ]
     return []
 
 

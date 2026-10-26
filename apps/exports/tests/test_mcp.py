@@ -27,26 +27,23 @@ from __future__ import annotations
 import io
 import json
 from collections.abc import Callable
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from django.core.management import call_command
 from mcp.server import MCPServer
-from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 
-from apps.core.mcp import SCOPE_KEY, Principal
 from apps.core.services import root_organization
+from apps.core.tests.mcp_context import context_for
 from apps.exports.mcp import register
 from apps.exports.models import Export
 from apps.exports.services import create_export
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from apps.accounts.models import User
-    from apps.core.models import Organization, Tenant
-
-    from .conftest import World
+    from apps.core.models import Tenant
+    from apps.core.tests.permissions_world import World
 
 pytestmark = pytest.mark.django_db
 
@@ -58,30 +55,6 @@ TOOL_FOR_ROUTE: dict[str, str] = {
     "export-create": "create_export",
     "export-download": "download_export",
 }
-
-
-@dataclass
-class _FakeRequest:
-    scope: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class _FakeRequestContext:
-    request: _FakeRequest
-
-
-def context_for(user: User, tenant: Tenant | None, org: Organization | None = None) -> Context[Any]:
-    """The context a tool sees, with the principal the middleware would have left.
-
-    The hat defaults to the tenant's root, which is what `config.mcp` resolves
-    for a token whose user holds the ordinary flat membership. A test that means
-    to prove a narrower hat names it.
-    """
-    resolved = org if org is not None else (root_organization(tenant=tenant) if tenant else None)
-    scope = {SCOPE_KEY: Principal(user=user, tenant=tenant, org=resolved)}
-    return Context(
-        request_context=cast(Any, _FakeRequestContext(request=_FakeRequest(scope=scope)))
-    )
 
 
 def exports_server() -> MCPServer[Any]:
@@ -152,9 +125,11 @@ def test_a_tool_and_its_route_answer_with_the_same_row(
     world: World, recorded_workflow_starts: None
 ) -> None:
     """Same selector, same schema, same row — the value half of parity."""
-    export = create_export(tenant=world.tenant, actor=world.owner_actor)
+    export = create_export(tenant=world.tenant, actor=world.owner)
 
-    answered = tool("get_export")(context_for(world.owner, world.tenant), export_id=export.pk)
+    answered = tool("get_export")(
+        context_for(world.user(world.owner), world.tenant, world.root), export_id=export.pk
+    )
 
     assert answered.id == export.pk
     assert answered.organization_slug == world.root.slug
@@ -165,9 +140,9 @@ def test_the_list_tool_answers_in_the_same_envelope(
     world: World, recorded_workflow_starts: None
 ) -> None:
     """`ExportPage` inherits `core.schemas.ListPage`, so there is one envelope."""
-    create_export(tenant=world.tenant, actor=world.owner_actor)
+    create_export(tenant=world.tenant, actor=world.owner)
 
-    page = tool("list_exports")(context_for(world.owner, world.tenant))
+    page = tool("list_exports")(context_for(world.user(world.owner), world.tenant, world.root))
 
     assert page.count is None
     assert page.has_more is False
@@ -182,12 +157,14 @@ def test_the_list_tool_is_scoped_to_the_hat_on_the_principal(
     There is no parameter a caller could send to widen this, which is the whole
     difference between the machine door and a query string.
     """
-    create_export(tenant=world.tenant, actor=world.owner_actor)
-    create_export(tenant=world.tenant, actor=world.region_actor)
+    create_export(tenant=world.tenant, actor=world.owner)
+    create_export(tenant=world.tenant, actor=world.admin_at_a)
 
-    at_region = tool("list_exports")(context_for(world.region_admin, world.tenant, world.region))
+    at_region = tool("list_exports")(
+        context_for(world.user(world.admin_at_a), world.tenant, world.a)
+    )
 
-    assert {one.organization_slug for one in at_region.items} == {"region"}
+    assert {one.organization_slug for one in at_region.items} == {"a"}
 
 
 def test_a_branch_admin_is_refused_a_tenant_wide_export_on_this_door_too(
@@ -196,7 +173,7 @@ def test_a_branch_admin_is_refused_a_tenant_wide_export_on_this_door_too(
     """The same bar as the HTTP door, because it is the same service under both."""
     with pytest.raises(ToolError):
         tool("create_export")(
-            context_for(world.region_admin, world.tenant, world.region), scope="tenant"
+            context_for(world.user(world.admin_at_a), world.tenant, world.a), scope="tenant"
         )
 
     assert not Export.objects.for_tenant(world.tenant).exists()
@@ -215,21 +192,25 @@ def test_the_download_tool_says_where_rather_than_what(
     from apps.exports.activities import _write_the_archive
     from apps.exports.services import finish_export
 
-    export = create_export(tenant=world.tenant, actor=world.owner_actor, scope=Export.Scope.TENANT)
+    export = create_export(tenant=world.tenant, actor=world.owner, scope=Export.Scope.TENANT)
     with pytest.raises(ToolError):
         # Not finished: there is no archive, and "no file" is `not_found`.
-        tool("download_export")(context_for(world.owner, world.tenant), export_id=export.pk)
+        tool("download_export")(
+            context_for(world.user(world.owner), world.tenant, world.root), export_id=export.pk
+        )
 
-    version, manifest = _write_the_archive(export=export, hat=world.root, actor=world.owner_actor)
+    version, manifest = _write_the_archive(export=export, hat=world.root, actor=world.owner)
     finish_export(
         tenant=world.tenant,
-        actor=world.owner_actor,
+        actor=world.owner,
         export=export,
         version=version,
         manifest=manifest,
     )
 
-    answered = tool("download_export")(context_for(world.owner, world.tenant), export_id=export.pk)
+    answered = tool("download_export")(
+        context_for(world.user(world.owner), world.tenant, world.root), export_id=export.pk
+    )
 
     assert answered.id == export.pk
     assert answered.artifact_bytes == version.size_bytes
@@ -248,8 +229,11 @@ def test_the_download_tool_says_where_rather_than_what(
 
 def test_a_tool_with_no_tenant_refuses(world: World, nomad: User) -> None:
     """Fails closed: a principal with no tenant reads nothing and writes nothing."""
-    with pytest.raises(ToolError):
-        tool("create_export")(context_for(nomad, None))
+    with pytest.raises(ToolError) as refused:
+        tool("create_export")(context_for(nomad, None, None))
+    assert "no_acting_scope" in str(refused.value)
+    with pytest.raises(ToolError, match="no_acting_scope"):
+        tool("list_exports")(context_for(nomad, None, None))
 
 
 def test_an_export_in_another_tenant_is_not_found_on_this_door_either(
@@ -263,4 +247,6 @@ def test_an_export_in_another_tenant_is_not_found_on_this_door_either(
     )
 
     with pytest.raises(ToolError):
-        tool("get_export")(context_for(world.owner, world.tenant), export_id=theirs.pk)
+        tool("get_export")(
+            context_for(world.user(world.owner), world.tenant, world.root), export_id=theirs.pk
+        )

@@ -1,78 +1,47 @@
-"""The machine door onto widgets — every capability the REST door has.
-
-**Door parity is the rule this file exists to demonstrate** (house rule 17):
-every capability `api.py` offers a person, `mcp.py` offers a machine, over the
-*same* selectors, the *same* services and the *same* schemas. A tool that could
-do something no route can, or that answered with a different shape for the same
-row, is a finding — and `tests/test_mcp.py` diffs the two registries out of
-`introspect` so that it is a failing one.
-
-**And it says what the REST door says, out of one docstring** (ADR api-1, house
-rule 41). Every `description=` below is `contract_of(<the REST route>)` — the
-contract half of the very function the OpenAPI document describes — so the two
-doors cannot come to describe one capability differently. A description typed
-here would be the first place they drift, and prose drifts long before
-behaviour does.
-
-What a tool is allowed to be is thin:
-
-* it takes **who is calling** from the principal the token middleware left on
-  the ASGI scope — never from an argument, so no caller can name a tenant, an
-  organization or a user it does not hold a token for. The hat comes from the
-  same `X-Org` header the HTTP door reads, resolved by the same function, which
-  is what makes the two doors agree on the same rows for the same hat;
-* it **calls services and selectors**, never `.objects`, never `.save()`;
-* it **maps no refusals of its own**: `tool_call` turns a domain exception into
-  a `ToolError` once, the way `config/api.py` turns one into a status code once.
-
-The bodies are plain `def` rather than `async def`: the transport runs a
-synchronous tool on a worker thread, which is where the synchronous ORM belongs,
-and `tool_call` closes the connection that thread borrowed.
-"""
+"""The machine door: every REST capability, through its one capability function."""
 
 from __future__ import annotations
 
 # golden: archive version move bulk history duplicate attach merge import begin
+# golden: noun begin
 from typing import Any
 from uuid import UUID
 
-from django.db.models import QuerySet
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
 
-from apps.core.api import ordered_by, searched
-from apps.core.api.docs import contract_of
-from apps.core.api.pagination import cursor_page
-from apps.core.authz import may_be_named
-from apps.core.exceptions import NotFound
-from apps.core.mcp import acting_tenant, tool_call
-from apps.core.verbs import with_allowed_acts
 from apps.example.api import (
-    ORDERING,
-    SEARCH_FIELDS,
     archive_widget_route,
     list_widgets_route,
     restore_widget_route,
     retrieve_widget,
+    widget_archive,
+    widget_detail,
+    widget_list,
+    widget_restore,
 )
-from apps.example.models import Widget
 from apps.example.schemas import WidgetDetailOut, WidgetFilter, WidgetOut, WidgetPage
-from apps.example.selectors import Show, get_widget, list_widgets
-from apps.example.services import archive_widget, restore_widget
+from pilecap import Show
+from pilecap.api import contract_of, cursor_page
+from pilecap.mcp import acting_tenant, tool_call
 
 # golden: archive version move bulk history duplicate attach merge import end
 # isort: split
 # golden: version move bulk history duplicate attach merge import begin
-from apps.core.schemas import HistoryPage
-from apps.core.selectors import list_history
-from apps.example.api import list_widget_history_route, update_widget_route
-from apps.example.services import update_widget
+from apps.example.api import (
+    list_widget_history_route,
+    update_widget_route,
+    widget_history_list,
+    widget_update,
+)
+from pilecap import HistoryPage
+
+# golden: noun end
 
 # golden: version move bulk history duplicate attach merge import end
 # isort: split
 # golden: move bulk history duplicate attach merge import begin
-from apps.example.api import move_destination, move_widget_route
-from apps.example.services import move_widget
+from apps.example.api import move_widget_route, widget_move
 
 # golden: move bulk history duplicate attach merge import end
 # isort: split
@@ -85,111 +54,135 @@ from apps.example.schemas import WidgetBulkOut
 # golden: bulk history duplicate attach merge import end
 # isort: split
 # golden: duplicate attach merge import begin
-from apps.example.api import duplicate_widget_route
-from apps.example.services import duplicate_widget
+from apps.example.api import duplicate_widget_route, widget_duplicate
 
 # golden: duplicate attach merge import end
 # isort: split
 # golden: merge import begin
-from apps.example.api import merge_widget_route, preview_widget_merge_route
-from apps.example.schemas import RepointOut, WidgetMergePreviewOut
-from apps.example.selectors import get_widget_merge_preview
-from apps.example.services import merge_widget
+from apps.example.api import (
+    merge_widget_route,
+    preview_widget_merge_route,
+    widget_merge,
+    widget_merge_detail,
+)
+from apps.example.schemas import WidgetMergePreviewOut
 
 # golden: merge import end
 # isort: split
-# golden: attach merge import begin
-from apps.example.selectors import list_widget_tags
-
-# golden: attach merge import end
-# isort: split
 # golden: import begin
-from apps.example.api import create_widget_route
-from apps.example.services import create_widget
+# golden: noun begin
+from apps.example.api import create_widget_route, widget_create
 
 # golden: import end
 # isort: split
+from pydantic import AwareDatetime
+
+# golden: noun end
+# golden: noun begin
+from apps.example.api import delete_widget_route, widget_delete
+
+# golden: noun end
+# isort: split
+# golden: workflow onboard begin
+from apps.example.api import approve_widget_route, widget_approve
+
+# golden: workflow onboard end
+# isort: split
+# golden: child entry begin
 from apps.example.api import (
-    approve_widget_route,
+    list_widget_entries_route,
+    record_widget_entry_route,
+    widget_entries_list,
+    widget_entry_record,
+)
+from apps.example.schemas import WidgetEntryOut, WidgetEntryPage
+
+# golden: child entry end
+# isort: split
+# golden: policy begin
+from apps.example.api import (
     archive_widget_policy_route,
     create_widget_policy_route,
-    delete_widget_route,
     get_governing_widget_policy_route,
-    list_widget_entries_route,
+    governing_widget_policy_detail,
     list_widget_policies_route,
-    record_widget_entry_route,
-    resolve_named_policy,
     restore_widget_policy_route,
-    widget_stats,
-    widget_stats_route,
+    widget_policies_list,
+    widget_policy_archive,
+    widget_policy_create,
+    widget_policy_restore,
 )
-from apps.example.models import WidgetEntry, WidgetPolicy
-from apps.example.schemas import (
-    WidgetEntryOut,
-    WidgetEntryPage,
-    WidgetPolicyOut,
-    WidgetPolicyPage,
-    WidgetStatsOut,
-)
-from apps.example.selectors import (
-    get_governing_widget_policy,
-    get_widget_policy,
-    list_widget_entries,
-    list_widget_policies,
-)
-from apps.example.services import (
-    approve_widget,
-    archive_widget_policy,
-    create_widget_policy,
-    delete_widget,
-    record_widget_entry,
-    restore_widget_policy,
-)
+from apps.example.schemas import WidgetPolicyOut, WidgetPolicyPage
+
+# golden: policy end
+
+# isort: split
+# golden: verb touch begin
+from apps.example.api import touch_widget_route, widget_touch
+
+# golden: verb touch end
+# isort: split
+# golden: enum status begin
+from apps.example.api import transition_widget_route, widget_transition
+
+# golden: enum status end
+# isort: split
+# golden: stat count begin
+from apps.example.api import widget_stats, widget_stats_route
+from apps.example.schemas import WidgetStatsOut
+
+# golden: stat count end
 
 
 # golden: archive version move bulk history duplicate attach merge import begin
+# golden: noun begin
 def register(server: MCPServer[Any]) -> None:
     """Contribute this app's tools. `config.mcp` discovers and calls this."""
 
-    @server.tool(
-        name="list_widgets",
-        description=contract_of(list_widgets_route),
-    )
+    @server.tool(name="list_widgets", description=contract_of(list_widgets_route))
     def list_widgets_tool(
         ctx: Context[Any],
+        # golden: filter name begin
         name: str | None = None,
+        # golden: filter name end
         q: str | None = None,
         ordering: str = "-created_at",
         show: Show = "live",
         cursor: str | None = None,
         limit: int | None = None,
         include_count: bool = False,
+        # golden: noun end
         # golden: archive version move bulk history duplicate attach merge import end
+        # golden: policy begin
         policy: UUID | None = None,
+        # golden: policy end
+        # golden: noun begin
+        due_before: AwareDatetime | None = None,
+        due_after: AwareDatetime | None = None,
         # golden: archive version move bulk history duplicate attach merge import begin
     ) -> WidgetPage:
         with tool_call(ctx) as acting:
-            actor = acting.actor()
-            filters = WidgetFilter(name=name)
+            tenant, actor = acting_tenant(acting), acting.actor()
+            filters = WidgetFilter()
+            # golden: filter name begin
+            filters.name = name
+            # golden: filter name end
+            # golden: noun end
             # golden: archive version move bulk history duplicate attach merge import end
+            # golden: policy begin
             filters.policy = policy
+            # golden: policy end
+            # golden: noun begin
+            filters.due_before = due_before
+            filters.due_after = due_after
             # golden: archive version move bulk history duplicate attach merge import begin
-            # Scoped first and only narrowed after — and the type widens from
-            # `ScopedQuerySet` to `QuerySet` for the same reason it does in
-            # `api.py`: filtering returns the plain one, and narrowing a queryset
-            # cannot widen its tenant.
-            widgets: QuerySet[Widget] = filters.filter(
-                list_widgets(tenant=acting.tenant, org=acting.org, actor=actor, show=show)
+            widgets = widget_list(
+                tenant=tenant, actor=actor, filters=filters, q=q, ordering=ordering, show=show
             )
-            widgets = searched(widgets, q, fields=SEARCH_FIELDS)
-            widgets = ordered_by(widgets, ordering, allowed=ORDERING, default="-created_at")
-            # `actor=` is what makes this the family's page: every row's
-            # `allowed_acts` and the list's own, from the seam the REST door's
-            # `ActsPagination` calls, so the two doors cannot disagree about
-            # who may do what.
+            # `actor=` puts every row's acts and the page's own on, as `ActsPagination` does.
             page = cursor_page(
                 widgets,
-                tenant=acting.tenant,
+                tenant=tenant,
                 cursor=cursor,
                 limit=limit,
                 include_count=include_count,
@@ -203,111 +196,94 @@ def register(server: MCPServer[Any]) -> None:
                 allowed_acts=list(page.allowed_acts or ()),
             )
 
-    @server.tool(
-        name="get_widget",
-        description=contract_of(retrieve_widget),
-    )
+    @server.tool(name="get_widget", description=contract_of(retrieve_widget))
     def get_widget_tool(ctx: Context[Any], widget_id: UUID) -> WidgetDetailOut:
         with tool_call(ctx) as acting:
-            actor = acting.actor()
-            # A widget in another tenant is `not_found`, exactly as it is over
-            # HTTP: a refusal that distinguished the two would tell the caller
-            # the row exists, which is the fact the tenancy was hiding.
-            widget = get_widget(
-                tenant=acting.tenant, widget_id=widget_id, org=acting.org, actor=actor
+            return widget_detail(
+                tenant=acting_tenant(acting), actor=acting.actor(), widget_id=widget_id
             )
-            # golden: archive version move bulk history duplicate end
-            widget.tags = list_widget_tags(  # type: ignore[attr-defined]
-                tenant=acting.tenant, actor=actor, widget=widget
-            )
-            # golden: archive version move bulk history duplicate begin
-            return WidgetDetailOut.from_orm(with_allowed_acts([widget], actor)[0])
 
     # golden: archive version move bulk history duplicate attach merge end
-    @server.tool(
-        name="create_widget",
-        description=contract_of(create_widget_route),
-    )
+    @server.tool(name="create_widget", description=contract_of(create_widget_route))
     def create_widget_tool(
         ctx: Context[Any],
         name: str,
         notes: str = "",
+        # golden: noun end
         external_ref: str = "",
         # golden: import end
+        # golden: policy begin
         policy_id: UUID | None = None,
+        # golden: policy end
+        # golden: noun begin
+        # golden: field due_at begin
+        due_at: AwareDatetime | None = None,
+        # golden: field due_at end
         # golden: import begin
     ) -> WidgetOut:
         with tool_call(ctx) as acting:
-            tenant = acting_tenant(acting)
-            actor = acting.actor()
-            # golden: import end
-            policy = resolve_named_policy(tenant=tenant, actor=actor, policy_id=policy_id)
-            # House rule 26, at the site that hands the foreign-key target over —
-            # the same two lines the HTTP door writes, for the same reason.
-            if policy is not None and not may_be_named(actor, policy):
-                raise NotFound()
-            # golden: import begin
-            return WidgetOut.from_orm(
-                with_allowed_acts(
-                    [
-                        create_widget(
-                            tenant=tenant,
-                            actor=actor,
-                            name=name,
-                            notes=notes,
-                            external_ref=external_ref,
-                            # golden: import end
-                            policy=policy,
-                            # golden: import begin
-                        )
-                    ],
-                    actor,
-                )[0]
+            return widget_create(
+                tenant=acting_tenant(acting),
+                actor=acting.actor(),
+                name=name,
+                notes=notes,
+                # golden: noun end
+                external_ref=external_ref,
+                # golden: import end
+                # golden: policy begin
+                policy_id=policy_id,
+                # golden: policy end
+                # golden: noun begin
+                # golden: field due_at begin
+                due_at=due_at,
+                # golden: field due_at end
+                # golden: import begin
             )
 
     # golden: import end
 
     # golden: version move bulk history duplicate attach merge import begin
-    @server.tool(
-        name="update_widget",
-        description=contract_of(update_widget_route),
-    )
+    @server.tool(name="update_widget", description=contract_of(update_widget_route))
     def update_widget_tool(
         ctx: Context[Any],
         widget_id: UUID,
         version: int,
         name: str | None = None,
         notes: str | None = None,
+        # golden: noun end
         # golden: version move bulk history duplicate attach merge import end
+        # golden: policy begin
         policy_id: UUID | None = None,
+        # golden: policy end
+        # golden: noun begin
+        # golden: field due_at begin
+        due_at: AwareDatetime | None = None,
+        clear_due_at: bool | None = None,
+        # golden: field due_at end
         # golden: version move bulk history duplicate attach merge import begin
     ) -> WidgetOut:
         with tool_call(ctx) as acting:
-            tenant = acting_tenant(acting)
-            actor = acting.actor()
-            widget = get_widget(tenant=tenant, widget_id=widget_id, org=acting.org, actor=actor)
-            # What was sent and nothing else, exactly as the HTTP door passes it.
-            changes: dict[str, Any] = {
-                field: value
-                for field, value in {"name": name, "notes": notes}.items()
-                if value is not None
-            }
-            # golden: version move bulk history duplicate attach merge import end
-            policy = resolve_named_policy(tenant=tenant, actor=actor, policy_id=policy_id)
-            if policy is not None and not may_be_named(actor, policy):
-                raise NotFound()
-            if policy is not None:
-                changes["policy"] = policy
-            # golden: version move bulk history duplicate attach merge import begin
-            updated = update_widget(
-                tenant=tenant, actor=actor, widget=widget, version=version, **changes
+            return widget_update(
+                tenant=acting_tenant(acting),
+                actor=acting.actor(),
+                widget_id=widget_id,
+                version=version,
+                name=name,
+                notes=notes,
+                # golden: noun end
+                # golden: version move bulk history duplicate attach merge import end
+                # golden: policy begin
+                policy_id=policy_id,
+                # golden: policy end
+                # golden: noun begin
+                # golden: field due_at begin
+                due_at=due_at,
+                clear_due_at=bool(clear_due_at),
+                # golden: field due_at end
+                # golden: version move bulk history duplicate attach merge import begin
             )
-            return WidgetOut.from_orm(with_allowed_acts([updated], actor)[0])
 
-    @server.tool(
-        name="list_widget_history",
-        description=contract_of(list_widget_history_route),
-    )
+    @server.tool(name="list_widget_history", description=contract_of(list_widget_history_route))
     def list_widget_history_tool(
         ctx: Context[Any],
         widget_id: UUID,
@@ -316,13 +292,10 @@ def register(server: MCPServer[Any]) -> None:
         include_count: bool = False,
     ) -> HistoryPage:
         with tool_call(ctx) as acting:
-            actor = acting.actor()
-            widget = get_widget(
-                tenant=acting.tenant, widget_id=widget_id, org=acting.org, actor=actor
-            )
+            tenant = acting_tenant(acting)
             page = cursor_page(
-                list_history(tenant=acting.tenant, actor=actor, row=widget),
-                tenant=acting.tenant,
+                widget_history_list(tenant=tenant, actor=acting.actor(), widget_id=widget_id),
+                tenant=tenant,
                 cursor=cursor,
                 limit=limit,
                 include_count=include_count,
@@ -335,12 +308,10 @@ def register(server: MCPServer[Any]) -> None:
                     "count": page.count,
                 }
             )
+            # golden: noun end
 
     # golden: version end
-    @server.tool(
-        name="move_widget",
-        description=contract_of(move_widget_route),
-    )
+    @server.tool(name="move_widget", description=contract_of(move_widget_route))
     def move_widget_tool(
         ctx: Context[Any],
         widget_id: UUID,
@@ -349,28 +320,17 @@ def register(server: MCPServer[Any]) -> None:
         owner_id: UUID | None = None,
     ) -> WidgetOut:
         with tool_call(ctx) as acting:
-            tenant = acting_tenant(acting)
-            actor = acting.actor()
-            widget = get_widget(tenant=tenant, widget_id=widget_id, org=acting.org, actor=actor)
-            if not may_be_named(actor, widget):
-                raise NotFound()
-            moved = move_widget(
-                tenant=tenant,
-                actor=actor,
-                widget=widget,
-                organization=move_destination(
-                    tenant=tenant, actor=actor, widget=widget, to=organization_id
-                ),
-                owner_id=owner_id,
+            return widget_move(
+                tenant=acting_tenant(acting),
+                actor=acting.actor(),
+                widget_id=widget_id,
                 version=version,
+                organization_id=organization_id,
+                owner_id=owner_id,
             )
-            return WidgetOut.from_orm(with_allowed_acts([moved], actor)[0])
 
     # golden: move end
-    @server.tool(
-        name="bulk_widgets",
-        description=contract_of(bulk_widgets_route),
-    )
+    @server.tool(name="bulk_widgets", description=contract_of(bulk_widgets_route))
     def bulk_widgets_tool(
         ctx: Context[Any],
         verb: Literal["archive", "restore", "move"],
@@ -379,7 +339,6 @@ def register(server: MCPServer[Any]) -> None:
         owner_id: UUID | None = None,
     ) -> WidgetBulkOut:
         with tool_call(ctx) as acting:
-            # The HTTP door's own function: one batch, whichever door it came in by.
             return bulk_widgets(
                 tenant=acting_tenant(acting),
                 actor=acting.actor(),
@@ -390,133 +349,74 @@ def register(server: MCPServer[Any]) -> None:
             )
 
     # golden: bulk history end
-    @server.tool(
-        name="duplicate_widget",
-        description=contract_of(duplicate_widget_route),
-    )
+    @server.tool(name="duplicate_widget", description=contract_of(duplicate_widget_route))
     def duplicate_widget_tool(
         ctx: Context[Any], widget_id: UUID, idempotency_key: str = ""
     ) -> WidgetOut:
+        # The key rides as an argument here and as the `Idempotency-Key` header over HTTP.
         with tool_call(ctx) as acting:
-            tenant = acting_tenant(acting)
-            actor = acting.actor()
-            widget = get_widget(tenant=tenant, widget_id=widget_id, org=acting.org, actor=actor)
-            if not may_be_named(actor, widget):
-                raise NotFound()
-            # The key rides as an argument here and as the `Idempotency-Key`
-            # header over HTTP — one promise, each protocol's own grammar.
-            copy = duplicate_widget(
-                tenant=tenant, actor=actor, widget=widget, idempotency_key=idempotency_key
+            return widget_duplicate(
+                tenant=acting_tenant(acting),
+                actor=acting.actor(),
+                widget_id=widget_id,
+                idempotency_key=idempotency_key,
             )
-            return WidgetOut.from_orm(with_allowed_acts([copy], actor)[0])
 
     # golden: duplicate attach end
-    @server.tool(
-        name="get_widget_merge",
-        description=contract_of(preview_widget_merge_route),
-    )
+    @server.tool(name="get_widget_merge", description=contract_of(preview_widget_merge_route))
     def get_widget_merge_tool(
         ctx: Context[Any], widget_id: UUID, into: UUID
     ) -> WidgetMergePreviewOut:
         with tool_call(ctx) as acting:
-            actor = acting.actor()
-            widget = get_widget(
-                tenant=acting.tenant, widget_id=widget_id, org=acting.org, actor=actor
-            )
-            survivor = get_widget(tenant=acting.tenant, widget_id=into, org=acting.org, actor=actor)
-            return WidgetMergePreviewOut(
-                loser_id=widget.pk,
-                into_id=survivor.pk,
-                repoints=[
-                    RepointOut(title=repointed.title, left=repointed.left)
-                    for repointed in get_widget_merge_preview(
-                        tenant=acting.tenant, actor=actor, widget=widget, into=survivor
-                    )
-                ],
+            return widget_merge_detail(
+                tenant=acting_tenant(acting), actor=acting.actor(), widget_id=widget_id, into=into
             )
 
-    @server.tool(
-        name="merge_widget",
-        description=contract_of(merge_widget_route),
-    )
+    @server.tool(name="merge_widget", description=contract_of(merge_widget_route))
     def merge_widget_tool(
         ctx: Context[Any], widget_id: UUID, into_id: UUID, version: int, into_version: int
     ) -> WidgetOut:
         with tool_call(ctx) as acting:
-            tenant = acting_tenant(acting)
-            actor = acting.actor()
-            widget = get_widget(tenant=tenant, widget_id=widget_id, org=acting.org, actor=actor)
-            survivor = get_widget(tenant=tenant, widget_id=into_id, org=acting.org, actor=actor)
-            if not may_be_named(actor, widget) or not may_be_named(actor, survivor):
-                raise NotFound()
-            merged = merge_widget(
-                tenant=tenant,
-                actor=actor,
-                widget=widget,
-                into=survivor,
+            return widget_merge(
+                tenant=acting_tenant(acting),
+                actor=acting.actor(),
+                widget_id=widget_id,
+                into_id=into_id,
                 version=version,
                 into_version=into_version,
             )
-            return WidgetOut.from_orm(with_allowed_acts([merged], actor)[0])
 
     # golden: merge import end
-    @server.tool(
-        name="approve_widget",
-        description=contract_of(approve_widget_route),
-    )
+    # golden: workflow onboard begin
+    @server.tool(name="approve_widget", description=contract_of(approve_widget_route))
     def approve_widget_tool(ctx: Context[Any], widget_id: UUID) -> WidgetOut:
         with tool_call(ctx) as acting:
-            tenant = acting_tenant(acting)
-            actor = acting.actor()
-            widget = get_widget(tenant=tenant, widget_id=widget_id, org=acting.org, actor=actor)
-            # House rule 26: approval writes a ledger line now, so its
-            # foreign-key target is checked here, as it is on the HTTP door.
-            if not may_be_named(actor, widget):
-                raise NotFound()
-            # The same service the HTTP route calls, so an agent gets the same
-            # refusal for the same reason — `conflict` on a run that has already
-            # ended, `not_found` on one that was never there.
-            return WidgetOut.from_orm(
-                with_allowed_acts(
-                    [approve_widget(tenant=tenant, actor=actor, widget=widget)], actor
-                )[0]
+            return widget_approve(
+                tenant=acting_tenant(acting), actor=acting.actor(), widget_id=widget_id
             )
 
-    @server.tool(
-        name="delete_widget",
-        description=contract_of(delete_widget_route),
-    )
+    # golden: workflow onboard end
+    # golden: noun begin
+    @server.tool(name="delete_widget", description=contract_of(delete_widget_route))
     def delete_widget_tool(ctx: Context[Any], widget_id: UUID) -> WidgetOut:
+        # HTTP answers 204; a tool result has no "gone", so it answers the row that went.
         with tool_call(ctx) as acting:
-            tenant = acting_tenant(acting)
-            actor = acting.actor()
-            widget = get_widget(tenant=tenant, widget_id=widget_id, org=acting.org, actor=actor)
-            if not may_be_named(actor, widget):
-                raise NotFound()
-            # The deleted row comes back rather than a bare acknowledgement: an
-            # agent that deleted the wrong widget can say which one it was. The
-            # HTTP door answers 204 because HTTP has a way to say "gone"; a tool
-            # result does not, so it says what went.
-            return WidgetOut.from_orm(
-                # No acts: nothing can be pressed on a row that is gone.
-                delete_widget(tenant=tenant, actor=actor, widget=widget)
+            return widget_delete(
+                tenant=acting_tenant(acting), actor=acting.actor(), widget_id=widget_id
             )
 
-    @server.tool(
-        name="get_widget_stats",
-        description=contract_of(widget_stats_route),
-    )
+    # golden: noun end
+
+    # golden: stat count begin
+    @server.tool(name="get_widget_stats", description=contract_of(widget_stats_route))
     def get_widget_stats_tool(ctx: Context[Any]) -> WidgetStatsOut:
         with tool_call(ctx) as acting:
-            # The HTTP route's own function, imported rather than reimplemented:
-            # a measured number computed twice is two numbers waiting to differ,
-            # which is the whole reason `MeasuredOut` exists.
-            return widget_stats(tenant=acting.tenant, org=acting.org, actor=acting.actor())
+            return widget_stats(tenant=acting_tenant(acting), actor=acting.actor())
 
-    @server.tool(
-        name="list_widget_policies",
-        description=contract_of(list_widget_policies_route),
-    )
+    # golden: stat count end
+
+    # golden: policy begin
+    @server.tool(name="list_widget_policies", description=contract_of(list_widget_policies_route))
     def list_widget_policies_tool(
         ctx: Context[Any],
         show: Show = "live",
@@ -525,12 +425,10 @@ def register(server: MCPServer[Any]) -> None:
         include_count: bool = False,
     ) -> WidgetPolicyPage:
         with tool_call(ctx) as acting:
-            policies: QuerySet[WidgetPolicy] = list_widget_policies(
-                tenant=acting.tenant, org=acting.org, actor=acting.actor(), show=show
-            )
+            tenant = acting_tenant(acting)
             page = cursor_page(
-                policies,
-                tenant=acting.tenant,
+                widget_policies_list(tenant=tenant, actor=acting.actor(), show=show),
+                tenant=tenant,
                 cursor=cursor,
                 limit=limit,
                 include_count=include_count,
@@ -548,31 +446,20 @@ def register(server: MCPServer[Any]) -> None:
     )
     def get_governing_widget_policy_tool(ctx: Context[Any]) -> WidgetPolicyOut:
         with tool_call(ctx) as acting:
-            return WidgetPolicyOut.from_orm(
-                get_governing_widget_policy(
-                    tenant=acting.tenant, org=acting.org, actor=acting.actor()
-                )
+            return governing_widget_policy_detail(
+                tenant=acting_tenant(acting), actor=acting.actor()
             )
 
-    @server.tool(
-        name="create_widget_policy",
-        description=contract_of(create_widget_policy_route),
-    )
+    @server.tool(name="create_widget_policy", description=contract_of(create_widget_policy_route))
     def create_widget_policy_tool(ctx: Context[Any], name: str, body: str = "") -> WidgetPolicyOut:
         with tool_call(ctx) as acting:
-            return WidgetPolicyOut.from_orm(
-                create_widget_policy(
-                    tenant=acting_tenant(acting),
-                    actor=acting.actor(),
-                    name=name,
-                    body=body,
-                )
+            return widget_policy_create(
+                tenant=acting_tenant(acting), actor=acting.actor(), name=name, body=body
             )
 
-    @server.tool(
-        name="list_widget_entries",
-        description=contract_of(list_widget_entries_route),
-    )
+    # golden: policy end
+    # golden: child entry begin
+    @server.tool(name="list_widget_entries", description=contract_of(list_widget_entries_route))
     def list_widget_entries_tool(
         ctx: Context[Any],
         widget_id: UUID | None = None,
@@ -581,12 +468,10 @@ def register(server: MCPServer[Any]) -> None:
         include_count: bool = False,
     ) -> WidgetEntryPage:
         with tool_call(ctx) as acting:
-            entries: QuerySet[WidgetEntry] = list_widget_entries(
-                tenant=acting.tenant, org=acting.org, widget_id=widget_id, actor=acting.actor()
-            )
+            tenant = acting_tenant(acting)
             page = cursor_page(
-                entries,
-                tenant=acting.tenant,
+                widget_entries_list(tenant=tenant, actor=acting.actor(), widget_id=widget_id),
+                tenant=tenant,
                 cursor=cursor,
                 limit=limit,
                 include_count=include_count,
@@ -598,10 +483,7 @@ def register(server: MCPServer[Any]) -> None:
                 count=page.count,
             )
 
-    @server.tool(
-        name="record_widget_entry",
-        description=contract_of(record_widget_entry_route),
-    )
+    @server.tool(name="record_widget_entry", description=contract_of(record_widget_entry_route))
     def record_widget_entry_tool(
         ctx: Context[Any],
         widget_id: UUID,
@@ -610,94 +492,70 @@ def register(server: MCPServer[Any]) -> None:
         organization_slug: str | None = None,
     ) -> WidgetEntryOut:
         with tool_call(ctx) as acting:
-            tenant = acting_tenant(acting)
-            actor = acting.actor()
-            widget = get_widget(tenant=tenant, widget_id=widget_id, org=acting.org, actor=actor)
-            # House rule 26, at the site that hands the foreign-key target over.
-            if not may_be_named(actor, widget):
-                raise NotFound()
-            return WidgetEntryOut.from_orm(
-                record_widget_entry(
-                    tenant=tenant,
-                    actor=actor,
-                    widget=widget,
-                    kind=kind,
-                    note=note,
-                    organization_slug=organization_slug,
-                )
+            return widget_entry_record(
+                tenant=acting_tenant(acting),
+                actor=acting.actor(),
+                widget_id=widget_id,
+                kind=kind,
+                note=note,
+                organization_slug=organization_slug,
             )
 
-    @server.tool(
-        name="archive_widget_policy",
-        description=contract_of(archive_widget_policy_route),
-    )
+    # golden: child entry end
+    # golden: policy begin
+    @server.tool(name="archive_widget_policy", description=contract_of(archive_widget_policy_route))
     def archive_widget_policy_tool(ctx: Context[Any], policy_id: UUID) -> WidgetPolicyOut:
         with tool_call(ctx) as acting:
-            tenant = acting_tenant(acting)
-            actor = acting.actor()
-            policy = get_widget_policy(
-                tenant=tenant, policy_id=policy_id, org=acting.org, actor=actor
-            )
-            if not may_be_named(actor, policy):
-                raise NotFound()
-            return WidgetPolicyOut.from_orm(
-                archive_widget_policy(tenant=tenant, actor=actor, policy=policy)
+            return widget_policy_archive(
+                tenant=acting_tenant(acting), actor=acting.actor(), policy_id=policy_id
             )
 
-    @server.tool(
-        name="restore_widget_policy",
-        description=contract_of(restore_widget_policy_route),
-    )
+    @server.tool(name="restore_widget_policy", description=contract_of(restore_widget_policy_route))
     def restore_widget_policy_tool(ctx: Context[Any], policy_id: UUID) -> WidgetPolicyOut:
         with tool_call(ctx) as acting:
-            tenant = acting_tenant(acting)
-            actor = acting.actor()
-            policy = get_widget_policy(
-                tenant=tenant, policy_id=policy_id, org=acting.org, actor=actor
-            )
-            if not may_be_named(actor, policy):
-                raise NotFound()
-            return WidgetPolicyOut.from_orm(
-                restore_widget_policy(tenant=tenant, actor=actor, policy=policy)
+            return widget_policy_restore(
+                tenant=acting_tenant(acting), actor=acting.actor(), policy_id=policy_id
             )
 
+    # golden: policy end
+    # golden: verb touch begin
+    @server.tool(name="touch_widget", description=contract_of(touch_widget_route))
+    def touch_widget_tool(ctx: Context[Any], widget_id: UUID) -> WidgetOut:
+        with tool_call(ctx) as acting:
+            return widget_touch(
+                tenant=acting_tenant(acting), actor=acting.actor(), widget_id=widget_id
+            )
+
+    # golden: verb touch end
+    # golden: enum status begin
+    @server.tool(name="transition_widget", description=contract_of(transition_widget_route))
+    def transition_widget_tool(ctx: Context[Any], widget_id: UUID, status: str) -> WidgetOut:
+        with tool_call(ctx) as acting:
+            return widget_transition(
+                tenant=acting_tenant(acting),
+                actor=acting.actor(),
+                widget_id=widget_id,
+                status=status,
+            )
+
+    # golden: enum status end
     # golden: archive version move bulk history duplicate attach merge import begin
-    @server.tool(
-        name="archive_widget",
-        description=contract_of(archive_widget_route),
-    )
+    # golden: noun begin
+    @server.tool(name="archive_widget", description=contract_of(archive_widget_route))
     def archive_widget_tool(ctx: Context[Any], widget_id: UUID) -> WidgetOut:
         with tool_call(ctx) as acting:
-            tenant = acting_tenant(acting)
-            actor = acting.actor()
-            widget = get_widget(tenant=tenant, widget_id=widget_id, org=acting.org, actor=actor)
-            if not may_be_named(actor, widget):
-                raise NotFound()
-            # The same service the HTTP route calls: a repeat press answers the
-            # archived widget unchanged, a member is refused with the key's own
-            # sentence, and a live child holding it is `archive_blocked`.
-            return WidgetOut.from_orm(
-                with_allowed_acts(
-                    [archive_widget(tenant=tenant, actor=actor, widget=widget)], actor
-                )[0]
+            return widget_archive(
+                tenant=acting_tenant(acting), actor=acting.actor(), widget_id=widget_id
             )
 
-    @server.tool(
-        name="restore_widget",
-        description=contract_of(restore_widget_route),
-    )
+    @server.tool(name="restore_widget", description=contract_of(restore_widget_route))
     def restore_widget_tool(ctx: Context[Any], widget_id: UUID) -> WidgetOut:
         with tool_call(ctx) as acting:
-            tenant = acting_tenant(acting)
-            actor = acting.actor()
-            widget = get_widget(tenant=tenant, widget_id=widget_id, org=acting.org, actor=actor)
-            if not may_be_named(actor, widget):
-                raise NotFound()
-            return WidgetOut.from_orm(
-                with_allowed_acts(
-                    [restore_widget(tenant=tenant, actor=actor, widget=widget)], actor
-                )[0]
+            return widget_restore(
+                tenant=acting_tenant(acting), actor=acting.actor(), widget_id=widget_id
             )
+
+    # golden: noun end
 
 
 # golden: archive version move bulk history duplicate attach merge import end

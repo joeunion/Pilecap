@@ -38,6 +38,7 @@ from typing import Any
 import pytest
 
 from apps.core.exceptions import (
+    CODE_STATUSES,
     REFUSALS,
     DomainError,
     Forbidden,
@@ -47,55 +48,23 @@ from apps.core.exceptions import (
     envelope_codes,
     register_refusal,
 )
-from config.api import CODE_STATUS, STATUS_FOR, status_for
+from config.api import CODE_STATUS, REFUSAL_FOR_STATUS, STATUS_FOR, status_for
 
-# --- Criterion 2: wire identity, against the pre-rung table -------------------
+# --- Criterion 2: the template's published codes, DERIVED and floored ---------
 #
-# The mapping `config/api.py` published on the baseline tree (7a2da23), read off
-# a live import and frozen here. It is the whole point of the rung that this
-# table did not change: what changed is who computes it.
+# This used to be `PRE_RUNG_CODE_STATUS`, a fourth hand-typed code→number table
+# beside the registry, `STATUS_FOR` and `REFUSAL_FOR_STATUS` — appended to by
+# every rung that registered a code. It is now what the registry says the
+# template's own modules published (`_template_statuses`), held by a FLOOR so a
+# code that silently drops out of `x-refusal-codes` still reds, while a code that
+# joins is admitted by its own `status=` and by nothing typed here (the move ADR
+# platform-partition-1 D4 made for the exports census).
 
-PRE_RUNG_CODE_STATUS: dict[str, int] = {
-    "addressing_header_not_honoured": 403,
-    "conflict": 409,
-    "database_unavailable": 503,
-    "error": 500,
-    "forbidden": 403,
-    "idempotency_key_reuse": 409,
-    "in_progress": 409,
-    "insufficient_scope": 403,
-    "invalid": 400,
-    "invalid_body": 422,
-    "invalid_cursor": 400,
-    "method_not_allowed": 405,
-    "not_found": 404,
-    "page_token_missing": 403,
-    "rate_limited": 429,
-    "search_unavailable": 503,
-    "session_required": 403,
-    "unauthenticated": 401,
-    # The noun-verb family's three, each declared `status=409` at its own
-    # `register_refusal` site (`apps/core/exceptions.py`) — pinned here by the
-    # change that added them, so the equality below keeps meaning "nothing joined
-    # the table unseen".
-    "archive_blocked": 409,
-    "restore_blocked": 409,
-    "archived": 409,
-    # The family's concurrency and move codes, the same way.
-    "stale_version": 409,
-    "move_blocked": 409,
-    # The family's merge codes, the same way: a merge a child holds apart, and a
-    # write that named a merged-away row.
-    "merge_blocked": 409,
-    "merged": 409,
-    # And a delete that named a survivor other rows were merged into.
-    "merge_survivor": 409,
-    # `apps/djb_imports`' whole-file refusal, declared `status=400` at its own
-    # `register_refusal` site (`apps/djb_imports/services.py`) — pinned here by the
-    # change that added the app to the template's partition, as the ones above
-    # were by the changes that added them.
-    "import_invalid": 400,
-}
+#: How many codes the template's own modules publish with a number, at least.
+#: Pinned from the line `test_the_template_publishes_at_least_its_floor` prints
+#: ("template codes published: N") on the tree that retired the typed table; it
+#: only ever falls by a human reading that line.
+TEMPLATE_PUBLISHED_FLOOR = 33
 
 
 def _template_apps() -> set[str]:
@@ -119,30 +88,32 @@ def _is_template_code(code: str) -> bool:
     return app == "" or app in _template_apps()
 
 
-def test_the_derived_table_is_the_table_that_was_typed() -> None:
-    """Every code the hand-appended block published, at the same number.
-
-    Equality and not containment in the direction that matters: a code the
-    append block published and the derivation does not is a code that has just
-    dropped out of `x-refusal-codes`, which is the exact defect rule 47 exists
-    to notice.
-
-    **The equality is over the TEMPLATE's codes only.** A product's
-    `register_refusal(code, status=…)` in its own app is admitted by that
-    declaration — the pin below proves a planted one is — and is censused in
-    the product's own tests, never by editing this table in `core`.
-    """
-    for code, status in PRE_RUNG_CODE_STATUS.items():
-        assert CODE_STATUS.get(code) == status, code
-
-    # And nothing of the TEMPLATE's joined it either, which is the other half of
-    # "identical". The `canary_` prefix is the tree's own convention for a code
-    # that exists only inside an instrument or a fixture (`canary_unpublished`
-    # is house rule 47's, planted into the real scope at self-test time).
-    template_codes = {
-        code for code in CODE_STATUS if not code.startswith("canary_") and _is_template_code(code)
+def _template_statuses() -> dict[str, int]:
+    """Every code a TEMPLATE module declared with a number, and the number."""
+    return {
+        code: status
+        for code, status in CODE_STATUS.items()
+        if not code.startswith("canary_") and _is_template_code(code)
     }
-    assert template_codes == set(PRE_RUNG_CODE_STATUS)
+
+
+def test_the_template_publishes_at_least_its_floor() -> None:
+    """A derived census of the template's published codes, above a printed floor.
+
+    `canary_` is the tree's own prefix for a code that exists only inside an
+    instrument or a fixture (`canary_unpublished` is house rule 47's), so it is
+    never counted as the template's. Each number is a refusal's: 4xx or 5xx.
+    """
+    published = _template_statuses()
+    print(f"template codes published: {len(published)}")
+    assert len(published) >= TEMPLATE_PUBLISHED_FLOOR, sorted(published)
+    assert all(400 <= status < 600 for status in published.values()), published
+
+
+def test_the_signed_door_refusal_is_published_at_403() -> None:
+    """The signed receiver's refusal, registered by `config.api`'s mount, publishes 403."""
+    assert _template_statuses()["signed_door_takes_no_address"] == 403
+    assert declared_by("signed_door_takes_no_address") == "apps.connections.api"
 
 
 def test_a_product_code_is_admitted_by_its_own_declaration() -> None:
@@ -162,27 +133,67 @@ def test_a_product_code_is_admitted_by_its_own_declaration() -> None:
     assert declaring_app("zzz_product_held") == "zzz_product"
     assert not _is_template_code("zzz_product_held")
     assert CODE_STATUS["zzz_product_held"] == 409
-    test_the_derived_table_is_the_table_that_was_typed()
+    assert "zzz_product_held" not in _template_statuses()
 
 
 def test_the_template_codes_are_declared_by_template_modules() -> None:
     """The partition is not vacuous: every typed code has a template declarer."""
-    for code in PRE_RUNG_CODE_STATUS:
+    for code in _template_statuses():
         assert _is_template_code(code), (code, declared_by(code))
     assert declared_by("stale_version") == "apps.core.exceptions"
 
 
-def test_the_registry_and_the_class_table_never_disagree() -> None:
-    """`STATUS_FOR` is now the fallback for a code that declared no number.
+def test_the_three_tables_are_one() -> None:
+    """(a) the registry's numbers = (b) the class fallback = (c) the bare-status table.
 
-    It stays because a registered code without a status still has to become a
-    number at the HTTP door (rule 47's canary is a `Forbidden`), and it is held
-    against the registry here so the two cannot drift into answering one code
-    two ways — the wire from the class tree, the document from the registry.
+    `REFUSAL_FOR_STATUS` and `STATUS_FOR` are derived from `CODE_STATUSES` at
+    import (`apps.core.exceptions.bare_status_refusals`), so this pins the
+    derivation rather than two typed tables agreeing: every bare status's class
+    answers that number by its own declaration, and the class fallback is the
+    same classes at the same numbers.
     """
+    for status, cls in REFUSAL_FOR_STATUS.items():
+        assert REFUSALS[cls.code].status == status, (status, cls.__name__)
+        assert CODE_STATUSES[cls.code] == status
+    assert set(STATUS_FOR) == set(REFUSAL_FOR_STATUS.values())
     for cls, status in STATUS_FOR.items():
-        registered = REFUSALS[cls.code]
-        assert registered.status == status, f"{cls.__name__} ({cls.code})"
+        assert REFUSALS[cls.code].status == status, f"{cls.__name__} ({cls.code})"
+        assert REFUSAL_FOR_STATUS[status] is cls
+
+
+def test_no_published_number_is_a_hole() -> None:
+    """Every number a template code answers has a refusal a BARE status maps to.
+
+    RED on the baseline: `REFUSAL_FOR_STATUS` had no 503 while two codes declared
+    it, so `HttpError(503, …)` fell through to ninja's codeless `{"detail": …}`.
+    """
+    holes = sorted(set(_template_statuses().values()) - set(REFUSAL_FOR_STATUS))
+    assert holes == [], holes
+
+
+@pytest.mark.parametrize("status", sorted({400, 401, 403, 404, 405, 409, 422, 429, 503}))
+def test_a_bare_status_answers_with_a_registered_code(status: int) -> None:
+    """A door that said only a number gets a body a client can branch on.
+
+    Through ninja's own exception dispatch (`api.on_exception`), so the handler
+    that runs is the one a route's `raise HttpError(…)` reaches. The negative is
+    the baseline's 503: `{"detail": "x"}`, no `code`.
+    """
+    import json
+
+    from django.test import RequestFactory
+    from ninja.errors import HttpError
+
+    from config.api import api
+
+    request = RequestFactory().get("/api/v1/organizations/")
+    answered = api.on_exception(request, HttpError(status, "A door said only a number."))
+    body = json.loads(answered.content)
+    assert answered.status_code == status
+    assert body["code"] in REFUSALS, body
+    assert REFUSALS[body["code"]].status == status, body
+    if status == 503:
+        assert body["code"] == "unavailable", body
 
 
 def test_the_wire_reads_the_registry_first() -> None:
@@ -312,7 +323,19 @@ def test_the_status_never_reaches_the_wire_body() -> None:
     """
     from apps.core.exceptions import refusal_message, wire_refusal
 
-    body = wire_refusal(DomainError("Something went wrong."))
+    body = wire_refusal(Forbidden("Something went wrong."))
     assert set(body) <= {"detail", "code", "errors", "remedies"}
     assert "status" not in body
     assert "status" not in refusal_message(body)
+
+
+def test_the_base_is_not_a_refusal_and_error_is_retired() -> None:
+    """The registered catch-all `error` had no raiser; the base now refuses to be one.
+
+    Every refusal is a registered subclass — `__init_subclass__` refuses a class
+    whose code is unregistered at import, and the base itself declares no code,
+    so constructing it is a `TypeError` naming the subclasses to raise instead.
+    """
+    assert "error" not in REFUSALS
+    with pytest.raises(TypeError, match="registered subclass"):
+        DomainError("Something went wrong.")

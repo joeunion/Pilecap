@@ -31,10 +31,12 @@ echo $?
 It does, unconditionally and in order: **resets this worktree to main**
 (printing the sha before and after, and SAYING SO when they differ),
 **provisions the venv**, **creates and migrates this checkout's own database**,
-**creates this checkout's own object-storage bucket**, and **dumps `introspect`
-to `.rung/introspect.json`** — the schema dump, which is data this tree's own
-instrument wrote and NOT a scratch area (scratch lives outside the checkout;
-§5). Each step prints what it did and how long it took, and the total is on the
+**creates this checkout's own object-storage bucket**, **dumps `introspect`
+to `.rung/introspect.json`** — the schema dump — and **dumps `manage.py roads
+--json` to `.rung/roads.json`** — the roads index, the one road per job to
+call before writing a helper (`roads <job>` prints one). Both are data this
+tree's own instrument wrote and NOT a scratch area (scratch lives outside the
+checkout; §5). Each step prints what it did and how long it took, and the total is on the
 last line.
 
 **When your brief names a baseline sha, type it** — `--expect <sha>` takes a
@@ -86,7 +88,9 @@ equivalent by hand is `git log -1 --oneline HEAD` against
 **and have not committed yet** — that clause is what the commits-ahead refusal
 mechanises.
 
-Then orient: load `.claude/skills/django-conventions/SKILL.md` before writing
+On a product's tree the loop after step zero is `./scripts/feature.sh <app>`
+(`docs/sdk/the-one-path.md`). Then orient: load
+`.claude/skills/django-conventions/SKILL.md` before writing
 any Python; read the criteria from where the brief points (verbatim, not from
 memory); for any rung touching models, schemas, routes, tools, consumers,
 workflows or settings, **read the dump step zero already wrote** (its path is on
@@ -205,31 +209,8 @@ scopes → two keys, and a wider scope never reusing a narrower verdict).*
 
 ### Authoring the drive: traps an honest drive still pays
 
-These red a drive that is doing everything right, which is why they are written
-down rather than re-discovered: each one cost a builder part of a rung.
-
-**A drive cannot run a nested `./scripts/check.sh` inside a gate.** The
-per-checkout gate lock refuses it (`gate_lock_refuse_if_held`), so a drive that
-shells out to the gate to prove a leg goes red for the lock and not for the
-property. A drive invokes the **leg body** — the sourced function the leg calls
-— never the gate around it. (Paid by B2's builder, 2026-09-12.)
-
-**`mktemp … 2>/dev/null` trips the portability census.** That census
-(`mktemp_selfline` in `scripts/check.sh`) reads the LAST bare word of the line
-as the template, so a trailing redirect becomes the template it judges and the
-line reds with no X's in sight. Write the redirect **before** the template, or
-not at all. (Paid by the same builder, the same night.)
-
-**A criterion of the form "X refuses in production" needs a production
-environment, and it is a module-local dict — never a new settings key.** The two
-worked forms in this tree are `PRODUCTION_ENVIRONMENT` in
-`apps/core/tests/test_settings.py` and in
-`apps/workflows/tests/test_machinery_lifetime.py`: the minimum set of
-environment variables `config.settings.production` refuses to start without,
-with throwaway real-shaped values and a `# pragma: allowlist secret` on each
-one, loaded around an import of the production settings module. Copy the nearer
-of the two; do not invent a third spelling, and do not add a settings key so a
-test can find one.
+Three traps that red a drive doing everything right — the nested gate lock,
+`mktemp … 2>/dev/null`, a production-environment criterion: `references/drive-traps.md`.
 
 ## 3 · The gate
 
@@ -249,10 +230,10 @@ test can find one.
 
   The wait prints the verdict and the `banked:` lines; the `tree=` there
   must equal your `git rev-parse HEAD^{tree}` — paste both. A `--loop` on
-  this machine refuses and prints that recipe unless `DJB_LOOP_HERE=<who and
-  why>` is typed; the reason lands beside the verdict. A drive your rung
+  this machine refuses and prints that recipe unless the valve is typed as a
+  flag, `--loop --here "<rung-id>: <reason>"`; the reason lands beside the verdict. A drive your rung
   rewrites may also run on the box: `./scripts/verifier_box.sh run <id> --
-  "cd /home/verifier/src && bash scripts/tests/test_x.sh"` — ONE quoted
+  "cd /home/verifier/src && bash scripts/tests/test_<x>.sh"` — ONE quoted
   string; the wrapper joins its arguments with spaces and the box's shell
   re-parses them, so no `$VAR`, no `\n`, no unquoted pipes.
   `./scripts/verifier_box.sh pool --want N` exists and `up` claims a warm box
@@ -262,6 +243,7 @@ test can find one.
   once at the PM's push; do not run it by hand — with two exceptions where it
   uniquely binds: rungs touching `quality/**` (the canary self-test is their
   point) and rungs touching dependencies (the supply-chain leg).
+  The shim runs `python -m quality.djb gate`: a local `--loop` refuses without `--here "<rung-id>: <reason>"` (`quality/djb/gate_args.py`; `feature.sh <app> --loop --here …` passes it through; `DJB_LOOP_HERE` in the environment is the same valve, the engine's own form for its tests and the box road, and the flag wins over it — never an env prefix on a wrapper call), so it runs on the box; the hook runs `--fast`.
 - **Two narrower runs exist for the two questions that used to cost a whole
   tier**, and both say in their own output what they did not look at:
 
@@ -366,7 +348,7 @@ test can find one.
   fold, which folds a COMMITTED tree: run that one at a boundary.
 - **Secrets are met immediately.** The `--loop` secrets leg scans your
   changed files; a false positive gets `# pragma: allowlist secret` with the
-  reason, now, while the string is still in your head — never deferred to
+  reason, now, while the string is still in your head — never left for the
   push. House rule 23's own scanner is a separate raw regex over `apps/`,
   `config/` and `scripts/` with no pragma path, so a fixture that must carry a
   key-shaped string keeps it out of the file's text — assembled at runtime,
@@ -382,7 +364,7 @@ test can find one.
   it was not handed, exits 0, and prints nothing. The sibling platform lost 77
   result lines to it twice and reverted both by hand (2026-09-02 intake); it
   reproduces on our installed version, and both directions are pinned in
-  `scripts/tests/test_secrets_baseline_guard.sh`, which prints the version each
+  `quality/tests/test_secrets.py`, which prints the version each
   verdict belongs to. The per-rung leg is safe because it runs the OTHER
   subcommand — `detect-secrets-hook --baseline`, which preserves what it did
   not scan — so **never point `--baseline` at the tracked file from a terminal,
@@ -410,12 +392,15 @@ test can find one.
   section tells you to write in YOUR worktree, and the schema dump step zero
   writes (§0) — output an instrument produced, not a place to work.
 - **Fold main at your last boundary, `--loop` after the fold, paste the key.**
-  The verifier's consult is one `--loop` in its own clone, and that clone is
+  The verifier's consult is a lookup of your banked key, never a `--loop` of its
+  own (`product-manager/SKILL.md` § The loop, stage 6: "The verifier reads; it
+  does not re-measure"), and its clone is
   the UNION of your branch and main — so a verdict banked on a tree that never
   saw main's tip banks a key nobody will hit. Fold, run `--loop` once, and
   paste the `banked:` key it printed (`LOOP_VERDICT_KEY`) into your report so
   the verifier can compare keys when it misses. A commit made *after* that run
-  moves the tree and the consult reads `miss(tree)` — the correct outcome, and
+  moves the tree off the banked key and the consult's lookup misses (stage 6's
+  `miss(…)`) — the correct outcome, and
   an avoidable one. **Folding main is `git merge main` in your worktree** —
   never `scripts/pm_fold.sh`, which is the PM's post-merge fold of derived
   files and has nothing to do with this. §6 fixes the two lines your report

@@ -45,14 +45,7 @@ from apps.core.authz import Policy, membership_for
 def belongs_to_the_tenant(actor: Actor, obj: Any = None) -> bool:
     """Any membership in the acting tenant, of any role, at any node.
 
-    Not privileged-only: signalling is a write, `member` is declared
-    `("*.read",)`, and a plain member approving their own widget is the ordinary
-    case the domain policy above already ruled on. What admits them is the
-    compat residue — a key with a predicate and no `DEFAULT_ROLES` declaration
-    is held by every declared role and the predicate narrows it
-    (`core.authz._attach_default_roles`, clause 5) — so this line is what keeps
-    the answer where it was through the transition, in a layer that cannot see
-    the row and therefore should not be deciding about it.
+    `member` holds the key by `DEFAULT_ROLES` below; object-level authorization is the caller's.
     """
     return membership_for(actor) is not None
 
@@ -84,50 +77,19 @@ def belongs_to_the_tenant(actor: Actor, obj: Any = None) -> bool:
 
 
 def may_replay_their_own(actor: Actor, obj: Any = None) -> bool:
-    """Membership in the acting tenant. **The ownership half is not here.**
+    """Membership in the acting tenant; the ownership half is `start_replay`'s, as `not_found`.
 
-    `start_replay` refuses a run this actor did not start, with `not_found`,
-    and it does that in the service rather than in this predicate on purpose. A
-    policy answers "may this person do this kind of thing here"; it is handed
-    the row, so it *could* compare `started_by` — but `require` raises
-    `Forbidden`, and a `Forbidden` on somebody else's run confirms that the run
-    exists, which is the one thing the tenant wall was hiding. Refusals are
-    decided where the right *answer* can be given, not wherever the data
-    happens to be in reach.
-
-    A replay re-executes work, so this is a write and `member` — declared
-    `("*.read",)` — reaches it only through the compat residue this line is what
-    narrows (`belongs_to_the_tenant` above says the mechanism). That is
-    deliberate: the person who started the run is the person who watches it
-    fail, and telling them to find an admin to press the button again is how a
-    ledger with a replay door still leaves the work undone. **The day this app's
-    residue is converted to a `DEFAULT_ROLES` declaration, that sentence is what
-    the declaration has to preserve**, and it is written here rather than left
-    to be re-derived.
+    Why-not here: `require` raises `Forbidden`, which would confirm another person's run exists.
+    `member` holds the key by `DEFAULT_ROLES`: whoever started the run may press it again.
     """
     return membership_for(actor) is not None
 
 
 def may_cancel_their_own(actor: Actor, obj: Any = None) -> bool:
-    """Membership in the acting tenant. **The ownership half is not here either.**
+    """Membership in the acting tenant; the ownership half is `cancel_run`'s, as `not_found`.
 
-    `may_replay_their_own`'s reasoning verbatim, and it is repeated as a named
-    function rather than aliased because these are two decisions that happen to
-    agree today: a product that lets a person stop their own job but not re-run
-    it — or the other way round — changes one of these and not both, and an
-    alias would make that a rename instead of an edit.
-
-    `cancel_run` refuses a run this actor did not start, with `not_found`, in
-    the service. The predicate is handed the row and could compare `started_by`
-    itself; it does not, because `require` raises `Forbidden` and a `Forbidden`
-    on somebody else's run confirms that the run exists — the one fact the
-    tenant wall was keeping.
-
-    Stopping work is a write, so a plain member reaches it through the same
-    compat residue replay's docstring names, narrowed by this line. Deliberate,
-    and the same argument replay makes: the person who started the job is the
-    person watching it run away with itself, and telling them to find an admin
-    is how a ledger with a cancel door still leaves the job running.
+    Kept apart from `may_replay_their_own` so a product can narrow one without the other.
+    `member` holds the key by `DEFAULT_ROLES`: whoever started the run may stop it.
     """
     return membership_for(actor) is not None
 
@@ -136,6 +98,14 @@ POLICIES: dict[str, Policy] = {
     "workflow_run.signal": belongs_to_the_tenant,
     "workflow_run.replay": may_replay_their_own,
     "workflow_run.cancel": may_cancel_their_own,
+}
+
+# The member half of the three run writes, as data; the predicates above and the services narrow it.
+
+DEFAULT_ROLES: dict[str, frozenset[str]] = {
+    "workflow_run.signal": frozenset({"member"}),
+    "workflow_run.replay": frozenset({"member"}),
+    "workflow_run.cancel": frozenset({"member"}),
 }
 
 

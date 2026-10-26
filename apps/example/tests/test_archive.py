@@ -1,13 +1,6 @@
-"""Archive and restore on the worked example, over the wire and at the service.
+"""Archive and restore on the worked example, over the wire and at the service."""
 
-`Widget` and `WidgetPolicy` leave the book by being archived and come back by a
-restore. What is proved here is the contract a client reads: the press, the
-repeat that changes nothing, the three list cuts, the archived row answering
-read-only, who may press, and what holds a policy in the book. The three places
-one press is told — the REST body, the MCP result and the outbox — are held to
-one byte string in `test_doors_over_the_wire.py`, where both doors run.
-"""
-
+# golden: policy begin
 from __future__ import annotations
 
 import json
@@ -17,30 +10,37 @@ import pytest
 from django.apps import apps as django_apps
 from django.test import Client
 
-from apps.accounts.models import User
-from apps.accounts.services import create_user
-from apps.core.actor import Actor, actor_for, system_actor
-from apps.core.authz import refusal_sentence
-from apps.core.exceptions import Forbidden, NotFound
-from apps.core.models import Membership, Organization, Tenant
-from apps.core.services import add_membership, create_organization
-from apps.example.models import Widget, WidgetPolicy
+from apps.example.models import WidgetPolicy
 from apps.example.services import (
     archive_widget,
     archive_widget_policy,
     create_widget,
     create_widget_policy,
-    restore_widget,
 )
+from pilecap import Actor
+from pilecap.accounts import User
+from pilecap.tenancy import Tenant
 
+# golden: policy end
+# isort: split
+from apps.example.models import Widget
+from apps.example.services import restore_widget
+from pilecap import Forbidden, NotFound
+from pilecap.accounts import create_user
+from pilecap.tenancy import Membership, Organization, add_membership, create_organization
+from pilecap.testing import actor_for, refusal_sentence, system_actor
+
+# golden: policy begin
 pytestmark = pytest.mark.django_db
 
 LIST_URL = "/api/v1/widgets/"
 POLICIES_URL = "/api/v1/widgets/policies/"
 JSON = "application/json"
-PASSWORD = "a-long-enough-password"  # pragma: allowlist secret
+# golden: policy end
+PASSWORD = "a-long-enough-password"  # noqa: S105 — a throwaway password a test user is made with  # pragma: allowlist secret
 
 
+# golden: policy begin
 def _body(response: Any) -> Any:
     return json.loads(response.content)
 
@@ -54,6 +54,9 @@ def _events(tenant: Tenant, name: str) -> int:
     """How many outbox rows carry this event name — the spine's own count."""
     outbox = django_apps.get_model("events", "Outbox")
     return int(outbox.objects.filter(event__tenant=tenant, event__name=name).count())
+
+
+# golden: policy end
 
 
 # --- EXA.1 · the press, the repeat, the cuts ------------------------------------
@@ -225,6 +228,7 @@ def test_the_service_pair_is_idempotent_both_ways(
 # --- EXA.4 · a live widget holds its policy in the book --------------------------
 
 
+# golden: policy begin
 def test_a_policy_a_live_widget_names_is_blocked_and_names_the_widgets(
     api: Client, tenant: Tenant, admin_member: User, owner_actor: Actor, admin_actor: Actor
 ) -> None:
@@ -273,6 +277,8 @@ def test_an_archived_policy_governs_nobody_and_cannot_be_named(
     named = api.post(LIST_URL, {"name": "New", "policy_id": str(policy.pk)}, content_type=JSON)
     assert named.status_code == 404, named.content
 
+
+# golden: policy end
 
 # --- EXA.5 (the per-row half) · allowed_acts on every WidgetOut -------------------
 

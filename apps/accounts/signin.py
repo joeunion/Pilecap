@@ -9,10 +9,10 @@ fail-closed, and closes the session on the way out of every exit it has.
 service. It writes no row, reads no model, and knows nothing about a tenant.
 **Exactly one thing in `apps/` or `config/` imports it** — `apps/accounts/
 views.py`, the door rung A5 mounted behind `SIGN_IN_DOOR=ours` — and
-`apps/accounts/tests/test_signin.py::test_one_door_reaches_the_seam_and_it_is_
-the_one_a5_mounted` is the census that says so. A seam built one rung ahead of
-its door was deliberate (rule 42): none of the properties below is easier to
-prove through a browser.
+`apps/accounts/tests/test_signin.py::
+test_one_door_reaches_the_seam_and_it_is_the_one_a5_mounted` is the census that
+says so. A seam built one rung ahead of its door was deliberate (rule 42): none
+of the properties below is easier to prove through a browser.
 
 **The contract, in one sentence.** Every entry point takes the ceremony's own
 store and returns one `SignIn`, whose `outcome` is a member of
@@ -67,7 +67,7 @@ One key in the caller's store (`request.session`, at A5), holding a mapping
 whose keys are exactly `CEREMONY_FIELDS` — a closed set, so the state a page
 carries between two POSTs is enumerable rather than whatever the last branch
 happened to put there. **It is deleted at every exit**, and the Zitadel session
-it names is closed at the same moment (ADR ident-10: every session this module
+it names is closed at the same moment (ADR ident-12: every session this module
 opens, it closes). "Every exit" includes the refusals, the outages, the
 person's own *Never mind*, and a second `begin` over a ceremony already in
 flight.
@@ -97,28 +97,12 @@ from typing import Any
 from django.conf import settings
 from django.core.cache import cache
 
-# rule-27: a sign-in CHECK is not the identity-configuration WRITE this rule
-# guards. It opens no transaction, reads no row and writes nothing of ours
-# until Zitadel has answered, so the C2 hazard the rule exists for — external
-# I/O inside a transaction rolling back a legitimate row — cannot occur here;
-# and the Session API is not reachable from an activity, because the person is
-# standing at the form waiting for the answer. The valve rather than the
-# allow-list, per lane I's Overrule 7: this is one module riding the comment,
-# not a standing second importer added to `quality/rules.yaml`.
+# rule-27: a sign-in CHECK writes nothing of ours until Zitadel answers, so no transaction
+# holds across the call; the person waits at the form, so it cannot be an activity.
 from apps.accounts import zitadel
-
-# **The audit's own reading of who this instance's mail belongs to, borrowed
-# rather than restated** (A6's F10). `manage.py zitadel_audit` is where "the
-# sender is somebody else's" is decided and printed for an operator, and the
-# chooser face has to say the same thing about the same instance — so a second
-# definition of *foreign* here would be a page and a report that can come to
-# disagree about whose mail a person is waiting for. `_is_foreign` is private
-# to that module and importing it is deliberate: the alternative is the copy,
-# and the copy is the defect. Promoting it to a public name is a one-line
-# change in a file this module does not own, and is FLAGGED rather than made
-# here.
-from apps.accounts.management.commands import zitadel_audit
+from apps.core import context
 from apps.core.log import get_logger
+from apps.core.surfaces import STAFF, absolute_url, surface_base_urls
 
 log = get_logger(__name__)
 
@@ -135,7 +119,7 @@ class Step(StrEnum):
     #: returns to after a refusal or a throttle.
     # The NAME of a frame, not a credential; detect-secrets keys on the
     # keyword and cannot tell a vocabulary member from a value.
-    PASSWORD = "password"  # pragma: allowlist secret
+    PASSWORD = "password"  # noqa: S105 — the name of the sign-in form's frame  # pragma: allowlist secret
     #: *One more step* — a factor is enrolled and has to be answered.
     FACTOR = "factor"
     #: *Set up two-factor* — the org asks for one and this person has none.
@@ -243,7 +227,7 @@ class FactorKind(StrEnum):
 #: person on this build to a form they cannot answer. Named rather than merely
 #: absent, so the absence is a decision a reader can check.
 # Zitadel's enum member, not a credential — allowlisted for the reason above.
-ZITADEL_PASSWORD_METHOD = "AUTHENTICATION_METHOD_TYPE_PASSWORD"  # pragma: allowlist secret
+ZITADEL_PASSWORD_METHOD = "AUTHENTICATION_METHOD_TYPE_PASSWORD"  # noqa: S105 — Zitadel's enum name for the password method  # pragma: allowlist secret
 
 ZITADEL_FACTOR_NAMES: Mapping[str, FactorKind] = {
     "AUTHENTICATION_METHOD_TYPE_TOTP": FactorKind.TOTP,
@@ -378,6 +362,13 @@ class SignIn:
     foreign_sender: str = ""
     #: On `DONE`: Zitadel's user id, which is the whole of what the door needs.
     subject: str = ""
+    #: On `DONE`: the organisation the session verified the person in — the
+    #: realm this sign-in came from, read off the session at the password step
+    #: (`factors.user.organizationId`, measured). The door hands it to the
+    #: adapter as the realm claim, so a person's realm is the platform's word
+    #: and never a join row that may be stale. Empty on a road that never read
+    #: a session (the invite road's done).
+    realm: str = ""
     #: The org's password rules, for the Choose-your-password frame (M11).
     password_rules: Mapping[str, Any] = field(default_factory=dict)
     #: On `INVITE_WEAK` only: the platform's own reason, with its error id
@@ -504,7 +495,7 @@ def _forget(store: MutableMapping[str, Any], *, close: bool = True) -> None:
     otherwise leave the ceremony behind for the next POST to resume into a
     session that may be gone. Every exit of this module goes through here.
 
-    **`close=False` is Mode A's one exception to ADR ident-10, and it was
+    **`close=False` is Mode A's one exception to ADR ident-12, and it was
     MEASURED rather than reasoned** (rung A8, 2026-09-19, live against
     v4.17.1). Finalizing an auth request answers a `callbackUrl` with a code
     on it, and the CLIENT spends that code afterwards, on its own connection,
@@ -1317,7 +1308,7 @@ def _finish(store: MutableMapping[str, Any], *, reason: str) -> SignIn:
     **Mode A's finalize happens HERE, before the close, and the order is the
     whole of why it is here** (design C-10, rung A8). Zitadel mints the
     client's code against the session named in the finalize, so a ceremony
-    that closed its session first — ADR ident-10's rule, which every other
+    that closed its session first — ADR ident-12's rule, which every other
     exit of this module obeys — would have nothing left to finalize with. Four
     roads reach this function (password, factor, enrolment, invite) and the
     finalize belongs on every one of them exactly once, which is what makes
@@ -1325,6 +1316,7 @@ def _finish(store: MutableMapping[str, Any], *, reason: str) -> SignIn:
     """
     ceremony = _ceremony(store)
     subject = str(ceremony.get("user_id", ""))
+    realm = str(ceremony.get("org_id", ""))
     seconds = _elapsed(ceremony)
     request_id = str(ceremony.get("auth_request", "") or "")
 
@@ -1334,7 +1326,7 @@ def _finish(store: MutableMapping[str, Any], *, reason: str) -> SignIn:
 
     # The session is left OPEN exactly when a client is about to spend a code
     # minted against it — see `_forget`'s own note, which carries the measured
-    # error a close produces. Every other exit closes, ADR ident-10 unchanged.
+    # error a close produces. Every other exit closes, ADR ident-12 unchanged.
     _forget(store, close=handed_back is None or not handed_back.callback_url)
     if handed_back is not None and handed_back.outcome is not SignInOutcome.DONE:
         return handed_back
@@ -1350,6 +1342,7 @@ def _finish(store: MutableMapping[str, Any], *, reason: str) -> SignIn:
         step=Step.NOTHING,
         reason=reason,
         subject=subject,
+        realm=realm,
         callback_url=handed_back.callback_url if handed_back is not None else "",
     )
 
@@ -1599,7 +1592,7 @@ def _smtp() -> dict[str, Any]:
 def _foreign_sender(smtp: Mapping[str, Any]) -> str:
     """The sender address to print, and `""` when the sender is our own."""
     configured = dict(smtp)
-    if not configured or not zitadel_audit._is_foreign(configured):
+    if not configured or not zitadel.is_foreign(configured):
         return ""
     return str(configured.get("senderAddress", "") or "")
 
@@ -1719,7 +1712,7 @@ def passkey_road_open() -> bool:
     **Not a preference — the specification.** A relying-party id must be a
     valid domain string; an IP literal is not one, and every browser refuses
     a ceremony whose `rp.id` is an address. The template ships
-    `PUBLIC_BASE_URL=http://127.0.0.1:8000`, so the default local checkout is
+    a base URL of `http://127.0.0.1:8000`, so the default local checkout is
     exactly that case: Zitadel will happily mint `rpId: "127.0.0.1"` (A9's
     drive measured a 201 and a 200 finish for it, server-side), and no
     browser will ever complete it.
@@ -1745,8 +1738,18 @@ def _rp_domain() -> str:
     MEASURED (M9): a passkey enrolled on Zitadel's own pages is bound to
     Zitadel's RP id and is refused on ours, which is design J6's
     `passkey_elsewhere` sentence rather than a bug to work around.
+
+    **The host of the surface this request came in on** — the one the door
+    bound (`core.context`'s `surface`), through the one URL builder: a passkey
+    is bound to its host, so one enrolled on the staff host is never offered on
+    the customer host (sessions and passkeys are per host). With no surfaces
+    bound it is the deployment's own host, as it always was. A `{tenant}` host
+    has no single name to bind a passkey to, and reads as the deployment's.
     """
-    base = str(getattr(settings, "PUBLIC_BASE_URL", "") or "")
+    try:
+        base = absolute_url(path="", surface=str(context.value("surface") or STAFF))
+    except ValueError:
+        base = surface_base_urls()[0]
     return base.split("://")[-1].split("/")[0].split(":")[0]
 
 

@@ -1,50 +1,24 @@
-"""The HTTP door onto documents: file one, replace one, find one, fetch one, archive one.
+"""The HTTP door onto documents: file, replace, find, fetch, archive — never a byte (ADR files-2).
 
-**No route in this module carries a byte.** Uploading and downloading both happen
-directly between the client and the object store, on short-lived signed URLs this
-app mints and audits — so what these routes hand out is a *place* and never a
-*stream*. That is ADR files-2's central design, and it is why there is no
-`/download/` route here of the kind `apps/exports` has: exports redirects to a
-link because an export is one artifact with one link, and a document is a document
-with versions, so the link names the version and the client asks for it.
-
-Nothing here is implicit: the router restates `auth=`, both lists paginate, every
-read goes through `selectors.py` (which narrows to `request.tenant` **and**
-`request.org`) and every write goes through `services.py`. `request.org` is the
-acting hat `TenantMiddleware` resolved from `X-Org`, and every read passes it — a
-route that passed only the tenant would hand a branch the whole tenant.
-
-The routes never say 404 either. `selectors.get_file` raises `NotFound` and
-`config/api.py` is the only module that turns that into a number, so the MCP tool
-over the same selector refuses identically without repeating the rule.
-
-`document_of` and `downloadable` below are shared with `mcp.py` rather than written
-twice, for the same reason `apps/exports/api.py::downloadable_export` is: the two
-doors would otherwise be free to come to different opinions about when a version
-is signable, and a disagreement about that is a disagreement about who may reach
-somebody's bytes.
+Each route resolves its row through the selector and calls the service its MCP twin calls.
+# why-not `from __future__ import annotations`: ninja reads the route signatures at import.
 """
-
-# NOTE: no `from __future__ import annotations` in this module, and that is
-# deliberate. ninja builds a Pydantic model out of a route's signature at import
-# time; with postponed evaluation every annotation is a string, and a
-# `FilterSchema` parameter comes out as an unresolvable forward reference.
 
 from uuid import UUID
 
 from django.db.models import QuerySet
 from ninja import Query, Router, Status
-from ninja.errors import HttpError
 from ninja.pagination import paginate
 
 from apps.accounts.auth import API_AUTH
-from apps.core.actor import Actor, actor_from_request
+from apps.core.actor import Actor
 from apps.core.api import CursorPagination, ordered_by
+from apps.core.api.acting import acting
 from apps.core.api.docs import Tag, also_refuses, refuses
 from apps.core.api.pagination import ActsPagination
-from apps.core.exceptions import Invalid
-from apps.core.models import Tenant
+from apps.core.api.query import ARCHIVED_SWITCH, RetiredQuery, refuse_retired_query
 from apps.core.requests import TenantRequest
+from apps.core.schemas import Show
 from apps.core.verbs import with_allowed_acts
 from apps.files.models import FileVersion, StoredFile
 from apps.files.schemas import (
@@ -59,7 +33,6 @@ from apps.files.schemas import (
     VersionIn,
 )
 from apps.files.selectors import (
-    SHOW_LIVE,
     get_downloadable_version,
     get_file,
     get_version,
@@ -140,87 +113,21 @@ TAGS = {
     ),
 }
 
+# The query parameters the document list no longer takes. The list has ONE way
+# to ask for the archive — `?show=` — and a second spelling that was quietly
+# ignored would hand a caller the live list while it believed it was reading the
+# archived one. Declared here, beside `PREFIX` and `TAGS`: the route refuses it,
+# the published document marks it deprecated, and a product's strict-query seam
+# defers to it (`apps/core/api/query.py`).
+RETIRED_QUERY: dict[str, RetiredQuery] = {"archived": ARCHIVED_SWITCH}
+
 # `auth` is restated here rather than inherited from the API default, so that
 # reading this one file tells you what it takes to call these routes.
 router = Router(tags=["files"], auth=API_AUTH)
 
 
-def _acting(request: TenantRequest) -> tuple[Actor, Tenant]:
-    """The actor and tenant a call happens as.
-
-    Authentication has already guaranteed the user. The tenant has not been
-    guaranteed by anything: a signed-in user with no membership resolves to
-    `None`, and a call with no tenant is refused rather than guessed at.
-
-    The hat rides on the actor rather than being returned beside the tenant,
-    because that is where the services read it from — `create_file` takes no
-    `organization=` argument, so there is nothing for a route to pass and nothing
-    for a caller to forge (ADR core-20's placement law).
-    """
-    if request.tenant is None:
-        raise HttpError(403, "No tenant for this request.")
-    return actor_from_request(request), request.tenant
-
-
-#: What `?archived=` answers. The list has ONE way to ask for the archive —
-#: `?show=` — and a second spelling that was quietly ignored would hand a caller
-#: the live list while it believed it was reading the archived one.
-ARCHIVED_SWITCH_REFUSED = (
-    "`archived` is not a parameter of this list. Send `show=archived` for the archived "
-    "documents, `show=all` for both, or leave it out for the live ones."
-)
-
-
-def refuse_the_archived_switch(request: TenantRequest) -> None:
-    """`?archived=` is `400 invalid` naming `show`, never silently ignored."""
-    if "archived" in request.GET:
-        raise Invalid({"show": [ARCHIVED_SWITCH_REFUSED]})
-
-
-def document_of(*, tenant: Tenant | None, org: object, file_id: UUID, actor: Actor) -> StoredFile:
-    """One document this hat may see, or `not_found` — **one lookup, both doors**.
-
-    A one-line wrapper on the selector, and it earns its place by being the thing
-    `mcp.py` imports: the two doors then cannot come to fetch a document two
-    different ways, which is how a scoping fix lands on one door and not the other.
-
-    `tenant` is allowed to be `None` and is not refused here: `for_tenant(None)`
-    reads an empty table, so an unresolved tenant gets the same `not_found` a
-    stranger gets rather than a different refusal that would tell the two apart. A
-    route that is about to WRITE refuses earlier and louder, in `_acting`.
-    """
-    return get_file(tenant=tenant, file_id=file_id, org=org, actor=actor)
-
-
-def downloadable(
-    *, tenant: Tenant, actor: Actor, file_id: UUID, version: int | None
-) -> DownloadTicket:
-    """The signed link for one version — **one gate, both doors**.
-
-    Four refusals in one place, all of them `not_found`: no such document
-    where this hat can see; no such version; a version whose bytes have not landed;
-    and a document that has never had a version finalize. A caller holding an id
-    cannot tell which, which is the same answer somebody outside the tenant gets —
-    a presigned URL must never be the oracle that confirms a document exists.
-
-    It lives here rather than in each door because `mcp.py` imports it, so the two
-    doors cannot come to disagree about when a version is signable — the kind of
-    disagreement no value-by-value parity test would catch.
-    """
-    document = document_of(tenant=tenant, org=actor.org, file_id=file_id, actor=actor)
-    row = get_downloadable_version(
-        tenant=tenant, file=document, version=version, org=actor.org, actor=actor
-    )
-    return issue_download_url(tenant=tenant, actor=actor, file=document, version=row)
-
-
-def _ticket(ticket: UploadTicket, actor: Actor) -> UploadTicketOut:
-    """The wire shape of an upload ticket, built once for both doors.
-
-    The document carries the caller's `allowed_acts` like every other read of it —
-    an empty list would read as "you may do nothing", which is not what filing it
-    meant.
-    """
+def upload_body(ticket: UploadTicket, actor: Actor) -> UploadTicketOut:
+    """The wire shape of an upload ticket, the document carrying this caller's `allowed_acts`."""
     return UploadTicketOut(
         file=StoredFileOut.model_validate(with_allowed_acts([ticket.file], actor)[0]),
         version=FileVersionOut.model_validate(ticket.version),
@@ -252,7 +159,7 @@ def list_files_route(
     request: TenantRequest,
     filters: Query[FileFilter],
     ordering: str = "-created_at",
-    show: str = SHOW_LIVE,
+    show: Show = "live",
     subject: str | None = None,
 ) -> QuerySet[StoredFile]:
     """List documents
@@ -308,8 +215,8 @@ def list_files_route(
       filter value was malformed, `?show=` was not `live`, `archived` or `all`
       (or `?archived=` was sent), or `?subject=` was not `<kind>:<id>` or names a
       kind that takes no documents. The response names the parameter.
-    * `403 forbidden` — the request resolved no tenant or no acting organization.
-      Send `X-Tenant` and `X-Org` naming ones you belong to.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
+      organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
     * `403 insufficient_scope` — the token authenticated and its ceiling does not
       carry `files:read`. Mint one that does.
     * `404 not_found` — `?subject=` names a record you cannot see, or none at all.
@@ -320,13 +227,10 @@ def list_files_route(
     `ScopedQuerySet` to `QuerySet` here: filtering returns the plain one, and
     narrowing a queryset cannot widen its tenant.
     """
-    refuse_the_archived_switch(request)
+    refuse_retired_query(request, RETIRED_QUERY)
+    actor, tenant = acting(request)
     files: QuerySet[StoredFile] = list_files_selector(
-        tenant=request.tenant,
-        org=request.org,
-        actor=actor_from_request(request),
-        show=show,
-        subject=subject,
+        tenant=tenant, org=actor.org, actor=actor, show=show, subject=subject
     )
     files = filters.filter(files)
     return ordered_by(files, ordering, allowed=ORDERING, default="-created_at")
@@ -389,8 +293,9 @@ def create_file_route(request: TenantRequest, payload: FileIn) -> Status[UploadT
       was created.
     * `422 invalid_body` — the body carried a field this endpoint does not accept,
       or one was missing or the wrong type. `errors` names the fields.
-    * `403 forbidden` — the request resolved no tenant, or you may not file
-      documents in this organization.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
+      organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+    * `403 forbidden` — you may not file documents in this organization.
     * `403 insufficient_scope` — the token's ceiling does not carry `files:write`.
     * `404 not_found` — `subject` names a record you cannot see, or none at all.
     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
@@ -398,7 +303,7 @@ def create_file_route(request: TenantRequest, payload: FileIn) -> Status[UploadT
       it has not finished. Resend the identical request, or use a new key.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     ticket = create_file(
         tenant=tenant,
         actor=actor,
@@ -408,7 +313,7 @@ def create_file_route(request: TenantRequest, payload: FileIn) -> Status[UploadT
         purpose=payload.purpose,
         subject=payload.subject,
     )
-    return Status(201, _ticket(ticket, actor))
+    return Status(201, upload_body(ticket, actor))
 
 
 @router.get("/{file_id}/", response=StoredFileOut, url_name="file-detail")
@@ -432,14 +337,14 @@ def retrieve_file(request: TenantRequest, file_id: UUID) -> StoredFile:
 
     Refusals you can get here:
 
-    * `403 forbidden` — the request resolved no tenant or no acting organization.
-      Send `X-Tenant` and `X-Org` naming ones you belong to.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
+      organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
     * `403 insufficient_scope` — the token's ceiling does not carry `files:read`.
     * `404 not_found` — nothing has that id where you can see.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor = actor_from_request(request)
-    document = document_of(tenant=request.tenant, org=request.org, file_id=file_id, actor=actor)
+    actor, tenant = acting(request)
+    document = get_file(tenant=tenant, file_id=file_id, org=actor.org, actor=actor)
     return with_allowed_acts([document], actor)[0]
 
 
@@ -448,12 +353,11 @@ def retrieve_file(request: TenantRequest, file_id: UUID) -> StoredFile:
     "archive_blocked",
     "forbidden",
     "insufficient_scope",
+    "no_acting_scope",
     "not_found",
     "rate_limited",
 )
-def archive_file_route(  # rule-41: raised via archive_file's _archived helper, one hop past reach
-    request: TenantRequest, file_id: UUID
-) -> StoredFile:
+def archive_file_route(request: TenantRequest, file_id: UUID) -> StoredFile:
     """Archive a document
 
     Take a document out of everyone's working set. It disappears from the list, and
@@ -482,8 +386,9 @@ def archive_file_route(  # rule-41: raised via archive_file's _archived helper, 
     Refusals you can get here:
 
     * `403 forbidden` — you do not administer the part of the organization this
-      document belongs to, or the request resolved no tenant or no acting
-      organization.
+      document belongs to.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
+      organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
     * `403 insufficient_scope` — the token's ceiling does not carry `files:write`.
     * `404 not_found` — nothing has that id where you can see.
     * `409 archive_blocked` — something still depends on this document; the answer
@@ -497,8 +402,8 @@ def archive_file_route(  # rule-41: raised via archive_file's _archived helper, 
     in the template today; the code is published because the declaration is the
     product's to make at any time.
     """
-    actor, tenant = _acting(request)
-    document = document_of(tenant=tenant, org=actor.org, file_id=file_id, actor=actor)
+    actor, tenant = acting(request)
+    document = get_file(tenant=tenant, file_id=file_id, org=actor.org, actor=actor)
     return with_allowed_acts([archive_file(tenant=tenant, actor=actor, file=document)], actor)[0]
 
 
@@ -506,6 +411,7 @@ def archive_file_route(  # rule-41: raised via archive_file's _archived helper, 
 @refuses(
     "forbidden",
     "insufficient_scope",
+    "no_acting_scope",
     "not_found",
     "rate_limited",
     "restore_blocked",
@@ -532,8 +438,9 @@ def restore_file_route(request: TenantRequest, file_id: UUID) -> StoredFile:
     Refusals you can get here:
 
     * `403 forbidden` — you do not administer the part of the organization this
-      document belongs to, or the request resolved no tenant or no acting
-      organization.
+      document belongs to.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
+      organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
     * `403 insufficient_scope` — the token's ceiling does not carry `files:write`.
     * `404 not_found` — nothing has that id where you can see.
     * `409 restore_blocked` — something stops this document coming back; the answer
@@ -545,13 +452,20 @@ def restore_file_route(request: TenantRequest, file_id: UUID) -> StoredFile:
     declares against `file` in its `restore_blockers.py`, discovered; none is
     declared in the template today.
     """
-    actor, tenant = _acting(request)
-    document = document_of(tenant=tenant, org=actor.org, file_id=file_id, actor=actor)
+    actor, tenant = acting(request)
+    document = get_file(tenant=tenant, file_id=file_id, org=actor.org, actor=actor)
     return with_allowed_acts([restore_file(tenant=tenant, actor=actor, file=document)], actor)[0]
 
 
 @router.post("/{file_id}/download-url/", response=FileDownloadOut, url_name="download_url-issue")
-@refuses("forbidden", "insufficient_scope", "invalid_body", "not_found", "rate_limited")
+@refuses(
+    "forbidden",
+    "insufficient_scope",
+    "invalid_body",
+    "no_acting_scope",
+    "not_found",
+    "rate_limited",
+)
 def issue_download_url_route(
     request: TenantRequest, file_id: UUID, payload: DownloadUrlIn
 ) -> FileDownloadOut:
@@ -592,8 +506,9 @@ def issue_download_url_route(
 
     * `422 invalid_body` — the body carried a field this endpoint does not accept,
       or `version` was not a positive whole number.
-    * `403 forbidden` — the request resolved no tenant or no acting organization,
-      or you may not read this organization's documents.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
+      organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+    * `403 forbidden` — you may not read this organization's documents.
     * `403 insufficient_scope` — the token's ceiling does not carry `files:write`.
       Issuing a link records an entry against the document, which is what puts this
       operation on the writing side of a token's ceiling.
@@ -607,16 +522,19 @@ def issue_download_url_route(
     answer is deliberately `not_found`, so a documented 409 would be a refusal
     no caller can ever receive.
     """
-    actor, tenant = _acting(request)
-    return download_body(
-        downloadable(tenant=tenant, actor=actor, file_id=file_id, version=payload.version)
+    actor, tenant = acting(request)
+    document = get_file(tenant=tenant, file_id=file_id, org=actor.org, actor=actor)
+    row = get_downloadable_version(
+        tenant=tenant, file=document, version=payload.version, org=actor.org, actor=actor
     )
+    return download_body(issue_download_url(tenant=tenant, actor=actor, file=document, version=row))
 
 
 # --- the versions -------------------------------------------------------------
 
 
 @router.get("/{file_id}/versions/", response=list[FileVersionOut], url_name="version-list")
+@also_refuses("invalid")
 @paginate(CursorPagination)
 def list_versions_route(
     request: TenantRequest, file_id: UUID, ordering: str = "-version"
@@ -644,16 +562,17 @@ def list_versions_route(
     Refusals you can get here:
 
     * `400 invalid` — `?ordering=` named a field this list does not accept.
-    * `403 forbidden` — the request resolved no tenant or no acting organization.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
+      organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
     * `403 insufficient_scope` — the token's ceiling does not carry `files:read`.
     * `404 not_found` — nothing has that id where you can see, or a `?cursor=` you
       sent belongs to a different walk.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    acting = actor_from_request(request)
-    document = document_of(tenant=request.tenant, org=request.org, file_id=file_id, actor=acting)
+    actor, tenant = acting(request)
+    document = get_file(tenant=tenant, file_id=file_id, org=actor.org, actor=actor)
     versions: QuerySet[FileVersion] = list_versions(
-        tenant=request.tenant, file=document, org=request.org, actor=acting
+        tenant=tenant, file=document, org=actor.org, actor=actor
     )
     return ordered_by(versions, ordering, allowed=VERSION_ORDERING, default="-version")
 
@@ -691,8 +610,9 @@ def add_version_route(
     * `400 invalid` — the declared size is above the limit, your credential
       resolved no person, or the request resolved no acting organization.
     * `422 invalid_body` — the body carried a field this endpoint does not accept.
-    * `403 forbidden` — the request resolved no tenant, or you may not add versions
-      in this organization.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
+      organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+    * `403 forbidden` — you may not add versions in this organization.
     * `403 insufficient_scope` — the token's ceiling does not carry `files:write`.
     * `404 not_found` — nothing has that id where you can see.
     * `409 archived` — the document is archived, so nothing new goes into it.
@@ -702,8 +622,8 @@ def add_version_route(
       it has not finished.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
-    document = document_of(tenant=tenant, org=actor.org, file_id=file_id, actor=actor)
+    actor, tenant = acting(request)
+    document = get_file(tenant=tenant, file_id=file_id, org=actor.org, actor=actor)
     ticket = add_version(
         tenant=tenant,
         actor=actor,
@@ -711,7 +631,7 @@ def add_version_route(
         content_type=payload.content_type,
         size_bytes=payload.size_bytes,
     )
-    return Status(201, _ticket(ticket, actor))
+    return Status(201, upload_body(ticket, actor))
 
 
 @router.post(
@@ -751,15 +671,16 @@ def confirm_upload_route(
     * `400 invalid` — `idempotency_key` was blank, or the request resolved no
       acting organization.
     * `422 invalid_body` — the body carried a field this endpoint does not accept.
-    * `403 forbidden` — the request resolved no tenant, or you may not add versions
-      in this organization.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
+      organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+    * `403 forbidden` — you may not add versions in this organization.
     * `403 insufficient_scope` — the token's ceiling does not carry `files:write`.
     * `404 not_found` — nothing has that id where you can see, or that document has
       no version with that number.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
-    document = document_of(tenant=tenant, org=actor.org, file_id=file_id, actor=actor)
+    actor, tenant = acting(request)
+    document = get_file(tenant=tenant, file_id=file_id, org=actor.org, actor=actor)
     row = get_version(tenant=tenant, file=document, version=version, org=actor.org, actor=actor)
     return Status(
         202,

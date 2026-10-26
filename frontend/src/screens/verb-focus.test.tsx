@@ -31,7 +31,7 @@ import { act, cleanup, fireEvent, render } from "@testing-library/react";
 import type { ComponentType } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { Road } from "@/screens/verbs";
+import type { Road } from "@pilecap/ui/verbs";
 import type { WidgetPage } from "@/screens/widget/parts";
 import { WidgetList } from "@/screens/widget/widget-list";
 import { ARCHIVED_PAGE, LATENCY_MS } from "@/screens/widget/widget-list.stories";
@@ -345,7 +345,7 @@ describe.each(roads.filter(({ road }) => road.verbs.includes("attach")))("the $n
 
 describe.each(roads.filter(({ road }) => road.verbs.includes("import")))("the $noun face's import road", ({ noun }) => {
     it("Import on a chosen file: Checking…, then the preview lands on the counts line", () => {
-        const Choose = story(noun, "RefusedImport", '[data-act="import"]');
+        const Choose = story(noun, "Empty", '[data-act="import"]');
         const { container } = render(<Choose />);
         const field = container.querySelector('input[type="file"]') as HTMLInputElement;
         fireEvent.change(field, { target: { files: [new File(["external_ref,name,notes"], "widgets.csv", { type: "text/csv" })] } });

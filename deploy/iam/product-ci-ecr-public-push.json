@@ -1,0 +1,19 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "MirrorTheStackImagesToEcrPublic",
+      "Effect": "Allow",
+      "Action": [
+        "ecr-public:InitiateLayerUpload",
+        "ecr-public:UploadLayerPart",
+        "ecr-public:CompleteLayerUpload",
+        "ecr-public:BatchCheckLayerAvailability",
+        "ecr-public:PutImage",
+        "ecr-public:DescribeRepositories",
+        "ecr-public:DescribeImages"
+      ],
+      "Resource": "arn:aws:ecr-public::${ACCOUNT_ID}:repository/*"
+    }
+  ]
+}

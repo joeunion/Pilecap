@@ -6,7 +6,14 @@ drivable with a bearer token: mint one with `issue_token` and send
 """
 
 from .base import *  # noqa: F403
-from .base import MACHINERY_PROCESS, SECRET_KEY, env, machinery_lifetime
+from .base import (
+    MACHINERY_PROCESS,
+    SECRET_KEY,
+    SURFACE_HOSTS,
+    admitted_hosts,
+    env,
+    machinery_lifetime,
+)
 from .guards import DEV_SECRET_KEY
 
 DEBUG = env.bool("DEBUG", default=True)
@@ -16,7 +23,25 @@ DEBUG = env.bool("DEBUG", default=True)
 if not SECRET_KEY:
     SECRET_KEY = DEV_SECRET_KEY
 
-ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=["localhost", "127.0.0.1", "[::1]"])
+# Re-read with a laptop default, so the surface map is folded in again here —
+# otherwise a bound `customer.localhost` answers 400 on the one stack
+# (`scripts/serve.sh`) a laptop and a verifier box actually run.
+ALLOWED_HOSTS = admitted_hosts(
+    env.list("ALLOWED_HOSTS", default=["localhost", "127.0.0.1", "[::1]"]), SURFACE_HOSTS
+)
+
+# THE ONE PROXY IN FRONT OF A LAPTOP'S OR A BOX'S DJANGO IS THE FACE. The
+# face's `next.config.ts` rewrite forwards `/api/v1/*` to Django with
+# `Host: 127.0.0.1:8000` and the address the browser used in
+# `X-Forwarded-Host` — a rewrite cannot keep `Host`. The surface is read from
+# the host, so without this every address answered through the face would be
+# `127.0.0.1` and no surface. That rewrite is the only reason this is on, and
+# it is on HERE only: `base` and `production` leave it off, because in a
+# deployment Caddy's `reverse_proxy web:8000` keeps the client's own `Host`
+# (`deploy/Caddyfile`) and a header nobody we run set must never choose the
+# audience. `request.get_host()` honours it on the HTTP door by Django's own
+# law; the socket and MCP doors read it through `core.surfaces.request_host`.
+USE_X_FORWARDED_HOST = True
 
 # A laptop serves plain HTTP.
 SECURE_SSL_REDIRECT = False
@@ -25,6 +50,8 @@ SECURE_HSTS_INCLUDE_SUBDOMAINS = False
 SECURE_HSTS_PRELOAD = False
 SESSION_COOKIE_SECURE = False
 CSRF_COOKIE_SECURE = False
+# A laptop's webhook subscribers are on localhost (SF-WEBHOOK-1 reads it; N2238).
+WEBHOOK_PRIVATE_TARGETS_ALLOWED = True
 
 EMAIL_BACKEND = env.str("EMAIL_BACKEND", default="django.core.mail.backends.console.EmailBackend")
 

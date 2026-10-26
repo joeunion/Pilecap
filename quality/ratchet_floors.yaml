@@ -1,0 +1,33 @@
+# The floors of the members that are not apps, per rule; down-only (ADR gate-6). An app's are its AppConfig.ratchet_floors.
+"89": {}
+"91":
+  apps_root.block-tail: 839
+  apps_root.docstring-tail: 526
+  apps_root.module-tail: 150
+  apps_root.narrative: 7
+  config.block-tail: 1680
+  config.docstring-tail: 469
+  config.module-tail: 156
+  config.narrative: 12
+  deploy.block-tail: 133
+  deploy.docstring-tail: 88
+  deploy.module-tail: 353
+  deploy.narrative: 3
+  quality.block-tail: 2866
+  quality.docstring-tail: 2562
+  quality.module-tail: 964
+  quality.narrative: 37
+  scripts.block-tail: 298
+  scripts.docstring-tail: 200
+  scripts.module-tail: 687
+  scripts.narrative: 9
+"98":
+  agents/builder.lines: 0
+  always_loaded.tokens: 10992
+  claude_md.lines: 0
+  skills/django-architect.lines: 253
+  skills/django-conventions.lines: 686
+  skills/fe-conventions.lines: 885
+  skills/platform-primer.lines: 144
+  skills/product-manager.lines: 777
+  skills/rung-execution.lines: 345

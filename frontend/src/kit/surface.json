@@ -1,0 +1,79 @@
+{
+  "modules": {
+    "@pilecap/ui/alert-panel": [
+      "AlertPanel"
+    ],
+    "@pilecap/ui/card": [
+      "Card"
+    ],
+    "@pilecap/ui/dialog": [
+      "Dialog",
+      "DialogProps"
+    ],
+    "@pilecap/ui/pill": [
+      "Pill"
+    ],
+    "@pilecap/ui/refusal-panel": [
+      "RefusalAct",
+      "RefusalPanel",
+      "RefusalPanelProps",
+      "RefusalWords"
+    ],
+    "@pilecap/ui/remedy-door": [
+      "RemedyDoor",
+      "carriesMachineToken",
+      "remedyDoor"
+    ],
+    "@pilecap/ui/routes": [
+      "ROUTE_TABLE",
+      "RouteRow",
+      "STAFF_SURFACE",
+      "SurfaceKey",
+      "offSurface",
+      "pathFor",
+      "routesOn",
+      "rowFor"
+    ],
+    "@pilecap/ui/state": [
+      "ENTRY_STORY_EXTRAS",
+      "NextAct",
+      "REMEDY_DESTINATIONS",
+      "REQUIRED_STORY_EXPORTS",
+      "Refusal",
+      "RequiredStoryExport",
+      "SURFACE_STATES",
+      "SocketCloseState",
+      "SurfaceState",
+      "SurfaceStateKind",
+      "WalkedStory",
+      "WireRefusal",
+      "WireRemedy",
+      "unhandledRefusal",
+      "unhandledState",
+      "walkOf"
+    ],
+    "@pilecap/ui/still-line": [
+      "StillLine"
+    ],
+    "@pilecap/ui/verbs": [
+      "Act",
+      "ActsSubject",
+      "AttachKind",
+      "Place",
+      "Press",
+      "Road",
+      "SEATS",
+      "Seat",
+      "VERB_TABLE",
+      "Verb",
+      "VerbRow",
+      "actsFor",
+      "attachAct",
+      "bulkActsFor",
+      "footAct",
+      "importActs",
+      "importHeadAct",
+      "pairActsFor"
+    ]
+  }
+}

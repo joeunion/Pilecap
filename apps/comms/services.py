@@ -100,6 +100,7 @@ from apps.core.context import value as bound_value
 from apps.core.exceptions import Conflict, Invalid, NotFound, as_invalid
 from apps.core.log import get_logger
 from apps.core.models import Organization, Tenant
+from apps.core.schemas import event_payload
 from apps.core.service import service
 from apps.core.services import root_organization
 from apps.core.verbs import archive_row, require_live, restore_row
@@ -188,25 +189,7 @@ REPORTED: frozenset[str] = frozenset(
     }
 )
 
-# The statuses a message may still be **handed to a transport** in, and
-# therefore exactly the statuses the wall at the edge has to judge again.
-#
-# `queued` is a first attempt. `sending` is a *later* one: Temporal guarantees
-# an activity runs at least once, so a transport that failed after this row was
-# marked leaves it mid-flight, and the retry re-sends it. Everything else —
-# sent, delivered, bounced, failed, suppressed — is a row whose story is over or
-# was never allowed to start. (The duplicate a retry can produce used to be
-# recognisable to the provider by a stable `Message-ID`; ADR comms-9 stopped
-# printing that header, because it was also a suppression key — `activities.py`'s
-# module docstring carries the trade.)
-#
-# **It lives here and `activities.py` reads it from here** (SEC-R1b). It used to
-# be defined in the activity alone while `mark_message_sending` kept its own
-# one-status copy of the same idea, and the two drifted the moment `sending`
-# joined the activity's set: the recheck ran on attempt 1 and was skipped on
-# every attempt after it, for the whole length of a retry backoff (SEC-1's H1).
-# One definition, read by the guard and by the service, is what makes that
-# particular drift unrepresentable rather than merely fixed.
+#: Waiting to go, or in flight after a failed attempt — one definition, read by activity and wall.
 SENDABLE: frozenset[str] = frozenset(
     {
         Message.Status.QUEUED.value,
@@ -350,33 +333,12 @@ def _refusal(
     preference: ChannelPreference | None,
     category: str,
     at: datetime,
-    tenant: Tenant | None = None,
+    tenant: Tenant,
 ) -> str:
-    """Why this send must not go out, or an empty string. **The consent wall.**
+    """Why this send must not go out now, or an empty string — the consent wall.
 
-    The order is the precedence, and each step is a different promise:
-
-    1. **no preference row at all** — nobody has said anything. Transactional
-       goes (they asked for it by doing something); marketing does not, because
-       consent that was never given is not consent;
-    2. **suppressed** — a hard bounce, a spam complaint, or the person asking to
-       be left alone. It refuses *everything* on this channel, transactional
-       included, and it is checked first because it outranks every other answer;
-    3. **marketing without live consent** — never given, or given and revoked;
-    4. **quiet hours** — non-transactional traffic waits. A receipt at 3am is
-       fine because the person just bought something; a campaign is not. Two
-       windows can say so and either is enough: the person's own
-       (`ChannelPreference`, set through `set_quiet_hours`) and the **tenant's**,
-       which arrives through the empty seam above and is `None` on every fresh
-       clone. The person's is checked first because it is the more specific
-       answer and because it is the one that exists without a product having
-       done anything.
-
-    **The tenant seam is consulted here and nowhere else**, which is the whole
-    of RUL-2's binding-point clause: `send()` calls this at queue time and
-    `mark_message_sending` calls it again at the transport edge, so a window a
-    product configures applies to both without either of them knowing the seam
-    exists.
+    Precedence: no preference (marketing refused), suppressed, no marketing consent, quiet hours.
+    Quiet hours: the person's window, then the tenant's — both are read here and nowhere else.
     """
     if preference is None:
         return "" if category == Category.TRANSACTIONAL else Message.SuppressedReason.NO_CONSENT
@@ -391,6 +353,23 @@ def _refusal(
         if window is not None and window.is_quiet_at(at):
             return Message.SuppressedReason.QUIET_HOURS
     return ""
+
+
+def _consent_wall(
+    *,
+    preference: ChannelPreference | None,
+    category: str,
+    at: datetime,
+    tenant: Tenant,
+) -> tuple[str, int]:
+    """The wall's reason and, for a quiet-hours hold, its seconds left — the one quiet-hours judge.
+
+    A temporal reason delays and never kills (ADR comms-10); the seconds are the longer window.
+    """
+    reason = _refusal(preference=preference, category=category, at=at, tenant=tenant)
+    if reason not in TEMPORAL_REASONS:
+        return reason, 0
+    return reason, quiet_defer_seconds(preference=preference, tenant=tenant, at=at)
 
 
 #: The per-message delivery nonce's separator inside a workflow id's `key`
@@ -490,8 +469,8 @@ def _context_errors(*, schema: dict[str, Any], context: dict[str, Any]) -> dict[
 
 
 def _payload(message: Message) -> dict[str, Any]:
-    """The event payload: the same shape a REST client gets for the same row."""
-    return dict(MessageOut.from_orm(message).model_dump(mode="json"))
+    """The event payload: the row as `MessageOut`, no viewer."""
+    return event_payload(MessageOut.from_orm(message))
 
 
 def _message_row(
@@ -744,27 +723,10 @@ def send(
     policy: str = "",
     send_at: datetime | None = None,
 ) -> Message:
-    """Say one thing to one person. **The only legal sender in the product.**
+    """Say one thing to one person, through the consent wall — the only legal sender.
 
-    Returns the `Message` row in every case that is not bad input — queued when
-    it is on its way, suppressed when consent said no. See the module docstring
-    for that line.
-
-    The acting **hat** comes from the actor and is never an argument: a caller
-    that could name an organization could send from a branch it holds no
-    membership over, which is the tenancy hole one level down.
-
-    `policy=` is this door's one addition and it is deliberately the *only*
-    one: with a policy this writes step 1 exactly as it would have written a
-    plain send, and hands the rest of the plan to the run as a snapshot. Without
-    one, nothing about this function's behaviour has moved.
-
-    **`send_at=` schedules it, and quiet hours no longer kill at queue time.**
-    Both are the same mechanism — a duration the run sleeps before it
-    tries anything — and both are decided in `_wait_for`, which carries the
-    argument for each. What matters here: a scheduled send is `queued`
-    immediately, and the consent wall runs AGAIN when the timer wakes, so
-    scheduling is not a way to bank permission.
+    Returns the row unless the input is bad: `queued` on its way, `suppressed` when refused.
+    The hat is the actor's, never an argument; a held or scheduled send is re-judged on waking.
     """
     at = timezone.now()
     # House rule 26, and this is the row it matters most for: `recipient` comes
@@ -789,10 +751,10 @@ def send(
     preference = get_preference(
         tenant=tenant, recipient=recipient, channel=slug, org=actor.org, actor=actor
     )
-    reason = _refusal(preference=preference, category=row.category, at=at, tenant=tenant)
-    delay, reason = _wait_for(
-        reason=reason, preference=preference, tenant=tenant, at=at, send_at=send_at
-    )
+    reason, hold = _consent_wall(preference=preference, category=row.category, at=at, tenant=tenant)
+    delay = _delay_seconds(send_at=send_at, at=at)
+    if reason in TEMPORAL_REASONS:  # a hold queues and waits the longer wait (ADR comms-10)
+        delay, reason = max(delay, hold), ""
     # The chain the door started, read and never minted: house rule 20 says a
     # correlation id minted below a door restarts the chain it exists to join.
     # `emit()` reads the same two values, so the message row, the audit row and
@@ -907,76 +869,18 @@ def _delay_seconds(*, send_at: datetime | None, at: datetime) -> int:
     return max(0, int((send_at - at).total_seconds()))
 
 
-def _wait_for(
-    *,
-    reason: str,
-    preference: ChannelPreference | None,
-    tenant: Tenant,
-    at: datetime,
-    send_at: datetime | None,
-) -> tuple[int, str]:
-    """How long this send waits, and which refusal (if any) survives the wait.
-
-    Two questions with one answer, because at queue time they are the same
-    question: *is there something to wait for, and does waiting help?*
-
-    **The other half, and it is the whole of that fix.** A temporal lever delays;
-    it does not kill (ADR comms-10) — and until this fix that was true at
-    the transport edge and false at queue time, so a marketing send submitted at
-    22:30 was thrown away while the identical send submitted at 21:59 was
-    deferred and delivered at 07:00. The asymmetry was real and had a reason at
-    the time: at queue time no run existed to wait in. This starts one.
-
-    So a temporal refusal returns **no refusal**: the caller writes `queued`,
-    which is true — the message is still waiting to go out — emits
-    `comms.message.queued`, which is also true, and starts the run with the
-    seconds the window has left. It wakes into `deliver_message` and re-runs the
-    FULL wall, which is where a suppression that landed overnight refuses. The
-    sleep is not a way around the wall; it is a way back to it.
-
-    A **permanent** refusal is untouched and still kills: consent that was never
-    given does not arrive by waiting, and a suppressed address does not
-    un-suppress overnight.
-
-    The two waits **take the longer of themselves**, for the reason
-    `quiet_defer_seconds` takes the longer of its two windows: waking early is
-    waking into a refusal, and a refusal on the far side of a sleep spends the
-    run's one deferral on nothing.
-    """
-    delay = _delay_seconds(send_at=send_at, at=at)
-    if reason not in TEMPORAL_REASONS:
-        return delay, reason
-    return (
-        max(delay, quiet_defer_seconds(preference=preference, tenant=tenant, at=at)),
-        "",
-    )
-
-
 # --- the escalation's later rungs -------------------------------------------------
 
 
 @dataclass(frozen=True)
 class StepOutcome:
-    """One escalation step, and how long the interpreter should wait for it.
-
-    A **small typed result** rather than the bare `Message`, which is the shape
-    `django-conventions` §4 allows a service when the object alone cannot carry
-    the answer. It cannot here: "how long is this step deferred for" is a fact
-    about this decision and not about the row, and there is deliberately no
-    column for it — the wait lives on the run, exactly as `send_at`'s does, and
-    `Message.send_at` is the visible record of it.
-
-    The first shape tried was an attribute stuck on the returned model
-    instance. `mypy --strict` refused it, correctly: a value a reader cannot
-    find on the class is a value the next caller will not know to read.
-    """
+    """One judged send: the row, and the seconds quiet hours hold it for (zero unless deferred)."""
 
     message: Message
-    #: Seconds the quiet-hours wall held this step for. Zero unless deferred,
-    #: which is almost every step.
     deferred_seconds: int = 0
 
 
+# door: only this tree's own hands reach this; the delivery workflow's send activity
 @service
 def send_step(
     *,
@@ -987,49 +891,12 @@ def send_step(
     channel: str,
     template: str,
 ) -> StepOutcome:
-    """One later rung of an escalation. **The consent wall runs again, here.**
+    """One later rung of an escalation, judged by the wall at its own send time (ADR comms-7).
 
-    ADR comms-7, and it is the frame's demanded property: consent is re-checked
-    **at each step's own send time**, not snapshotted when the policy was
-    entered. Somebody who unsubscribes, gets suppressed by a hard bounce, or
-    revokes marketing consent between the text and the email must not get the
-    email — and the only way that is true is if the wall stands here, in the
-    service that writes the row, where no interpreter and no activity can reach
-    around it. A step the wall refuses writes its `suppressed` `Message`, says
-    so on the spine, and the run escalates past it without waiting: there is
-    nothing to wait for, because nothing went out.
-
-    `message` is the **anchor** — step 1's row — and everything that identifies
-    who this is for comes off it: the recipient, the acting organization, the
-    rendered context, the policy's name and version, and the correlation chain.
-    That is what keeps a three-step escalation one conversation in the log
-    instead of three unrelated messages that happen to share a recipient.
-
-    `delivery_workflow_id` is copied rather than rebuilt, and that is the column
-    earning its keep: every message in this escalation points at the **one**
-    interpreting run, so a provider status webhook for step 2 signals the run
-    that is waiting on step 2 — which an id derived from a message's own primary
-    key could not do.
-
-    **It starts no workflow, and that is the rule this service exists to keep.**
-    A step that started its own run would make every escalation a chain of runs
-    nothing could stop, and "delivered, so do not send the rest" would have no
-    single place to be true. The interpreter is the only orchestrator.
+    `message` is the anchor (step 1): recipient, hat, context, policy and correlation come off it.
+    It starts no workflow — the run is the only orchestrator.
     """
-    # House rule 26, judged. The anchor arrives from the `send_step`
-    # activity, which resolved it through `get_message(... org=)` — a
-    # `.visible_to(org)` read, so the row is already in this hat's subtree and
-    # this call cannot refuse a legitimate escalation. That is the argument for
-    # writing the check rather than a `# reach:` sentence: the sentence would
-    # have said "our one caller resolves it safely", which is a property of the
-    # caller and not of this service. The escalation's new row lands in
-    # `message.organization`, so the reference being reachable is precisely the
-    # question, and the run acting for the product is not an answer to it —
-    # `may_be_named` has no system exemption on purpose.
-    # REACHABILITY FIRST, then the capability — `require` is asked at the
-    # node the ROW names since resolution landed, so asking it first turned
-    # an anchor outside this hat's subtree into `forbidden`. Not-there
-    # before not-yours, as `core.revoke_membership` orders it.
+    # Reachability before capability: not-there before not-yours (house rule 26).
     if not may_be_named(actor, message):
         raise NotFound()
     require(actor, "message.send", message.recipient)
@@ -1039,7 +906,7 @@ def send_step(
 
     row = get_template(tenant=tenant, name=template, actor=actor)
     at = timezone.now()
-    reason = _refusal(
+    reason, wait = _consent_wall(
         preference=get_preference(
             tenant=tenant,
             recipient=message.recipient,
@@ -1049,39 +916,10 @@ def send_step(
         ),
         category=row.category,
         at=at,
+        tenant=tenant,
     )
-    # **The last piece of kill-vs-delay.** A temporal lever
-    # delays; it does not kill (ADR comms-10) — true at the transport edge
-    # since comms-10, true at queue time since the deferred-window mechanism,
-    # and until this fix false here. So an escalation step landing in a quiet window wrote
-    # `suppressed`, the interpreter read "nothing went out" and escalated
-    # straight past it: the person's own quiet hours cost them the step, and the
-    # chain moved on to a channel they had not asked to be reached on. That is
-    # the wall being a weapon with extra steps.
-    #
-    # The step is now DEFERRED — the row is `queued`, which is what it is — and
-    # `deferred_seconds` goes back to the interpreter, which sleeps and delivers
-    # it. The event is `comms.message.queued`, which is also what it is: a
-    # suppression event for a message about to be delivered is the ledger lying
-    # in the noisiest possible way, and `mark_message_sending` has said so about
-    # its own path since comms-10.
-    #
-    # A **permanent** lever is untouched and still writes `suppressed` here:
-    # consent that was never given does not arrive by waiting.
-    deferred = reason in TEMPORAL_REASONS
-    wait = 0
-    if deferred:
-        wait = quiet_defer_seconds(
-            preference=get_preference(
-                tenant=tenant,
-                recipient=message.recipient,
-                channel=slug,
-                org=message.organization,
-                actor=actor,
-            ),
-            tenant=tenant,
-            at=at,
-        )
+    if reason in TEMPORAL_REASONS:
+        # A quiet-hours hold defers the step (`queued`), never suppresses it (ADR comms-10).
         reason = ""
 
     escalated = _message_row(
@@ -1187,6 +1025,7 @@ def cancel_message(*, tenant: Tenant, actor: Actor, message: Message) -> Message
             run_async(_go)
             log.info("comms.message.cancel_requested", workflow_id=run_id)
 
+        # rule-92: cancels the delivery run only after the cancel commits; no other caller shares it
         transaction.on_commit(cancel_the_delivery_run_on_commit, robust=True)
     return message
 
@@ -1194,86 +1033,23 @@ def cancel_message(*, tenant: Tenant, actor: Actor, message: Message) -> Message
 # --- the delivery workflow's writes ---------------------------------------------
 
 
+# door: only this tree's own hands reach this; the delivery workflow's first step
 @service
-def mark_message_sending(*, tenant: Tenant, actor: Actor, message: Message) -> Message:
-    """Take a sendable message to the edge — or refuse it there. **The wall, again.**
+def mark_message_sending(*, tenant: Tenant, actor: Actor, message: Message) -> StepOutcome:
+    """Take a sendable row to the transport edge, re-judged by the wall every attempt (ADR comms-8).
 
-    The activity's first write, and since ADR comms-8 it is also the **last
-    moment the consent wall gets to speak**. `send()` ran the wall when the row
-    was written; the transport runs later — minutes later on a retry, hours
-    later on an escalation — and a suppression or a marketing revocation landing
-    in between used to be ignored at the one moment that decides whether a human
-    is mailed. `send_step` has honoured that seam since ADR comms-7. This is the
-    same recheck on the plain path, in the service the delivery activity already
-    calls before it has anything to hand over, so no door and no activity can
-    reach around it (house rule 10).
-
-    **It runs on every attempt that can still reach a transport, not only the
-    first** (SEC-R1b, closing SEC-1's H1). `SENDABLE` holds two statuses on
-    purpose: `queued` is a first attempt and `sending` is a retry after a
-    transport failed. This
-    guard used to read `queued` alone and sat *above* the recheck, so a retried
-    row — already `sending` — was returned untouched and the wall never spoke.
-    The window that opened was the whole retry backoff, minutes to hours, which
-    is precisely the interval a bounce or a revocation arrives in. Both statuses
-    now consult `_refusal` against current state, and a `sending` row the wall
-    refuses transitions exactly as a `queued` one does.
-
-    **The wall widened; the idempotence narrowed nothing.** Every other status
-    still returns early and untouched: `sent`, `delivered` and `bounced` are
-    news from the transport, `failed` is a spent run and `suppressed` is already
-    the refusal. Re-walling one of those would let a suppression arriving
-    afterwards rewrite a settled row, which is the log lying in the other
-    direction.
-
-    **And refusal now forks by what kind of lever refused** (ADR comms-10). A
-    permanent lever — suppression, consent withdrawn — is a fact about the
-    person, and the message dies here as it always did. A temporal lever —
-    quiet hours — is a fact about the clock: it stops being true at a knowable
-    minute, and killing a message for it threw away sends nobody objected to.
-    A temporal refusal writes the row back to `queued`, emits nothing,
-    and returns; the caller reads that as "not yet", asks `quiet_hours_opens_in`
-    how long, and the run — which is already alive — waits. The three statuses
-    this can return are disjoint and that is the caller's whole branch:
-    `sending` cleared, `suppressed` was refused for good, `queued` is deferred.
-
-    Refused **for good** means the same thing here as it does everywhere else in
-    this app:
-    the row goes `suppressed` with its reason, `comms.message.suppressed` is
-    emitted, and nothing reaches a provider. **Not a new word and not an
-    exception** — a second refusal dialect at the transport would be the drift
-    two walls exist to avoid. `suppressed` is in `REPORTED`, so the delivery's
-    own bookkeeping cannot walk a refusal — first attempt or fifth — back into a
-    `sent`.
-
-    Idempotent, because Temporal guarantees an activity runs *at least* once: a
-    second attempt on a message already in flight re-judges consent and
-    otherwise changes nothing, one on a message already sent leaves the terminal
-    state alone, and a replay after a refusal re-reads `suppressed` and refuses
-    again without emitting twice.
-
-    The status this returns is what the caller must branch on: the activity
-    hands nothing to a transport unless it reads back as sendable.
+    The status is the caller's branch: `sending` cleared, `suppressed` for good, `queued` held.
+    A held row carries its seconds (ADR comms-10); a row past `SENDABLE` comes back untouched.
     """
-    # House rule 26, judged. Same argument as `send_step` above: the
-    # `deliver_message` activity read this row through `get_message(... org=)`,
-    # so the check is free today and is the whole fence tomorrow. The delivery
-    # run always holds a hat — `send()` refuses `actor.org is None` before it
-    # starts one — so the platform-acting-for-itself case this rule's `# reach:`
-    # valve exists for does not arise in this app, and taking the valve would be
-    # choosing the weaker of two available answers.
-    # REACHABILITY FIRST, then the capability — `require` is asked at the
-    # node the ROW names since resolution landed, so asking it first turned
-    # an anchor outside this hat's subtree into `forbidden`. Not-there
-    # before not-yours, as `core.revoke_membership` orders it.
+    # Reachability before capability: not-there before not-yours (house rule 26).
     if not may_be_named(actor, message):
         raise NotFound()
     require(actor, "message.send", message.recipient)
     if message.status not in SENDABLE:
-        return message
+        return StepOutcome(message=message)
 
     at = timezone.now()
-    reason = _refusal(
+    reason, hold = _consent_wall(
         preference=get_preference(
             tenant=tenant,
             recipient=message.recipient,
@@ -1281,34 +1057,17 @@ def mark_message_sending(*, tenant: Tenant, actor: Actor, message: Message) -> M
             org=message.organization,
             actor=actor,
         ),
-        # The row's own category, not the template's: it was denormalised at
-        # send time for exactly this kind of later read, and the template may
-        # have been revised or retired since.
+        # The row's denormalised category: the template may have been revised since.
         category=message.category,
         at=at,
-        # The tenant seam again, at the transport edge — the same binding point
-        # `send()` used, so a window a product configures applies to a message
-        # that has been asleep for a day as well as to one being written now.
         tenant=tenant,
     )
     if reason in TEMPORAL_REASONS:
-        # **A temporal lever delays; it does not kill** (ADR comms-10).
-        # Nothing is written but the status, and the status is written back to
-        # `queued` — which is the true one: this message is still waiting to go
-        # out, and a `sending` row would claim a transport had it. No refusal
-        # row, no `comms.message.suppressed`, no `suppressed_reason`: none of
-        # those are true, and a suppression event for a message that is about to
-        # be delivered is the ledger lying in the noisiest possible way.
-        #
-        # The caller reads the fork off the status, and the three answers are
-        # disjoint by construction: `sending` cleared, `suppressed` was refused
-        # for good, `queued` is "not yet". The run is already alive and can
-        # wait — which is the whole reason this is a delay and not a re-enqueue
-        # (ADR comms-10's own rejected alternative).
+        # A temporal lever delays: back to `queued`, no event, no suppression (ADR comms-10).
         if message.status != Message.Status.QUEUED:
             message.status = Message.Status.QUEUED
             message.save(update_fields=["status", "updated_at"])
-        return message
+        return StepOutcome(message=message, deferred_seconds=hold)
 
     if reason:
         message.status = Message.Status.SUPPRESSED
@@ -1316,13 +1075,14 @@ def mark_message_sending(*, tenant: Tenant, actor: Actor, message: Message) -> M
         message.suppressed_at = at
         message.save(update_fields=["status", "suppressed_reason", "suppressed_at", "updated_at"])
         emit(name=MESSAGE_SUPPRESSED, tenant=tenant, payload=_payload(message), actor=actor)
-        return message
+        return StepOutcome(message=message)
 
     message.status = Message.Status.SENDING
     message.save(update_fields=["status", "updated_at"])
-    return message
+    return StepOutcome(message=message)
 
 
+# door: only this tree's own hands reach this; the delivery workflow's success step
 @service
 def record_message_sent(
     *,
@@ -1377,6 +1137,7 @@ def record_message_sent(
     return message
 
 
+# door: only this tree's own hands reach this; the delivery workflow's failure step
 @service
 def record_message_failed(*, tenant: Tenant, actor: Actor, message: Message, error: str) -> Message:
     """The attempts are spent and it did not go out.
@@ -1531,6 +1292,7 @@ def _record_complaint(
     return message
 
 
+# door: no door calls this; the signed status webhook's handler in providers.py does, as the system
 @service
 def record_delivery_status(
     *,
@@ -1791,7 +1553,7 @@ def record_engagement(
     emit(
         name=ENGAGEMENT_EVENTS[slug],
         tenant=tenant,
-        payload=MessageEngagementOut.from_orm(engagement).model_dump(mode="json"),
+        payload=event_payload(MessageEngagementOut.from_orm(engagement)),
         actor=actor,
     )
     return engagement
@@ -1900,7 +1662,7 @@ def register_device(
     emit(
         name=DEVICE_REGISTERED,
         tenant=tenant,
-        payload=DeviceOut.from_orm(device).model_dump(mode="json"),
+        payload=event_payload(DeviceOut.from_orm(device)),
         actor=actor,
     )
     return device
@@ -1940,7 +1702,7 @@ def retire_device(*, tenant: Tenant, actor: Actor, device: Device) -> Device:
     emit(
         name=DEVICE_RETIRED,
         tenant=tenant,
-        payload=DeviceOut.from_orm(device).model_dump(mode="json"),
+        payload=event_payload(DeviceOut.from_orm(device)),
         actor=actor,
     )
     return device
@@ -2049,15 +1811,7 @@ def _note_suppression(*, tenant: Tenant, actor: Actor, connection: Connection | 
 
 
 def _surge_payload(surge: SuppressionSurge) -> dict[str, Any]:
-    """What a subscriber is told about a surge. **The state, not a message.**
-
-    Hand-built rather than an `Out` schema because there is no door that
-    publishes a surge — no route, no tool, no list — and a schema nothing
-    serves would be a contract with no reader. What travels is the connection
-    the flood came through, the window it was counted over, the threshold it
-    crossed and the worst count seen: enough for an alert rule to fire on and
-    for a human to know where to look, and nothing about any person.
-    """
+    """What a subscriber hears of a surge: connection, window, threshold, peak; no person."""
     return {
         "v": V,
         "id": str(surge.pk),
@@ -2070,6 +1824,7 @@ def _surge_payload(surge: SuppressionSurge) -> dict[str, Any]:
     }
 
 
+# door: no door calls this; the status webhook's suppression count opens a surge, as the system
 @service
 def start_suppression_surge(
     *, tenant: Tenant, actor: Actor, connection: Connection, count: int
@@ -2112,10 +1867,12 @@ def start_suppression_surge(
         count=count,
         threshold=SURGE_THRESHOLD,
     )
+    # payload: a surge has no door and so no Out; `_surge_payload` is its one shape.
     emit(name=SUPPRESSION_SURGED, tenant=tenant, payload=_surge_payload(surge), actor=actor)
     return surge
 
 
+# door: no door calls this; the status webhook's suppression count closes a surge, as the system
 @service
 def close_suppression_surge(
     *, tenant: Tenant, actor: Actor, surge: SuppressionSurge, count: int
@@ -2146,6 +1903,7 @@ def close_suppression_surge(
         count=count,
         threshold=SURGE_THRESHOLD,
     )
+    # payload: a surge has no door and so no Out; `_surge_payload` is its one shape.
     emit(name=SUPPRESSION_RECOVERED, tenant=tenant, payload=_surge_payload(surge), actor=actor)
     return surge
 
@@ -2551,12 +2309,7 @@ def archive_recipient(*, tenant: Tenant, actor: Actor, recipient: Recipient) -> 
         emit(
             name=RECIPIENT_ARCHIVED,
             tenant=tenant,
-            # Excluded by hand until core's `event_payload()` helper lands; an
-            # event payload never carries a per-viewer field — `allowed_acts` is
-            # what one caller may press, and a subscriber is somebody else.
-            payload=RecipientOut.from_orm(recipient).model_dump(
-                mode="json", exclude={"allowed_acts"}
-            ),
+            payload=event_payload(RecipientOut.from_orm(recipient)),
             actor=actor,
         )
     return recipient
@@ -2583,12 +2336,7 @@ def restore_recipient(*, tenant: Tenant, actor: Actor, recipient: Recipient) -> 
         emit(
             name=RECIPIENT_RESTORED,
             tenant=tenant,
-            # Excluded by hand until core's `event_payload()` helper lands; an
-            # event payload never carries a per-viewer field — `allowed_acts` is
-            # what one caller may press, and a subscriber is somebody else.
-            payload=RecipientOut.from_orm(recipient).model_dump(
-                mode="json", exclude={"allowed_acts"}
-            ),
+            payload=event_payload(RecipientOut.from_orm(recipient)),
             actor=actor,
         )
     return recipient

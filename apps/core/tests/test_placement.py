@@ -23,10 +23,10 @@ opposite directions:
 
 Both are one bug: the landing node was a constant instead of the context.
 
-**What is true now.** The acting hat at grant time IS the landing node, recorded
+**What is true now.** The hat at grant time IS the landing node, recorded
 on the row. Every authority question — issue, supersede, revoke, the escalation
 wall, the removal ceiling — is asked AT that node. The accepted membership lands
-exactly there. An omitted placement is the acting hat and never the root, on
+exactly there. An omitted placement is the hat and never the root, on
 both doors. **A caller can only ever be surprised narrower.**
 
 **A flat product pays nothing**, and that is asserted rather than assumed: with
@@ -103,7 +103,7 @@ def branch_admin(tenant: Tenant, owner: User, branch: Organization) -> User:
     # `apps.workflows` in behind it.
     user = create_user(
         email="branch-admin@example.com",
-        password="a-long-enough-password",  # pragma: allowlist secret
+        password="a-long-enough-password",  # noqa: S106 — a throwaway password a test user is made with  # pragma: allowlist secret
     )
     add_membership(
         user=user,

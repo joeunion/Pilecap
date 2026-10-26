@@ -1,0 +1,61 @@
+from collections.abc import Iterator
+from typing import Any
+
+import pytest
+
+from apps.example.models import Widget
+from apps.example.services import create_widget
+from pilecap import Actor
+from pilecap.accounts import User, create_user
+from pilecap.surfaces import STAFF, Surface
+from pilecap.tenancy import Organization, Tenant, add_membership
+from pilecap.testing import actor_for, by_key, forget_declarations, system_actor
+
+STAFF_HOST = "localhost"
+CUSTOMER_HOST = "customer.localhost"
+CUSTOMER_ROLE = "customer"
+
+
+def _a_customer(*, email: str, tenant: Tenant) -> User:
+    person = create_user(email=email)
+    add_membership(
+        user=person,
+        tenant=tenant,
+        role=CUSTOMER_ROLE,
+        is_default=True,
+        actor=system_actor(tenant=tenant),
+    )
+    return person
+
+
+@pytest.fixture
+def two_hosts(settings: Any) -> Iterator[Surface]:
+    """Both hosts bound, as a deployment binds them. Answers the customer surface."""
+    forget_declarations()
+    settings.SURFACE_HOSTS = {STAFF: STAFF_HOST, CUSTOMER_ROLE: CUSTOMER_HOST}
+    settings.ALLOWED_HOSTS = [*settings.ALLOWED_HOSTS, CUSTOMER_HOST]
+    yield by_key(CUSTOMER_ROLE)
+    forget_declarations()
+
+
+@pytest.fixture
+def customer(tenant: Tenant, owner: User) -> User:
+    """A customer's person: one membership in the tenant, role `customer`, at its root."""
+    return _a_customer(email="pat@customer.example", tenant=tenant)
+
+
+@pytest.fixture
+def customer_actor(customer: User, tenant: Tenant, root_org: Organization) -> Actor:
+    return actor_for(user=customer, tenant=tenant, org=root_org)
+
+
+@pytest.fixture
+def other_customer(other_tenant: Tenant, stranger: User) -> User:
+    """A customer of ANOTHER tenant — the reader who must see nothing of this one."""
+    return _a_customer(email="lee@elsewhere.example", tenant=other_tenant)
+
+
+@pytest.fixture
+def widget(tenant: Tenant, owner_actor: Actor, recorded_workflow_starts: None) -> Widget:
+    """The staff's widget the customer asks about."""
+    return create_widget(tenant=tenant, actor=owner_actor, name="Left mount")

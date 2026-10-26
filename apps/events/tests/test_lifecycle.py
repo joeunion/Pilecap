@@ -66,6 +66,7 @@ from apps.core.audit import AuditEntry
 from apps.core.lifecycle import Lifecycle, LifecycleKind, lifecycle_of
 from apps.core.models import Tenant
 from apps.core.time import now
+from apps.core.types import Swept
 from apps.events import activities, services
 from apps.events.models import Delivery, Event, Outbox, WebhookEndpoint
 from apps.events.types import PurgeExpired, PurgeOutcome
@@ -120,7 +121,7 @@ def endpoint(tenant: Tenant) -> WebhookEndpoint:
     return WebhookEndpoint.objects.create(
         tenant=tenant,
         url="https://subscriber.example/hook",
-        secret="a-shared-secret",  # pragma: allowlist secret
+        secret="a-shared-secret",  # noqa: S106 — a signing secret the test both signs and verifies with  # pragma: allowlist secret
     )
 
 
@@ -204,15 +205,7 @@ def test_the_purge_is_idempotent(tenant: Tenant, endpoint: WebhookEndpoint) -> N
 
 
 def test_the_declared_chain_reaches_the_delivery_sweeper() -> None:
-    """Schedule -> workflow -> activity -> service, walked link by link.
-
-    The same chain house rule 31 walks, asserted here for the reason its own
-    `does_not_cover` gives: the rule proves the chain is written down and says
-    nothing about the WINDOW the schedule carries or the filter at the end of
-    it. A schedule pointed at the right workflow with `delivery_retention_days`
-    it never set would sweep with a window of zero, which is every finished
-    delivery in the deployment.
-    """
+    """The schedule carries the window `Delivery.lifecycle` quotes; rule 31 walks the rest."""
     declaration = next(one for one in activities.SCHEDULES if one.name == "events.purge-expired")
     action: Any = declaration.schedule("djb-tests").action
 
@@ -223,20 +216,11 @@ def test_the_declared_chain_reaches_the_delivery_sweeper() -> None:
     window: PurgeExpired = action.args[0]
     assert window.delivery_retention_days == activities.DELIVERY_RETENTION_DAYS == 90
 
-    # The activity that workflow executes, read from the workflow's own source —
-    # `execute_activity` takes the name as a string and there is no runtime edge.
-    from apps.events.workflows import PurgeExpiredWorkflow
-
-    assert "purge_expired_records" in inspect.getsource(PurgeExpiredWorkflow)
-
-    # And the service that activity reaches, which is what `Delivery.lifecycle`
-    # named. Resolved through the dotted path the declaration actually carries,
-    # so a rename that misses the declaration fails here.
+    # The service `Delivery.lifecycle` names, through the dotted path it carries.
     declared = lifecycle_of(Delivery)
     assert declared is not None
     module_path, _, attribute = declared.purged_by.rpartition(".")
     assert getattr(importlib.import_module(module_path), attribute) is services.purge_deliveries
-    assert "purge_deliveries" in inspect.getsource(activities.purge_expired_records)
 
 
 def test_one_run_of_the_sweep_purges_and_leaves_a_platform_audit_row(
@@ -294,6 +278,17 @@ def test_a_replayed_history_without_the_window_does_not_sweep_everything(
 
     assert outcome.deliveries == 0
     assert Delivery.objects.count() == 1
+
+
+@pytest.mark.parametrize("sweep", ["purge_dispatched_outbox", "purge_deliveries"])
+def test_each_daily_sweep_is_on_the_factorys_one_signature(sweep: str) -> None:
+    """ADR core-22 absence 1: `(*, before, tenant: None) -> Swept`, `daily_purge`'s shape."""
+    signature = inspect.signature(getattr(services, sweep), eval_str=True)
+
+    assert list(signature.parameters) == ["before", "tenant"]
+    assert {p.kind for p in signature.parameters.values()} == {inspect.Parameter.KEYWORD_ONLY}
+    assert signature.parameters["tenant"].annotation is None
+    assert signature.return_annotation is Swept
 
 
 # --- 3 · The census over this app --------------------------------------------

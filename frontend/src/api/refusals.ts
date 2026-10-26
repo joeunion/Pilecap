@@ -22,13 +22,30 @@ export type WireRemedy = components["schemas"]["RefusalRemedy"];
 export type RegistryCode = WireRefusal["code"];
 
 /**
+ * THE REMEDY DESTINATIONS THIS CLIENT READS — a remedy's `destination` is a
+ * machine token, `<kind>:<what>`, composed once server-side
+ * (`apps/core/exceptions.py`). `self:` names something the caller can do
+ * itself, `route:` an operation a page may draw (`@pilecap/ui/remedy-door` turns
+ * it into a link), `header:` a request header the caller can change. `reread`
+ * is the one `self:` destination a face acts on: a re-read answers it, and its
+ * one act is *Reload*. Declared once; every reader reads it from here.
+ */
+// road: remedy_destination — The remedy destination kinds this client reads, declared once. · example: frontend/src/screens/widget/widget-edit.tsx::rereadAnswers
+export const REMEDY_DESTINATIONS = {
+    self: "self:",
+    route: "route:",
+    header: "header:",
+    reread: "self:reread",
+} as const;
+
+/**
  * THE CLOSED TRANSPORT VOCABULARY — two HALVES, and no member of either is a
- * registry code (P16 ruling 2, "no fifth state").
+ * registry code, and none is a fifth `SurfaceState` (fe-conventions §3).
  *
  * The halves are `FETCH_TRANSPORT_CODES` (a request that never got an answer)
  * and `SOCKET_CLOSE_STATES` (a socket that ended without one). It is one
  * vocabulary because it is one question — *what happened instead of an answer*
- * — and P16 ruling 2 says a vocabulary may GROW where a state list may not:
+ * — and a vocabulary may GROW where a state list may not:
  * the four `SurfaceState`s are a closed question a screen answers once, and
  * the things that can go wrong are an open population. Growing this list is
  * therefore legal and is deliberately LOUD: `refusals.test.ts` asserts the
@@ -89,26 +106,23 @@ export function unhandledRefusal(refusal: never): never {
     throw new Error(`unhandled Refusal: ${JSON.stringify(refusal)}`);
 }
 
+/** The statuses a gateway answers when the server behind it never did. */
+const GATEWAY_STATUSES: ReadonlySet<number> = new Set([502, 503, 504]);
+
 /**
  * A body that came back from the door, turned into the refusal it claims to be.
  *
- * A refusal whose body is not the envelope is still a refusal — a proxy's own
- * error page, an HTML 502 — and it is mapped to the registry member with the
- * one code the document already carries for "something went wrong here"
- * (`error`), never to a transport code: a response DID exist, so calling it a
- * transport failure would be a second lie about what happened.
+ * The envelope is the registry's refusal, as sent; anything else carries no registry code and is the transport member.
+ * A gateway status with no envelope is the unreachable case, in its sentence; any other unreadable body says the reason did not arrive readably.
  */
-export function registryRefusal(body: unknown): RegistryRefusal {
+export function registryRefusal(body: unknown, status?: number): Refusal {
     if (isWireRefusal(body)) {
         return { kind: "registry", refusal: body };
     }
-    return {
-        kind: "registry",
-        refusal: {
-            code: "error",
-            detail: TRANSPORT_COPY.unreadable_refusal,
-        },
-    };
+    if (status !== undefined && GATEWAY_STATUSES.has(status)) {
+        return { kind: "transport", code: "network_unreachable", detail: TRANSPORT_COPY.network_unreachable };
+    }
+    return { kind: "transport", code: "network_unreachable", detail: TRANSPORT_COPY.unreadable_refusal };
 }
 
 /**

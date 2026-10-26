@@ -1,120 +1,73 @@
 #!/usr/bin/env bash
-# THIS FILE IS EXECUTED, AND IT IS BASH — not POSIX sh, and not zsh. The
-# shebang above is honoured by `./this`; `sh this` and `zsh this` IGNORE it,
-# and neither of them fails where the mistake was made. Measured on this tree:
-#
-#   zsh scripts/queue_cited.sh   exit 2 blaming the TREE ("this is not a
-#                                checkout root") for zsh's word-splitting
-#   zsh scripts/kill_mine.sh     an ordinary-looking census of nothing
-#   sh  scripts/sweep.sh         "lifecycle.sh: line 152: syntax error"
-#
-# A wrong shell here does not crash. It ANSWERS, and the answer looks like the
-# tree's fault.
-#
-# TWO TESTS, because on macOS `/bin/sh` IS bash: BASH_VERSION is set under
-# `sh x.sh` and only POSIX MODE tells the two apart (SHELLOPTS carries
-# `posix`). On Linux `/bin/sh` is dash and the first test is the one that
-# fires. Neither test alone covers both machines.
-#
-# A SOURCED library must never carry this. There the interpreter is the
-# caller's ON PURPOSE and an `exit` would kill the caller's shell — the
-# argument is scripts/db.sh's, at scripts/db.sh:50-57, and it is why db.sh is
-# the one executable in this tree deliberately without a belt.
-[ -n "${BASH_VERSION:-}" ] || {
-    echo "${0##*/}: must run under bash — not sh, not zsh. Try \`bash ${0}\`." >&2
-    exit 2
-}
-case ":${SHELLOPTS:-}:" in
-*:posix:*)
-    echo "${0##*/}: bash is in POSIX mode — which is what \`sh ${0}\` does on a" >&2
-    echo "  machine whose /bin/sh is bash. Try \`bash ${0}\`." >&2
-    exit 2
-    ;;
-esac
+. "$(dirname -- "${BASH_SOURCE:-$0}")/bash_only.sh" || exit 2
 # Fresh clone to running, idempotently. Safe to run again at any time, and safe
 # to run from a second worktree while the first one's stack is up: compose.yaml
 # pins the project name, so every checkout of this repository sees the same
 # three containers instead of trying to start its own on the same ports.
 set -euo pipefail
 
+# The arguments are read before anything else: a flag this script does not know never reaches a step.
+setup_usage() {
+    cat <<'USAGE'
+usage: setup.sh [-h | --help]
+
+  Takes this checkout from a fresh clone to running. It is idempotent and
+  re-runnable at any time, from any worktree: it repairs what is missing and
+  leaves what is right alone. Its steps, in order:
+
+    local main                           create a local `main` on a tag clone
+    environment file                     .env regenerated from .env.example, values kept
+    python dependencies                  uv sync
+    frontend toolchain                   pnpm install in frontend/, skipped without pnpm
+    services                             the compose stack, up and healthy
+    zitadel machine credential           the platform service account's token into .env
+    sign-in door (classic login)         the identity platform's login door
+    database for this worktree           this checkout's own Postgres database
+    migrations                           manage.py migrate
+    zitadel identity configuration       manage.py zitadel_seed
+    object storage bucket for this worktree
+                                         this checkout's own bucket, named in .env
+    integrations                         what this deployment talks to, real or stand-in
+    git hooks                            core.hooksPath set to scripts/githooks
+
+  The one database it makes is derived from this checkout's path
+  (scripts/db.sh); a DATABASE_NAME already in the environment wins.
+
+  It takes no flag but --help. Anything else is refused (exit 2) before any step.
+
+exit: 0 setup complete · 1 a step ran and what it found is wrong · 2 refused,
+      or could not look.
+USAGE
+}
+SETUP_HELP=""
+for arg in "$@"; do
+    case "$arg" in
+    -h | --help) SETUP_HELP=1 ;;
+    *)
+        echo "!! setup.sh takes no argument but --help; got '${arg}'. Nothing was installed, started or created — ./scripts/setup.sh --help" >&2
+        exit 2
+        ;;
+    esac
+done
+if [ -n "$SETUP_HELP" ]; then
+    setup_usage
+    exit 0
+fi
+
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 
 # >>> step-wall >>>
-# THE FIRST THING A STRANGER RUNS PRINTS A NUMBER. Every step says
-# how long it took and the run says its total, because "the first ten minutes"
-# was an estimate nobody could check: every duration in the ledgers for this
-# script was hand-copied from somebody's terminal, and a hand-copied number is
-# a number nobody can re-measure.
-#
-# THE CLOCK IS `scripts/rung_start.sh`'s, COPIED — not a third one. That file
-# owns the portability ladder below (bash 5's EPOCHREALTIME · GNU date's
-# `%s%3N` · perl · python3 · whole seconds, declared when it is the one used)
-# and the argument for each rung of it is in its own header, above its
-# `now_ms`. Principle 13: one derivation of one number. If this ladder is ever
-# wrong, it is wrong in `rung_start.sh` first and this block is re-copied —
-# never patched here alone. The line GRAMMAR is the gate's `leg` grammar
-# (`scripts/check.sh`'s `leg`/`leg_done`: `  (<name>: <n>s)`), because these
-# steps carry names rather than ordinals; the number's resolution is
-# `rung_start.sh`'s `fmt_ms`, so a fast step reads `0.31s` instead of `0s`.
-#
-# THE CLOSE IS DEFERRED — `step` closes the step before it, and `setup_total`
-# closes the last one — so a step that exits mid-way through under `set -e`
-# prints no elapsed at all rather than a time for work that did not finish.
-CLOCK=""
-_probe=$(date +%s%3N 2>/dev/null || echo x)
-if [ -n "${EPOCHREALTIME:-}" ]; then
-    CLOCK=bash5
-elif case "$_probe" in '' | *[!0-9]*) false ;; *) true ;; esac; then
-    CLOCK=gnudate
-elif command -v perl >/dev/null 2>&1; then
-    CLOCK=perl
-elif command -v python3 >/dev/null 2>&1; then
-    CLOCK=python3
-else
-    CLOCK=seconds
-fi
+# Every step prints its wall and the run its total, through `scripts/steps.sh` and its one clock.
+# The close is deferred — `step` closes the step before it, `setup_total` the last — so a step that dies prints no wall.
+# shellcheck source=scripts/steps.sh
+. "${ROOT}/scripts/steps.sh" || exit 2
 
-now_ms() {
-    case "$CLOCK" in
-    bash5)
-        local us=${EPOCHREALTIME/./}
-        printf '%s' "${us%???}"
-        ;;
-    gnudate) date +%s%3N ;;
-    perl) perl -MTime::HiRes=time -e 'printf "%.0f", time()*1000' ;;
-    python3) python3 -c 'import time; print(int(time.time()*1000))' ;;
-    *) printf '%s000' "$(date +%s)" ;;
-    esac
-}
-
-fmt_ms() {
-    awk -v ms="$1" 'BEGIN { printf "%.2fs", ms / 1000 }'
-}
-
-STEP_NAME=""
-STEP_START=0
-RUN_START=$(now_ms)
-
-step_end() {
-    [ -n "$STEP_NAME" ] || return 0
-    printf '  (%s: %s)\n' "$STEP_NAME" "$(fmt_ms $(($(now_ms) - STEP_START)))"
-    STEP_NAME=""
-}
-
-step() {
-    step_end
-    printf '\n== %s\n' "$1"
-    STEP_NAME="$1"
-    STEP_START=$(now_ms)
-}
-
-# The last line of a run, and it is the last line on purpose: the number a
-# reader came for is the one under the guidance block, where the eye stops.
+# The run's last line, under the guidance block where the eye stops.
 setup_total() {
-    step_end
-    printf '\nsetup: total %s\n' "$(fmt_ms $(($(now_ms) - RUN_START)))"
-    if [ "$CLOCK" = "seconds" ]; then
+    step_close
+    printf '\nsetup: total %s\n' "$(clock_fmt $(($(clock_ms) - RUN_START)))"
+    if [ "$GATE_CLOCK" = "seconds" ]; then
         printf '  (clock resolution: whole seconds — no sub-second clock on this host)\n'
     fi
 }
@@ -176,47 +129,26 @@ make_tmp() {
     printf -v "$__djb_target" '%s' "$(mktemp "${DJB_TMP_DIR}/tmp.XXXXXXXX")"
 }
 
-# The compose services this repository needs, and where each publishes.
-# The stack a fresh clone needs up. MAILPIT IS IN THIS LIST BECAUSE
-# `compose.yaml` SAYS IT IS THE CONTRACT: "every email the product sends
-# on a laptop, caught and readable at http://127.0.0.1:8025 instead of
-# delivered". A setup that brought up everything except the mail catcher left
-# that promise true only for whoever thought to start it by hand — and the
-# failure it exists to prevent is a laptop sending a real invitation to a real
-# customer, which is exactly the kind of thing nobody starts a container for
-# until after it has happened. It declares a healthcheck like every other
-# service here, so `wait_healthy` covers it with no special case.
-# MINIO AND MEILISEARCH JOINED LATER, each in the rung that gave it a reader —
-# NOT when the containers themselves were first added, deliberately: adding a
-# container to `compose.yaml` with nothing dialling it does not make a service
-# a fresh clone is told it needs. Real storage tests put real bytes through
-# MinIO; real engine tests drive Meilisearch live — a laptop without
-# them up now FAILS those tests rather than skipping them, which is the whole
-# reason they belong here.
-SERVICES=(db redis temporal zitadel mailpit minio meilisearch)
-
-# Health of one compose service, as compose reports it. Empty when the service
-# is not running at all.
-service_health() {
-    # READ WHOLE, THEN SLICE. `docker compose ps … | head -1` under this file's
-    # `set -o pipefail` orphans compose mid-write once its output passes the
-    # kernel's 64 KiB pipe buffer, and the pipeline's 141 would kill setup at a
-    # line that had already read the health it wanted. `|| true` keeps a compose
-    # that is not running from being fatal, which is what the old `2>/dev/null`
-    # plus an empty answer already meant.
-    local reported
-    reported="$(docker compose ps --format '{{.Health}}' "$1" 2>/dev/null || true)"
-    printf '%s\n' "${reported%%$'\n'*}"
-}
-
-# True when every service is already up and healthy — which is the normal case
-# in a second worktree, and the case `docker compose up` used to make worse.
-stack_is_healthy() {
-    local service
-    for service in "${SERVICES[@]}"; do
-        [ "$(service_health "$service")" = "healthy" ] || return 1
-    done
-    return 0
+# The services are compose's no-profile set (`ci_stack_services`), the runner's
+# population, and they come up through `ci_stack_organs` — the workflows' recipe.
+# shellcheck source=scripts/ci_stack.sh
+. "${ROOT}/scripts/ci_stack.sh"
+SERVICES=()
+# setup_services — fill SERVICES once; could-not-look when compose will not answer.
+setup_services() {
+    local listed
+    [ "${#SERVICES[@]}" -eq 0 ] || return 0
+    listed="$(ci_stack_services)" || {
+        echo "!! setup: COULD NOT LOOK — \`docker compose config --services\` did not answer," >&2
+        echo "   so the set of services this checkout needs is unknown. Nothing was started." >&2
+        exit 2
+    }
+    # shellcheck disable=SC2206  # one service name per line, no spaces by compose's own grammar
+    SERVICES=($listed)
+    [ "${#SERVICES[@]}" -gt 0 ] || {
+        echo "!! setup: COULD NOT LOOK — compose.yaml declares no service outside a profile." >&2
+        exit 2
+    }
 }
 
 # Sets KEY=VALUE in .env, in place: replacing the line if the key is already
@@ -455,25 +387,81 @@ env_sync_from_example() {
 }
 # <<< env-sync <<<
 
-# Waits for a compose service to report healthy. Every service in compose.yaml
-# declares a healthcheck, so "up" is never mistaken for "ready".
-wait_healthy() {
-    local service="$1" attempts="${2:-90}"
-    printf 'waiting for %s' "$service"
-    for _ in $(seq 1 "$attempts"); do
-        if [ "$(service_health "$service")" = "healthy" ]; then
-            printf ' ready\n'
-            return 0
-        fi
-        printf '.'
-        sleep 1
-    done
-    printf '\n'
-    echo "${service} did not become healthy; check 'docker compose logs ${service}'" >&2
-    return 1
+# >>> services >>>
+# The one-shots and who waits on them, as "<one-shot>\t<dependant>" lines: a
+# one-shot is a service another service's `depends_on` names with `condition:
+# service_completed_successfully`, compose's own name for a service that runs
+# once and exits. Read from the rendered file, never a hand list.
+one_shot_edges() {
+    local rendered
+    rendered="$(docker compose config 2>/dev/null)" || return 1
+    compose_once_members <<<"$rendered" | awk -F '\t' '$1 == "once" { print $2 "\t" $3 }'
 }
 
-# >>> services >>>
+# "compose project <name>, ports <a/b/…>": the project and every published host
+# port of the services this checkout runs, read from the rendered compose file —
+# the ports the reuse line vouches for, so never a list typed beside it.
+stack_identity() {
+    local rendered said=""
+    make_tmp said
+    rendered="$(docker compose config 2>"$said")" || {
+        gate_tool_said "$said"
+        return 1
+    }
+    awk -v wanted=" ${SERVICES[*]} " '
+        /^name: / { project = $2 }
+        /^[^ ]/ { in_services = ($0 == "services:"); next }
+        in_services && /^  [^ ]/ { service = $1; sub(/:$/, "", service); next }
+        in_services && /^ +(- )?published: / && index(wanted, " " service " ") {
+            port = $NF; gsub(/"/, "", port); ports = ports (ports == "" ? "" : "/") port
+        }
+        END {
+            if (project == "") exit 1
+            printf "compose project %s, ports %s\n", project, (ports == "" ? "<none published>" : ports)
+        }
+    ' <<<"$rendered" || {
+        echo "   \`docker compose config\` rendered no \`name:\` line; its first line: ${rendered%%$'\n'*}" >&2
+        return 1
+    }
+}
+
+# True when every service is done: a long-running one running and healthy, a
+# one-shot exited 0 — or, its container removed, every service that waits on it
+# done, since compose starts none of those before the one-shot completed.
+stack_is_healthy() {
+    # READ WHOLE, THEN SLICE: one `ps -a` for the stack, never `| head` under
+    # this file's `set -o pipefail` (a 141 once killed setup mid-read).
+    local rows edges
+    setup_services
+    rows="$(docker compose ps -a --format '{{.Service}}\t{{.State}}\t{{.Health}}\t{{.ExitCode}}' 2>/dev/null)" || return 1
+    edges="$(one_shot_edges)" || return 1
+    {
+        [ -z "$edges" ] || printf '%s\n' "$edges" | sed 's/^/E\t/'
+        [ -z "$rows" ] || printf '%s\n' "$rows" | sed 's/^/R\t/'
+    } | awk -F '\t' -v wanted="${SERVICES[*]}" '
+        $1 == "E" { once[$2] = 1; waiters[$2] = waiters[$2] " " $3; next }
+        $1 == "R" {
+            rows[$2]++
+            if ($3 == "running" && $4 == "healthy") up[$2]++
+            if ($3 == "exited" && $5 == "0") finished[$2]++
+            next
+        }
+        function done(service, depth,    n, i, list) {
+            if (depth > 32) return 0
+            if (!(service in once)) return rows[service] > 0 && up[service] == rows[service]
+            if (rows[service] > 0) return finished[service] == rows[service]
+            n = split(waiters[service], list, " ")
+            for (i = 1; i <= n; i++) if (!done(list[i], depth + 1)) return 0
+            return n > 0
+        }
+        END {
+            n = split(wanted, list, " ")
+            for (i = 1; i <= n; i++) if (!done(list[i], 0)) exit 1
+            exit 0
+        }
+    '
+}
+
 # THE STACK IS PULLED BEFORE IT IS STARTED, AND A PULL THAT FAILS IS A REFUSAL
 # — exit 2, naming the image and the registry — rather than the shape this used
 # to have, which was `docker compose up -d` discovering the same thing halfway
@@ -484,8 +472,8 @@ wait_healthy() {
 # The measurement behind it (2026-09-12): `compose.yaml` pinned MinIO's Docker
 # Hub release, Docker Hub stopped serving that tag, and the first thing a fresh
 # clone runs stopped working. The pin moved to quay.io — and on 2026-09-24 MinIO
-# withdrew every public image, so it moved again, to the owner's ECR Public
-# mirror, by digest (the comment beside the pin in `compose.yaml`). This step is
+# withdrew every public image, so it moved again, to an ECR Public mirror, by
+# digest (the comment beside the pin in `compose.yaml`). This step is
 # what makes each NEXT registry to drop a tag a refusal that names the image
 # instead of a setup that hangs. A registry is a vendor
 # behind a pin (principle 5) and an external system is untrusted (principle 4):
@@ -495,17 +483,20 @@ wait_healthy() {
 # does anyway, so this adds a name for a failure that was already going to
 # happen rather than a second network act; `manifest inspect` needs experimental
 # mode on some daemons (`deploy/provision.sh` records the same thing about it).
+# It runs only after a refused pull, to put the registry's own words on it.
 #
-# The reuse path pulls NOTHING. A second worktree finding the stack already
-# healthy is the normal case, and a pull there would spend a fresh clone's
-# network on every `setup.sh` in the house.
+# A stack `stack_is_healthy` calls done is reused and nothing is pulled; any
+# other answer pulls, then starts.
 services_up() {
+    setup_services
     if stack_is_healthy; then
-        # The ports this line names are what it is vouching for; mailpit's 8025
-        # belongs here too, or the message under-reports the stack it just
-        # called healthy. MinIO's 9000 (S3 API) and 9001 (console) and
-        # Meilisearch's 7700 joined under the same rule.
-        echo "reusing running stack (compose project djangobootstrap, ports 5432/6379/7233/8081/8025/9000/9001/7700)"
+        local identity
+        identity="$(stack_identity)" || {
+            echo "!! setup: COULD NOT LOOK — the stack answered healthy and then \`docker compose config\`" >&2
+            echo "   did not name it, so the stack this run would reuse cannot be named. Nothing was started." >&2
+            exit 2
+        }
+        echo "reusing running stack (${identity})"
         return 0
     fi
 
@@ -523,20 +514,71 @@ services_up() {
         echo "   The image references this checkout asks for, each with the registry" >&2
         echo "   host it would be fetched from:" >&2
         services_image_census >&2
-        echo "   Read the pull transcript above for the one that failed. A registry" >&2
-        echo "   that has stopped serving a pinned tag (MinIO's release on Docker Hub," >&2
-        echo "   2026-09-12, then on quay.io, 2026-09-24) looks exactly like this, and" >&2
-        echo "   the fix is in compose.yaml beside the pin." >&2
+        if [ -n "${DJB_STACK_REGISTRY:-}" ]; then
+            echo "   the stack registry: ${DJB_STACK_REGISTRY} (DJB_STACK_REGISTRY)" >&2
+        else
+            echo "   the stack registry: docker.io (DJB_STACK_REGISTRY unset)" >&2
+        fi
+        refused_pull_cause "$pull_log" >&2
         exit 2
     fi
 
-    docker compose up -d "${SERVICES[@]}"
-    local service
-    for service in "${SERVICES[@]}"; do
-        # Zitadel's first start on an empty database runs every migration and
-        # then the first-instance bootstrap; it is the slow one here.
-        wait_healthy "$service" 180
-    done
+    ci_stack_organs "${SERVICES[@]}"
+}
+
+# The cause of a refused pull, in the registry's words: `docker manifest
+# inspect` of the first image the transcript names as failing, its first stderr
+# line verbatim, then the remedy for whichever known cause that line names.
+refused_pull_cause() {
+    local transcript images line image service ref="" said="" rc=0 host first
+    transcript="$(cat "$1")"
+    images="$(docker compose config --images "${SERVICES[@]}" 2>/dev/null || true)"
+    while IFS= read -r line; do
+        case "$line" in *[Ee]rror*) ;; *) continue ;; esac
+        while IFS= read -r image; do
+            [ -n "$image" ] && [[ "$line" == *"$image"* ]] && ref="$image" && break
+        done <<<"$images"
+        [ -z "$ref" ] || break
+        for service in "${SERVICES[@]}"; do
+            if [[ "$line" =~ (^|[[:space:]])${service}[[:space:]]+Error ]]; then
+                ref="$(docker compose config --images "$service" 2>/dev/null || true)"
+                ref="${ref%%$'\n'*}"
+                break
+            fi
+        done
+        [ -z "$ref" ] || break
+    done <<<"$transcript"
+    if [ -z "$ref" ]; then
+        echo "   No line of the pull transcript above names a failing image, so no"
+        echo "   manifest was read. Read the transcript for the one that failed."
+        return 0
+    fi
+    host="$(image_registry_host "$ref")"
+    said="$(docker manifest inspect "$ref" 2>&1 >/dev/null)" || rc=$?
+    first="${said%%$'\n'*}"
+    if [ "$rc" -eq 0 ]; then
+        echo "   \`docker manifest inspect ${ref}\` read the manifest (exit 0): ${host}"
+        echo "   serves this pin to this machine now, so the pull failed for another"
+        echo "   reason — read its transcript above."
+        return 0
+    fi
+    echo "   \`docker manifest inspect ${ref}\` exited ${rc}; its first line:"
+    echo "     ${first:-<nothing on stderr>}"
+    case "$(printf '%s' "$first" | tr '[:upper:]' '[:lower:]')" in
+    *authoriz* | *denied* | *forbidden* | *403* | *token* | *credential*)
+        echo "   remedy: a stored login for ${host} is stale or expired — \`docker logout ${host}\`"
+        echo "   (a product pulls these images anonymously) or log in again, then re-run setup."
+        ;;
+    *"manifest unknown"* | *"not found"* | *"no such manifest"*)
+        echo "   remedy: ${host} no longer serves this pin (MinIO's release left Docker Hub"
+        echo "   2026-09-12, then quay.io 2026-09-24) — the fix is in compose.yaml beside the pin."
+        ;;
+    *)
+        echo "   remedy: neither known cause matched. A stale login for ${host} is cleared by"
+        echo "   \`docker logout ${host}\`; a registry that stopped serving the pin is fixed in"
+        echo "   compose.yaml beside the pin."
+        ;;
+    esac
 }
 
 # Every image this checkout's services name, with the registry each would be
@@ -573,6 +615,58 @@ image_registry_host() {
 }
 # <<< services <<<
 
+# >>> zitadel-pat >>>
+# `.env` wins; the volume fills a gap. A copy out of the volume that fails
+# prints Docker's own first line, then the remedy for the cause it names — the
+# destructive one only when the volume answered that it holds no PAT, and last.
+adopt_zitadel_pat() {
+    local pat_file="$1" said="" rc=0 first
+    if grep -q "^ZITADEL_PAT=." .env; then
+        echo "ZITADEL_PAT already in .env; leaving it alone"
+        # Said out loud, because "leaving it alone" is only reassuring if the
+        # reader knows there WAS something else on offer. A silent no-op and a
+        # no-op nobody could have noticed look identical in a transcript.
+        if said="$(docker compose cp zitadel:/zitadel/bootstrap/machine.pat "$pat_file" 2>&1)"; then
+            echo "  (this compose Zitadel offers its own bootstrap PAT; .env's value wins —"
+            echo "   delete the ZITADEL_PAT line and re-run to adopt the container's)"
+        fi
+        return 0
+    fi
+    said="$(docker compose cp zitadel:/zitadel/bootstrap/machine.pat "$pat_file" 2>&1)" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        env_set ZITADEL_PAT "$(tr -d '\r\n' <"$pat_file")"
+        echo "ZITADEL_PAT written to .env from the zitadel_bootstrap volume"
+        return 0
+    fi
+    first="${said%%$'\n'*}"
+    {
+        echo "no PAT: \`docker compose cp zitadel:/zitadel/bootstrap/machine.pat\` exited ${rc}; its first line:"
+        echo "  ${first:-<nothing on stderr>}"
+        case "$(printf '%s' "$first" | tr '[:upper:]' '[:lower:]')" in
+        *"docker daemon"* | *docker.sock* | *"connection refused"*)
+            echo "remedy: Docker is not running — start it, then run this again."
+            ;;
+        *"no such container"* | *"no container"* | *"not running"* | *restarting* | *starting*)
+            echo "remedy: the zitadel container is not up yet — wait until \`docker compose ps zitadel\`"
+            echo "reads healthy, then run this again."
+            ;;
+        *"could not find the file"* | *"no such file"*)
+            echo "remedy: the zitadel_bootstrap volume holds no PAT — this instance was bootstrapped"
+            echo "without one. Issue one for the machine user, or (DESTRUCTIVE: every Zitadel user"
+            echo "and project goes) drop the zitadel database and the zitadel_bootstrap volume,"
+            echo "then run this again."
+            ;;
+        *)
+            echo "remedy: neither known cause matched. In order: start Docker if it is not running;"
+            echo "wait for \`docker compose ps zitadel\` to read healthy and run this again; only if the"
+            echo "volume truly holds no PAT (DESTRUCTIVE: every Zitadel user and project goes), drop"
+            echo "the zitadel database and the zitadel_bootstrap volume, then run this again."
+            ;;
+        esac
+    } >&2
+}
+# <<< zitadel-pat <<<
+
 # >>> local-main >>>
 # ensure_local_main — the first step, and the reason it is first.
 #
@@ -587,7 +681,7 @@ image_registry_host() {
 #   this checkout has NO local refs/heads/main, so the --loop scope has no
 #   fork point to derive the active rung from.
 #
-# — a refusal that is EXEMPLARY and stays exactly as it is (`scripts/loop_tier.sh`;
+# — a refusal that is EXEMPLARY and stays exactly as it is (`quality/djb/scope.py`;
 # its own argument: a thin basis is not a small answer, it is the wrong one).
 # What was wrong was not the refusal but the trap in front of it, and a trap is
 # closed one step earlier: the first thing a stranger runs now gives the
@@ -676,6 +770,12 @@ chmod 600 .env
 step "python dependencies"
 uv sync
 
+step "frontend toolchain"
+# The one installer (`scripts/provision.sh::frontend_install`); never fatal — no frontend/ or no pnpm is a printed skip.
+# shellcheck source=scripts/provision.sh
+. "${ROOT}/scripts/provision.sh"
+frontend_install "$ROOT"
+
 step "services"
 services_up
 
@@ -703,24 +803,7 @@ make_tmp pat_file
 # The same shape as a pin elsewhere in this repository, refused for the same
 # reason: a value a human put somewhere is not this script's to replace
 # without being asked.
-# `.env` wins; the volume fills a gap.
-if grep -q "^ZITADEL_PAT=." .env; then
-    echo "ZITADEL_PAT already in .env; leaving it alone"
-    # Said out loud, because "leaving it alone" is only reassuring if the
-    # reader knows there WAS something else on offer. A silent no-op and a
-    # no-op nobody could have noticed look identical in a transcript.
-    if docker compose cp zitadel:/zitadel/bootstrap/machine.pat "$pat_file" >/dev/null 2>&1; then
-        echo "  (this compose Zitadel offers its own bootstrap PAT; .env's value wins —"
-        echo "   delete the ZITADEL_PAT line and re-run to adopt the container's)"
-    fi
-elif docker compose cp zitadel:/zitadel/bootstrap/machine.pat "$pat_file" >/dev/null 2>&1; then
-    env_set ZITADEL_PAT "$(tr -d '\r\n' <"$pat_file")"
-    echo "ZITADEL_PAT written to .env from the zitadel_bootstrap volume"
-else
-    echo "no PAT: this Zitadel instance was bootstrapped without one." >&2
-    echo "Issue one for the machine user, or reset the instance (drop the" >&2
-    echo "zitadel database and the zitadel_bootstrap volume), then run this again." >&2
-fi
+adopt_zitadel_pat "$pat_file"
 rm -f "$pat_file"
 
 step "sign-in door (classic login)"
@@ -748,101 +831,113 @@ step "sign-in door (classic login)"
 # at something that is not up yet — and `zitadel_seed` below is already the step
 # that reports a shut identity door. A failure to READ or WRITE the feature here
 # prints the manual command on stderr and carries on; it never fails setup.
-# Single-quoted ON PURPOSE: this string is printed for a human to paste, so the
-# `$ZITADEL_PAT` and `$ZITADEL_ISSUER` in it must survive as names they can read
-# out of their own .env — expanding them here would print the credential.
-# shellcheck disable=SC2016
-login_v2_manual='curl -X PUT -H "Authorization: Bearer $ZITADEL_PAT" -H "Content-Type: application/json" -d "{\"loginV2\":{\"required\":false}}" "$ZITADEL_ISSUER/v2/features/instance"'
-zitadel_pat="$(sed -n 's/^ZITADEL_PAT=//p' .env | tail -1)"
-zitadel_base="$(sed -n 's/^ZITADEL_ISSUER=//p' .env | tail -1)"
-if [ -z "$zitadel_base" ]; then
-    zitadel_port="$(sed -n 's/^ZITADEL_EXTERNALPORT=//p' .env | tail -1)"
-    zitadel_base="http://localhost:${zitadel_port:-8081}"
-fi
-# The PAT goes in on STDIN, through curl's own config format, rather than in an
-# argument: `curl -H "Authorization: Bearer $PAT"` puts a live credential in the
-# process table for anyone with `ps` for as long as the request takes. `printf`
-# is a shell builtin, so it never appears in an argument list either.
-if ! command -v curl >/dev/null 2>&1; then
-    echo "sign-in door: curl not found, so loginV2 was not checked on this instance." >&2
-    echo "  Check and repair by hand: ${login_v2_manual}" >&2
-elif [ -z "$zitadel_pat" ]; then
-    echo "sign-in door: no ZITADEL_PAT in .env, so loginV2 was not checked." >&2
-    echo "  Repair once identity is bootstrapped: ${login_v2_manual}" >&2
-else
-    features="$(printf 'header = "Authorization: Bearer %s"\n' "$zitadel_pat" |
-        curl -sS -K - -w '\n%{http_code}' "${zitadel_base}/v2/features/instance" 2>/dev/null || true)"
-    features_code="$(printf '%s' "$features" | tail -1)"
-    features_body="$(printf '%s' "$features" | sed '$d')"
-    if [ "$features_code" != "200" ]; then
-        echo "sign-in door: could not read ${zitadel_base}/v2/features/instance (HTTP ${features_code:-none});" >&2
-        echo "  loginV2 was NOT checked. If browser sign-in 404s at /ui/v2/login/…, repair by hand:" >&2
-        echo "  ${login_v2_manual}" >&2
-    elif ! printf '%s' "$features_body" | grep '"loginV2"' >/dev/null; then
-        # THE READER DOES NOT EXIT EARLY, and the inversion is why it matters
-        # most here. Under this file's `pipefail`, a quiet consumer that stops at
-        # its first match leaves the producer writing into a closed pipe: the
-        # producer takes SIGPIPE, the pipeline reports 141, and 141 is not zero.
-        # A bare probe would then read "absent" for something present — but this
-        # probe is NEGATED, so 141 sends it down THIS branch, and this branch
-        # prints "shape not recognised" and SKIPS THE REAL CHECK below. The race
-        # does not make the step noisy; it makes the step stop looking, while
-        # printing a sentence that sounds like it looked. That is the worse
-        # direction of the two, on the one step that repairs the sign-in door.
-        #
-        # MEASURED ON THIS BOX, not reasoned (BSD grep 2.6.0-FreeBSD, macOS):
-        # it is a STEEP PROBABILITY STEP at the 64 KiB pipe buffer, not a wall.
-        # Re-measured at higher counts than the first reading: a body ABOVE the
-        # buffer took the wrong branch 189 times in 200 runs, and a body BELOW it
-        # 1 time in 500. Neither side is certain — a macOS pipe starts at 16 KiB
-        # and grows, so the boundary itself moves — and the honest statement is
-        # that below the buffer the producer's write usually fits and it rarely
-        # blocks, while above it the producer usually blocks and usually loses.
-        # This body is an external API response and nothing bounds it under
-        # 64 KiB, so the reader reads to EOF and the branch below is reached on
-        # the evidence. The conversion the branch defends is unchanged; only the
-        # certainty the words claimed is.
-        #
-        # AND THE SECOND CONDITION, re-measured when this branch folded main:
-        # the reader is line-oriented and cannot decide a line it does not yet
-        # hold, so a body with NO newline in it is read to EOF whatever its
-        # size — 84,016 bytes on one line took the wrong branch 0/50 runs,
-        # while the same bytes over 2,101 lines took it 50/50. This instance
-        # answers compact JSON today, which is why the line above is BELT and
-        # not repair, and it is labelled that way rather than sold as a fix.
-        # It stops being belt the moment the feature API pretty-prints — a
-        # change nobody would ever make with this branch in mind, which is
-        # exactly the kind this reader should not be one edit away from.
-        #
-        # Said out loud rather than read as "already correct": a feature API that
-        # stopped naming loginV2 is a shape change, and the one answer this step
-        # must never give on a shape it does not recognise is reassurance.
-        echo "sign-in door: the feature API answered without a loginV2 field — shape not recognised," >&2
-        echo "  so nothing was checked. Read it yourself: ${zitadel_base}/v2/features/instance" >&2
-    else
-        login_v2="$(printf '%s' "$features_body" | tr -d ' \n' | sed -n 's/.*"loginV2":{\([^}]*\)}.*/\1/p')"
-        case "$login_v2" in
-        *'"required":true'*)
-            echo "sign-in door: loginV2 required=true found on this instance — repairing (classic-login-pin)"
-            repair_code="$(printf 'header = "Authorization: Bearer %s"\n' "$zitadel_pat" |
-                curl -sS -K - -X PUT -H 'Content-Type: application/json' \
-                    -d '{"loginV2":{"required":false}}' \
-                    -o /dev/null -w '%{http_code}' \
-                    "${zitadel_base}/v2/features/instance" 2>/dev/null || true)"
-            if [ "$repair_code" = "200" ]; then
-                echo "sign-in door: loginV2 required=false — classic login restored"
-            else
-                echo "sign-in door: the repair PUT failed (HTTP ${repair_code:-none}); browser sign-in" >&2
-                echo "  will still 404 at /ui/v2/login/…. Repair by hand:" >&2
-                echo "  ${login_v2_manual}" >&2
-            fi
-            ;;
-        *)
-            echo "sign-in door: loginV2 not required on this instance — already correct"
-            ;;
-        esac
+# >>> sign-in-door >>>
+# sign_in_door — read the instance's loginV2 feature and repair required=true; never fatal.
+sign_in_door() {
+    local login_v2_manual zitadel_pat zitadel_base zitadel_port curl_said
+    local features features_code features_body login_v2 repair_code
+    # Single-quoted ON PURPOSE: this string is printed for a human to paste, so the
+    # `$ZITADEL_PAT` and `$ZITADEL_ISSUER` in it must survive as names they can read
+    # out of their own .env — expanding them here would print the credential.
+    # shellcheck disable=SC2016
+    login_v2_manual='curl -X PUT -H "Authorization: Bearer $ZITADEL_PAT" -H "Content-Type: application/json" -d "{\"loginV2\":{\"required\":false}}" "$ZITADEL_ISSUER/v2/features/instance"'
+    zitadel_pat="$(sed -n 's/^ZITADEL_PAT=//p' .env | tail -1)"
+    zitadel_base="$(sed -n 's/^ZITADEL_ISSUER=//p' .env | tail -1)"
+    if [ -z "$zitadel_base" ]; then
+        zitadel_port="$(sed -n 's/^ZITADEL_EXTERNALPORT=//p' .env | tail -1)"
+        zitadel_base="http://localhost:${zitadel_port:-8081}"
     fi
-fi
+    # The PAT goes in on STDIN, through curl's own config format, rather than in an
+    # argument: `curl -H "Authorization: Bearer $PAT"` puts a live credential in the
+    # process table for anyone with `ps` for as long as the request takes. `printf`
+    # is a shell builtin, so it never appears in an argument list either.
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "sign-in door: curl not found, so loginV2 was not checked on this instance." >&2
+        echo "  Check and repair by hand: ${login_v2_manual}" >&2
+    elif [ -z "$zitadel_pat" ]; then
+        echo "sign-in door: no ZITADEL_PAT in .env, so loginV2 was not checked." >&2
+        echo "  Repair once identity is bootstrapped: ${login_v2_manual}" >&2
+    else
+        curl_said=""   # make_tmp's out-parameter: curl's own error, quoted under a refusal
+        make_tmp curl_said
+        features="$(printf 'header = "Authorization: Bearer %s"\n' "$zitadel_pat" |
+            curl -sS -K - -w '\n%{http_code}' "${zitadel_base}/v2/features/instance" 2>"$curl_said" || true)"
+        features_code="$(printf '%s' "$features" | tail -1)"
+        features_body="$(printf '%s' "$features" | sed '$d')"
+        if [ "$features_code" != "200" ]; then
+            echo "sign-in door: could not read ${zitadel_base}/v2/features/instance (HTTP ${features_code:-none});" >&2
+            gate_tool_said "$curl_said"
+            echo "  loginV2 was NOT checked. If browser sign-in 404s at /ui/v2/login/…, repair by hand:" >&2
+            echo "  ${login_v2_manual}" >&2
+        elif ! printf '%s' "$features_body" | grep '"loginV2"' >/dev/null; then
+            # THE READER DOES NOT EXIT EARLY, and the inversion is why it matters
+            # most here. Under this file's `pipefail`, a quiet consumer that stops at
+            # its first match leaves the producer writing into a closed pipe: the
+            # producer takes SIGPIPE, the pipeline reports 141, and 141 is not zero.
+            # A bare probe would then read "absent" for something present — but this
+            # probe is NEGATED, so 141 sends it down THIS branch, and this branch
+            # prints "shape not recognised" and SKIPS THE REAL CHECK below. The race
+            # does not make the step noisy; it makes the step stop looking, while
+            # printing a sentence that sounds like it looked. That is the worse
+            # direction of the two, on the one step that repairs the sign-in door.
+            #
+            # MEASURED ON THIS BOX, not reasoned (BSD grep 2.6.0-FreeBSD, macOS):
+            # it is a STEEP PROBABILITY STEP at the 64 KiB pipe buffer, not a wall.
+            # Re-measured at higher counts than the first reading: a body ABOVE the
+            # buffer took the wrong branch 189 times in 200 runs, and a body BELOW it
+            # 1 time in 500. Neither side is certain — a macOS pipe starts at 16 KiB
+            # and grows, so the boundary itself moves — and the honest statement is
+            # that below the buffer the producer's write usually fits and it rarely
+            # blocks, while above it the producer usually blocks and usually loses.
+            # This body is an external API response and nothing bounds it under
+            # 64 KiB, so the reader reads to EOF and the branch below is reached on
+            # the evidence. The conversion the branch defends is unchanged; only the
+            # certainty the words claimed is.
+            #
+            # AND THE SECOND CONDITION, re-measured when this branch folded main:
+            # the reader is line-oriented and cannot decide a line it does not yet
+            # hold, so a body with NO newline in it is read to EOF whatever its
+            # size — 84,016 bytes on one line took the wrong branch 0/50 runs,
+            # while the same bytes over 2,101 lines took it 50/50. This instance
+            # answers compact JSON today, which is why the line above is BELT and
+            # not repair, and it is labelled that way rather than sold as a fix.
+            # It stops being belt the moment the feature API pretty-prints — a
+            # change nobody would ever make with this branch in mind, which is
+            # exactly the kind this reader should not be one edit away from.
+            #
+            # Said out loud rather than read as "already correct": a feature API that
+            # stopped naming loginV2 is a shape change, and the one answer this step
+            # must never give on a shape it does not recognise is reassurance.
+            echo "sign-in door: the feature API answered without a loginV2 field — shape not recognised," >&2
+            echo "  so nothing was checked. Read it yourself: ${zitadel_base}/v2/features/instance" >&2
+        else
+            login_v2="$(printf '%s' "$features_body" | tr -d ' \n' | sed -n 's/.*"loginV2":{\([^}]*\)}.*/\1/p')"
+            case "$login_v2" in
+            *'"required":true'*)
+                echo "sign-in door: loginV2 required=true found on this instance — repairing (classic-login-pin)"
+                repair_code="$(printf 'header = "Authorization: Bearer %s"\n' "$zitadel_pat" |
+                    curl -sS -K - -X PUT -H 'Content-Type: application/json' \
+                        -d '{"loginV2":{"required":false}}' \
+                        -o /dev/null -w '%{http_code}' \
+                        "${zitadel_base}/v2/features/instance" 2>"$curl_said" || true)"
+                if [ "$repair_code" = "200" ]; then
+                    echo "sign-in door: loginV2 required=false — classic login restored"
+                else
+                    echo "sign-in door: the repair PUT failed (HTTP ${repair_code:-none}); browser sign-in" >&2
+                    gate_tool_said "$curl_said"
+                    echo "  will still 404 at /ui/v2/login/…. Repair by hand:" >&2
+                    echo "  ${login_v2_manual}" >&2
+                fi
+                ;;
+            *)
+                echo "sign-in door: loginV2 not required on this instance — already correct"
+                ;;
+            esac
+        fi
+    fi
+}
+# <<< sign-in-door <<<
+sign_in_door
 
 step "database for this worktree"
 # scripts/db.sh was sourced at the environment step above (its marker grammar
@@ -901,9 +996,14 @@ if [ -n "$DB_PIN_MARKED" ]; then
     env_pin="$(grep -E '^DATABASE_NAME=' .env | tail -1)"
     echo "DATABASE_NAME left alone — .env carries the \`# pinned\` marker"
     echo "  .env:       ${env_pin}"
-    echo "  derivation: ${DATABASE_NAME}"
-    echo "  This checkout's scripts will use the derivation and a bare manage.py"
-    echo "  will use the pin. Remove the marker and re-run to reconcile them."
+    case "${DATABASE_NAME_SOURCE:-derived}" in
+    ".env pin") opened_by="pin" ;;
+    "DATABASE_NAME exported") opened_by="export" ;;
+    *) opened_by="derivation" ;;
+    esac
+    echo "  opens:      ${DATABASE_NAME} (${opened_by})"
+    echo "  Every step and a bare manage.py open that same name. Remove the marker"
+    echo "  and re-run to move this checkout to its derivation."
 elif [ "$DB_PIN_VERDICT" = "disagree" ]; then
     overridden="$DB_PIN_VALUE"
     overridden_also=""
@@ -1140,7 +1240,11 @@ Next:
   uv run python manage.py issue_token --email you@example.com --name laptop --scope '*'
                                            # --scope is required; '*' means no limit.
                                            # Narrow it with --scope widgets:read (repeat per scope).
-  ./scripts/serve.sh                       # http://127.0.0.1:8000/api/v1/docs
+  ./scripts/serve.sh                       # serves on this checkout's own derived port and
+                                           # prints its URL (--print-port prints the port alone)
+  cd frontend && DJANGO_ORIGIN="http://127.0.0.1:\$(../scripts/serve.sh --print-port)" pnpm dev
+                                           # the face; DJANGO_ORIGIN is REQUIRED — it is
+                                           # where the face proxies /api/v1/ to
   ./scripts/worker.sh                      # the Temporal worker, in another shell
   ./scripts/test.sh                        # the test suite
 
@@ -1151,6 +1255,7 @@ Next:
   never through that console.
 NEXT
 
+[ -n "${SETUP_INCOMPLETE}" ] || printf 'next: uv run python manage.py scaffold --list\n'
 setup_total
 
 # Exit 1, not 2: this script looked, and what it found is wrong (the header at

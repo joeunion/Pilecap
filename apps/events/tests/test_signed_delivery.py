@@ -45,7 +45,7 @@ from django.test import Client
 from temporalio.exceptions import ApplicationError
 
 from apps.accounts.models import User
-from apps.core.actor import Actor
+from apps.core.actor import Actor, system_actor
 from apps.core.models import Tenant
 from apps.core.time import now
 from apps.events import activities, receivers, services
@@ -54,6 +54,13 @@ from apps.events.types import DeliverWebhook
 from apps.example.events import WIDGET_CREATED
 
 pytestmark = pytest.mark.django_db(transaction=True)
+
+
+@pytest.fixture(autouse=True)
+def loopback_receiver(settings: Any) -> None:
+    """The receiver is a real loopback socket over http: the valve local.py sets."""
+    settings.WEBHOOK_PRIVATE_TARGETS_ALLOWED = True
+
 
 ENDPOINTS_URL = "/api/v1/webhook-endpoints/"
 WIDGETS_URL = "/api/v1/widgets/"
@@ -153,7 +160,7 @@ def acting(tenant: Tenant, monkeypatch: pytest.MonkeyPatch) -> Tenant:
     the activity directly there is no workflow, so the one function that reads it
     is replaced — which is also the proof that it is read in exactly one place.
     """
-    monkeypatch.setattr(activities, "acting_tenant", lambda: tenant)
+    monkeypatch.setattr(activities, "current_actor", lambda **_: system_actor(tenant))
     return tenant
 
 
@@ -206,7 +213,7 @@ def test_the_secret_the_door_handed_back_verifies_a_real_delivery(
     key the create response returns did not sign the delivery, every other test
     in this app could still be green and no subscriber could trust a byte.
     """
-    with Receiver(secret="not-the-key-yet") as receiver:  # pragma: allowlist secret
+    with Receiver(secret="not-the-key-yet") as receiver:  # noqa: S106 — a signing secret the test both signs and verifies with  # pragma: allowlist secret
         api.force_login(owner)
         created = api.post(
             ENDPOINTS_URL,
@@ -248,7 +255,7 @@ def test_the_signature_is_over_the_bytes_that_arrived(
     Not a detail: it is the single most common way a first integration fails,
     and the reason the delivery serialises once and both signs and sends that.
     """
-    with Receiver(secret="placeholder") as receiver:  # pragma: allowlist secret
+    with Receiver(secret="placeholder") as receiver:  # noqa: S106 — a signing secret the test both signs and verifies with  # pragma: allowlist secret
         api.force_login(owner)
         created = api.post(
             ENDPOINTS_URL, data=json.dumps({"url": receiver.url}), content_type=JSON
@@ -284,7 +291,7 @@ def test_after_a_rotation_the_old_key_stops_verifying_and_the_new_one_starts(
     which is exactly what is wanted when the reason to rotate is that the old key
     is somewhere it should not be.
     """
-    with Receiver(secret="placeholder") as receiver:  # pragma: allowlist secret
+    with Receiver(secret="placeholder") as receiver:  # noqa: S106 — a signing secret the test both signs and verifies with  # pragma: allowlist secret
         api.force_login(owner)
         created = api.post(
             ENDPOINTS_URL, data=json.dumps({"url": receiver.url}), content_type=JSON
@@ -336,7 +343,7 @@ def test_a_paused_endpoint_is_not_among_the_targets_at_all(
     loaded. `GET /deliveries/` therefore stops where the pause began, and that
     stopping point is the answer to "since when has this been quiet".
     """
-    with Receiver(secret="placeholder") as receiver:  # pragma: allowlist secret
+    with Receiver(secret="placeholder") as receiver:  # noqa: S106 — a signing secret the test both signs and verifies with  # pragma: allowlist secret
         api.force_login(owner)
         created = api.post(
             ENDPOINTS_URL, data=json.dumps({"url": receiver.url}), content_type=JSON
@@ -385,7 +392,7 @@ def test_a_dead_letter_replayed_over_the_door_is_delivered(
     `delivered`. A replay that had written a second row would have lost the fact
     that this pair ever failed.
     """
-    with Receiver(secret="placeholder") as receiver:  # pragma: allowlist secret
+    with Receiver(secret="placeholder") as receiver:  # noqa: S106 — a signing secret the test both signs and verifies with  # pragma: allowlist secret
         api.force_login(owner)
         created = api.post(
             ENDPOINTS_URL, data=json.dumps({"url": receiver.url}), content_type=JSON
@@ -437,7 +444,7 @@ def test_the_event_the_receiver_got_is_the_one_the_door_reports(
     id to be idempotent on, and needs that id to be the one this product's own
     door reports. Asserted rather than assumed.
     """
-    with Receiver(secret="placeholder") as receiver:  # pragma: allowlist secret
+    with Receiver(secret="placeholder") as receiver:  # noqa: S106 — a signing secret the test both signs and verifies with  # pragma: allowlist secret
         api.force_login(owner)
         created = api.post(
             ENDPOINTS_URL, data=json.dumps({"url": receiver.url}), content_type=JSON
@@ -508,7 +515,7 @@ def test_a_year_on_the_old_scheme_still_verifies_and_the_window_refuses(
     through — the same seam, and the same proof-by-substitution, as `acting`
     above.
     """
-    with Receiver(secret="placeholder") as receiver:  # pragma: allowlist secret
+    with Receiver(secret="placeholder") as receiver:  # noqa: S106 — a signing secret the test both signs and verifies with  # pragma: allowlist secret
         captured = a_delivery_to_capture(
             api=api, tenant=acting, owner=owner, receiver=receiver, name="replay me"
         )
@@ -547,7 +554,7 @@ def test_the_window_verifies_fresh_and_refuses_one_second_past_tolerance(
     inside is accepted and one second outside is refused, so the tolerance is
     the thing that decides and not the shape of the header.
     """
-    with Receiver(secret="placeholder") as receiver:  # pragma: allowlist secret
+    with Receiver(secret="placeholder") as receiver:  # noqa: S106 — a signing secret the test both signs and verifies with  # pragma: allowlist secret
         captured = a_delivery_to_capture(
             api=api, tenant=acting, owner=owner, receiver=receiver, name="stale soon"
         )
@@ -593,7 +600,7 @@ def test_a_delivery_carries_both_signatures_during_the_expansion_window(
     keeps working, byte for byte, while one that has moved to `X-Signature-V2`
     gets the freshness the old header cannot carry.
     """
-    with Receiver(secret="placeholder") as receiver:  # pragma: allowlist secret
+    with Receiver(secret="placeholder") as receiver:  # noqa: S106 — a signing secret the test both signs and verifies with  # pragma: allowlist secret
         captured = a_delivery_to_capture(
             api=api, tenant=acting, owner=owner, receiver=receiver, name="both headers"
         )

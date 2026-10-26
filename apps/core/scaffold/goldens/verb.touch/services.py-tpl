@@ -1,0 +1,17 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "imports", "text": ""}
+from apps.example.events import WIDGET_TOUCHED
+
+# golden-anchor: {"nth": 0, "scope": [], "side": "before", "text": "def _locked_widget(*, tenant: Tenant, widget: Widget) -> Widget:"}
+@service
+def touch_widget(*, tenant: Tenant, actor: Actor, widget: Widget) -> Widget:
+    """Mark a widget as seen now: only `updated_at` moves, and every press is said."""
+    if not may_be_named(actor, widget):
+        raise NotFound()
+    locked = _locked_widget(tenant=tenant, widget=widget)
+    require_live(locked, noun="widget")
+    require(actor, "widget.update", locked)
+    locked.save(update_fields=["updated_at"])
+    _publish_widget(WIDGET_TOUCHED, tenant=tenant, widget=locked, actor=actor)
+    return locked
+
+

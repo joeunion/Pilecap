@@ -37,6 +37,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from apps.accounts.models import User
 from apps.core.actor import Actor, actor_for, system_actor
+from apps.core.authz import collection, refusal_sentence
 from apps.core.exceptions import Conflict, Forbidden, NotFound, refusal_message
 from apps.core.models import Membership, Organization, Tenant
 from apps.core.services import (
@@ -52,13 +53,16 @@ pytestmark = pytest.mark.django_db
 
 JSON = "application/json"
 
-#: The sentence, written out so a reword passes through a test that says what
-#: the words are for. It is `revoke_membership`'s own with one verb changed —
-#: which is asserted below rather than trusted.
-CEILING = (
-    "You may not demote a 'owner': your own effective role there is 'admin', "
-    "and nobody demotes above themselves."
-)
+
+def assert_ceiling(said: str, tenant: Tenant, *, verb: str = "demote") -> None:
+    """`said` is the take-back refusal naming every key an owner holds and an admin does not."""
+    opening = f"You may not {verb} somebody who holds what you do not:"
+    assert said.startswith(opening), said
+    short = collection(tenant, Membership.Role.OWNER) - collection(tenant, Membership.Role.ADMIN)
+    assert short, "an owner holds nothing an admin does not — the probe is vacuous"
+    for key in short:
+        assert refusal_sentence(key) in said, (key, said)
+
 
 #: What the escalation wall says to somebody who holds nothing there. Quoted
 #: here because the ordering test's whole point is that this is the answer, not
@@ -107,7 +111,7 @@ def test_an_admin_may_not_demote_an_owner(
             actor=admin_actor,
         )
 
-    assert str(refused.value) == CEILING
+    assert_ceiling(str(refused.value), tenant)
     assert refused.value.code == "forbidden"
     assert membership_of(owner, tenant).role == Membership.Role.OWNER
 
@@ -184,15 +188,11 @@ def test_the_granted_role_is_judged_before_the_held_one(
         set_role(
             tenant=tenant,
             membership=membership_of(owner, tenant),
-            # A plain string, because that is what both doors deliver — and
-            # because `_refuse_escalation` quotes what it was handed, so an
-            # enum member here would put `Membership.Role.ADMIN` in a sentence
-            # written for a person.
             role=Membership.Role.ADMIN.value,
             actor=member_actor,
         )
 
-    assert str(refused.value).startswith("You may not grant 'admin':")
+    assert str(refused.value).startswith("You may not grant what you do not hold yourself:")
 
 
 def test_this_ceiling_answers_before_the_ownerless_floor(
@@ -215,7 +215,7 @@ def test_this_ceiling_answers_before_the_ownerless_floor(
             actor=admin_actor,
         )
 
-    assert str(refused.value) == CEILING
+    assert_ceiling(str(refused.value), tenant)
     assert LAST_OWNER not in str(refused.value)
     assert membership_of(owner, tenant).role == Membership.Role.OWNER
 
@@ -261,7 +261,7 @@ def test_a_role_this_product_does_not_know_does_not_get_you_past_the_ceiling(
             actor=admin_actor,
         )
 
-    assert str(refused.value) == CEILING
+    assert_ceiling(str(refused.value), tenant)
     assert membership_of(owner, tenant).role == Membership.Role.OWNER
 
 
@@ -428,7 +428,7 @@ def test_the_wire_refuses_the_demotion_as_ft_1_would_drive_it(
     assert response.status_code == 403
     body = response.json()
     assert body["code"] == "forbidden"
-    assert body["detail"] == CEILING
+    assert_ceiling(body["detail"], tenant)
     assert membership_of(owner, tenant).role == Membership.Role.OWNER
 
 

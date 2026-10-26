@@ -1,0 +1,13 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "before", "text": "POLICIES: dict[str, Policy] = {"}
+def can_record_entry(actor: Actor, obj: Any = None) -> bool:
+    """Anyone who can see the widget may add a line to its ledger."""
+    return is_member(actor)
+
+
+# golden-anchor: {"nth": 0, "scope": [], "side": "before", "text": "\"widget.archive\": may_archive,"}
+    # The ledger. Append-only and landing-gated, so the bar is membership.
+    "widget_entry.record": can_record_entry,
+# golden-anchor: {"nth": 0, "scope": [], "side": "before", "text": "\"widget.archive\": frozenset({\"member\"}),"}
+    "widget_entry.record": frozenset({"member"}),
+# golden-anchor: {"nth": 0, "scope": [], "side": "after", "text": "\"widget.delete\": \"You may not delete that widget.\","}
+    "widget_entry.record": "You may not add entries to that widget's ledger.",

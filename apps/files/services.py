@@ -78,12 +78,14 @@ from django.db import models, transaction
 from django.utils import timezone
 
 from apps.core.actor import Actor, system_actor
-from apps.core.authz import may_be_named, require
+from apps.core.authz import kind_of, may_be_named, require
 from apps.core.exceptions import Conflict, Invalid, NotFound, as_invalid
 from apps.core.log import get_logger
 from apps.core.models import Organization, Tenant, is_org_scoped
+from apps.core.retry import retry_floor_seconds
+from apps.core.schemas import event_payload
 from apps.core.service import service
-from apps.core.verbs import archive_row, require_live, restore_row
+from apps.core.verbs import archive_row, landing_for, require_live, restore_row
 from apps.events.services import emit
 from apps.files import storage
 from apps.files.events import FILE_ARCHIVED, FILE_MOVED, FILE_RESTORED, FILE_STORED
@@ -100,10 +102,6 @@ from apps.usage.services import record_usage
 from apps.workflows.services import start_workflow_on_commit, workflow_id
 
 # The read shape's fields that answer ONE viewer rather than describe the document
-# (`core.schemas.ActsOut`). An event goes to every subscriber, so no payload this
-# app emits carries them — an event payload never carries a per-viewer field. A
-# hand exclusion until core's `event_payload()` helper lands and replaces it.
-PER_VIEWER_FIELDS = {"allowed_acts"}
 
 log = get_logger("apps.files.services")
 
@@ -245,6 +243,10 @@ class DownloadTicket:
     expires_in: int
 
 
+#: The named row only, never against a key check: a bare FOR UPDATE also locked the branch's row.
+ROW_LOCK: dict[str, Any] = {"of": ("self",), "no_key": True}
+
+
 def _the_hat(actor: Actor) -> Organization:
     """The acting organization, or a refusal. **ADR core-20's placement law.**
 
@@ -319,7 +321,7 @@ def _next_version(
     locked = (
         StoredFile.objects.for_tenant(file.tenant)
         .visible_to(org)
-        .select_for_update()
+        .select_for_update(**ROW_LOCK)
         .get(pk=file.pk)
     )
     highest = (
@@ -397,7 +399,7 @@ def _uploader_id(actor: Actor) -> Any:
     return actor.user.pk
 
 
-def _upload_url_for(*, tenant: Tenant, version: FileVersion) -> str:
+def _upload_url_for(*, tenant: Tenant, version: FileVersion, store: Any = None) -> str:
     """**The one place an upload URL is minted.** A `STORED` version gets none.
 
     ADR files-2: an upload presign is issued only for a `PENDING` version. This
@@ -430,7 +432,9 @@ def _upload_url_for(*, tenant: Tenant, version: FileVersion) -> str:
             "An object is written once and read for as long as anything quotes its digest; "
             "replacing a document means adding a version beside this one."
         )
-    return storage.presign_put(tenant=tenant, key=version.key, content_type=version.content_type)
+    return storage.presign_put(
+        tenant=tenant, key=version.key, content_type=version.content_type, store=store
+    )
 
 
 @service
@@ -460,16 +464,8 @@ def create_file(
     against the size policy and it is never written — see
     `MAX_DECLARED_UPLOAD_BYTES` for what that does and does not buy.
 
-    **`subject`** (`<kind>:<id>`) files the document AGAINST a record. The record
-    is resolved first (`selectors.get_subject`, over `core.verbs.resolve_subject`):
-    one this caller cannot reach is `not_found` — never `forbidden` — and a kind
-    that does not list `files` among its `attachments` is `invalid` naming
-    `subject`. The document then **lands in the subject's organization**, not at
-    the hat: a document about a record lives where the record lives, so every
-    reader of the record can read it. That is never a widening — the subject was
-    reached through `visible_to` the hat, so its node is the hat or beneath it,
-    where the hat's authority to file already reaches. A subject with no
-    organization of its own (a tenant-wide noun) leaves the document at the hat.
+    `subject` (`<kind>:<id>`) files it against a record, read in `subject_for`'s order; the
+    document lands where the record lives (`landing_for`), never wider than the hat reaches.
     """
     require(actor, "file.create")
     hat = _the_hat(actor)
@@ -479,10 +475,8 @@ def create_file(
     subject_kind, subject_id = "", None
     if subject is not None:
         row = get_subject(actor=actor, subject=subject)
-        subject_kind, subject_id = subject.partition(":")[0], row.pk
-        landing = getattr(row, "organization", None) if is_org_scoped(type(row)) else None
-        if isinstance(landing, Organization):
-            home = landing
+        subject_kind, subject_id = str(kind_of(type(row))), row.pk
+        home = landing_for(row, actor)
     file = StoredFile(
         tenant=tenant,
         # ADR core-20: the acting hat, never the root, and never a parameter —
@@ -496,12 +490,14 @@ def create_file(
     )
     with as_invalid():
         file.full_clean()
+    # Built before the document is locked: no row lock is held across the store's client.
+    store = storage.client()
     file.save()
     version = _next_version(file=file, org=home, content_type=content_type, uploaded_by_id=person)
     return UploadTicket(
         file=file,
         version=version,
-        upload_url=_upload_url_for(tenant=tenant, version=version),
+        upload_url=_upload_url_for(tenant=tenant, version=version, store=store),
         expires_in=storage.upload_url_ttl(),
     )
 
@@ -540,13 +536,15 @@ def add_version(
     hat = _the_hat(actor)
     _check_declared_size(size_bytes)
     require_live(file, noun=NOUN)
+    # Built before the document is locked: no row lock is held across the store's client.
+    store = storage.client()
     version = _next_version(
         file=file, org=hat, content_type=content_type, uploaded_by_id=_uploader_id(actor)
     )
     return UploadTicket(
         file=file,
         version=version,
-        upload_url=_upload_url_for(tenant=tenant, version=version),
+        upload_url=_upload_url_for(tenant=tenant, version=version, store=store),
         expires_in=storage.upload_url_ttl(),
     )
 
@@ -621,7 +619,7 @@ def confirm_upload(
     # tenant.
     start_workflow_on_commit(
         workflow=FINALIZE_WORKFLOW,
-        arg=FinalizeUpload(version_id=str(version.pk)),
+        arg=FinalizeUpload(version_id=str(version.pk), retry_floor=retry_floor_seconds()),
         tenant=tenant,
         user=actor.user,
         org=hat,
@@ -643,11 +641,12 @@ def _locked_document(*, tenant: Tenant, hat: Organization, file_id: Any) -> Stor
         StoredFile.objects.for_tenant(tenant)
         .including_archived()
         .visible_to(hat)
-        .select_for_update()
+        .select_for_update(**ROW_LOCK)
         .get(pk=file_id)
     )
 
 
+# door: only this tree's own hands reach it — the upload workflow's activity, once it measured.
 @service
 def record_stored(
     *,
@@ -726,7 +725,7 @@ def record_stored(
         fresh = (
             FileVersion.objects.for_tenant(tenant)
             .visible_to(hat)
-            .select_for_update()
+            .select_for_update(**ROW_LOCK)
             .get(pk=version.pk)
         )
         transitioned = fresh.status != FileVersion.Status.STORED
@@ -749,10 +748,7 @@ def record_stored(
             # and the record stays exact.
             quantity=Decimal(size_bytes),
             ref=fresh,
-            # ADR files-2's shape, verbatim: the source row's primary key and the
-            # meter name. The pk is what makes it one unit of work; the meter
-            # name is what keeps a second meter over the same row from colliding
-            # with this one the day storage is counted two ways.
+            # ADR files-2: the row's pk (one unit of work) and the meter name (two meters apart).
             idempotency_key=f"{fresh.pk}:{STORAGE_BYTES}",
         )
 
@@ -760,10 +756,12 @@ def record_stored(
             emit(
                 name=FILE_STORED,
                 tenant=tenant,
-                payload=FileStoredOut(
-                    **StoredFileOut.model_validate(file).model_dump(),
-                    version=FileVersionOut.model_validate(fresh),
-                ).model_dump(mode="json", exclude=PER_VIEWER_FIELDS),
+                payload=event_payload(
+                    FileStoredOut(
+                        **StoredFileOut.model_validate(file).model_dump(),
+                        version=FileVersionOut.model_validate(fresh),
+                    )
+                ),
                 actor=actor,
             )
     return fresh
@@ -868,7 +866,17 @@ def archive_file(*, tenant: Tenant, actor: Actor, file: StoredFile) -> StoredFil
     if not may_be_named(actor, file):
         raise NotFound()
     require(actor, "file.archive", file)
-    return _archived(tenant=tenant, actor=actor, file=file)
+    # why-not `_archived`: rule 41 derives the route's codes one hop into `core.verbs`, no further.
+    row: StoredFile
+    row, changed = archive_row(tenant=tenant, actor=actor, row=file, noun=NOUN)
+    if changed:
+        emit(
+            name=FILE_ARCHIVED,
+            tenant=tenant,
+            payload=event_payload(StoredFileOut.model_validate(row)),
+            actor=actor,
+        )
+    return row
 
 
 def _archived(*, tenant: Tenant, actor: Actor, file: StoredFile) -> StoredFile:
@@ -884,9 +892,7 @@ def _archived(*, tenant: Tenant, actor: Actor, file: StoredFile) -> StoredFile:
         emit(
             name=FILE_ARCHIVED,
             tenant=tenant,
-            payload=StoredFileOut.model_validate(row).model_dump(
-                mode="json", exclude=PER_VIEWER_FIELDS
-            ),
+            payload=event_payload(StoredFileOut.model_validate(row)),
             actor=actor,
         )
     else:
@@ -918,9 +924,7 @@ def restore_file(*, tenant: Tenant, actor: Actor, file: StoredFile) -> StoredFil
         emit(
             name=FILE_RESTORED,
             tenant=tenant,
-            payload=StoredFileOut.model_validate(row).model_dump(
-                mode="json", exclude=PER_VIEWER_FIELDS
-            ),
+            payload=event_payload(StoredFileOut.model_validate(row)),
             actor=actor,
         )
     else:
@@ -1038,9 +1042,7 @@ def move_attached_files(*, tenant: Tenant, actor: Actor, loser: Any, survivor: A
         emit(
             name=FILE_MOVED,
             tenant=tenant,
-            payload=StoredFileOut.model_validate(row).model_dump(
-                mode="json", exclude=PER_VIEWER_FIELDS
-            ),
+            payload=event_payload(StoredFileOut.model_validate(row)),
             actor=actor,
         )
     log.info("files.file.subject_moved", count=len(ids), kind=kind)
@@ -1054,7 +1056,7 @@ def move_attached_files(*, tenant: Tenant, actor: Actor, loser: Any, survivor: A
 # only one there should ever be. The caller population is activities that rendered
 # the bytes themselves, and an activity IS a door for house rule 42's purposes.
 # `apps/exports`' archive builder was the expected first caller and was pointed
-# at `store_stream` instead (`apps/exports/activities.py:76` imports it, `:242`
+# at `store_stream` instead (`apps/exports/activities.py:68` imports it, `:263`
 # calls it), because an archive is built into a spooled file — so this half of the
 # seam has no production caller yet and the valve stands on its own reasoning
 # rather than on a promise about who will arrive.
@@ -1261,6 +1263,7 @@ def store_stream(
     )
 
 
+# door: only this tree's own hands reach it — deployment housekeeping, run by its declared schedule.
 @service
 def purge_pending_versions(*, before: datetime, tenant: Tenant | None) -> SweepOutcome:
     """Take the uploads that never happened, and archive what they leave empty.

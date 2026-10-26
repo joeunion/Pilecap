@@ -6,7 +6,8 @@
     "delivery URL is read at apply time from the Secrets Manager slot named in",
     "`webhook.url_slot` (house doctrine: slot and length only, never a value).",
     "The SHAPES are here; the POPULATION is census.py's, derived from",
-    "apps/*/events.py. `transition` is instantiated once per derived pair.",
+    "apps/*/events.py. `transition` is instantiated once per derived pair,",
+    "`spike` once per declared SPIKES entry.",
     "Placeholders are Python str.format fields, filled from the census row —",
     "except `{namespace}` in the webhook block below, which apply.py fills from",
     "DJB_DEPLOY_NAMESPACE and REFUSES to guess: the bundle name and the secret",
@@ -147,6 +148,72 @@
       "thresholdType": "above",
       "name": "{prefix} recovered",
       "message": ":white_check_mark: RECOVERED — {prefix} recovered — {recovered} is in the sink. THE CIRCUIT HAS RECOVERED, and this notification is the announcement rather than a close. The degraded alert ({prefix} degraded) does NOT close on this event; its own 'window quiet' means only that its query window stopped matching. This one fires because {recovered} is in the sink, which is the fact you were waiting for. Match it to the OPEN by correlation_id. Runbook: docs/runbooks/alerts.md"
+    }
+  },
+
+  "spike": {
+    "_note": [
+      "One alert per declared spike (census.py's third half). A spike is a",
+      "COUNT of one LOG key inside one window, declared in the emitting app's",
+      "events.py as SPIKES — key, threshold, window, reason — and never typed",
+      "here: this is the shape, the census is the population. The worked",
+      "instance is apps/accounts/events.py's auth-failure spike. `interval` is",
+      "the declared window and `threshold` the declared count, both filled",
+      "from the census row by apply.py; `above` is ClickStack's `>=`, so the",
+      "alert opens on the window holding threshold-or-more lines and resolves",
+      "on the first window holding fewer. It counts lines, not tenants: the",
+      "saved search groups nothing."
+    ],
+    "saved_search": {
+      "name": "{log_key} — spike",
+      "whereLanguage": "sql",
+      "where": "JSONExtractString(Body, 'event') = '{log_key}'",
+      "select": "Timestamp, JSONExtractString(Body, 'event') AS event, JSONExtractString(Body, 'reason') AS reason, JSONExtractString(Body, 'tenant_id') AS tenant_id, JSONExtractString(Body, 'correlation_id') AS correlation_id, TraceId AS trace_id",
+      "orderBy": "Timestamp DESC",
+      "_name_note": [
+        "The name carries the key and nothing that can be re-declared: it is",
+        "the identity apply.py and export.py match on, so a threshold in it",
+        "would turn a re-tuned spike into a second saved search."
+      ]
+    },
+    "alert": {
+      "source": "saved_search",
+      "interval": "{window}",
+      "threshold": "{threshold}",
+      "thresholdType": "above",
+      "name": "{log_key} spike",
+      "message": ":rotating_light: OPENED — {log_key} spike — {threshold} or more {log_key} log lines inside {window} (ClickStack's 'above' is >=). Declared in {declared_at}: {reason}. The rows below say which reason and which tenant; one tenant and twenty tenants are the same alert. A 'window quiet' notification means a {window} window held fewer than {threshold}. Runbook: docs/runbooks/alerts.md § 'Values, and why each one'"
+    }
+  },
+
+  "traces": {
+    "_note": [
+      "The deployment-wide trace alerts (census.py's TRACES), over the Traces",
+      "source's server spans. A saved-search alert can only count rows, so this",
+      "kind is a DASHBOARD TILE alert: ClickStack's check runs the tile's own",
+      "select, which is what lets `latency` carry quantile(0.95). apply.py keeps",
+      "one dashboard, one tile per member keyed on the member's key, the alert",
+      "embedded in the tile. `above` is ClickStack's >=."
+    ],
+    "dashboard": {
+      "name": "{namespace}-alerts-traces",
+      "tags": ["alerts"]
+    },
+    "tile": {
+      "name": "{name}",
+      "displayType": "line",
+      "select": "{select}",
+      "where": "{where_sql}",
+      "whereLanguage": "sql",
+      "groupBy": "{group_by}"
+    },
+    "alert": {
+      "source": "tile",
+      "interval": "{window}",
+      "threshold": "{threshold}",
+      "thresholdType": "above",
+      "name": "{name}",
+      "message": ":rotating_light: OPENED — {name} — {summary}. A 'window quiet' notification means a {window} window fell back under the threshold. Runbook: docs/runbooks/alerts.md § 'Values, and why each one'"
     }
   },
 

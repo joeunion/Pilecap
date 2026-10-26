@@ -1,0 +1,6 @@
+# golden-anchor: {"nth": 0, "scope": ["Widget"], "side": "before", "text": "due_at = models.DateTimeField("}
+    onboarding_confirmed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When a signed onboarding delivery confirmed this widget.",
+    )

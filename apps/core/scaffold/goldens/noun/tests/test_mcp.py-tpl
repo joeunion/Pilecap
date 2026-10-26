@@ -1,0 +1,370 @@
+from __future__ import annotations
+
+import io
+import json
+from datetime import UTC, datetime
+from typing import Any, cast
+from uuid import UUID
+
+import pytest
+from django.core.management import call_command
+from django.test import Client
+from mcp.server import MCPServer
+from mcp.server.mcpserver import Context
+from mcp.server.mcpserver.exceptions import ToolError
+
+from apps.example.mcp import register
+from apps.example.models import Widget
+from apps.example.schemas import WidgetOut
+from apps.example.services import create_widget
+from config.api import as_the_door_renders
+from pilecap import Actor, AuditEntry
+from pilecap.accounts import User
+from pilecap.tenancy import Tenant, root_organization
+from pilecap.testing import (
+    FakeRequest,
+    FakeRequestContext,
+    WorkflowRun,
+    bind,
+    context_for,
+    derive_tool_name,
+    finish_run,
+    tool,
+)
+from pilecap.workflows import workflow_id
+
+pytestmark = pytest.mark.django_db
+
+# The page and the acts' one node read, on the `widget.read` memo; no request out here.
+LIST_QUERY_BUDGET = 4
+
+# The two doors this file compares, spelled once.
+JSON = "application/json"
+
+
+def example_server() -> MCPServer[Any]:
+    """A server holding this app's tools and nothing else."""
+    server: MCPServer[Any] = MCPServer(name="test", version="1")
+    register(server)
+    return server
+
+
+def introspected() -> dict[str, Any]:
+    """What `manage.py introspect` reports — the real registries, as JSON."""
+    out = io.StringIO()
+    call_command("introspect", stdout=out)
+    payload: dict[str, Any] = json.loads(out.getvalue())
+    return payload
+
+
+def example_routes() -> set[str]:
+    """This app's mounted `url_name`s, read off `introspect`'s route registry."""
+    return {
+        str(route["name"]).removeprefix("api:")
+        for route in introspected()["routes"]
+        if str(route["view"]).startswith("apps.example.api.")
+    }
+
+
+def test_every_rest_capability_is_on_the_machine_door_too() -> None:
+    """Rule 17 off the two registries: every route's derived tool name is a registered tool."""
+    routes = example_routes()
+    assert routes, "introspect listed no example route"
+    tools = {str(one["name"]) for one in introspected()["tools"]}
+    missing = sorted(
+        derive_tool_name(name) for name in routes if derive_tool_name(name) not in tools
+    )
+    assert missing == [], missing
+
+
+def test_the_app_registers_those_tools_and_no_others() -> None:
+    """The reverse direction: a tool with no route is a door disagreement too."""
+    registered = {one.name for one in example_server()._tool_manager.list_tools()}
+    assert registered == {derive_tool_name(name) for name in example_routes()}
+
+
+def test_every_tool_describes_itself() -> None:
+    """A tool with no description is one an agent has to guess at."""
+    for one in example_server()._tool_manager.list_tools():
+        assert one.description, f"{one.name} has no description"
+
+
+# golden: ordering due_at begin
+def test_due_at_orders_alike_on_both_doors(
+    api: Client, tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    for name in ("Left", "Right"):
+        create_widget(tenant=tenant, actor=owner_actor, name=name)
+    api.force_login(owner)
+    listing = tool("list_widgets", register=register)
+    ctx = context_for(owner, tenant, root_organization(tenant=tenant))
+    for ordering in ("due_at", "-due_at"):
+        over_http = api.get("/api/v1/widgets/", {"ordering": ordering})
+        assert over_http.status_code == 200, over_http.content
+        ids = [item["id"] for item in json.loads(over_http.content)["items"]]
+        assert ids == [str(item.id) for item in listing(ctx=ctx, ordering=ordering).items]
+
+
+# golden: ordering due_at end
+
+# golden: filter name begin
+NAME_FINDS: dict[str, Any] = {"name": "Left bench"}
+NAME_MISSES: dict[str, Any] = {"name": "Other"}
+NAME_ASKS: dict[str, Any] = {"name": "bench"}
+
+
+def test_the_name_filter_narrows_alike_on_both_doors(
+    api: Client, tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    found = create_widget(tenant=tenant, actor=owner_actor, **{"name": "Found", **NAME_FINDS})
+    create_widget(tenant=tenant, actor=owner_actor, **{"name": "Missed", **NAME_MISSES})
+    api.force_login(owner)
+    over_http = api.get("/api/v1/widgets/", NAME_ASKS)
+    over_mcp = tool("list_widgets", register=register)(
+        ctx=context_for(owner, tenant, root_organization(tenant=tenant)), **NAME_ASKS
+    )
+    assert over_http.status_code == 200, over_http.content
+    assert [item["id"] for item in json.loads(over_http.content)["items"]] == [str(found.pk)]
+    assert [str(item.id) for item in over_mcp.items] == [str(found.pk)]
+
+
+# golden: filter name end
+
+
+def test_a_tool_and_its_route_answer_with_the_same_row(
+    api: Client, tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    """The same widget, through both doors, byte for byte the same shape."""
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Twin", notes="hello")
+
+    api.force_login(owner)
+    over_http = api.get(f"/api/v1/widgets/{widget.pk}/")
+    assert over_http.status_code == 200
+
+    over_mcp = tool("get_widget", register=register)(
+        ctx=context_for(owner, tenant, root_organization(tenant=tenant)), widget_id=widget.pk
+    )
+    assert isinstance(over_mcp, WidgetOut)
+    assert as_the_door_renders(over_mcp.model_dump(mode="json")) == as_the_door_renders(
+        json.loads(over_http.content)
+    )
+
+
+def test_list_widgets_is_scoped_to_the_tokens_tenant(
+    tenant: Tenant,
+    other_tenant: Tenant,
+    owner: User,
+    owner_actor: Actor,
+    stranger_actor: Actor,
+) -> None:
+    mine = create_widget(tenant=tenant, actor=owner_actor, name="Mine")
+    create_widget(tenant=other_tenant, actor=stranger_actor, name="Theirs")
+
+    page = tool("list_widgets", register=register)(
+        ctx=context_for(owner, tenant, root_organization(tenant=tenant))
+    )
+    assert len(page.items) == 1
+    assert [item.id for item in page.items] == [mine.pk]
+
+
+def test_list_widgets_paginates_searches_and_orders(
+    tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    for index in range(3):
+        create_widget(tenant=tenant, actor=owner_actor, name=f"Widget {index}", notes="prose")
+    create_widget(tenant=tenant, actor=owner_actor, name="Other", notes="nothing")
+
+    listing = tool("list_widgets", register=register)
+    ctx = context_for(owner, tenant, root_organization(tenant=tenant))
+
+    page = listing(ctx=ctx, limit=2, include_count=True)
+    assert page.count == 4
+    assert len(page.items) == 2
+    assert page.has_more is True
+
+    second = listing(ctx=ctx, cursor=page.next_cursor, limit=2)
+    assert [item.id for item in second.items] != [item.id for item in page.items]
+    assert second.has_more is False
+
+    found = listing(ctx=ctx, q="prose")
+    assert len(found.items) == 3
+
+    named = listing(ctx=ctx, name="Other")
+    assert [item.name for item in named.items] == ["Other"]
+
+    names = [item.name for item in listing(ctx=ctx, ordering="name").items]
+    assert names == sorted(names) and len(names) == 4
+    descending = [item.name for item in listing(ctx=ctx, ordering="-name").items]
+    assert descending == names[::-1]
+
+
+def test_list_widgets_orders_by_due_date_with_the_undated_last(
+    tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    """`list_widgets(ordering="due_at" | "-due_at")` sorts as the list route does."""
+    from datetime import UTC, datetime
+
+    create_widget(tenant=tenant, actor=owner_actor, name="Undated")
+    for name, month in (("Middle", 11), ("Soonest", 10), ("Latest", 12)):
+        create_widget(
+            tenant=tenant,
+            actor=owner_actor,
+            name=name,
+            due_at=datetime(2026, month, 15, tzinfo=UTC),
+        )
+    listing = tool("list_widgets", register=register)
+    ctx = context_for(owner, tenant, root_organization(tenant=tenant))
+
+    soonest = listing(ctx=ctx, ordering="due_at")
+    assert [item.name for item in soonest.items] == ["Soonest", "Middle", "Latest", "Undated"]
+    latest = listing(ctx=ctx, ordering="-due_at")
+    assert [item.name for item in latest.items] == ["Latest", "Middle", "Soonest", "Undated"]
+
+    with pytest.raises(ToolError) as refused:
+        listing(ctx=ctx, ordering="due")
+    assert "invalid" in str(refused.value)
+
+
+def test_an_ordering_the_route_did_not_offer_is_refused(
+    tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    """The same allow-list as the HTTP list, because it is literally the same one."""
+    with pytest.raises(ToolError) as refused:
+        tool("list_widgets", register=register)(
+            ctx=context_for(owner, tenant, root_organization(tenant=tenant)),
+            ordering="owner__password",
+        )
+    assert "invalid" in str(refused.value)
+
+
+def test_a_widget_in_another_tenant_is_not_found(
+    tenant: Tenant, other_tenant: Tenant, owner: User, stranger_actor: Actor
+) -> None:
+    theirs = create_widget(tenant=other_tenant, actor=stranger_actor, name="Theirs")
+    with pytest.raises(ToolError) as refused:
+        tool("get_widget", register=register)(
+            ctx=context_for(owner, tenant, root_organization(tenant=tenant)), widget_id=theirs.pk
+        )
+    # `not_found`, never `forbidden`: a 403 here would confirm the row exists.
+    assert "not_found" in str(refused.value)
+
+
+def test_create_widget_writes_the_row_and_owns_it(tenant: Tenant, owner: User) -> None:
+    out = tool("create_widget", register=register)(
+        ctx=context_for(owner, tenant, root_organization(tenant=tenant)),
+        name="From a machine",
+        notes="n",
+    )
+
+    widget = Widget.objects.for_tenant(tenant).get(pk=out.id)
+    assert widget.name == "From a machine"
+    assert widget.owner_id == owner.pk
+    assert widget.tenant_id == tenant.pk
+
+
+def test_update_widget_changes_only_what_it_was_given(
+    tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Before", notes="keep")
+
+    out = tool("update_widget", register=register)(
+        ctx=context_for(owner, tenant, root_organization(tenant=tenant)),
+        widget_id=widget.pk,
+        version=widget.version,
+        name="After",
+    )
+    assert out.name == "After"
+    assert out.notes == "keep"
+
+
+def test_delete_widget_removes_the_row_and_says_which(
+    tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Doomed")
+
+    out = tool("delete_widget", register=register)(
+        ctx=context_for(owner, tenant, root_organization(tenant=tenant)), widget_id=widget.pk
+    )
+    assert out.id == widget.pk
+    assert Widget.objects.for_tenant(tenant).count() == 0
+
+
+def test_a_token_with_no_tenant_cannot_write(nomad: User) -> None:
+    """Fails closed, exactly as the HTTP door does with no tenant."""
+    with pytest.raises(ToolError) as refused:
+        tool("create_widget", register=register)(ctx=context_for(nomad, None, None), name="Nowhere")
+    assert "no_acting_scope" in str(refused.value)
+
+
+def test_a_token_with_no_tenant_reads_nothing(nomad: User) -> None:
+    """A token resolving no tenant is refused `no_acting_scope`, as the HTTP door refuses it."""
+    with pytest.raises(ToolError) as refused:
+        tool("list_widgets", register=register)(ctx=context_for(nomad, None, None))
+    assert "no_acting_scope" in str(refused.value)
+
+
+def test_a_call_with_no_principal_is_refused(tenant: Tenant) -> None:
+    """There is no unauthenticated tool call to forget to check."""
+    empty = Context(request_context=cast(Any, FakeRequestContext(request=FakeRequest())))
+    with pytest.raises(Exception) as refused:
+        tool("list_widgets", register=register)(ctx=empty)
+    assert "principal" in str(refused.value)
+
+
+def test_the_id_a_tool_takes_is_a_uuid(tenant: Tenant, owner: User, owner_actor: Actor) -> None:
+    """The schema is the contract on this door too: ids are UUIDs, not strings."""
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Typed")
+    schema = example_server()._tool_manager.get_tool("get_widget")
+    assert schema is not None
+    assert schema.parameters["properties"]["widget_id"]["format"] == "uuid"
+    assert isinstance(widget.pk, UUID)
+
+
+def test_the_list_tool_has_a_query_budget(
+    tenant: Tenant, owner: User, owner_actor: Actor, django_assert_num_queries: Any
+) -> None:
+    """The same pin the HTTP list carries, for the same failure."""
+    for index in range(10):
+        create_widget(tenant=tenant, actor=owner_actor, name=f"Widget {index}")
+
+    listing = tool("list_widgets", register=register)
+    ctx = context_for(owner, tenant, root_organization(tenant=tenant))
+    with django_assert_num_queries(LIST_QUERY_BUDGET):
+        page = listing(ctx=ctx)
+    assert len(page.items) == 10
+
+
+# golden: field due_at begin
+DUE_AT = datetime(2026, 11, 2, 17, 0, tzinfo=UTC)
+LATER_DUE_AT = datetime(2026, 12, 1, 9, 30, tzinfo=UTC)
+
+
+def test_a_tool_creates_changes_and_clears_due_at(tenant: Tenant, owner: User) -> None:
+    ctx = context_for(owner, tenant, root_organization(tenant=tenant))
+    created = tool("create_widget", register=register)(ctx=ctx, name="Due", due_at=DUE_AT)
+    assert created.due_at == DUE_AT
+
+    changed = tool("update_widget", register=register)(
+        ctx=ctx, widget_id=created.id, version=created.version, due_at=LATER_DUE_AT
+    )
+    assert changed.due_at == LATER_DUE_AT
+
+    cleared = tool("update_widget", register=register)(
+        ctx=ctx, widget_id=created.id, version=changed.version, clear_due_at=True
+    )
+    assert cleared.due_at is None
+
+
+# golden: field due_at end
+
+
+def test_a_tool_filters_by_a_due_date(tenant: Tenant, owner: User, owner_actor: Actor) -> None:
+    ctx = context_for(owner, tenant, root_organization(tenant=tenant))
+    create_widget(tenant=tenant, actor=owner_actor, name="Due", due_at=DUE_AT)
+    create_widget(
+        tenant=tenant, actor=owner_actor, name="Early", due_at=datetime(2026, 10, 15, tzinfo=UTC)
+    )
+    listing = tool("list_widgets", register=register)
+    cut = datetime(2026, 11, 1, tzinfo=UTC)
+    assert [item.name for item in listing(ctx=ctx, due_before=cut).items] == ["Early"]
+    assert [item.name for item in listing(ctx=ctx, due_after=cut).items] == ["Due"]

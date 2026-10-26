@@ -39,18 +39,9 @@ keys below resolve to exactly the people the predicate admitted — and a tenant
 that wants a fourth kind of person able to rotate a credential can now say so
 with a `Role` row, which the predicate gave them no way to do.
 
-The proof is a census rather than this paragraph: `tests/authz_baseline.json` is
-derived on the tree before the sweep and `tests/test_authz_sweep.py` re-derives
-it here and asserts equality, cell for cell.
-
-**What this sweep deliberately did NOT do** (PM ruling, 2026-09-16): the other
-half of the sweep — moving "which declared role holds this by default" out of
-the compat residue and into a `DEFAULT_ROLES` mapping — is DEFERRED to one later
-rung, because any `DEFAULT_ROLES` entry moves `defaults_for("member")` and two
-pins of the flat product in `apps/core/tests/test_vocabulary.py` read that value
-directly. This app would have had nothing to put in one — it admits no member to
-any write — but the deferral is recorded here so the next reader knows the file
-is waiting on a rung rather than finished by omission.
+**No `DEFAULT_ROLES`: no key here admits a role by itself.** The compat residue
+that once offered a predicate key to every role is retired, so who holds
+a key is the role declarations' patterns and nothing else.
 """
 
 from __future__ import annotations

@@ -69,44 +69,43 @@ document and the status codes.
 
 from __future__ import annotations
 
-import importlib
-import importlib.util
 import json
 import re
 import sys
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from types import ModuleType
-from typing import Any
+from typing import Any, Literal
 
-from django.apps import apps as django_apps
 from django.core.exceptions import ObjectDoesNotExist, PermissionDenied, ValidationError
 from django.db import IntegrityError, OperationalError
-from django.http import Http404, HttpRequest, HttpResponse, HttpResponseNotAllowed
+from django.http import Http404, HttpRequest, HttpResponse, HttpResponseNotAllowed, JsonResponse
 from django.views.defaults import server_error
-from ninja import NinjaAPI, Router
+from ninja import NinjaAPI, Router, Schema
 from ninja.errors import AuthenticationError, AuthorizationError, HttpError, Throttled
 from ninja.errors import ValidationError as NinjaValidationError
 from ninja.openapi.schema import BODY_CONTENT_TYPES
 from ninja.responses import NinjaJSONEncoder
 
-from apps.accounts.auth import API_AUTH, PageTokenMissing, Unauthenticated
+from apps.accounts.auth import API_AUTH, Unauthenticated
+from apps.core import context, surfaces
 from apps.core.actor import TOKEN_ATTR
 from apps.core.api import docs, scopes
 from apps.core.api.pagination import answers_cursor_envelope
+from apps.core.api.query import retired_query_of
+from apps.core.discovery import declared
 from apps.core.exceptions import (
     CODE_STATUSES,
     NON_FIELD_KEY,
     REFUSALS,
     Conflict,
-    DatabaseUnavailable,
     DomainError,
     Forbidden,
     Invalid,
     NotFound,
     RateLimited,
     Remedy,
-    SearchUnavailable,
+    bare_status_refusals,
     database_unavailable,
     is_connection_shaped,
     register_refusal,
@@ -223,7 +222,44 @@ class ContractAPI(NinjaAPI):
         # do not exist until it has finished. One call: which headers there are,
         # and which responses each lands on, is declared beside the writers.
         docs.add_response_headers(schema)
+        return _for_the_surface(schema)
+
+
+def _for_the_surface(schema: dict[str, Any]) -> dict[str, Any]:
+    """The document narrowed to the families the request's surface exposes.
+
+    The surface is the one the door bound for this request (`context`, beside
+    `door`), read through the same predicate the door gate asks
+    (`surfaces.exposes`) — so a host's document and its doors cannot disagree
+    about what it answers. Outside a request (the client generator, a test, a
+    command) nothing is bound and the document is whole; on a total surface it
+    is whole too, byte for byte.
+    """
+    bound = context.value("surface")
+    surface = surfaces.declared().get(str(bound)) if bound else None
+    if surface is None or surface.families is surfaces.ALL:
         return schema
+    kept: dict[str, Any] = {}
+    for path, item in schema.get("paths", {}).items():
+        operations = {
+            method: operation
+            for method, operation in item.items()
+            if not isinstance(operation, dict)
+            or "tags" not in operation
+            or surfaces.exposes(surface, _family(operation.get("tags")))
+        }
+        if any(
+            isinstance(operation, dict) and "tags" in operation for operation in operations.values()
+        ):
+            kept[path] = operations
+    schema["paths"] = kept
+    schema["tags"] = [tag for tag in schema.get("tags", []) if tag.get("name") in surface.families]
+    return schema
+
+
+def _family(tags: Sequence[str] | None) -> str | None:
+    """An operation's one scope family — its one tag (rule 41) — or `None` for any other count."""
+    return tags[0] if tags is not None and len(tags) == 1 else None
 
 
 api = ContractAPI(
@@ -244,16 +280,10 @@ api = ContractAPI(
 def _discover_api_modules() -> list[tuple[str, ModuleType, Router]]:
     """Every installed `apps.*` module that exposes a `router`, in app order."""
     found: list[tuple[str, ModuleType, Router]] = []
-    for config in django_apps.get_app_configs():
-        if not config.name.startswith("apps."):
-            continue
-        module_name = f"{config.name}.api"
-        if importlib.util.find_spec(module_name) is None:
-            continue
-        module = importlib.import_module(module_name)
-        router = getattr(module, "router", None)
-        if not isinstance(router, Router):
-            continue
+    for config, router in declared(
+        "api", "router", predicate=lambda value: isinstance(value, Router)
+    ):
+        module = sys.modules[f"{config.name}.api"]
         prefix = str(getattr(module, "PREFIX", config.label)).strip("/")
         found.append((prefix, module, router))
     return found
@@ -286,6 +316,31 @@ def _tag_descriptions() -> list[dict[str, str]]:
         docs.tag_entry(name, collected[name])
         for name in sorted(collected)
         if getattr(collected[name], "description", collected[name])
+    ]
+
+
+def _retired_query_parameters(operation: Any) -> list[dict[str, Any]]:
+    """The query parameters this operation retired, published `deprecated: true`.
+
+    An `api.py` declares `RETIRED_QUERY: dict[str, RetiredQuery]` beside its
+    `TAGS` — a parameter a list no longer takes, the live one to ask with
+    instead, and the sentence a caller reads. Read through
+    `core.api.query.retired_query_of`, the same function a product's
+    strict-query seam defers to, so the document, the seam and the route's
+    refusal read one declaration and cannot disagree about which operations
+    retired what. `deprecated` is the standard flag every OpenAPI reader
+    renders: a generated client sees the word, and a caller reads why.
+    """
+    return [
+        {
+            "name": name,
+            "in": "query",
+            "required": False,
+            "deprecated": True,
+            "description": retired.reason,
+            "schema": {"type": "string"},
+        }
+        for name, retired in sorted(retired_query_of(operation).items())
     ]
 
 
@@ -411,63 +466,25 @@ class InvalidBody(Invalid):
     default_detail = "The request does not match the shape this operation accepts."
 
 
-STATUS_FOR: dict[type[DomainError], int] = {
-    Invalid: 400,
-    # 422, and NOT folded into `Invalid`'s 400. The two are different
-    # answers and RFC 9110 §15.5.21 already has a number for the second: 400 is
-    # "a rule about your data did not hold" — the shape was right, a service
-    # looked and said no — and 422 is "this is not the shape this operation
-    # accepts", decided while the request was still being parsed, before any
-    # route ran. It is also the number ninja already answered a schema failure
-    # with, so what changed is the BODY and not the status line: a client
-    # that branched on 422 keeps working, and now has a `code` to branch on
-    # instead. `status_for` walks the MRO in order, so this entry is found
-    # before `Invalid`'s.
-    InvalidBody: 422,
-    Unauthenticated: 401,
-    Forbidden: 403,
-    PageTokenMissing: 403,
-    NotFound: 404,
-    MethodNotAllowed: 405,
-    Conflict: 409,
-    RateLimited: 429,
-    # 503, and the only 5xx in this table that is not a bug. An
-    # unreachable search index is NOT this — the circuit answers it from
-    # Postgres at 200 — so this number is reached only when no engine could
-    # answer at all. It is a refusal rather than a crash because the caller's
-    # request was fine and retrying is the remedy, which is exactly what 503
-    # means and what `DomainError`'s bare 500 does not say.
-    SearchUnavailable: 503,
-    # 503, the second one, and the second 5xx in this table that is not a bug.
-    # `SearchUnavailable`'s own docstring rejected a generic `Unavailable` and
-    # named itself "the precedent it generalises" for the day a second seam
-    # would need one; this is that day. The number is the same for the same reason: the
-    # caller's request was fine, retrying is the remedy, and that is exactly
-    # what 503 means and what `DomainError`'s bare 500 does not say.
-    DatabaseUnavailable: 503,
-}
+#: Which refusal a bare status means — `HttpError(403, …)`, ninja's own
+#: `AuthenticationError` — for `on_http_error` below. DERIVED, never typed:
+#: the codes are `core.exceptions.BARE_STATUS_CODES` (the one decision: the most
+#: general refusal at each number) and the numbers are each code's own `status=`
+#: in the registry (ADR core-23), so this table, the class fallback below and
+#: the document cannot come to disagree. Every number the registry publishes
+#: has an entry — a 503 included, which used to fall through to ninja's codeless
+#: `{"detail": …}` — and `apps/core/tests/test_refusal_status.py` pins that no
+#: status is a hole. Computed here, after `MethodNotAllowed` and `InvalidBody`
+#: are defined and `Unauthenticated` imported, so every listed code has its class.
+REFUSAL_FOR_STATUS: dict[int, type[DomainError]] = bare_status_refusals()
 
-#: The reverse of `STATUS_FOR`, for the one caller that has a number and needs a
-#: refusal: `on_http_error` below, translating a raise site that spoke HTTP.
-#: Built here rather than typed, so a status can never mean two things — and
-#: `PageTokenMissing` deliberately does not win 403 back from `Forbidden`, which
-#: is what a bare `raise HttpError(403, …)` in a route means.
-REFUSAL_FOR_STATUS: dict[int, type[DomainError]] = {
-    400: Invalid,
-    401: Unauthenticated,
-    403: Forbidden,
-    404: NotFound,
-    # A door that deliberately raises `HttpError(405, …)` means the same thing
-    # the router means, and now says it in the same envelope. It is here for the
-    # same reason every other line is: the table is the reverse of `STATUS_FOR`,
-    # and a number that maps to a refusal in one direction maps back in the other.
-    405: MethodNotAllowed,
-    409: Conflict,
-    # A door that raises `HttpError(422, …)` means what ninja's own parser means,
-    # and now says it in the same envelope. Here for the reason every
-    # other line is here: the table is the reverse of `STATUS_FOR`.
-    422: InvalidBody,
-    429: RateLimited,
+#: The class-tree fallback `status_for` walks for a code that declared no number
+#: (a machine-door code that reached this door, rule 47's canary): the same
+#: classes, each at its own declared status. A view of `REFUSAL_FOR_STATUS`, so
+#: a product's `class InsufficientFunds(Conflict)` is a 409 without declaring
+#: anything, by its base's declaration and not by a second table.
+STATUS_FOR: dict[type[DomainError], int] = {
+    cls: CODE_STATUSES[cls.code] for cls in REFUSAL_FOR_STATUS.values()
 }
 
 
@@ -959,6 +976,24 @@ def _refused_for_scope(request: HttpRequest, required: str | None) -> HttpRespon
     )
 
 
+def _refused_for_surface(request: HttpRequest, family: str | None) -> HttpResponse | None:
+    """The refusal for an operation this request's surface does not expose, or `None`.
+
+    Beside the ceiling check and ASKED BEFORE AUTHENTICATION: whether this host
+    offers the operation at all is a fact about the address, and answering a
+    credential question first would tell an anonymous caller on a customer host
+    that a staff door exists behind it. 404, never 403 — the reach-refusal
+    posture. A total surface exposes everything, so a product that declares no
+    surface never reaches the refusal.
+    """
+    surface = surfaces.of_request(request)
+    if surfaces.exposes(surface, family):
+        return None
+    if surface is None:
+        return on_domain_error(request, surfaces.SurfaceUnknownHost())
+    return on_domain_error(request, surfaces.does_not_expose(surface))
+
+
 def _refused_for_addressing(request: HttpRequest) -> HttpResponse | None:
     """The addressing-header law at the REST door (ADR core-21).
 
@@ -1007,10 +1042,14 @@ def _guard_the_ceiling(operation: Any) -> None:
             "Nothing is mounted rather than mounted unguarded."
         )
     required = docs.derived_scope(tags=operation.tags or [], methods=operation.methods)
+    family = _family(operation.tags)
 
     if operation.is_async:
 
         async def run_checks_async(request: HttpRequest) -> Any:
+            elsewhere = _refused_for_surface(request, family)
+            if elsewhere is not None:
+                return elsewhere
             error = await inner(request)
             if error is not None:
                 return error
@@ -1023,6 +1062,9 @@ def _guard_the_ceiling(operation: Any) -> None:
         return
 
     def run_checks(request: HttpRequest) -> Any:
+        elsewhere = _refused_for_surface(request, family)
+        if elsewhere is not None:
+            return elsewhere
         error = inner(request)
         if error is not None:
             return error
@@ -1255,6 +1297,8 @@ def _document_operation(path: str, operation: Any) -> None:
         # `docs.add_response_headers` (`ContractAPI.get_openapi_schema`), with
         # every other response header, off one population.
 
+    parameters.extend(_retired_query_parameters(operation))
+
     extra: dict[str, Any] = {}
     if parameters:
         extra["parameters"] = parameters
@@ -1290,6 +1334,7 @@ def _document_operation(path: str, operation: Any) -> None:
         docs.derived_scope(tags=operation.tags or [], methods=operation.methods),
         reachable_by_token=docs.reachable_by_token(operation.auth_callbacks),
     )
+    extra.update(docs.url_name_extension(operation))
     operation.openapi_extra = {**(operation.openapi_extra or {}), **extra}
 
 
@@ -1387,3 +1432,40 @@ def api_server_error(request: HttpRequest) -> HttpResponse:
     if exc is not None and is_connection_shaped(exc):
         return on_domain_error(request, database_unavailable(exc, seam="handler500"))
     return server_error(request)
+
+
+# --- The face's boot question: which surface is this address? ------------------
+
+
+class SurfaceOut(Schema):
+    """Which surface this address is, and what the face draws on it."""
+
+    surface: str
+    screens: list[str] | Literal["*"]
+    tenant_rule: str
+
+
+def surface_view(request: HttpRequest) -> HttpResponse:
+    """Which surface this address is: its key, its screens and how it chooses the workspace.
+
+    The one face asks it at boot and draws that surface's screens. Unauthenticated
+    because it is asked before anybody signs in, and it says only what the
+    address already is — the surface's key, its screens and its tenant rule —
+    never a family, a door or another surface. A host no surface is bound to
+    never reaches it: the middleware answered that request already.
+
+    A plain view under the version segment speaks the API's vocabulary like the
+    catch-all beside it: a wrong method is the API's own 405, in the one
+    envelope, and the mount exempts it from CSRF because it reads and writes
+    nothing a forged request could reach.
+    """
+    if request.method not in ("GET", "HEAD"):
+        return _method_refusal(request, HttpResponseNotAllowed(["GET", "HEAD"]))
+    surface = surfaces.of_request(request)
+    if surface is None:
+        refusal = surfaces.SurfaceUnknownHost()
+        return JsonResponse(wire_refusal(refusal), status=status_for(refusal))
+    listed = surfaces.named(surface.screens)
+    screens: list[str] | Literal["*"] = "*" if listed is None else sorted(listed)
+    body = SurfaceOut(surface=surface.key, screens=screens, tenant_rule=surface.tenant_rule)
+    return JsonResponse(body.model_dump())

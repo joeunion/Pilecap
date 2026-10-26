@@ -39,15 +39,12 @@ import pytest
 
 DEMO_PATH = Path(__file__).resolve().parents[3] / "scripts" / "oauth_demo.py"
 
-# The text `apps/core/mcp.py:acting_tenant` refuses a tenantless caller with,
-# and the shape `tool_call` renders every domain
-# refusal in: `<code>: <detail>`, then whatever remedies the registry offers.
-# Copied as a literal rather than composed, because what is under test is a
-# *client* reading a wire format it does not own; composing it from our own
-# helpers would only prove that we agree with ourselves.
+# What the MCP door renders for a tenantless caller (`no_acting_scope`), typed as a literal:
+# the demo is a client reading a wire format it does not own.
 REFUSAL_TEXT = (
-    "no_tenant: This token resolves to no tenant, so there is nothing to act in."
-    " — you can: Check which tenant you are acting in [header:X-Tenant]"
+    "no_acting_scope: This request resolved no workspace for you to act in: you hold no "
+    "membership it could act under. Nothing was read and nothing was written."
+    " — you can: Check which memberships you actually hold [self:membership]"
 )
 
 
@@ -99,10 +96,7 @@ def test_a_refused_tool_call_exits_nonzero_and_names_the_refusal(
 ) -> None:
     """The exact failure from the docstring above, now a failure.
 
-    Both halves are asserted because both are what an operator acts on: the
-    **code** is what says which wall was hit (`no_tenant`, not "something went
-    wrong"), and the **detail** is the sentence that says what to do about it.
-    A nonzero exit with an unreadable line would be half a fix.
+    Both halves are what an operator acts on: the code names the wall, the detail says what to do.
     """
     with pytest.raises(SystemExit) as exited:
         demo.check_result("mcp tools/call create_widget", refused_result())
@@ -113,8 +107,8 @@ def test_a_refused_tool_call_exits_nonzero_and_names_the_refusal(
     assert "[FAIL]" in printed
     assert "mcp tools/call create_widget" in printed
     assert "REFUSED" in printed
-    assert "no_tenant" in printed
-    assert "nothing to act in" in printed
+    assert "no_acting_scope" in printed
+    assert "Nothing was read" in printed
     # And it must not have said the thing that made the original refusal look like a success.
     assert "[OK" not in printed
 

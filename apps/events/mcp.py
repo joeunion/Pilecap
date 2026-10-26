@@ -80,9 +80,9 @@ from apps.events.schemas import (
     WebhookEndpointSecretOut,
 )
 from apps.events.selectors import (
-    dead_lettered,
     get_delivery,
     get_endpoint,
+    list_dead_letters,
     list_deliveries,
     list_endpoints,
 )
@@ -94,6 +94,7 @@ from apps.events.services import (
     resume_endpoint,
     update_endpoint,
 )
+from apps.events.targets import refuse_private_target
 
 
 def register(server: MCPServer[Any]) -> None:
@@ -115,14 +116,18 @@ def register(server: MCPServer[Any]) -> None:
         with tool_call(ctx) as acting:
             endpoints: QuerySet[WebhookEndpoint] = WebhookEndpointFilter(
                 is_active=is_active
-            ).filter(list_endpoints(tenant=acting.tenant, active_only=False, actor=acting.actor()))
+            ).filter(
+                list_endpoints(
+                    tenant=acting_tenant(acting), active_only=False, actor=acting.actor()
+                )
+            )
             endpoints = searched(endpoints, q, fields=ENDPOINT_SEARCH_FIELDS)
             endpoints = ordered_by(
                 endpoints, ordering, allowed=ENDPOINT_ORDERING, default="-created_at"
             )
             page = cursor_page(
                 endpoints,
-                tenant=acting.tenant,
+                tenant=acting_tenant(acting),
                 cursor=cursor,
                 limit=limit,
                 include_count=include_count,
@@ -144,7 +149,9 @@ def register(server: MCPServer[Any]) -> None:
             # HTTP: a refusal that distinguished the two would tell the caller
             # the row exists, which is the fact the tenancy was hiding.
             return WebhookEndpointOut.from_orm(
-                get_endpoint(tenant=acting.tenant, endpoint_id=endpoint_id, actor=acting.actor())
+                get_endpoint(
+                    tenant=acting_tenant(acting), endpoint_id=endpoint_id, actor=acting.actor()
+                )
             )
 
     @server.tool(
@@ -158,6 +165,7 @@ def register(server: MCPServer[Any]) -> None:
         description: str = "",
     ) -> WebhookEndpointSecretOut:
         with tool_call(ctx) as acting:
+            refuse_private_target(url)
             # `with_secret` is the HTTP door's own function, imported rather than
             # reimplemented: "the key is shown once" written twice is a promise
             # one of the two doors will stop keeping.
@@ -185,6 +193,8 @@ def register(server: MCPServer[Any]) -> None:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
             endpoint = get_endpoint(tenant=tenant, endpoint_id=endpoint_id, actor=acting.actor())
+            if url is not None:
+                refuse_private_target(url)
             return WebhookEndpointOut.from_orm(
                 update_endpoint(
                     tenant=tenant,
@@ -280,13 +290,13 @@ def register(server: MCPServer[Any]) -> None:
         with tool_call(ctx) as acting:
             deliveries: QuerySet[Delivery] = DeliveryFilter(
                 status=status, endpoint_id=endpoint_id
-            ).filter(list_deliveries(tenant=acting.tenant, actor=acting.actor()))
+            ).filter(list_deliveries(tenant=acting_tenant(acting), actor=acting.actor()))
             deliveries = ordered_by(
                 deliveries, ordering, allowed=DELIVERY_ORDERING, default="-created_at"
             )
             page = cursor_page(
                 deliveries,
-                tenant=acting.tenant,
+                tenant=acting_tenant(acting),
                 cursor=cursor,
                 limit=limit,
                 include_count=include_count,
@@ -311,14 +321,14 @@ def register(server: MCPServer[Any]) -> None:
     ) -> DeliveryPage:
         with tool_call(ctx) as acting:
             deliveries: QuerySet[Delivery] = ordered_by(
-                dead_lettered(tenant=acting.tenant, actor=acting.actor()),
+                list_dead_letters(tenant=acting_tenant(acting), actor=acting.actor()),
                 ordering,
                 allowed=DELIVERY_ORDERING,
                 default="-dead_lettered_at",
             )
             page = cursor_page(
                 deliveries,
-                tenant=acting.tenant,
+                tenant=acting_tenant(acting),
                 cursor=cursor,
                 limit=limit,
                 include_count=include_count,

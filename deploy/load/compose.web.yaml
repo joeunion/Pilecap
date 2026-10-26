@@ -1,0 +1,46 @@
+# The web box of an envelope's production shape: the app's containers resolve every organ's name to the organs box.
+#
+# Overlaid on deploy/compose.yaml (--profile laptop) by scripts/envelope.sh --shape prod, which starts
+# only web, worker, frontend, caddy and the relay (--no-deps); the env file's organ names stay as they are.
+# Zitadel is reached as Caddy reaches it on one box: the issuer's name is Caddy (an alias), Caddy's
+# `zitadel:8080` is the relay, and the relay is the organs box's 443; web and worker trust Caddy's
+# root, which the script copies out of Caddy before it starts them.
+x-caddy-root: &caddy-root
+  SSL_CERT_FILE: /caddy-root.crt
+x-organs: &organs
+  - "db:${DJB_ENVELOPE_ORGANS_IP:?scripts/envelope.sh names the organs box's private address}"
+  - "redis:${DJB_ENVELOPE_ORGANS_IP}"
+  - "meilisearch:${DJB_ENVELOPE_ORGANS_IP}"
+  - "temporal:${DJB_ENVELOPE_ORGANS_IP}"
+  - "minio:${DJB_ENVELOPE_ORGANS_IP}"
+  - "otel-collector:${DJB_ENVELOPE_ORGANS_IP}"
+  - "clickstack:${DJB_ENVELOPE_ORGANS_IP}"
+
+services:
+  web:
+    extra_hosts: *organs
+    environment: *caddy-root
+    volumes: ["${DJB_ENVELOPE_CADDY_ROOT:?scripts/envelope.sh copies Caddy's root out first}:/caddy-root.crt:ro"]
+  worker:
+    extra_hosts: *organs
+    environment: *caddy-root
+    volumes: ["${DJB_ENVELOPE_CADDY_ROOT:?scripts/envelope.sh copies Caddy's root out first}:/caddy-root.crt:ro"]
+  oneoff:
+    extra_hosts: *organs
+  frontend:
+    extra_hosts: *organs
+  caddy:
+    extra_hosts: *organs
+    networks:
+      default:
+        aliases: ["${AUTH_ADDRESS:?the env file names the issuer's host}"]
+  zitadel-relay:
+    # pin-exception: deploy/compose.yaml's own Caddy pin, read off it by scripts/envelope.sh.
+    image: ${DJB_ENVELOPE_CADDY_IMAGE:?scripts/envelope.sh reads the caddy image off deploy/compose.yaml}
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+    environment:
+      ZITADEL_UPSTREAM: "${DJB_ENVELOPE_ORGANS_IP}:443"
+    volumes: ["./load/Caddyfile.relay:/etc/caddy/Caddyfile:ro"]
+    networks:
+      default:
+        aliases: ["zitadel"]

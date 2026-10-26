@@ -56,7 +56,7 @@ from django.urls import resolve, reverse
 
 from apps.accounts import qr, signin, views, zitadel
 from apps.accounts.management.commands import zitadel_seed
-from apps.accounts.models import User
+from apps.accounts.models import SsoIdentity, User
 from apps.accounts.signin import (
     ZITADEL_FACTOR_NAMES,
     ZITADEL_PASSWORD_METHOD,
@@ -74,6 +74,7 @@ from apps.accounts.tests.conftest import (
     FakeInvitedZitadel,
     FakeModeAZitadel,
     FakeSignInZitadel,
+    subject_of,
 )
 from apps.accounts.tests.stub_issuer import StubIssuer
 from apps.accounts.tests.test_entrance_frames import BASELINES, FRAMES_DIR, _doors
@@ -81,6 +82,10 @@ from apps.accounts.tests.test_rp_login import sign_in
 from apps.accounts.tests.test_signin import A_FOREIGN_SENDER
 from apps.core.audit import AuditEntry
 from apps.core.tests.tree_census import source_text, source_tree
+
+#: The sign-in world's people (`SIGNIN_LOGIN_NAME`, `SIGNIN_INVITED_LOGIN_NAME`)
+#: are at this domain, and `ours` arms it as the workforce's.
+SIGNIN_WORKFORCE_DOMAIN = SIGNIN_LOGIN_NAME.rsplit("@", 1)[1]
 
 pytestmark = pytest.mark.django_db
 
@@ -92,7 +97,7 @@ LOGIN_URL = "/accounts/login/"
 #: `test_signin.py` declares its three: `detect-secrets` keys on the keyword,
 #: and a pragma on a call `ruff format` may rewrap is a pragma on the wrong
 #: line.
-WRONG_PASSWORD = "not-the-password"  # pragma: allowlist secret
+WRONG_PASSWORD = "not-the-password"  # noqa: S105 — a throwaway password a test user is made with  # pragma: allowlist secret
 
 #: The three files a clone or a deployment copies. `DJB_SIGN_IN_DOOR` ships
 #: COMMENTED in each, at the default, because turning it on writes a
@@ -152,8 +157,17 @@ def ours(settings: Any, platform_provider: None) -> None:
     all — which is a configuration this door answers 503 for, and is what
     A5.7's configured checkout is about. The case that drives the unregistered
     half asks for `ours_unconfigured` instead.
+
+    **And the sign-in world's people are staff.** Each person this door signs
+    in is NEW here, and the platform mints a new person only at a workforce
+    domain or on an invitation (`SocialAccountAdapter._may_sign_up` — an empty
+    list fails closed). These tests are about the ceremony, not the wall, so
+    the world's domain is the workforce's; `test_workforce_wall.py` judges the
+    wall. It is armed here and not in `door`, whose audit tests need the
+    workforce door OFF on both sides to read clean.
     """
     settings.SIGN_IN_DOOR = "ours"
+    settings.GOOGLE_WORKSPACE_DOMAINS = [SIGNIN_WORKFORCE_DOMAIN]
 
 
 @pytest.fixture
@@ -199,18 +213,28 @@ def _logout_page(client: Client) -> str:
     return str(response.content.decode())
 
 
-def _on_the_face(body: str) -> str:
-    """The copy, without the shell's own comments or its token block.
+#: A hidden input, whole. Its value is a machine's token, never copy.
+_HIDDEN_INPUT = re.compile(r"<input\b[^>]*\btype=[\"']?hidden[\"']?[^>]*>", re.I | re.S)
 
-    Both are places this tree explains itself, and one of them names the
-    screens the design is replacing ("the MFA screens", in the primitives
+
+def _on_the_face(body: str) -> str:
+    """The copy, without the shell's comments, its token block or its hidden inputs.
+
+    The first two are places this tree explains itself, and one of them names
+    the screens the design is replacing ("the MFA screens", in the primitives
     comment inside `<style>`). A must-not-say assertion over the raw bytes
     would be an assertion about the REASONING rather than about the page, and
-    the only way to satisfy it would be to delete the reasoning. What is left
-    after both are removed is what a person can read.
+    the only way to satisfy it would be to delete the reasoning.
+
+    The third is a place the page carries a random value nobody reads: the
+    CSRF token is mixed-case alphanumerics, so one render in a few thousand
+    spells `U2F` or `MFA` inside `value="…"` and the must-not-say assertion
+    reds on a coin toss rather than on the copy. What is left after all three
+    are removed is what a person can read.
     """
     without_comments = re.sub(r"<!--.*?-->", "", body, flags=re.S)
-    return re.sub(r"<style>.*?</style>", "", without_comments, flags=re.S)
+    without_style = re.sub(r"<style>.*?</style>", "", without_comments, flags=re.S)
+    return _HIDDEN_INPUT.sub("", without_style)
 
 
 def _title(body: str) -> str:
@@ -235,22 +259,14 @@ def test_the_door_defaults_to_hosted() -> None:
 
 
 def test_an_unknown_door_refuses_rather_than_choosing_one() -> None:
-    """A typo is `ImproperlyConfigured` at import, never the other door.
+    """A typo is `ImproperlyConfigured` at import, never the other door."""
+    from django.core.exceptions import ImproperlyConfigured
 
-    The branch everywhere in this tree is `!= "ours"`, so a settings module
-    that fell back would answer `DJB_SIGN_IN_DOOR=Ours` with the hosted page —
-    a whole sign-in experience decided by a capital letter, discovered by a
-    person who cannot get in. The refusal is read out of `base.py`'s own source
-    because importing it under a bad value is what the guard prevents: the
-    assertion is that the raise EXISTS and names the setting, and
-    `apps/core/tests/test_settings.py` is where a module is re-imported under a
-    planted environment.
-    """
-    source = source_text(BASE_DIR / "config" / "settings" / "base.py")
+    from apps.core.tests.settings_env import _settings_module
 
-    assert 'env.str("DJB_SIGN_IN_DOOR", default="hosted")' in source
-    assert "if SIGN_IN_DOOR not in SIGN_IN_DOORS:" in source
-    assert "raise ImproperlyConfigured(" in source
+    with pytest.raises(ImproperlyConfigured, match="DJB_SIGN_IN_DOOR"):
+        with _settings_module("config.settings.base", DJB_SIGN_IN_DOOR="Ours"):
+            pass
 
 
 @pytest.mark.parametrize("name", ENV_EXAMPLES)
@@ -441,7 +457,10 @@ def test_ours_a_password_lands_at_the_login_redirect(
     assert response.status_code == 302, response.content
     assert response["Location"] == django_settings.LOGIN_REDIRECT_URL
     assert client.session.get("_auth_user_id")
-    assert User.objects.get(zitadel_sub=SIGNIN_USER_ID).email == SIGNIN_LOGIN_NAME
+    assert (
+        SsoIdentity.objects.get(connection__isnull=True, subject=SIGNIN_USER_ID).user.email
+        == SIGNIN_LOGIN_NAME
+    )
 
 
 def test_ours_unverified_address_is_refused_by_the_adapter(
@@ -463,7 +482,7 @@ def test_ours_unverified_address_is_refused_by_the_adapter(
     response = _sign_in(client)
 
     assert "_auth_user_id" not in client.session
-    assert not User.objects.filter(zitadel_sub=SIGNIN_USER_ID).exists()
+    assert not SsoIdentity.objects.filter(connection__isnull=True, subject=SIGNIN_USER_ID).exists()
     assert b"verified" in response.content
 
 
@@ -485,7 +504,7 @@ def test_ours_existing_person_is_linked_not_duplicated(
     assert response.status_code == 302, response.content
     assert User.objects.filter(email=SIGNIN_LOGIN_NAME).count() == 1
     existing.refresh_from_db()
-    assert existing.zitadel_sub == SIGNIN_USER_ID
+    assert subject_of(existing) == SIGNIN_USER_ID
 
 
 def test_ours_records_the_subject_once(client: Client, door: FakeSignInZitadel, ours: None) -> None:
@@ -500,7 +519,9 @@ def test_ours_records_the_subject_once(client: Client, door: FakeSignInZitadel, 
     cache.clear()
     assert _sign_in(client).status_code == 302
 
-    assert list(User.objects.values_list("zitadel_sub", flat=True)) == [SIGNIN_USER_ID]
+    assert list(
+        SsoIdentity.objects.filter(connection__isnull=True).values_list("subject", flat=True)
+    ) == [SIGNIN_USER_ID]
 
 
 @pytest.mark.parametrize("first", ["hosted", "ours"])
@@ -511,7 +532,7 @@ def test_a_person_signs_in_again_through_the_other_door(
 
     The seven tests this module and `test_rp_login` already carry each drive
     ONE door twice. Every one of them goes red when
-    `record_zitadel_identity`'s `== cleaned` early return is removed, and not
+    `record_identity`'s `== cleaned` early return is removed, and not
     one of them crosses: a tree could answer "nothing signs in twice" per door
     and still refuse the person who used the hosted page on Monday and this
     deployment's own form on Tuesday, because the two doors reach the subject
@@ -542,6 +563,9 @@ def test_a_person_signs_in_again_through_the_other_door(
     # OIDC subject IS the user id the Session API reports.
     stub_issuer.subject = SIGNIN_USER_ID
     stub_issuer.email = SIGNIN_LOGIN_NAME
+    # A new person on both doors: staff, as `ours` arms it (the wall is judged
+    # in `test_workforce_wall.py`).
+    settings.GOOGLE_WORKSPACE_DOMAINS = [SIGNIN_WORKFORCE_DOMAIN]
 
     def hosted() -> Any:
         settings.SIGN_IN_DOOR = "hosted"
@@ -557,7 +581,7 @@ def test_a_person_signs_in_again_through_the_other_door(
     there = roads[first]()
     assert there.status_code == 302, there.content
     person = User.objects.get(email=SIGNIN_LOGIN_NAME)
-    assert person.zitadel_sub == SIGNIN_USER_ID
+    assert subject_of(person) == SIGNIN_USER_ID
     assert client.session.get("_auth_user_id") == str(person.pk)
 
     client.logout()
@@ -569,10 +593,10 @@ def test_a_person_signs_in_again_through_the_other_door(
     assert client.session.get("_auth_user_id") == str(person.pk)
     assert User.objects.count() == 1
     person.refresh_from_db()
-    assert person.zitadel_sub == SIGNIN_USER_ID
+    assert subject_of(person) == SIGNIN_USER_ID
     assert (
         AuditEntry.objects.for_platform()
-        .filter(action="accounts.record_zitadel_identity", outcome="ok")
+        .filter(action="accounts.record_identity", outcome="ok")
         .count()
         == 2
     )
@@ -736,10 +760,33 @@ def test_ours_a_factor_reads_the_sentence_and_never_hands_off(
     assert "_auth_user_id" not in client.session
 
 
+def test_a_token_that_spells_a_banned_word_is_not_the_face_saying_it(
+    client: Client, door: FakeSignInZitadel, ours: None
+) -> None:
+    """The must-not-say reading is over the copy, never over the CSRF token.
+
+    The same page the case above reads, with its real token swapped for one
+    that spells `U2F` — the render a random token produces now and then, pinned
+    so it is the ordinary case rather than a flake. The swap is asserted to
+    have landed, so this cannot pass on a page that carried no token at all.
+    """
+    door.auth_methods.append(_zitadel_name_for(FactorKind.PASSKEY))
+    body = _sign_in(client).content.decode()
+
+    planted, swapped = re.subn(
+        r'(name="csrfmiddlewaretoken" value=")[^"]*"', r'\1aBU2Fc9MFAx"', body
+    )
+
+    assert swapped, "the page carried no CSRF token to swap"
+    assert "U2F" in planted
+    for banned in ("MFA", "U2F"):
+        assert banned not in _on_the_face(planted), banned
+
+
 def test_ours_a_factor_step_closes_the_ceremony_it_cannot_finish(
     client: Client, door: FakeSignInZitadel, ours: None
 ) -> None:
-    """ADR ident-10 at the door: every session this deployment opens, it closes.
+    """ADR ident-12 at the door: every session this deployment opens, it closes.
 
     The dead end above is a place the person stops, and a door that simply
     rendered a sentence would leave a ten-minute half-authenticated session on
@@ -951,7 +998,7 @@ def test_the_oauth_resource_server_was_not_touched() -> None:
 
 #: The password an invited person chooses in these tests. Declared once, with
 #: the pragma on its own line, for the reason `WRONG_PASSWORD` is.
-CHOSEN_PASSWORD = "Fresh-Horse-Battery-9!"  # pragma: allowlist secret
+CHOSEN_PASSWORD = "Fresh-Horse-Battery-9!"  # noqa: S105 — a throwaway password a test user is made with  # pragma: allowlist secret
 
 #: One the pinned build's own policy refuses (`minLength` 8, M11).
 TOO_SHORT = "abc"  # pragma: allowlist secret
@@ -1308,7 +1355,7 @@ def test_mode_a_round_trip_lands_through_the_callback(
 def test_a_finalized_session_is_left_for_the_client_to_spend(
     client: Client, mode_a_instance: FakeModeAZitadel, ours: None
 ) -> None:
-    """Mode A's one exception to ADR ident-10, and the LIVE walk is what found it.
+    """Mode A's one exception to ADR ident-12, and the LIVE walk is what found it.
 
     Every other exit of the seam closes the Zitadel session it opened. This
     road cannot: the finalize answers a callback URL with a code on it, the
@@ -1345,7 +1392,7 @@ def test_every_other_road_still_closes_its_session(
 ) -> None:
     """The other direction of the exception, so it stays an exception.
 
-    ADR ident-10 is unchanged everywhere a client is not waiting on a code:
+    ADR ident-12 is unchanged everywhere a client is not waiting on a code:
     the ordinary password road, and a Mode A ceremony whose finalize was
     REFUSED (there is no code, so there is nothing for anybody to spend).
     Both are driven here, because a `close=` that quietly became `False` for
@@ -2868,7 +2915,7 @@ def test_the_chip_road_puts_the_challenge_on_the_factor_frame(
 # stops describing the product.
 
 #: Design I-A's own words, by state, with the line they were transcribed from
-#: (the P20 cycle plan; the § and line number are on each row).
+#: (the sign-in cycle's plan; the § and line number are on each row).
 #:
 #: **THE PLAN'S PATH IS DELIBERATELY NOT SPELLED HERE.** The `--loop`
 #: ledger's own drive asserts that no module under `apps/` names a docs

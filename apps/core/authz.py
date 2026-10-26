@@ -48,10 +48,8 @@ membership over. That is `may_be_named(actor, obj)`, below, with its own
 
 from __future__ import annotations
 
-import importlib
-import importlib.util
 import re
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
 from types import MappingProxyType
@@ -63,7 +61,7 @@ from django.contrib.auth.base_user import AbstractBaseUser
 from django.core.exceptions import FieldDoesNotExist, ImproperlyConfigured
 from django.db import models
 
-from apps.core import verbs
+from apps.core import discovery, verbs
 from apps.core.actor import Actor, actor_for
 from apps.core.exceptions import Forbidden
 from apps.core.log import get_logger
@@ -78,14 +76,11 @@ from apps.core.models import (
     is_descendant_path,
     is_inherited_downward,
 )
+from apps.core.roads import road
 
 log = get_logger(__name__)
 
 Policy = Callable[[Actor, Any], bool]
-
-# The verbs a `member` may perform without a policy saying so. Everything else
-# is a write, and a write needs either a privileged role or a policy.
-READ_VERBS = frozenset({"view", "read", "list", "get"})
 
 # Roles, ordered. **deprecated v2.1 → removed v3.0.** The order used to be the
 # only place in the tree that said one role outranks another, and it was the
@@ -120,15 +115,15 @@ _announced: set[str] = set()
 def _declarations(module: str, attribute: str) -> list[tuple[AppConfig, dict[Any, Any]]]:
     """Every app's `<module>.<attribute>` dict, in app order, with its declarer.
 
-    A caller of `core.verbs.declared`, which is THE discovery walk — lifted
-    there so the vocabulary and the noun-verb family's hooks share one walk
-    rather than two copies of it (principle 13). `policies.py` and `roles.py`
+    A caller of `core.discovery.declared`, which is THE discovery walk — so the
+    vocabulary and the noun-verb family's hooks share one walk rather than two
+    copies of it (principle 13). `policies.py` and `roles.py`
     are found the same way for the same reason — drop the file and the
     declaration counts, with no registration anywhere — and the `AppConfig`
     travels with the dict because every refusal below has to name WHICH app
     declared the thing it is refusing.
     """
-    return verbs.declared(module, attribute)
+    return discovery.declared(module, attribute)
 
 
 def action_prose() -> dict[str, str]:
@@ -193,7 +188,7 @@ def policies() -> dict[str, Policy]:
     """Every app's `POLICIES`, merged. Discovered once, then cached."""
     global _registry
     if _registry is None:
-        _registry = _discover()
+        _registry = _discover_policies()
     return _registry
 
 
@@ -311,7 +306,7 @@ def declared_roles(policy: Policy) -> frozenset[str] | None:
     return None
 
 
-def _discover() -> dict[str, Policy]:
+def _discover_policies() -> dict[str, Policy]:
     found: dict[str, Policy] = {}
     for _, declared in _declarations("policies", "POLICIES"):
         found.update({str(action): policy for action, policy in declared.items()})
@@ -347,11 +342,10 @@ def _discover() -> dict[str, Policy]:
 #: three more spellings of it and the census says so.
 CRUD_VERBS: tuple[str, ...] = ("create", "read", "update", "delete")
 
-#: The three other spellings of `read`. Its own constant rather than a reuse of
-#: `READ_VERBS` above: that one is the ROLE FALLBACK's list — "the verbs a
-#: member may perform without a policy saying so" — and it retires with the
-#: free-read branch. The census is a different question and has to keep asking
-#: it after that happens.
+#: The three other spellings of `read` — the one alias set. The vocabulary
+#: census reads it (a key spelled with one is non-conforming), the MCP door's
+#: tool grammar reads it (a tool named after one of them reads), and the
+#: deprecated `is_read()` shim reads it with `read` itself.
 READ_ALIAS_VERBS = frozenset({"view", "list", "get"})
 
 #: A kind or a verb: lowercase, underscores, no dots. The dot is the separator.
@@ -592,14 +586,7 @@ def event_kinds_of(app_label: str) -> Mapping[str, str | None]:
     nothing is installed under answers `{}` — "declares no mapping", which
     `kind_of_event` then turns into a refusal rather than into a guess.
     """
-    try:
-        config = django_apps.get_app_config(app_label)
-    except LookupError:
-        return {}
-    module_name = f"{config.name}.events"
-    if importlib.util.find_spec(module_name) is None:
-        return {}
-    declared = getattr(importlib.import_module(module_name), EVENT_KINDS_ATTRIBUTE, None)
+    declared = discovery.declared_by(app_label, "events", EVENT_KINDS_ATTRIBUTE)
     return dict(declared) if isinstance(declared, Mapping) else {}
 
 
@@ -725,9 +712,9 @@ def family_verbs(model: type[models.Model]) -> tuple[str, ...]:
     demands the doors cannot come to disagree about which verbs a marker means.
     """
     found: list[str] = []
-    for road in verbs.ROADS.values():
-        if road.marker != verbs.ANY_MARKER and getattr(model, road.marker, False):
-            found.extend(verb for verb in road.grants if verb not in found)
+    for family in verbs.ROADS.values():
+        if family.marker != verbs.ANY_MARKER and getattr(model, family.marker, False):
+            found.extend(verb for verb in family.grants if verb not in found)
     return tuple(found)
 
 
@@ -882,11 +869,13 @@ def _attach_default_roles(words: dict[str, Permission]) -> None:
 
     (1) `owner` always; (2) every declared role whose patterns match; (3) every
     `DEFAULT_ROLES` entry naming the key; **(4) retired by ADR core-27
-    (R1-F2)**; (5) a key with a predicate and no declaration is offered to every
-    role and the predicate narrows — the un-swept residue, which is what keeps
-    the sweeps from changing any answer; (6) otherwise `owner` and pattern
-    matches only. The numbering keeps its gap on purpose, so the missing clause
-    reads as a retirement rather than as a typo.
+    (R1-F2)**; **(5) retired** (the compat residue: a platform key with
+    a predicate and no declaration offered to every `staff` role, the predicate
+    narrowing); (6) otherwise `owner` and pattern matches only. The numbering
+    keeps its gaps on purpose, so a missing clause reads as a retirement rather
+    than as a typo. So the column equals `defaults_for(role)` for every declared
+    role: a key with a predicate and no declaration is offered to nobody by
+    default, and a product role that needs one declares it.
 
     **What (4) was, and why its retirement changes nothing for the template.**
     It said *a `.read` key is free to every membership until reads become
@@ -907,7 +896,6 @@ def _attach_default_roles(words: dict[str, Permission]) -> None:
     declared_roles_ = role_declarations()
     additions = _discover_default_roles()
     every_role = frozenset(declared_roles_)
-
     for action, permission in list(words.items()):
         if permission.decided_by == "reserved":
             continue
@@ -918,14 +906,13 @@ def _attach_default_roles(words: dict[str, Permission]) -> None:
             if any(_pattern_matches(pattern, action) for pattern in role.permissions)
         }
         holders |= {role for role in additions.get(action, frozenset()) if role in every_role}
-        if permission.predicate is not None and action not in additions:
-            holders |= every_role
         words[action] = replace_permission(permission, default_roles=tuple(sorted(holders)))
 
 
 def vocabulary() -> Mapping[str, Permission]:
     """Every permission this deployment has. Computed once, then cached.
 
+    Every key's `default_roles` is the declaration's: `owner`, pattern matches, `DEFAULT_ROLES`.
     Read-only on purpose: a call site that could add a key would be a second
     owner of the vocabulary, which is the defect this whole shape is against.
     """
@@ -1140,9 +1127,8 @@ def defaults_for(role_key: str) -> frozenset[str]:
 # Three layers meet here and each is read exactly once:
 #
 #   1. **code** — `owner` IS the vocabulary; a declared role is its patterns
-#      over the vocabulary, plus what an app's `DEFAULT_ROLES` adds, plus the
-#      keys it holds today only because nobody has swept the app that owns them
-#      (the compat residue, below).
+#      over the vocabulary, plus what an app's `DEFAULT_ROLES` adds
+#      (`defaults_for`; the compat residue retired with clause (5)).
 #   2. **the tenant's rows** — a `RolePermission` include adds a key to a role,
 #      an exclude takes one away; a custom role's includes ARE its collection.
 #   3. **the person's rows** — a `Grant` allow adds one key to one membership,
@@ -1150,30 +1136,9 @@ def defaults_for(role_key: str) -> frozenset[str]:
 #      overrides permit"), because the alternative is a subtraction somebody
 #      undoes by being given something.
 #
-# **THE COMPAT RESIDUE, and why it is inside the collection rather than beside
-# it.** Until an app's predicates are swept (rung P7.x), a key with a predicate
-# and no `DEFAULT_ROLES` declaration is held by every declared role and the
-# PREDICATE is what narrows it — `vocabulary()`'s own `default_roles` column
-# says so, and it is the only reason `widget.create` still answers True for a
-# member. Putting it in the collection rather than in a branch of `allows` is
-# what makes a tenant's own rows compose with it: an `exclude widget.create` on
-# `member` takes it away, an `allow` grant gives it back to one person, and a
-# `withhold` removes it again. A branch in `allows` would have skipped all
-# three, and a tenant that excluded a key would have kept it.
-#
-# `defaults_for` is deliberately NOT that set: it is the DECLARATION's own half
-# (patterns and `DEFAULT_ROLES`), which is what `introspect` prints per role and
-# what `test_vocabulary.py` pins. `collection()` below is what somebody HOLDS,
-# and `compat=False` asks it for the declaration-only answer — the shape a
-# promise about a credential's reach is made from, because a capability that
-# exists only until an app is swept is not one to promise.
-
-
 def _collection_from_rows(
     role_key: str,
     rows: Iterable[tuple[str, str]],
-    *,
-    compat: bool = True,
 ) -> frozenset[str]:
     """One role's collection, given its `(effect, permission)` delta rows.
 
@@ -1181,7 +1146,6 @@ def _collection_from_rows(
     role on the chain out of ONE query rather than one query per role — the
     three-statement budget is the reason this seam exists at all.
     """
-    words = vocabulary()
     grantable = grantable_permissions()
     if role_key == OWNER_ROLE:
         # `owner` IS the vocabulary, present and future, the reserved verb
@@ -1196,11 +1160,7 @@ def _collection_from_rows(
         # which is a state the system reaches and never a state a door sets.
         return frozenset()
     if role_key in role_declarations():
-        base = (
-            frozenset(action for action in grantable if role_key in words[action].default_roles)
-            if compat
-            else defaults_for(role_key)
-        )
+        base = defaults_for(role_key)
     else:
         # A CUSTOM role, or a key no deployment declares: its collection is
         # exactly its include rows, and an unknown key therefore holds nothing
@@ -1217,7 +1177,7 @@ def _collection_from_rows(
     return frozenset((base | include) - exclude)
 
 
-def collection(tenant: Tenant | None, role_key: str, *, compat: bool = True) -> frozenset[str]:
+def collection(tenant: Tenant | None, role_key: str) -> frozenset[str]:
     """Every permission a role holds **in this tenant**. One query, or none.
 
     `owner` → the vocabulary minus the virtual kinds · a declared key → what
@@ -1229,11 +1189,9 @@ def collection(tenant: Tenant | None, role_key: str, *, compat: bool = True) -> 
     used to enforce.
     """
     if role_key == OWNER_ROLE or not role_key or tenant is None:
-        return _collection_from_rows(role_key, (), compat=compat)
+        return _collection_from_rows(role_key, ())
     rows = RolePermission.objects.for_tenant(tenant).filter(role_key=role_key)
-    return _collection_from_rows(
-        role_key, list(rows.values_list("effect", "permission")), compat=compat
-    )
+    return _collection_from_rows(role_key, list(rows.values_list("effect", "permission")))
 
 
 def _memo_box(
@@ -1310,7 +1268,6 @@ def effective_permissions(
     tenant: Tenant | None,
     at: Organization | None = None,
     *,
-    compat: bool = True,
     memo: Actor | None = None,
 ) -> frozenset[str]:
     """What this person may do at this node. **Three statements, whatever the data.**
@@ -1318,10 +1275,10 @@ def effective_permissions(
     `at` is the node the question is about. The memberships that count are the
     ones whose organization **is `at` or an ancestor of it** — roles inherit
     downwards and nothing else: a branch admin is not a group admin and never
-    sees a sibling. `at=None` is the tenant-wide union, which is the honest
-    answer for a caller with no hat and no object (a command, a test), and is
-    deliberately not what `visible_to` does — that one fails closed, because
-    "which rows" must.
+    sees a sibling. `at=None` counts every membership the person holds in the
+    tenant — each one's chain — for a caller with no hat and no object (a
+    command, a test). It is not a plain union: a withhold on ANY branch
+    membership subtracts tenant-wide, so it fails closed, as `visible_to` does.
 
     The algebra, in order: every membership on the chain contributes its role's
     collection and its `allow` grants; every `withhold` grant anywhere on the
@@ -1362,11 +1319,7 @@ def effective_permissions(
     if memberships is None:
         memberships = tuple(memberships_in(user, tenant))
         box["memberships"] = memberships
-    chain = [
-        membership
-        for membership in memberships
-        if at is None or is_descendant_path(at.path, membership.organization.path)
-    ]
+    chain = list(chain_over(memberships, at))
     if not chain:
         # The early return is BEFORE the other two statements and stays there:
         # a person with no membership over this node costs one query today and
@@ -1383,7 +1336,7 @@ def effective_permissions(
     allowed: set[str] = set()
     for membership in chain:
         key = str(membership.role)
-        allowed |= _collection_from_rows(key, deltas.get(key, ()), compat=compat)
+        allowed |= _collection_from_rows(key, deltas.get(key, ()))
     allowed |= {
         permission
         for permission, effect in grants
@@ -1397,7 +1350,7 @@ def where_of(actor: Actor, obj: Any = None) -> Organization | None:
     """**The node the question is about.** Down only, and never sideways.
 
     An `Organization` is its own node; a row that names one is asked at the
-    node it names; anything else falls back to the acting hat. No hat and no
+    node it names; anything else falls back to the hat. No hat and no
     object is `None`, which `effective_permissions` reads as the tenant-wide
     union — the abstract question, asked by a command or a test.
 
@@ -1512,9 +1465,28 @@ def memberships_in(user: AbstractBaseUser | None, tenant: Tenant | None) -> list
     """
     if user is None or tenant is None:
         return []
-    return list(
-        Membership.objects.filter(user_id=user.pk, tenant=tenant).select_related("organization")
-    )
+    return list(Membership.objects.for_tenant(tenant).of(user).select_related("organization"))
+
+
+@road("role_chain", example="apps/core/authz.py::effective_permissions")
+def chain_over(memberships: Iterable[Membership], at: Organization | None) -> Iterator[Membership]:
+    """The memberships that reach `at`: held ON it or on one of its ancestors.
+
+    **Roles inherit downwards only**, so a membership counts over a node when
+    the node is the membership's own organization or lies underneath it —
+    never the reverse: a membership on a child does not reach its parent.
+    One prefix test per row, in Python, over rows the caller already read
+    (`memberships_in`), so asking costs no query.
+
+    `at=None` is the tenant-wide question — no node named — and every
+    membership answers it; that is the reading every caller had before this
+    was one function. The tenant check is the CALLER's and comes first: every
+    tenant's root is `"0000"`, so this comparison cannot tell two tenants'
+    trees apart and must never be asked across them.
+    """
+    for membership in memberships:
+        if at is None or is_descendant_path(at.path, membership.organization.path):
+            yield membership
 
 
 def effective_role(
@@ -1558,11 +1530,7 @@ def effective_role(
     # with no membership on the chain.
     if tenant is None or (org is not None and org.tenant_id != tenant.pk):
         return None
-    chain = [
-        membership
-        for membership in memberships_in(user, tenant)
-        if org is None or is_descendant_path(org.path, membership.organization.path)
-    ]
+    chain = list(chain_over(memberships_in(user, tenant), org))
     if not chain:
         return None
     # Best rank, and **ties break to the nearest ancestor** — the longest path
@@ -1596,7 +1564,7 @@ def membership_for(actor: Actor) -> Membership | None:
     "Best" rather than "first" since a person may hold several in one tenant:
     the one that answers "what may they do here" is the strongest, and picking
     an arbitrary row would make the answer depend on insertion order. It is
-    narrowed to the acting hat's ancestors when there is a hat — a policy asking
+    narrowed to the hat's ancestors when there is a hat — a policy asking
     `membership_for` while acting as a branch gets the branch's answer, not the
     group's.
     """
@@ -1612,14 +1580,18 @@ def membership_for(actor: Actor) -> Membership | None:
     if memberships is None:
         memberships = tuple(memberships_in(actor.user, actor.tenant))
         box["memberships"] = memberships
-    candidates = [
-        membership
-        for membership in memberships
-        if actor.org is None or is_descendant_path(actor.org.path, membership.organization.path)
-    ]
+    candidates = list(chain_over(memberships, actor.org))
     if not candidates:
         return None
     return max(candidates, key=lambda membership: rank(membership.role))
+
+
+def is_member(actor: Actor, obj: Any = None) -> bool:
+    """Whether the actor holds any membership reaching its hat in the acting tenant; a `Policy`.
+
+    Not a role read (rule 54 (c)) and not reach (`may_be_named`): `obj` is accepted and unread.
+    """
+    return membership_for(actor) is not None
 
 
 def is_read(action: str) -> bool:
@@ -1633,7 +1605,7 @@ def is_read(action: str) -> bool:
     their own app's sweep renames.
     """
     _, _, verb = action.rpartition(".")
-    return verb in READ_VERBS
+    return verb == "read" or verb in READ_ALIAS_VERBS
 
 
 def allows(actor: Actor, action: str, obj: Any = None) -> bool:
@@ -1649,7 +1621,7 @@ def allows(actor: Actor, action: str, obj: Any = None) -> bool:
        may_archive` is the first: an archive is an admin's press, and a
        workflow is nobody's admin).
     2. **Where** — `where_of(actor, obj)`: the node the object names, the
-       acting hat when it names none, and the tenant-wide union when there is
+       hat when it names none, and the tenant-wide union when there is
        neither.
     3. **Vocabulary** — an alias resolves first (one line, deliberately BEFORE
        the lookup: a renamed key resolved after it would find no policy and
@@ -1674,8 +1646,8 @@ def allows(actor: Actor, action: str, obj: Any = None) -> bool:
     and a `withhold` subtracts it exactly as it subtracts a write. **`visible_to`
     still decides WHICH rows** (rule 24, BVB-4); this decides WHETHER this kind,
     here, and the selector asks it once (§C6). A membership with no role reads
-    nothing. `READ_VERBS` and `is_read()` survive as deprecated shims that
-    nothing in this function reads.
+    nothing. `is_read()` survives as a deprecated shim that nothing in this
+    function reads.
 
     **A key whose KIND names no row skips the data half**, for the reason the
     virtual kinds are virtual: there is nothing for a collection to be about.
@@ -1768,8 +1740,12 @@ def may_be_named(actor: Actor, obj: Any) -> bool:
         if not may_be_named(actor, recipient):
             raise NotFound()                      # the check, done
 
-        # reach: the dispatch workflow acts tenant-wide and holds no hat
-        services.record_delivery(recipient=recipient, ...)
+        services.record_delivery(recipient=recipient, ...)   # <- the valve line above it
+
+    where the valve line is a comment whose marker is `reach` and whose reason
+    follows the colon — "the dispatch workflow acts tenant-wide and holds no
+    hat". (Spelled in prose here: an example line opening with the marker would
+    be counted as a valve by the standing census, though it excuses nothing.)
 
     The comment is not a disable. It is a sentence somebody wrote and a
     reviewer can disagree with, it sits on the line it excuses, and the gate

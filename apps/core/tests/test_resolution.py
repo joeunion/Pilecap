@@ -666,33 +666,28 @@ def test_nothing_inherits_upward_or_sideways(world: World) -> None:
 # --- P3.6 · the echoed scopes read permissions, not rank ----------------------
 
 
-def test_a_member_with_one_write_grant_echoes_write_scopes(
+def test_a_member_with_one_write_grant_echoes_only_that_familys_write_scope(
     tenant: Tenant, member: User, root_org: Organization
 ) -> None:
-    """A rank could not see a grant. A permission set can.
-
-    A plain member's effective set is reads, so the write half of what they
-    asked for is dead weight and the echo says so. One granted write key and
-    the write scopes stand — which is exactly the person a `Grant` exists for.
-    """
-    asked = ["org-structure:write", "widgets:read"]
+    """One granted write key backs the write scope of its own family and no other."""
+    asked = ["org-structure:write", "connections:write"]
     assert effective_scopes(user=member, tenant=tenant, org=root_org, scopes=asked) == [
+        "connections:read",
         "org-structure:read",
-        "widgets:read",
     ]
 
     membership = Membership.objects.get(user=member, tenant=tenant)
     Grant.objects.create(
         tenant=tenant,
         membership=membership,
-        permission="widget.create",
+        permission="organization.create",
         effect=Grant.Effect.ALLOW,
     )
 
     assert effective_scopes(user=member, tenant=tenant, org=root_org, scopes=asked) == [
+        "connections:read",
         "org-structure:read",
         "org-structure:write",
-        "widgets:read",
     ]
 
 
@@ -710,16 +705,15 @@ def test_a_roleless_membership_echoes_no_scope_at_all(world: World) -> None:
     `if not held: return []` line), so no code moved for this criterion and this
     test is a regression guard rather than a flip.
     """
-    asked = ["widgets:read", "widgets:write"]
+    asked = ["connections:read", "connections:write"]
     assert (
         effective_scopes(user=world.roleless.user, tenant=world.tenant, org=world.b, scopes=asked)
         == []
     )
-    # And the member beside them still echoes the read half — the answer that
-    # must not move (P3.6).
+    # And the member beside them still echoes the read half of a family it writes nothing in.
     assert effective_scopes(
         user=world.member.user, tenant=world.tenant, org=world.root, scopes=asked
-    ) == ["widgets:read"]
+    ) == ["connections:read"]
 
 
 def test_a_replaced_actor_starts_cold(world: World, django_assert_num_queries: Any) -> None:
@@ -864,7 +858,7 @@ def test_the_flat_product_census_equals_the_baseline(db: None) -> None:
 
     from django.conf import settings
 
-    from apps.core.tests.permissions_world import flat_world
+    from apps.core.tests.permissions_world import flat_roles, flat_world
 
     document = json.loads(
         (Path(settings.BASE_DIR) / "apps/core/tests/flat_product_baseline.json").read_text()
@@ -873,7 +867,7 @@ def test_the_flat_product_census_equals_the_baseline(db: None) -> None:
     reads = [key for key in expected if key.endswith(".read")]
     # Both halves are there — a census that stopped deriving either cannot pass.
     assert reads and len(reads) < len(expected), (len(reads), len(expected))
-    assert sum(len(cells) for cells in expected.values()) == 3 * len(expected)
+    assert sum(len(cells) for cells in expected.values()) == len(flat_roles()) * len(expected)
 
     _tenant, actors = flat_world()
     # **THE KEY SET IS DERIVED ON THIS TREE, never taken from the document.**
@@ -948,9 +942,9 @@ def test_phase_r_leaves_every_template_read_where_it_was(world: World) -> None:
         assert {row.pk for row in list_invitations(tenant=world.tenant, org=org, actor=actor)} == {
             row.pk for row in Invitation.objects.for_tenant(world.tenant).visible_to(org)
         }
-    # The whole tenant is visible SOMEWHERE — a vacuous pass would make the
-    # comparison above true for three empty sets.
-    assert list_memberships(tenant=world.tenant, org=world.root, actor=world.owner).count() == 6
+    # All seven memberships (the clerk's at A among them) — a vacuous pass would make
+    # the comparison above true for three empty sets.
+    assert list_memberships(tenant=world.tenant, org=world.root, actor=world.owner).count() == 7
 
 
 # --- the collection, read directly --------------------------------------------

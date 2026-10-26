@@ -24,8 +24,6 @@ after the change; this module is that walk where CI can keep running it.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from importlib import import_module
 from typing import Any
 
@@ -41,6 +39,7 @@ from apps.core.actor import actor_for, system_actor
 from apps.core.idempotency import HEADER, REPLAYED_HEADER, IdempotencyRecord
 from apps.core.models import Membership, Tenant
 from apps.core.services import add_membership
+from apps.core.tests.wire import wire
 from apps.example.models import Widget
 
 # `transaction=True` because the request commits: the widget route's service
@@ -50,19 +49,8 @@ from apps.example.models import Widget
 pytestmark = [pytest.mark.django_db(transaction=True), pytest.mark.asyncio]
 
 WIDGETS_URL = "/api/v1/widgets/"
-BASE_URL = "http://testserver"
 CSRF_SOURCE_URL = "/admin/login/"
 TENANT_HEADER = "X-Tenant"
-
-
-@asynccontextmanager
-async def wire() -> AsyncIterator[httpx.AsyncClient]:
-    """An HTTP client speaking to the real application, with nothing switched off."""
-    from config.asgi import build_application
-
-    transport = httpx.ASGITransport(app=build_application())
-    async with httpx.AsyncClient(transport=transport, base_url=BASE_URL) as client:
-        yield client
 
 
 @pytest.fixture

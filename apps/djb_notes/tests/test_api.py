@@ -11,6 +11,7 @@ from django.test import Client
 from apps.accounts.models import User
 from apps.core.actor import Actor
 from apps.core.models import Tenant
+from apps.core.tests.wire import REQUEST_FIXED_QUERIES
 from apps.djb_notes.services import archive_note, create_note
 from apps.example.models import Widget
 from apps.example.services import create_widget
@@ -21,12 +22,8 @@ NOTES_URL = "/api/v1/djb_notes/"
 NOTE_URL = "/api/v1/djb_notes/{}/"
 JSON = "application/json"
 
-#: The note list's query count at any number of rows, measured on the box and
-#: pinned (rule 5): the session and the tenant middleware, the subject's
-#: resolution (the kind registry's read of the subject row, and the hat's
-#: reach), the `djb_note.read` resolution at the hat (paid once per actor), the
-#: page itself with the author and the archiver joined in.
-LIST_QUERY_BUDGET = 12
+#: The fixed request cost, then the subject row, the hat's reach of it, and the page.
+LIST_QUERY_BUDGET = REQUEST_FIXED_QUERIES + 3
 
 
 @pytest.fixture(autouse=True)
@@ -172,3 +169,12 @@ def test_the_whole_road_by_route_name(
         reverse("api:djb_note-restore", kwargs={"note_id": note_id}), data="{}", content_type=JSON
     )
     assert restored.status_code == 200 and _body(restored)["archived_at"] is None
+
+
+def test_an_unknown_show_is_refused_naming_show(api: Client, owner: User, widget: Widget) -> None:
+    """`?show=bogus` is a refusal naming `show`, never the live book read under a wrong word."""
+    api.force_login(owner)
+    response = api.get(NOTES_URL, {"subject": f"widget:{widget.pk}", "show": "bogus"})
+    assert response.status_code == 400, response.content
+    assert _body(response)["code"] == "invalid", response.content
+    assert "show" in str(_body(response)["errors"]), response.content

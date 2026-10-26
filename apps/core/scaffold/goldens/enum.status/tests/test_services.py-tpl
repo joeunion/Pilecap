@@ -1,0 +1,45 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "imports", "text": ""}
+from apps.example.services import transition_widget
+from pilecap import Conflict
+
+# golden-anchor: {"nth": 0, "scope": [], "side": "before", "text": "DUE_AT = datetime(2026, 11, 2, 17, 0, tzinfo=UTC)"}
+def test_a_status_starts_first_and_moves_one_step_at_a_time(
+    tenant: Tenant, owner_actor: Actor
+) -> None:
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Staged")
+    assert widget.status == Widget.Status.DRAFT
+    for status in (Widget.Status.ACTIVE, Widget.Status.RETIRED):
+        widget = transition_widget(tenant=tenant, actor=owner_actor, widget=widget, status=status)
+        assert widget.status == status
+    widget.refresh_from_db()
+    assert widget.status == Widget.Status.RETIRED
+
+
+@pytest.mark.parametrize(
+    ("before", "to"),
+    [
+        ((), Widget.Status.RETIRED),
+        ((), Widget.Status.DRAFT),
+        ((Widget.Status.ACTIVE,), Widget.Status.DRAFT),
+    ],
+)
+def test_a_status_move_off_the_one_step_is_refused_and_changes_nothing(
+    tenant: Tenant, owner_actor: Actor, before: tuple[str, ...], to: str
+) -> None:
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Staged")
+    for status in before:
+        widget = transition_widget(tenant=tenant, actor=owner_actor, widget=widget, status=status)
+    with pytest.raises(Conflict):
+        transition_widget(tenant=tenant, actor=owner_actor, widget=widget, status=to)
+    stayed = widget.status
+    widget.refresh_from_db()
+    assert widget.status == stayed
+
+
+def test_a_status_the_noun_does_not_have_is_invalid(tenant: Tenant, owner_actor: Actor) -> None:
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Staged")
+    with pytest.raises(Invalid) as refused:
+        transition_widget(tenant=tenant, actor=owner_actor, widget=widget, status="nowhere")
+    assert "status" in refused.value.errors
+
+

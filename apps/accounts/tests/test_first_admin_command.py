@@ -40,6 +40,7 @@ from django.urls import reverse
 from apps.accounts import zitadel
 from apps.accounts.tests.conftest import FakeZitadel
 from apps.core.models import Tenant
+from apps.core.surfaces import PUBLIC_BASE_URL_SETTING
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -193,19 +194,30 @@ def test_it_prints_the_three_steps_in_order(instance: FakeZitadel, capsys: Any) 
     assert "bootstrap_tenant" in steps[2] and FIRST_ADMIN in steps[2]
 
 
-def test_it_writes_no_row_of_ours(instance: FakeZitadel, capsys: Any) -> None:
-    """Nothing of ours changed, so nothing of ours is written — including audit.
-
-    The birth certificate is `bootstrap_tenant`'s audited write (ADR core-17),
-    and it comes last. A command that wrote a row here would be a second, quieter
-    origin for an installation.
-    """
+def test_it_writes_the_vouch_and_no_tenant(instance: FakeZitadel, capsys: Any) -> None:
+    """One row of ours, audited, with no tenant: the vouch, and its expiry printed."""
+    from apps.accounts.models import FirstAdminVouch
     from apps.core.audit import AuditEntry
 
-    _run(capsys)
+    out = _run(capsys)
 
     assert not Tenant.objects.exists()
-    assert not AuditEntry.objects.exists()
+    vouch = FirstAdminVouch.objects.get()
+    assert vouch.email == FIRST_ADMIN and vouch.consumed_at is None
+    assert f"{vouch.expires_at:%Y-%m-%d %H:%M} UTC" in out
+    audited = [(entry.action, entry.tenant_id) for entry in AuditEntry.objects.all()]
+    assert audited == [("accounts.issue_first_admin_vouch", None)], audited
+
+
+def test_a_re_run_renews_the_one_vouch(instance: FakeZitadel, capsys: Any) -> None:
+    """A second link is a second chance for the same person, never a second person."""
+    from apps.accounts.models import FirstAdminVouch
+
+    _run(capsys)
+    first = FirstAdminVouch.objects.get().expires_at
+    _run(capsys)
+
+    assert FirstAdminVouch.objects.get().expires_at >= first
 
 
 # --- the second run, before the person acts ----------------------------------
@@ -325,6 +337,7 @@ def test_a_loopback_base_url_outside_debug_is_refused(
     refusal = _refused(capsys)
 
     assert "only resolves on this machine" in str(refusal)
+    assert f"Set {PUBLIC_BASE_URL_SETTING} " in str(refusal)
     assert refusal.returncode == 1
 
 

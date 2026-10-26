@@ -1,10 +1,6 @@
-"""The admin is a door, and a door calls services.
+"""The admin is a door, and a door calls services."""
 
-Driven through the real admin URLs with a real staff session, because the whole
-claim is about what happens when a support agent clicks Save — not about what
-`WidgetAdmin.save_model` does when called directly.
-"""
-
+# golden: noun begin
 from __future__ import annotations
 
 from typing import Any
@@ -12,30 +8,23 @@ from typing import Any
 import pytest
 from django.test import Client
 
-from apps.accounts.models import User
-from apps.accounts.services import create_user
-from apps.core.actor import Actor, actor_for, system_actor
-from apps.core.audit import AuditEntry
-from apps.core.models import Membership, Tenant
-from apps.core.services import add_membership, root_organization
 from apps.example.models import Widget
 from apps.example.services import create_widget
+from pilecap import Actor, AuditEntry
+from pilecap.accounts import User, create_user
+from pilecap.tenancy import Membership, Tenant, add_membership, root_organization
+from pilecap.testing import actor_for, system_actor
 
 pytestmark = pytest.mark.django_db
 
-ADD_URL = "/admin/example/widget/add/"
-LIST_URL = "/admin/example/widget/"
-PASSWORD = "a-long-enough-password"  # pragma: allowlist secret
+LIST_URL = f"/admin/{Widget._meta.app_label}/{Widget._meta.model_name}/"
+ADD_URL = f"{LIST_URL}add/"
+PASSWORD = "a-long-enough-password"  # noqa: S105 — a throwaway password a test user is made with  # pragma: allowlist secret
 
 
 @pytest.fixture
 def staff(tenant: Tenant) -> User:
-    """A staff member who is also an owner of the tenant they act in.
-
-    Both halves are needed and that is the point: `is_staff` opens the admin,
-    and the membership is what authorizes the write. Staff status alone is not
-    a way past the tenancy.
-    """
+    """A staff member who is also an owner of the tenant they act in."""
     user = create_user(email="staff@example.com", password=PASSWORD, is_staff=True)
     user.is_superuser = True
     user.save(update_fields=["is_superuser"])
@@ -50,8 +39,7 @@ def staff(tenant: Tenant) -> User:
 
 
 def staff_actor(user: User, tenant: Tenant) -> Actor:
-    """The staff member acting under the tenant's root hat, as the admin door
-    would resolve it from their default membership."""
+    """The staff member acting under the tenant's root hat."""
     return actor_for(user=user, tenant=tenant, org=root_organization(tenant=tenant))
 
 
@@ -116,6 +104,9 @@ def test_editing_through_the_admin_goes_through_the_service(
     assert widget.name == "After"
     entry = AuditEntry.objects.for_tenant(tenant).get(action="example.update_widget")
     assert entry.door == "admin"
+
+
+# golden: noun end
 
 
 def test_the_audit_admin_offers_no_way_to_change_anything(

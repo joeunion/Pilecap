@@ -16,7 +16,7 @@ protocol implementation: its state handling, its PKCE verifier round trip, its
 The signing is done with `cryptography` directly rather than through a JWT
 library, for two reasons. It is the one direct dependency that can already do
 it — `pyjwt` arrives here transitively through
-`django-allauth[socialaccount]`, and W2-R4 is the rung that promotes it — and
+`django-allauth[socialaccount]`, and the MCP door's validator promotes it — and
 producing a token whose signature is deliberately **wrong** is one line when you
 hold the primitive and a fight when you hold a library built to stop you.
 
@@ -36,7 +36,7 @@ to the issuer, which OpenID Connect Core §3.1.3.7 says is sufficient
 `verify_signature = not self.did_fetch_access_token`). Issuer, audience and
 expiry *are* enforced there. So the signature path is exercised against the same
 verifier by calling it the way a **resource server** does — which is exactly the
-call W2-R4's bearer validation will make, against this same JWKS.
+call the MCP door's bearer validation makes, against this same JWKS.
 """
 
 from __future__ import annotations
@@ -124,6 +124,12 @@ class StubIssuer:
         self.subject = "zitadel-subject-1"
         self.email = "person@example.com"
         self.email_verified = True
+        # The realm the person lives in, as the platform names it when the
+        # authorize asked `urn:zitadel:iam:user:resourceowner` — MEASURED on the
+        # pinned build (2026-09-30): an unconfined authorize carrying that scope
+        # answers these three claims in the id_token AND the userinfo, and one
+        # without it answers none. `None` is the platform that was not asked.
+        self.resource_owner: dict[str, str] | None = None
         # Overrides for the negative cases, each `None` when not under test.
         self.audience_override: str | None = None
         self.expires_in: int = 300
@@ -165,6 +171,15 @@ class StubIssuer:
             # replay, and a fixed jti would make the *second* login in a test
             # fail as a replay of the first.
             "exp": now + self.expires_in,
+            **self._resource_owner_claims(),
+        }
+
+    def _resource_owner_claims(self) -> dict[str, str]:
+        if self.resource_owner is None:
+            return {}
+        return {
+            f"urn:zitadel:iam:user:resourceowner:{field}": value
+            for field, value in self.resource_owner.items()
         }
 
     def id_token(self) -> str:
@@ -176,6 +191,7 @@ class StubIssuer:
             "sub": self.subject,
             "email": self.email,
             "email_verified": self.email_verified,
+            **self._resource_owner_claims(),
         }
 
 

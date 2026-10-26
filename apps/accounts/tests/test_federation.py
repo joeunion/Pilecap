@@ -1,4 +1,4 @@
-"""W2-R5's new machinery: the workforce door, the disable, and the revocation.
+"""ADR ident-6's machinery: the workforce door, the disable, and the revocation.
 
 Three things ADR ident-6 added, and none of them dials anything: the same
 `FakeZitadel` socket `test_zitadel.py` uses is what stands in for the management
@@ -20,13 +20,14 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 
 from apps.accounts import zitadel
-from apps.accounts.activities import WORKFORCE_IDP_NAME, apply_identity_config
-from apps.accounts.models import SsoConnection, User
+from apps.accounts.activities import apply_identity_config
+from apps.accounts.models import STAFF_REALM, SsoConnection, User
+from apps.accounts.selectors import get_tenant_realm
 from apps.accounts.services import (
     SYNC_IDENTITY_CONFIG_WORKFLOW,
     disable_sso_connection,
     erase_user,
-    record_zitadel_identity,
+    record_identity,
     sync_workforce_identity_config,
 )
 from apps.accounts.tests.conftest import FakeZitadel
@@ -36,6 +37,7 @@ from apps.accounts.types import (
     KIND_WORKFORCE_PROVIDER,
     IdentityConfigSync,
 )
+from apps.accounts.zitadel import WORKFORCE_IDP_NAME
 from apps.core.actor import Actor, actor_for, system_actor
 from apps.core.exceptions import Forbidden, Invalid
 from apps.core.models import Organization, Tenant
@@ -61,7 +63,7 @@ def acting(tenant: Tenant, root_org: Organization) -> Iterator[None]:
 def workforce(settings: Any) -> None:
     """A deployment that has actually configured the workforce door — both halves."""
     settings.GOOGLE_OAUTH_CLIENT_ID = "google-client-id"
-    settings.GOOGLE_OAUTH_CLIENT_SECRET = "google-client-secret"  # pragma: allowlist secret
+    settings.GOOGLE_OAUTH_CLIENT_SECRET = "google-client-secret"  # noqa: S105 — a fake IdP client secret the test world configures  # pragma: allowlist secret
     settings.GOOGLE_WORKSPACE_DOMAINS = [WORKFORCE_DOMAIN]
 
 
@@ -196,7 +198,7 @@ def test_changed_workforce_credentials_are_a_new_run(
     actor = actor_for(user=operator, tenant=tenant, kind="human")
     first = sync_workforce_identity_config(actor=actor, tenant=None)
 
-    settings.GOOGLE_OAUTH_CLIENT_SECRET = "google-client-secret-rotated"  # pragma: allowlist secret
+    settings.GOOGLE_OAUTH_CLIENT_SECRET = "google-client-secret-rotated"  # noqa: S105 — a fake IdP client secret the test world configures  # pragma: allowlist secret
     second = sync_workforce_identity_config(actor=actor, tenant=None)
 
     assert first.key != second.key
@@ -215,11 +217,14 @@ def test_a_tenants_owner_may_not_configure_the_deployments_door(
     provider is not a bigger version of that permission — it is the deployment's,
     shared by every tenant on it, and a different question entirely.
     """
+    before = WorkflowRun.objects.count()
     with pytest.raises(Forbidden):
         sync_workforce_identity_config(actor=owner_actor, tenant=None)
 
-    assert not WorkflowRun.objects.for_tenant(tenant).exists()
-    assert not WorkflowRun.objects.for_platform().exists()
+    # Counted across the refusal: the world already holds the tenant's realm
+    # run (and the dispatch of its `identity_home.created`), and the refused
+    # ask added nothing beside them.
+    assert WorkflowRun.objects.count() == before
 
 
 def test_an_empty_domain_list_refuses_rather_than_materialising_an_open_door(
@@ -238,12 +243,12 @@ def test_an_empty_domain_list_refuses_rather_than_materialising_an_open_door(
     settings.GOOGLE_WORKSPACE_DOMAINS = []
     actor = actor_for(user=operator, tenant=tenant, kind="human")
 
+    before = WorkflowRun.objects.count()
     with pytest.raises(Invalid) as refused:
         sync_workforce_identity_config(actor=actor, tenant=None)
 
     assert "GOOGLE_WORKSPACE_DOMAINS" in refused.value.detail
-    assert not WorkflowRun.objects.for_tenant(tenant).exists()
-    assert not WorkflowRun.objects.for_platform().exists()
+    assert WorkflowRun.objects.count() == before
 
 
 def test_missing_google_credentials_refuse_too(
@@ -275,7 +280,6 @@ def test_the_activity_materialises_the_workforce_provider(
         IdentityConfigSync(kind=KIND_WORKFORCE_PROVIDER, key="workforce-abc123")
     )
 
-    assert applied.created is True
     remote = zitadel.get_identity_provider(idp_id=applied.resource_id)
     assert remote is not None
     assert remote["name"] == WORKFORCE_IDP_NAME
@@ -296,8 +300,6 @@ def test_the_workforce_activity_twice_leaves_one_provider(
     second = apply_identity_config(payload)
 
     assert first.resource_id == second.resource_id
-    assert first.created is True
-    assert second.created is False
     assert len(instance.idps) == 1
 
 
@@ -338,17 +340,20 @@ def test_the_door_still_refuses_a_tenant_slug_that_does_not_exist(
 # --- Disabling reaches Zitadel (ADR ident-6, item 2) -------------------------
 
 
-def test_disabling_a_connection_deactivates_its_provider(
+def test_disabling_a_connection_takes_its_provider_off_the_realms_sign_in(
     instance: FakeZitadel,
     acting: None,
     tenant: Tenant,
     owner_actor: Actor,
     sso_connection: SsoConnection,
 ) -> None:
-    """The half W2-R5 owed: before it, disabling stopped our callback and nothing else.
+    """The half ADR ident-6 owed: before it, disabling stopped our callback and nothing else.
 
-    Once Zitadel fronts every IdP, a provider left active there is the whole of
-    the door still open — our own refusal is not in the path any more.
+    Once Zitadel fronts every IdP, a provider left on a realm's sign-in is the
+    whole of the door still open — our own refusal is not in the path any more.
+    The pinned build has no deactivation for the provider templates this tree
+    makes (measured), so the release is the provider unlinked from the tenant
+    realm's login policy.
     """
     apply_identity_config(IdentityConfigSync(kind=KIND_SSO_CONNECTION, key=str(sso_connection.pk)))
     sso_connection.refresh_from_db()
@@ -358,24 +363,30 @@ def test_disabling_a_connection_deactivates_its_provider(
     disable_sso_connection(tenant=tenant, actor=owner_actor, connection=sso_connection)
     apply_identity_config(IdentityConfigSync(kind=KIND_SSO_CONNECTION, key=str(sso_connection.pk)))
 
-    assert materialised in instance.deactivated_idps
-    # Deactivated, never deleted: the object and the links it holds survive a
+    realm = get_tenant_realm(tenant)
+    assert realm is not None
+    assert materialised not in instance.login_policy_idps.get(realm.id, [])
+    # Taken off, never deleted: the object and the links it holds survive a
     # customer's migration window.
     assert materialised in instance.idps
 
 
-def test_deactivating_an_already_deactivated_provider_is_not_a_failure(
-    instance: FakeZitadel, acting: None, sso_connection: SsoConnection
+def test_releasing_a_released_provider_is_not_a_failure(
+    instance: FakeZitadel,
+    acting: None,
+    tenant: Tenant,
+    owner_actor: Actor,
+    sso_connection: SsoConnection,
 ) -> None:
-    """Zitadel answers 400; a retry that treated that as failure would fail a landed run."""
+    """Unlinked twice is unlinked: a retry of the release must not fail a landed run."""
     apply_identity_config(IdentityConfigSync(kind=KIND_SSO_CONNECTION, key=str(sso_connection.pk)))
-    sso_connection.refresh_from_db()
+    disable_sso_connection(tenant=tenant, actor=owner_actor, connection=sso_connection)
+    payload = IdentityConfigSync(kind=KIND_SSO_CONNECTION, key=str(sso_connection.pk))
 
-    first = zitadel.deactivate_identity_provider(idp_id=sso_connection.zitadel_idp_id)
-    second = zitadel.deactivate_identity_provider(idp_id=sso_connection.zitadel_idp_id)
+    first = apply_identity_config(payload)
+    second = apply_identity_config(payload)
 
-    assert first.created is True
-    assert second.created is False
+    assert first.resource_id == second.resource_id
 
 
 # --- Erasure revokes the identity (W2R5-20) ----------------------------------
@@ -399,8 +410,8 @@ def test_the_activity_deactivates_and_unlinks_the_person(
         {"idpId": "77", "providedUserId": "google|abc"},
         {"idpId": "88", "providedUserId": "okta|def"},
     ]
-    record_zitadel_identity(
-        user=member, subject="9001", tenant=None, actor=system_actor(tenant=None)
+    record_identity(
+        realm=STAFF_REALM, user=member, subject="9001", tenant=None, actor=system_actor(tenant=None)
     )
 
     applied = apply_identity_config(
@@ -418,16 +429,16 @@ def test_revoking_twice_is_not_a_failure(
     """The retry contract, in the posture a platform run really arrives in."""
     instance.users["9001"] = {"id": "9001", "userName": member.email}
     instance.user_links["9001"] = [{"idpId": "77", "providedUserId": "google|abc"}]
-    record_zitadel_identity(
-        user=member, subject="9001", tenant=None, actor=system_actor(tenant=None)
+    record_identity(
+        realm=STAFF_REALM, user=member, subject="9001", tenant=None, actor=system_actor(tenant=None)
     )
     payload = IdentityConfigSync(kind=KIND_IDENTITY_REVOCATION, key=str(member.pk))
 
     first = apply_identity_config(payload)
     second = apply_identity_config(payload)
 
-    assert first.created is True
-    assert second.created is False
+    assert first.resource_id == second.resource_id == "9001"
+    assert "9001" in instance.deactivated_users
 
 
 def test_somebody_who_never_signed_in_has_nothing_to_revoke(
@@ -451,8 +462,8 @@ def test_erasure_asks_for_the_revocation(
     `platform:...`, not `<tenant.slug>:...`, because the credential is Zitadel's
     and the tenant it was erased in never owned it.
     """
-    record_zitadel_identity(
-        user=member, subject="9001", tenant=None, actor=system_actor(tenant=None)
+    record_identity(
+        realm=STAFF_REALM, user=member, subject="9001", tenant=None, actor=system_actor(tenant=None)
     )
 
     erase_user(user=member, actor=owner_actor, tenant=tenant)
@@ -513,8 +524,8 @@ def test_a_person_with_no_tenant_anywhere_is_erased_and_revoked(
     """
     from apps.core.actor import system_actor
 
-    record_zitadel_identity(
-        user=nomad, subject="9002", tenant=None, actor=system_actor(tenant=None)
+    record_identity(
+        realm=STAFF_REALM, user=nomad, subject="9002", tenant=None, actor=system_actor(tenant=None)
     )
 
     erase_user(user=nomad, actor=system_actor(), tenant=None)
@@ -551,8 +562,8 @@ def test_the_tenantless_revocation_reaches_zitadel(
 
     instance.users["9002"] = {"id": "9002", "userName": nomad.email}
     instance.user_links["9002"] = [{"idpId": "77", "providedUserId": "google|abc"}]
-    record_zitadel_identity(
-        user=nomad, subject="9002", tenant=None, actor=system_actor(tenant=None)
+    record_identity(
+        realm=STAFF_REALM, user=nomad, subject="9002", tenant=None, actor=system_actor(tenant=None)
     )
 
     with caplog.at_level(logging.WARNING):
@@ -670,8 +681,8 @@ def test_a_tenanted_members_revocation_is_the_platforms_too(
         role=Membership.Role.MEMBER,
         actor=system_actor(tenant=other_tenant),
     )
-    record_zitadel_identity(
-        user=member, subject="9001", tenant=None, actor=system_actor(tenant=None)
+    record_identity(
+        realm=STAFF_REALM, user=member, subject="9001", tenant=None, actor=system_actor(tenant=None)
     )
 
     erase_user(user=member, actor=owner_actor, tenant=tenant)
@@ -699,8 +710,8 @@ def test_erasing_the_same_person_twice_is_still_one_run(
     """
     from apps.accounts.services import _revoke_identity_platform_access
 
-    record_zitadel_identity(
-        user=member, subject="9001", tenant=None, actor=system_actor(tenant=None)
+    record_identity(
+        realm=STAFF_REALM, user=member, subject="9001", tenant=None, actor=system_actor(tenant=None)
     )
 
     first = _revoke_identity_platform_access(user=member, actor=owner_actor)
@@ -721,7 +732,7 @@ def test_the_platform_kinds_resolve_their_scope_through_the_bridge(
     """**B2-5 / ADR core-9: the accessor is reached, not skipped.**
 
     Before the bridge key existed these two kinds called nothing at all — the
-    accessor lives in `apps.workflows`, which sits above this app, so W7's
+    accessor lives in `apps.workflows`, which sits above this app, so the
     builder could not reach it. "Resolves its scope" is a claim about a call
     being made, and the only way to fail such a claim is to make the call
     observable. So the registered callable is swapped for one that records.
@@ -738,8 +749,12 @@ def test_the_platform_kinds_resolve_their_scope_through_the_bridge(
     bridge.register(bridge.PLATFORM_CONTEXT, recording)
     try:
         instance.users["9001"] = {"id": "9001", "userName": member.email}
-        record_zitadel_identity(
-            user=member, subject="9001", tenant=None, actor=system_actor(tenant=None)
+        record_identity(
+            realm=STAFF_REALM,
+            user=member,
+            subject="9001",
+            tenant=None,
+            actor=system_actor(tenant=None),
         )
         apply_identity_config(IdentityConfigSync(kind=KIND_IDENTITY_REVOCATION, key=str(member.pk)))
     finally:
@@ -765,8 +780,8 @@ def test_a_platform_kind_under_tenant_stamped_headers_is_refused(
     pinned as found in `apps/workflows/tests/test_platform_context_bridge.py`.
     """
     instance.users["9001"] = {"id": "9001", "userName": member.email}
-    record_zitadel_identity(
-        user=member, subject="9001", tenant=None, actor=system_actor(tenant=None)
+    record_identity(
+        realm=STAFF_REALM, user=member, subject="9001", tenant=None, actor=system_actor(tenant=None)
     )
 
     with pytest.raises(RuntimeError) as refused:

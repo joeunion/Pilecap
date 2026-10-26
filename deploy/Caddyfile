@@ -33,6 +33,15 @@
 	# changed here.
 	auto_https disable_redirects
 
+	# NO HTTP/3. Caddy's default advertises `alt-svc: h3=":443"`, and the
+	# security group (deploy/provision.sh) opens tcp/443 only, so a browser that
+	# took the offer stalled on udp/443 until it fell back. The edge offers what
+	# the firewall carries; opening udp would reach only boxes provisioned after
+	# it, this reaches every box on its next deploy.
+	servers {
+		protocols h1 h2
+	}
+
 	# Where Caddy's own logs go: stdout, structured, so `docker compose logs`
 	# and the collector see the same lines. The app's logging is core.log's
 	# business and is untouched by this.
@@ -43,6 +52,12 @@
 }
 
 # --- The product -------------------------------------------------------------
+# ONE site block for every surface — one stack, N hosts. The
+# placeholder is every name the product answers at — the staff name first, then
+# each other surface's — joined `a, b` so Caddy reads one address per name and
+# gets one certificate per name (deploy/compose.yaml says where the list comes
+# from). Which host is which surface is the app's question, asked of the Host
+# header this block passes through untouched.
 {$SITE_ADDRESS} {
 	tls {$CADDY_TLS}
 
@@ -55,15 +70,32 @@
 	# forgets to say "only ever HTTPS".
 	header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
 
+	# THE ONE PATH SPLIT: every root the backend answers goes to `web`, and
+	# everything else to the face — the dev proxy's twin, where `next dev`
+	# hands `/api/v1/` to Django and draws the rest. The list is not a hand
+	# list: `quality/tests/deploy/test_face.py` derives it from `config/urls.py`,
+	# the ASGI mounts and STATIC_URL, and holds every rewrite in
+	# `frontend/next.config.ts` inside it. `/` and `/welcome` are the face's
+	# (`config/urls.py` mounts both as fallbacks a product with a face never reaches).
+	@backend path /.well-known /.well-known/* /accounts /accounts/* /admin /admin/* /api /api/* /healthz /llms.txt /mcp /mcp/* /readyz /static /static/* /ws /ws/*
+
 	# `web` is a container name on the compose network, resolved by Docker's
 	# DNS. Caddy sets X-Forwarded-Proto itself and strips whatever a client
 	# claimed, which is the precondition `.env`'s BEHIND_PROXY=1 states before
 	# Django is allowed to believe the header.
-	reverse_proxy web:8000 {
-		# Sockets and the MCP stream are long-lived; the default read timeout
-		# would cut them. Flush immediately so a server-sent stream is not
-		# buffered into uselessness.
-		flush_interval -1
+	handle @backend {
+		reverse_proxy web:8000 {
+			# Sockets and the MCP stream are long-lived; the default read timeout
+			# would cut them. Flush immediately so a server-sent stream is not
+			# buffered into uselessness.
+			flush_interval -1
+		}
+	}
+
+	# The face: the Next standalone server, Host passed through untouched so
+	# its server-side surface ask names the address the browser asked for.
+	handle {
+		reverse_proxy frontend:3000
 	}
 }
 

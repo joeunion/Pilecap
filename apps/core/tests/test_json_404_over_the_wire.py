@@ -117,21 +117,40 @@ def _views_under(prefix: str) -> list[Any]:
     return found
 
 
-def test_the_catch_all_is_the_only_plain_view_under_the_api_prefix() -> None:
+#: The plain views under the version segment, by name, and why each is there:
+#: the catch-all, and the face's boot question (which surface this address is).
+#: A plain view added tomorrow fails the test below until it is named here.
+PLAIN_VIEWS_UNDER_THE_API = {"api_not_found", "surface_view"}
+
+
+def test_the_named_plain_views_are_the_only_ones_under_the_api_prefix() -> None:
     """Criterion 5, held by a test rather than by a reading done once.
 
-    Two things hang under the version segment: the ninja API (a resolver, whose
-    own view ninja marks `csrf_exempt` and which checks CSRF inside
-    `SessionAuth`), and this catch-all. If a third plain view is ever mounted
-    here, it inherits the very defect this module closed — so this fails and says so.
+    Under the version segment hang the ninja API (a resolver, whose own view
+    ninja marks `csrf_exempt` and which checks CSRF inside `SessionAuth`) and
+    the named plain views. A plain view mounted there without being named, or
+    named and not exempt, inherits the very defect this module closed — so this
+    fails and says so.
     """
     under = _views_under(root_urls.API_PREFIX)
     resolvers = [entry for entry in under if isinstance(entry, URLResolver)]
     views = [entry for entry in under if not isinstance(entry, URLResolver)]
 
     assert len(resolvers) == 1, "the ninja API is no longer the one resolver under /api/v1/"
-    assert len(views) == 1, f"a second plain view is mounted under the API prefix: {views}"
-    assert getattr(views[0], "csrf_exempt", False) is True, (
-        "the catch-all under the API prefix is not csrf_exempt; a cookieless "
-        "unsafe request to a typo will come back as Django's HTML CSRF page"
-    )
+    assert {view.__name__ for view in views} == PLAIN_VIEWS_UNDER_THE_API, views
+    for view in views:
+        assert getattr(view, "csrf_exempt", False) is True, (
+            f"{view.__name__} under the API prefix is not csrf_exempt; a cookieless "
+            "unsafe request to it will come back as Django's HTML CSRF page"
+        )
+
+
+@pytest.mark.django_db
+def test_a_cookieless_post_to_the_boot_question_answers_the_apis_json_405() -> None:
+    """The boot question takes GET; anything else is the API's own 405, never HTML."""
+    response = strict_client().post("/api/v1/surface/", data="{}", content_type=JSON)
+
+    assert response.status_code == 405, response.content[:400]
+    assert response["Content-Type"].startswith(JSON), response.content[:400]
+    assert response.json()["code"] == "method_not_allowed"
+    assert "GET" in response["Allow"]

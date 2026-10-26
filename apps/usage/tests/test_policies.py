@@ -1,31 +1,4 @@
-"""Narrowing the bill is DATA now, and this module is where that becomes true.
-
-**What this module used to be, and why it changed shape.** An owner ruling
-(`design-agreements.md` § Usage visibility) found that a plain member wearing the
-root hat read the tenant-wide bill *because of an argument in a docstring*, and
-ruled: do not narrow it — DECLARE it, so the default is a line somebody can find
-and change. `apps/usage/policies.py` grew a `DeclaredPermission` to carry that,
-and these tests pinned it.
-
-P20 answered the same question for the whole platform, one layer down, so the
-declaration's job is now the vocabulary's and the narrowing's job is now a
-tenant's own rows. The ruling is kept in every respect that mattered and
-strengthened in the one that mattered most:
-
-* **the default is still visible** — `usage_entry.read` is a derived key, `member`
-  is declared `("*.read",)`, and `manage.py introspect` prints both. Nothing is
-  argued in a docstring;
-* **narrowing is no longer a fork, an edit or a deploy.** It was "a product edits
-  one line in `policies.py`"; it is now "a tenant's administrator writes a row",
-  through the role editor's own doors, in a running deployment, audited, per
-  tenant instead of per deployment. That is what the tests below drive.
-
-The two properties still pull against each other and both are still asserted: a
-fresh clone behaves exactly as it always did, AND a narrowing bites at the door.
-The import-refusal tests retired with the class they guarded — a typo in a
-narrowing is now `Invalid` from `core`'s own `_refuse_undeclared_permissions`,
-which is `apps/core/tests/test_handing_out.py`'s subject and not this app's.
-"""
+"""Narrowing the bill is a tenant's rows, not an edit: a withhold or exclude bites at the door."""
 
 from __future__ import annotations
 
@@ -43,7 +16,7 @@ from apps.core.models import Membership, RolePermission
 from apps.core.services import add_membership, set_role_collection
 from apps.usage.api import _window
 from apps.usage.selectors import get_usage
-from apps.usage.tests.conftest import PASSWORD, World
+from apps.usage.tests.conftest import PASSWORD, World, user_of
 from apps.usage.types import PeriodKind
 
 pytestmark = pytest.mark.django_db
@@ -71,7 +44,7 @@ def _member(world: World, email: str) -> Any:
         organization=world.root,
         is_default=True,
         role=Membership.Role.MEMBER,
-        actor=world.root_actor,
+        actor=world.owner,
     )
     return person
 
@@ -134,7 +107,7 @@ def test_a_fresh_clone_lets_every_role_read_the_report(
         organization=world.root,
         is_default=True,
         role=role,
-        actor=world.root_actor,
+        actor=world.owner,
     )
 
     report = get_usage(
@@ -189,16 +162,16 @@ def test_a_tenant_narrows_the_bill_with_an_exclude_row_and_the_door_obeys(
         actor=actor_for(user=member, tenant=world.tenant),
     )
     _, owner_token = issue_token(
-        user=world.owner,
+        user=user_of(world.owner),
         tenant=world.tenant,
         name="owner",
         scopes=["usage:read"],
-        actor=actor_for(user=world.owner, tenant=world.tenant),
+        actor=actor_for(user=user_of(world.owner), tenant=world.tenant),
     )
 
     set_role_collection(
         tenant=world.tenant,
-        actor=world.root_actor,
+        actor=world.owner,
         role_key="member",
         permissions=sorted(defaults_for("member") - {READ_KEY}),
     )
@@ -233,7 +206,7 @@ def test_the_narrowing_refuses_the_selector_and_not_only_the_door(world: World) 
     member = _member(world, "member-in-the-selector@acme.com")
     set_role_collection(
         tenant=world.tenant,
-        actor=world.root_actor,
+        actor=world.owner,
         role_key="member",
         permissions=sorted(defaults_for("member") - {READ_KEY}),
     )
@@ -275,7 +248,7 @@ def test_a_narrowing_is_per_tenant_and_not_per_deployment(world: World, tenant: 
 
     set_role_collection(
         tenant=world.tenant,
-        actor=world.root_actor,
+        actor=world.owner,
         role_key="member",
         permissions=sorted(defaults_for("member") - {READ_KEY}),
     )

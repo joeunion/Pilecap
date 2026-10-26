@@ -1,0 +1,10 @@
+WIDGET_CREATED = "example.widget.created"
+# golden: import end
+# golden: version move bulk history duplicate attach merge import begin
+WIDGET_UPDATED = "example.widget.updated"
+# golden: version move bulk history duplicate attach merge import end
+WIDGET_DELETED = "example.widget.deleted"
+
+
+WIDGET_ARCHIVED = "example.widget.archived"
+WIDGET_RESTORED = "example.widget.restored"

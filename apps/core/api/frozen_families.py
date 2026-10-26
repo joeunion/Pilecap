@@ -1,4 +1,4 @@
-"""The scope-family freeze census — the one platform file a PRODUCT appends to.
+"""The scope-family freeze census — the template's record, unioned with a product's drawer.
 
 **Why this is its own module.** Everything in `scopes.py` is machinery: the
 derivation, the predicate, the refusal. These two values are a **record**, and
@@ -37,7 +37,20 @@ quantifier to the lockfile population.*
 
 from __future__ import annotations
 
-__all__ = ["FROZEN_FAMILIES", "SANCTIONED_RENAMES", "Released"]
+from pathlib import Path
+
+import yaml
+from django.core.exceptions import ImproperlyConfigured
+
+__all__ = [
+    "DRAWER",
+    "FROZEN_FAMILIES",
+    "SANCTIONED_RENAMES",
+    "DeclaredBy",
+    "Released",
+    "drawer_families",
+    "with_drawer",
+]
 
 
 class Released(tuple[str, ...]):
@@ -59,6 +72,26 @@ class Released(tuple[str, ...]):
     __slots__ = ()
 
 
+class DeclaredBy(str):
+    """A frozen family whose declaring app a deployment may leave out — the app named.
+
+    The key itself, exactly as a plain entry is (this IS the string, so every
+    reader that walks `FROZEN_FAMILIES` sees the same word), and one fact more,
+    carried by the type: WHICH app declares it. A deployment that switched that
+    app off (`DJB_DISABLED_APPS` — the app's own `optional = True`, or a
+    `depends_on` reaching one that is) has no door for the family by its own
+    choice, and `family_freeze_findings` does not call that a vanished key;
+    the freeze still holds the word, so the app switched back on answers it.
+    """
+
+    app: str
+
+    def __new__(cls, family: str, *, app: str) -> DeclaredBy:
+        made = super().__new__(cls, family)
+        made.app = app
+        return made
+
+
 #: Every family key a minted token could already be carrying.
 #:
 #: **Written down rather than derived, and that is the point.** A census derived
@@ -71,7 +104,7 @@ class Released(tuple[str, ...]):
 #: is free and nothing here refuses a new family; what keeps the list current is
 #: `apps/accounts/tests/test_scopes.py`, which pins it equal to the live
 #: vocabulary, so a family shipped and not written down fails by name.
-FROZEN_FAMILIES: tuple[str, ...] = (
+CORE_FAMILIES: tuple[str, ...] = (
     "auth",
     "connections",
     # ADR comms-9's push half. The fourth of a four-key frame's
@@ -124,6 +157,11 @@ FROZEN_FAMILIES: tuple[str, ...] = (
     "invitations",
     "messaging",
     "org-structure",
+    # The worked customer face's own family (`apps/example_portal`):
+    # `portal_requests:read` is reading the requests a customer sent,
+    # `portal_requests:write` is sending one. Frozen the day the door shipped,
+    # like every other key here.
+    DeclaredBy("portal_requests", app="example_portal"),
     "roles",
     "runs",
     # ADR search-2. The third of a four-key frame's ratified keys
@@ -132,6 +170,7 @@ FROZEN_FAMILIES: tuple[str, ...] = (
     # holding it is trusted with, and there is no `search:write` because there
     # is no write door — indexing is spine-fed and service-only.
     "search",
+    "socket-tickets",
     "tenant-settings",
     "tokens",
     # ADR usage-1. A NEW family, and the mildest exception the
@@ -144,7 +183,7 @@ FROZEN_FAMILIES: tuple[str, ...] = (
     # to satisfy. Frozen from the day it shipped, like every other key here.
     "usage",
     "users",
-    "widgets",
+    DeclaredBy("widgets", app="example"),
 )
 
 #: The departures an owner has ruled: a retired key, and what it became.
@@ -182,3 +221,37 @@ SANCTIONED_RENAMES: dict[str, tuple[str, ...]] = {
     "notes": Released(("djb_notes",)),
     "tags": Released(("djb_tags",)),
 }
+
+
+#: A product's own frozen families; rule 95 keeps it out of this file.
+DRAWER = "quality/local/frozen_families.yaml"
+
+_ROOT = Path(__file__).resolve().parents[3]
+
+
+def drawer_families(path: Path) -> tuple[str, ...]:
+    """The family keys the drawer at `path` freezes, under `families:`; absent is none."""
+    if not path.is_file():
+        return ()
+    loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    words = loaded.get("families") if isinstance(loaded, dict) else None
+    if (
+        not isinstance(loaded, dict)
+        or set(loaded) - {"families"}
+        or not isinstance(words, list)
+        or not all(isinstance(word, str) and word for word in words)
+    ):
+        raise ImproperlyConfigured(
+            f"{DRAWER} is not `families:` and a list of family keys — the product's "
+            "frozen families are read from it, so a shape nobody can read is refused."
+        )
+    return tuple(words)
+
+
+def with_drawer(core: tuple[str, ...], path: Path) -> tuple[str, ...]:
+    """The core tuple, then each family the drawer at `path` adds that it does not hold."""
+    return (*core, *(family for family in drawer_families(path) if family not in core))
+
+
+#: The core tuple, then the product drawer's families: the census every reader walks.
+FROZEN_FAMILIES = with_drawer(CORE_FAMILIES, _ROOT / DRAWER)

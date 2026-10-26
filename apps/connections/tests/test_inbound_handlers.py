@@ -4,20 +4,17 @@
 **must never learn what a payload means** — an ESP's bounce, a payment
 provider's dispute, a calendar's change notification are all somebody else's
 vocabulary. So the receiver stores the delivery, hands it to the event spine,
-and then asks a registry whether some app claimed this provider's slug (ADR
-comms-4). `apps/comms` is the first caller; nothing here knows that.
+and starts a run for whichever app claimed this provider's slug (ADR comms-4).
+`apps/comms` is the first caller; nothing here knows that.
 
 These tests plant a handler of their own rather than driving comms', which is
 what makes them tests of the *seam* rather than a second copy of
 `apps/comms/tests/test_delivery_status.py`. The two questions they exist for:
 
-* is a registered handler actually called, with the stored row and the actor
-  the receiver authorized as — after the store, so a handler cannot be the
-  reason a delivery is lost;
-* **does a handler that blows up still leave a 202 and a stored row?** Both
-  halves matter, and the second is the one a `try/except` alone does not buy:
-  on Postgres a handler whose failure was a database error would leave the
-  receipt itself unable to commit.
+* is a registered handler started as a run rather than called in the request,
+  and does that run's service call it with the stored row and the system actor;
+* **does a handler that blows up leave a receipt that says so?** The savepoint
+  is what lets a database error in the handler leave the status write intact.
 """
 
 from __future__ import annotations
@@ -33,9 +30,12 @@ from django.test import Client
 from apps.connections import providers
 from apps.connections.api import SIGNATURE_HEADER, SIGNATURE_PREFIX
 from apps.connections.models import Connection, InboundWebhook
-from apps.connections.services import create_connection
+from apps.connections.services import apply_inbound_webhook, create_connection
 from apps.connections.tests.conftest import WEBHOOK_SECRET
-from apps.core.actor import Actor
+from apps.connections.tests.handler_runs import run_handlers_at_the_receipt
+from apps.connections.types import HANDLE_WORKFLOW
+from apps.core import bridge
+from apps.core.actor import Actor, system_actor
 from apps.core.models import Tenant
 
 pytestmark = pytest.mark.django_db
@@ -64,83 +64,140 @@ def claimed(tenant: Tenant, owner_actor: Actor) -> Connection:
         provider="slug-with-a-handler",
         name="Something inbound",
         credentials={"webhook_secret": WEBHOOK_SECRET},
+        is_signature_v2_required=False,
     )
 
 
-def test_a_registered_handler_is_called_with_the_stored_row_and_the_actor(
-    api: Client, tenant: Tenant, claimed: Connection, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The hand-off happens, and it happens *after* the store.
+@pytest.fixture
+def starts(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """Every handler run the receiver asks the platform's starter for, captured at the bridge."""
+    asked: list[dict[str, Any]] = []
 
-    `received.pk` being resolvable through the manager inside the handler is the
-    load-bearing assertion: it means the row was already written when the
-    handler ran, which is what makes a handler unable to lose a delivery.
-    """
+    def spy(**kw: Any) -> None:
+        if kw["workflow"] == HANDLE_WORKFLOW:
+            asked.append(kw)
+
+    monkeypatch.setitem(bridge._registry, bridge.START_WORKFLOW_ON_COMMIT, spy)
+    return asked
+
+
+def _handle(tenant: Tenant, received: InboundWebhook) -> InboundWebhook:
+    return apply_inbound_webhook(
+        tenant=tenant, actor=system_actor(tenant), inbound_webhook_id=received.pk
+    )
+
+
+def test_a_claimed_delivery_starts_its_handler_run_and_never_calls_it_inline(
+    api: Client,
+    tenant: Tenant,
+    claimed: Connection,
+    starts: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called: list[str] = []
+    monkeypatch.setitem(
+        providers._inbound, claimed.provider, lambda **kw: called.append(kw["received"].body)
+    )
+
+    response = _post(api, claimed)
+
+    assert response.status_code == 202
+    assert called == []
+    assert [s["workflow"] for s in starts] == [HANDLE_WORKFLOW]
+    assert starts[0]["arg"].inbound_webhook_id == response.json()["id"]
+    assert starts[0]["id"].endswith(f":connections:inbound_webhook:{response.json()['id']}")
+
+
+def test_the_run_calls_the_handler_with_the_stored_row_and_the_actor(
+    api: Client,
+    tenant: Tenant,
+    claimed: Connection,
+    starts: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     seen: list[tuple[str, str]] = []
 
     def handler(*, received: InboundWebhook, actor: Actor) -> None:
-        assert InboundWebhook.objects.for_tenant(received.tenant).filter(pk=received.pk).exists()
         seen.append((received.body, actor.kind))
 
     monkeypatch.setitem(providers._inbound, claimed.provider, handler)
+    _post(api, claimed, b'{"event": "thing.happened"}')
 
-    response = _post(api, claimed, b'{"event": "thing.happened"}')
+    handled = _handle(tenant, InboundWebhook.objects.for_tenant(tenant).get())
 
-    assert response.status_code == 202
     assert seen == [('{"event": "thing.happened"}', "system")]
+    assert handled.status == InboundWebhook.Status.HANDLED
+    assert handled.handed_off_at is not None
+
+
+def test_the_receipt_seam_runs_the_handler_where_the_receiver_starts_it(
+    api: Client, tenant: Tenant, claimed: Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`handler_runs` is how a test that drives the door reads a handler's effect at the 202."""
+    seen: list[str] = []
+    monkeypatch.setitem(
+        providers._inbound, claimed.provider, lambda **kw: seen.append(kw["received"].body)
+    )
+    run_handlers_at_the_receipt(monkeypatch)
+
+    assert _post(api, claimed).status_code == 202
+
+    assert seen == ['{"event": "x"}']
+    stored = InboundWebhook.objects.for_tenant(tenant).get()
+    assert stored.status == InboundWebhook.Status.HANDLED
 
 
 def test_a_provider_nobody_claimed_is_simply_silent(
-    api: Client, tenant: Tenant, connection: Connection
+    api: Client, tenant: Tenant, connection: Connection, starts: list[dict[str, Any]]
 ) -> None:
     """Outbound-only integrations are the ordinary case, not a misconfiguration."""
     assert providers.inbound_handler(connection.provider) is None
     assert _post(api, connection).status_code == 202
     stored = InboundWebhook.objects.for_tenant(tenant).get()
     assert stored.status == InboundWebhook.Status.HANDED_OFF, "the spine still took it"
+    assert starts == []
 
 
-def test_a_handler_that_raises_costs_the_delivery_nothing(
-    api: Client, tenant: Tenant, claimed: Connection, monkeypatch: pytest.MonkeyPatch
+def test_a_handler_that_raises_is_recorded_on_the_receipt(
+    api: Client,
+    tenant: Tenant,
+    claimed: Connection,
+    starts: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The store is the durability. One app's bad afternoon is not the door's."""
-
     def handler(*, received: InboundWebhook, actor: Actor) -> None:
         raise RuntimeError("the handler had an opinion")
 
     monkeypatch.setitem(providers._inbound, claimed.provider, handler)
+    assert _post(api, claimed).status_code == 202
 
-    response = _post(api, claimed)
+    handled = _handle(tenant, InboundWebhook.objects.for_tenant(tenant).get())
 
-    assert response.status_code == 202
     stored = InboundWebhook.objects.for_tenant(tenant).get()
+    assert handled.status == stored.status == InboundWebhook.Status.HANDLER_FAILED
     assert stored.body == '{"event": "x"}'
-    assert stored.status == InboundWebhook.Status.HANDED_OFF
 
 
-def test_a_handler_that_breaks_the_database_still_leaves_the_receipt(
-    api: Client, tenant: Tenant, claimed: Connection, monkeypatch: pytest.MonkeyPatch
+def test_a_handler_that_breaks_the_database_still_records_its_failure(
+    api: Client,
+    tenant: Tenant,
+    claimed: Connection,
+    starts: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The savepoint, and why `except Exception` alone is not the promise.
-
-    A `ProgrammingError` inside the receiver's transaction aborts it: without
-    the `atomic()` around the hand-off, the receipt row this service already
-    wrote could not commit, and the sender would get a 500 from the one route in
-    the product that must never give it one. The handler here fails the way a
-    real one eventually will — in the middle of a query — rather than by raising
-    a tidy `RuntimeError` the transaction never notices.
-    """
+    """The savepoint: an aborted query in the handler cannot take the status write with it."""
 
     def handler(*, received: InboundWebhook, actor: Actor) -> None:
         with db_connection.cursor() as cursor:
             cursor.execute("SELECT * FROM a_table_that_is_not_there")
 
     monkeypatch.setitem(providers._inbound, claimed.provider, handler)
+    assert _post(api, claimed).status_code == 202
 
-    response = _post(api, claimed)
+    _handle(tenant, InboundWebhook.objects.for_tenant(tenant).get())
 
-    assert response.status_code == 202
-    assert InboundWebhook.objects.for_tenant(tenant).count() == 1
+    stored = InboundWebhook.objects.for_tenant(tenant).get()
+    assert stored.status == InboundWebhook.Status.HANDLER_FAILED
 
 
 def test_the_registry_takes_one_handler_per_slug_and_gives_it_back(

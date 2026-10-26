@@ -9,9 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from apps.accounts.models import User
 from apps.core.actor import Actor, actor_for
-from apps.core.exceptions import Archived, Conflict, Forbidden, Invalid, NotFound
+from apps.core.exceptions import Archived, Conflict, Forbidden, Invalid, NotFound, wire_refusal
 from apps.core.models import Tenant
 from apps.core.verbs import Repointer, hook
 from apps.djb_tags.events import TAG_LINK_CREATED, TAG_LINK_DELETED, TAG_LINK_MOVED
@@ -27,7 +26,7 @@ from apps.djb_tags.services import (
     rename_tag,
     restore_tag,
 )
-from apps.djb_tags.tests.conftest import World
+from apps.djb_tags.tests.conftest import TagWorld
 from apps.events.models import Event
 
 pytestmark = pytest.mark.django_db
@@ -54,8 +53,11 @@ def test_a_tag_is_coined_once_per_tenant(tenant: Tenant, owner_actor: Actor) -> 
 def test_an_archived_word_still_owns_its_slug(tenant: Tenant, owner_actor: Actor) -> None:
     tag = create_tag(tenant=tenant, actor=owner_actor, name="Urgent")
     archive_tag(tenant=tenant, actor=owner_actor, tag=tag)
-    with pytest.raises(Conflict, match="restore it instead"):
+    with pytest.raises(Conflict) as refused:
         create_tag(tenant=tenant, actor=owner_actor, name="Urgent")
+    body = wire_refusal(refused.value)
+    assert body["code"] == "conflict"
+    assert body["remedies"] and all(set(r) == {"label", "destination"} for r in body["remedies"])
 
 
 def test_a_word_with_no_letters_is_invalid_naming_name(tenant: Tenant, owner_actor: Actor) -> None:
@@ -69,11 +71,11 @@ def test_a_member_may_not_coin_a_word(tenant: Tenant, member_actor: Actor) -> No
         create_tag(tenant=tenant, actor=member_actor, name="Urgent")
 
 
-def test_a_branch_actor_is_asked_at_the_root(world: World) -> None:
+def test_a_branch_actor_is_asked_at_the_root(world: TagWorld) -> None:
     """A tenant-wide kind is written at the root (house rule 55): the clerk's
     hat is branch A, and the root is where the question is asked."""
     with pytest.raises(Forbidden):
-        create_tag(tenant=world.tenant, actor=world.clerk_actor, name="Urgent")
+        create_tag(tenant=world.tenant, actor=world.clerk, name="Urgent")
 
 
 def test_rename_respells_and_moves_the_slug(tenant: Tenant, owner_actor: Actor) -> None:
@@ -117,60 +119,56 @@ def test_a_member_may_not_archive_a_word(
 
 
 @pytest.mark.usefixtures("widget_takes_tags")
-def test_a_link_lands_in_the_subjects_branch_and_is_idempotent(
-    world: World, owner_actor: Actor
-) -> None:
-    tag = create_tag(tenant=world.tenant, actor=owner_actor, name="Urgent")
+def test_a_link_lands_in_the_subjects_branch_and_is_idempotent(world: TagWorld) -> None:
+    tag = create_tag(tenant=world.tenant, actor=world.owner, name="Urgent")
     first = create_tag_link(
-        tenant=world.tenant, actor=world.clerk_actor, tag=tag, subject=_subject(world.widget_a)
+        tenant=world.tenant, actor=world.clerk, tag=tag, subject=_subject(world.widget_a)
     )
     second = create_tag_link(
-        tenant=world.tenant, actor=world.clerk_actor, tag=tag, subject=_subject(world.widget_a)
+        tenant=world.tenant, actor=world.clerk, tag=tag, subject=_subject(world.widget_a)
     )
     assert first.created is True
     assert second.created is False
     assert second.link.pk == first.link.pk
-    assert first.link.organization_id == world.branch_a.pk
+    assert first.link.organization_id == world.a.pk
     assert TagLink.objects.for_tenant(world.tenant).count() == 1
     assert _events(world.tenant, TAG_LINK_CREATED) == 1
 
 
 @pytest.mark.usefixtures("tag_takes_tags")
-def test_a_link_on_a_tenant_wide_subject_lands_at_the_acting_hat(
-    world: World, owner: User, owner_actor: Actor
-) -> None:
+def test_a_link_on_a_tenant_wide_subject_lands_at_the_acting_hat(world: TagWorld) -> None:
     """The landing law's second case: a subject with no branch of its own lands
     the link at the ACTING HAT (ADR core-20), never at the root — visibility is
     down-only, so a root-landed link is one its own branch author cannot read
     back. The word itself stays root-written (house rule 55)."""
-    subject = create_tag(tenant=world.tenant, actor=owner_actor, name="Region")
-    word = create_tag(tenant=world.tenant, actor=owner_actor, name="Urgent")
+    subject = create_tag(tenant=world.tenant, actor=world.owner, name="Region")
+    word = create_tag(tenant=world.tenant, actor=world.owner, name="Urgent")
     linking = create_tag_link(
-        tenant=world.tenant, actor=world.clerk_actor, tag=word, subject=f"djb_tag:{subject.pk}"
+        tenant=world.tenant, actor=world.clerk, tag=word, subject=f"djb_tag:{subject.pk}"
     )
-    assert linking.link.organization_id == world.branch_a.pk
+    assert linking.link.organization_id == world.a.pk
     assert linking.link.organization_id != world.root.pk
     read_back = list_tag_links(
-        tenant=world.tenant, actor=world.clerk_actor, subject=f"djb_tag:{subject.pk}"
+        tenant=world.tenant, actor=world.clerk, subject=f"djb_tag:{subject.pk}"
     )
     assert [link.pk for link in read_back] == [linking.link.pk]
-    at_b = actor_for(user=owner, tenant=world.tenant, org=world.branch_b)
+    at_b = actor_for(user=world.owner.user, tenant=world.tenant, org=world.b)
     assert not list_tag_links(tenant=world.tenant, actor=at_b, subject=f"djb_tag:{subject.pk}")
 
 
 @pytest.mark.usefixtures("tag_takes_tags")
 def test_a_word_already_on_a_tenant_wide_subject_from_another_branch_is_a_conflict(
-    world: World, owner: User, owner_actor: Actor
+    world: TagWorld,
 ) -> None:
     """One link per `(tag, subject)` holds tenant-wide, and a link another branch
     landed is not this hat's to read — so the second branch's press is a
     `conflict` with no row change and no event, never a 500 off the lost race."""
-    subject = create_tag(tenant=world.tenant, actor=owner_actor, name="Region")
-    word = create_tag(tenant=world.tenant, actor=owner_actor, name="Urgent")
+    subject = create_tag(tenant=world.tenant, actor=world.owner, name="Region")
+    word = create_tag(tenant=world.tenant, actor=world.owner, name="Urgent")
     create_tag_link(
-        tenant=world.tenant, actor=world.clerk_actor, tag=word, subject=f"djb_tag:{subject.pk}"
+        tenant=world.tenant, actor=world.clerk, tag=word, subject=f"djb_tag:{subject.pk}"
     )
-    at_b = actor_for(user=owner, tenant=world.tenant, org=world.branch_b)
+    at_b = actor_for(user=world.owner.user, tenant=world.tenant, org=world.b)
     with pytest.raises(Conflict):
         create_tag_link(tenant=world.tenant, actor=at_b, tag=word, subject=f"djb_tag:{subject.pk}")
     assert TagLink.objects.for_tenant(world.tenant).count() == 1
@@ -178,31 +176,27 @@ def test_a_word_already_on_a_tenant_wide_subject_from_another_branch_is_a_confli
 
 
 @pytest.mark.usefixtures("widget_takes_tags")
-def test_a_sibling_branchs_subject_is_not_found(world: World, owner_actor: Actor) -> None:
-    tag = create_tag(tenant=world.tenant, actor=owner_actor, name="Urgent")
+def test_a_sibling_branchs_subject_is_not_found(world: TagWorld) -> None:
+    tag = create_tag(tenant=world.tenant, actor=world.owner, name="Urgent")
     with pytest.raises(NotFound):
         create_tag_link(
             tenant=world.tenant,
-            actor=world.clerk_actor,
+            actor=world.clerk,
             tag=tag,
             subject=_subject(world.widget_b),
         )
     with pytest.raises(NotFound):
-        list_tag_links(
-            tenant=world.tenant, actor=world.clerk_actor, subject=_subject(world.widget_b)
-        )
+        list_tag_links(tenant=world.tenant, actor=world.clerk, subject=_subject(world.widget_b))
 
 
 @pytest.mark.usefixtures("widget_takes_no_tags")
-def test_a_kind_that_does_not_take_tags_is_invalid_naming_subject(
-    world: World, owner_actor: Actor
-) -> None:
+def test_a_kind_that_does_not_take_tags_is_invalid_naming_subject(world: TagWorld) -> None:
     """`Widget` with `tags` taken out of its declaration: `invalid` naming `subject`."""
-    tag = create_tag(tenant=world.tenant, actor=owner_actor, name="Urgent")
+    tag = create_tag(tenant=world.tenant, actor=world.owner, name="Urgent")
     with pytest.raises(Invalid) as refused:
         create_tag_link(
             tenant=world.tenant,
-            actor=world.clerk_actor,
+            actor=world.clerk,
             tag=tag,
             subject=_subject(world.widget_a),
         )
@@ -210,42 +204,40 @@ def test_a_kind_that_does_not_take_tags_is_invalid_naming_subject(
 
 
 @pytest.mark.usefixtures("widget_takes_tags")
-def test_an_archived_word_cannot_be_put_on_a_row(world: World, owner_actor: Actor) -> None:
-    tag = create_tag(tenant=world.tenant, actor=owner_actor, name="Urgent")
-    archive_tag(tenant=world.tenant, actor=owner_actor, tag=tag)
+def test_an_archived_word_cannot_be_put_on_a_row(world: TagWorld) -> None:
+    tag = create_tag(tenant=world.tenant, actor=world.owner, name="Urgent")
+    archive_tag(tenant=world.tenant, actor=world.owner, tag=tag)
     tag.refresh_from_db()
     with pytest.raises(Archived):
         create_tag_link(
             tenant=world.tenant,
-            actor=world.clerk_actor,
+            actor=world.clerk,
             tag=tag,
             subject=_subject(world.widget_a),
         )
 
 
 @pytest.mark.usefixtures("widget_takes_tags")
-def test_archiving_a_word_keeps_its_links_readable(world: World, owner_actor: Actor) -> None:
-    tag = create_tag(tenant=world.tenant, actor=owner_actor, name="Urgent")
+def test_archiving_a_word_keeps_its_links_readable(world: TagWorld) -> None:
+    tag = create_tag(tenant=world.tenant, actor=world.owner, name="Urgent")
     create_tag_link(
-        tenant=world.tenant, actor=world.clerk_actor, tag=tag, subject=_subject(world.widget_a)
+        tenant=world.tenant, actor=world.clerk, tag=tag, subject=_subject(world.widget_a)
     )
-    archive_tag(tenant=world.tenant, actor=owner_actor, tag=tag)
+    archive_tag(tenant=world.tenant, actor=world.owner, tag=tag)
     links = list(
-        list_tag_links(
-            tenant=world.tenant, actor=world.clerk_actor, subject=_subject(world.widget_a)
-        )
+        list_tag_links(tenant=world.tenant, actor=world.clerk, subject=_subject(world.widget_a))
     )
     assert [link.tag_id for link in links] == [tag.pk]
     assert links[0].tag.is_archived
 
 
 @pytest.mark.usefixtures("widget_takes_tags")
-def test_delete_tag_link_removes_it_and_says_so(world: World, owner_actor: Actor) -> None:
-    tag = create_tag(tenant=world.tenant, actor=owner_actor, name="Urgent")
+def test_delete_tag_link_removes_it_and_says_so(world: TagWorld) -> None:
+    tag = create_tag(tenant=world.tenant, actor=world.owner, name="Urgent")
     link = create_tag_link(
-        tenant=world.tenant, actor=world.clerk_actor, tag=tag, subject=_subject(world.widget_a)
+        tenant=world.tenant, actor=world.clerk, tag=tag, subject=_subject(world.widget_a)
     ).link
-    removed = delete_tag_link(tenant=world.tenant, actor=world.clerk_actor, link=link)
+    removed = delete_tag_link(tenant=world.tenant, actor=world.clerk, link=link)
     assert removed.pk == link.pk
     assert not TagLink.objects.for_tenant(world.tenant).exists()
     assert _events(world.tenant, TAG_LINK_DELETED) == 1
@@ -261,21 +253,19 @@ def test_tags_declares_one_repointer_for_every_noun() -> None:
 
 
 @pytest.mark.usefixtures("widget_takes_tags")
-def test_the_repointer_moves_every_link_and_counts_what_it_moves(
-    world: World, owner_actor: Actor
-) -> None:
+def test_the_repointer_moves_every_link_and_counts_what_it_moves(world: TagWorld) -> None:
     """A planted merge: the loser carries three words, the survivor already
     carries one of them. After `repoint` the loser carries nothing, the survivor
     carries all three once each, and the answer equals `count`'s dry run."""
     tenant = world.tenant
     loser, survivor = world.other_widget_a, world.widget_a
     urgent, blue, big = (
-        create_tag(tenant=tenant, actor=owner_actor, name=name)
+        create_tag(tenant=tenant, actor=world.owner, name=name)
         for name in ("Urgent", "Blue", "Big")
     )
     for tag in (urgent, blue, big):
-        create_tag_link(tenant=tenant, actor=world.clerk_actor, tag=tag, subject=_subject(loser))
-    create_tag_link(tenant=tenant, actor=world.clerk_actor, tag=urgent, subject=_subject(survivor))
+        create_tag_link(tenant=tenant, actor=world.clerk, tag=tag, subject=_subject(loser))
+    create_tag_link(tenant=tenant, actor=world.clerk, tag=urgent, subject=_subject(survivor))
     repointer = REPOINTERS["*"]
 
     stamped_before = dict(
@@ -285,7 +275,7 @@ def test_the_repointer_moves_every_link_and_counts_what_it_moves(
     )
 
     counted = repointer.count(tenant=tenant, loser=loser)
-    moved = repointer.repoint(tenant=tenant, actor=owner_actor, loser=loser, survivor=survivor)
+    moved = repointer.repoint(tenant=tenant, actor=world.owner, loser=loser, survivor=survivor)
 
     assert counted == 3
     assert moved == counted
@@ -305,17 +295,15 @@ def test_the_repointer_moves_every_link_and_counts_what_it_moves(
 
 
 @pytest.mark.usefixtures("widget_takes_tags")
-def test_the_repointer_refuses_a_subject_the_actor_cannot_reach(
-    world: World, owner_actor: Actor
-) -> None:
-    tag = create_tag(tenant=world.tenant, actor=owner_actor, name="Urgent")
+def test_the_repointer_refuses_a_subject_the_actor_cannot_reach(world: TagWorld) -> None:
+    tag = create_tag(tenant=world.tenant, actor=world.owner, name="Urgent")
     create_tag_link(
-        tenant=world.tenant, actor=world.clerk_actor, tag=tag, subject=_subject(world.widget_a)
+        tenant=world.tenant, actor=world.clerk, tag=tag, subject=_subject(world.widget_a)
     )
     with pytest.raises(NotFound):
         move_tag_links(
             tenant=world.tenant,
-            actor=world.clerk_actor,
+            actor=world.clerk,
             loser=world.widget_a,
             survivor=world.widget_b,
         )
@@ -329,3 +317,13 @@ def test_the_tags_list_is_the_tenants_own(
     create_tag(tenant=other_tenant, actor=stranger_actor, name="Theirs")
     assert [tag.name for tag in list_tags(tenant=tenant, actor=owner_actor)] == ["Ours"]
     assert Tag.objects.for_tenant(other_tenant).count() == 1
+
+
+def test_an_unknown_cut_is_refused_naming_show_below_the_door(
+    tenant: Tenant, owner_actor: Actor
+) -> None:
+    """The selector refuses `show="bogus"` itself, so no caller reads the live words under it."""
+    create_tag(tenant=tenant, actor=owner_actor, name="Urgent")
+    with pytest.raises(Invalid) as refused:
+        list_tags(tenant=tenant, actor=owner_actor, show="bogus")
+    assert set(refused.value.errors) == {"show"}

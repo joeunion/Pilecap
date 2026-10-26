@@ -74,7 +74,7 @@ JSON = "application/json"
 #: than a `.secrets.baseline` entry: the baseline is a shared file at the root
 #: of the tree and this app owns neither it nor the right to conflict four
 #: other lanes on it.
-STATUS_SECRET = "this-rung-signs-with-its-own-string"  # pragma: allowlist secret
+STATUS_SECRET = "this-rung-signs-with-its-own-string"  # noqa: S105 — a signing secret the test both signs and verifies with  # pragma: allowlist secret
 
 
 # --- the door, the same one every status test drives -----------------------------
@@ -117,6 +117,7 @@ def esp(tenant: Tenant, owner_actor: Actor) -> Connection:
         provider=STATUS_PROVIDER,
         name="Transactional email",
         credentials={"webhook_secret": STATUS_SECRET, "access_token": "an-esp-key"},
+        is_signature_v2_required=False,
     )
 
 

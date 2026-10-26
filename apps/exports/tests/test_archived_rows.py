@@ -39,7 +39,7 @@ from apps.exports.services import create_export
 from .conftest import archive_bytes
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from .conftest import World
+    from apps.core.tests.permissions_world import World
 
 pytestmark = pytest.mark.django_db
 
@@ -55,18 +55,18 @@ def test_an_archived_widget_travels_in_the_tenant_export_with_its_archive_stamp(
 ) -> None:
     widget = Widget.objects.for_tenant(world.tenant).order_by("created_at").first()
     assert widget is not None
-    archive_widget(tenant=world.tenant, actor=world.owner_actor, widget=widget)
+    archive_widget(tenant=world.tenant, actor=world.owner, widget=widget)
     widget = Widget.objects.including_archived().get(pk=widget.pk)
     assert widget.archived_at is not None, "the plant: the widget really is archived"
 
-    export = create_export(tenant=world.tenant, actor=world.owner_actor, scope=Export.Scope.TENANT)
-    version, manifest = _write_the_archive(export=export, hat=world.root, actor=world.owner_actor)
+    export = create_export(tenant=world.tenant, actor=world.owner, scope=Export.Scope.TENANT)
+    version, manifest = _write_the_archive(export=export, hat=world.root, actor=world.owner)
 
     by_id = {row["id"]: row for row in _widget_rows(str(version.key))}
     assert str(widget.pk) in by_id, "the archived widget is absent from the export"
     row = by_id[str(widget.pk)]
     assert row["archived_at"] is not None
-    assert row["archived_by"] == str(world.owner.pk)
+    assert row["archived_by"] == str(world.user(world.owner).pk)
     # The live ones still travel beside it: the widening adds, it does not swap.
     assert len(by_id) == 4
     counted = {one["label"]: one["rows"] for one in manifest["models"]}
@@ -76,7 +76,9 @@ def test_an_archived_widget_travels_in_the_tenant_export_with_its_archive_stamp(
 def test_every_archivable_model_the_census_carries_is_read_including_archived(
     world: World,
 ) -> None:
-    reader = actor_for(user=world.owner, tenant=world.tenant, org=world.root, kind="agent")
+    reader = actor_for(
+        user=world.user(world.owner), tenant=world.tenant, org=world.root, kind="agent"
+    )
     carried = dispositions()
     population = [m._meta.label for m in archivable_models() if m._meta.label in carried]
     assert "example.Widget" in population, "the population is not empty"

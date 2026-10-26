@@ -55,9 +55,13 @@ from typing import Any
 
 import pytest
 
+import apps.conftest as harness
+import apps.testing.hooks as harness_hooks
+import apps.testing.tier as harness_tier
 from apps.conftest import (
     DJB_CENSUS_MARKER,
     DJB_CENSUS_POPULATION,
+    DJB_DECLARED_READS,
     DJB_REACH_KINDS_KEY,
     DJB_REACH_TOKENS,
     DJB_WALK_TOKENS,
@@ -77,12 +81,12 @@ from apps.conftest import (
 #: The checkout root. `apps/test_census_markers.py` -> the directory above `apps`.
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
-#: Every token that makes a module always-on WITHOUT a marker, plus every token
-#: a marker is allowed to stand on. Derived from the two declarations in the
-#: sentinel block so that this file holds no second copy of either.
+#: Every token a marker may stand on: the sentinel block's reach, walk and declared-read tokens.
 MARKER_EVIDENCE: tuple[str, ...] = tuple(
     sorted(
-        {token for tokens in DJB_REACH_TOKENS.values() for token in tokens} | set(DJB_WALK_TOKENS)
+        {token for tokens in DJB_REACH_TOKENS.values() for token in tokens}
+        | set(DJB_WALK_TOKENS)
+        | {token for tokens in DJB_DECLARED_READS.values() for token in tokens}
     )
 )
 
@@ -105,19 +109,7 @@ class _CollectedModules:
 def _collected_modules(root: pathlib.Path, target: pathlib.Path) -> list[str]:
     """Every module a nested `pytest --collect-only -q` collected, `root`-relative.
 
-    AN UNREADABLE INPUT IS COULD-NOT-LOOK, never an empty population: a nested
-    collection that refused would otherwise read as a tree with no censuses in
-    it, and both halves below would pass by having nothing to look at.
-    `pytest.exit(..., returncode=4)` is how a test says that here — pytest's own
-    usage-error status, which `scripts/check.sh` maps to exit 2 along with 3 and
-    5.
-
-    THE NESTED RUN'S OUTPUT IS HELD, NOT DISCARDED. `--collect-only -q` prints
-    one line per collected item — four thousand of them on this tree — into the
-    OUTER test's captured stdout, where they are reprinted under every failure
-    that has nothing to do with them. It goes into a buffer instead, and the
-    tail of that buffer is pasted into the refusal above, which is the one place
-    a reader needs it.
+    Why-not `pytest.exit`: in an xdist worker it reads as INTERNALERROR on an unrelated test.
     """
     recorder = _CollectedModules()
     held = io.StringIO()
@@ -136,19 +128,19 @@ def _collected_modules(root: pathlib.Path, target: pathlib.Path) -> list[str]:
         )
     if int(status) != 0:
         tail = "\n".join(held.getvalue().splitlines()[-20:])
-        pytest.exit(
-            f"apps/test_census_markers.py could not collect {target} "
+        pytest.fail(
+            f"COULD NOT LOOK: apps/test_census_markers.py could not collect {target} "
             f"(nested pytest exited {int(status)}). Nothing was asserted about the "
             f"census markers: an underived population is not an empty one.\n{tail}",
-            returncode=4,
+            pytrace=False,
         )
     return sorted(path.relative_to(root).as_posix() for path in recorder.paths)
 
 
 def _is_apps_root_module(module: str) -> bool:
-    """`apps/test_x.py` — owned by no app, so always-on by construction.
+    """`apps/test_<x>.py` — owned by no app, so always-on by construction.
 
-    The same shape `apps/conftest.py::_population_members` reads, asked of a
+    The same shape `apps/testing/impact.py::_population_members` reads, asked of a
     path rather than of a nodeid so that a planted world under `tmp_path` is
     judged by exactly the rule the real tree is.
     """
@@ -187,6 +179,18 @@ def _census(root: pathlib.Path, modules: list[str]) -> tuple[list[str], list[str
     return forward, reverse, marked, walkers
 
 
+def _declared_reads(root: pathlib.Path, modules: list[str]) -> dict[str, tuple[int, int]]:
+    """Read kind -> (modules holding its tokens, of those the ones carrying the marker)."""
+    counts: dict[str, tuple[int, int]] = {}
+    for kind, tokens in DJB_DECLARED_READS.items():
+        readers = [
+            m for m in modules if any(t in (root / m).read_text(encoding="utf-8") for t in tokens)
+        ]
+        declared = [m for m in readers if _module_census_reason(str(root / m))]
+        counts[kind] = (len(readers), len(declared))
+    return counts
+
+
 def _announce(capsys: Any, line: str) -> None:
     """One line a reader of a serial run sees, and NOT through `print`.
 
@@ -218,6 +222,15 @@ def test_every_declared_census_names_a_population_it_walks(
     assert forward == [], "\n    " + "\n    ".join(forward)
 
 
+def test_every_declared_read_kind_finds_a_reader(tree_modules: list[str], capsys: Any) -> None:
+    """LAYER 1 for the declared reads: a kind no module holds is a token gone blind."""
+    counts = _declared_reads(REPO_ROOT, tree_modules)
+    for kind, (readers, declared) in sorted(counts.items()):
+        _announce(capsys, f"declared reads: {kind} {readers} readers, {declared} declared")
+    blind = sorted(kind for kind, (readers, _declared) in counts.items() if readers < 1)
+    assert blind == [], f"declared read kinds no collected module holds: {blind}"
+
+
 def test_every_walker_declares_itself(tree_modules: list[str]) -> None:
     """REVERSE. A census with no marker is a hole every scope falls through."""
     _forward, reverse, _marked, _walkers = _census(REPO_ROOT, tree_modules)
@@ -237,7 +250,7 @@ _PLANT_TEST = "\n\ndef test_a_planted_module() -> None:\n    assert True\n"
 #: A source line that WALKS, assembled from the declaration rather than spelled.
 #: Spelled whole it would put a walk token into this module's own source, and
 #: this module is inside the population the reverse half reads — a guard counting
-#: a token it finds in a fixture is the class `scripts/tests/test_loop_tier.sh`
+#: a token it finds in a fixture is the class `quality/tests/test_scope.py`
 #: assembles its Temporal plant to avoid.
 _PLANT_WALK = '"""A plant."""\n\nimport pathlib\n\nWALKED = list(pathlib.Path("apps")' + (
     DJB_WALK_TOKENS[1] + '"*.py"))\n'
@@ -285,6 +298,30 @@ def test_a_planted_census_that_declares_itself_is_green(tmp_path: pathlib.Path) 
     modules = _collected_modules(root, root / "apps")
     forward, reverse, marked, walkers = _census(root, modules)
     assert (forward, reverse, marked, walkers) == ([], [], 1, 1)
+
+
+def _plant_quality_read() -> str:
+    """A `quality/` read assembled from the declaration (see `_PLANT_WALK`); never run."""
+    token = DJB_DECLARED_READS["quality_reader"][0]
+    return f'import importlib\n\n\ndef _engine() -> object:\n    return importlib.{token}gate")\n'
+
+
+def test_a_planted_marker_standing_on_a_quality_read_is_accepted(tmp_path: pathlib.Path) -> None:
+    """The `quality_reader` kind: a declared `quality/` read is evidence, and is counted."""
+    head = f"{DJB_CENSUS_MARKER} {DJB_CENSUS_POPULATION}quality/** reads the engine\n"
+    root = _plant(tmp_path, "quality_marked", head + _plant_quality_read())
+    modules = _collected_modules(root, root / "apps")
+    assert _census(root, modules) == ([], [], 1, 0)
+    assert _declared_reads(root, modules)["quality_reader"] == (1, 1)
+
+
+def test_an_unmarked_quality_read_is_counted_and_not_always_on(tmp_path: pathlib.Path) -> None:
+    """The stray half: a reader with no marker is counted undeclared and gains no way in."""
+    root = _plant(tmp_path, "quality_stray", '"""A plant."""\n\n' + _plant_quality_read())
+    modules = _collected_modules(root, root / "apps")
+    assert _census(root, modules) == ([], [], 0, 0)
+    assert _declared_reads(root, modules)["quality_reader"] == (1, 0)
+    assert _module_reach(str(root / modules[0])) == frozenset()
 
 
 def test_an_empty_world_is_green_and_says_how_empty(tmp_path: pathlib.Path, capsys: Any) -> None:
@@ -538,3 +575,138 @@ def test_a_drawer_reach_kind_that_edits_or_declares_nothing_is_refused(declared:
 def test_the_template_kinds_carry_the_door_registry() -> None:
     """The kind the derivation was missing is declared in the sentinel block."""
     assert DJB_REACH_TOKENS["door_registry"]
+
+
+# --- a collection refusal: one sentence, once, as a worker, the controller and serially ---
+
+_WHOLE_TREE_OPTIONS: dict[str, Any] = {
+    "--djb-tier": "all",
+    "--djb-tier-manifest": "",
+    "--djb-scope-narrow": False,
+    "--djb-scope-counts": "",
+    "--djb-impact-select": "",
+    "--djb-changed": [],
+}
+_FAST_TIER_OPTIONS: dict[str, Any] = {
+    **_WHOLE_TREE_OPTIONS,
+    "--djb-tier": "fast",
+    "--djb-own-app": [],
+    "--djb-scope": [],
+    "--djb-tests-only": [],
+    "--djb-changed-test": [],
+}
+
+
+class _Collector:
+    """A collector's config as the selection hook reads it: options, its args, its hooks."""
+
+    def __init__(self, options: dict[str, Any], *, worker: bool) -> None:
+        self._options = options
+        self.args = [str(REPO_ROOT / "apps")]
+        self.invocation_params = types.SimpleNamespace(dir=REPO_ROOT)
+        self.rootpath = REPO_ROOT
+        self.deselected: list[Any] = []
+        self.hook = types.SimpleNamespace(pytest_deselected=self._deselect)
+        if worker:
+            self.workerinput = {"workerid": "gw0", "workercount": 2}
+            self.workeroutput: dict[str, Any] = {}
+
+    def _deselect(self, items: list[Any]) -> None:
+        self.deselected.extend(items)
+
+    def getoption(self, name: str, default: Any = None) -> Any:
+        return self._options.get(name, default)
+
+
+@pytest.fixture
+def refusal_file(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> pathlib.Path:
+    """The file the gate names for a refusal, and a controller with nothing held."""
+    target = tmp_path / "refused"
+    monkeypatch.setenv(harness.DJB_REFUSAL_FILE_ENV, str(target))
+    monkeypatch.setattr(harness_hooks, "_DJB_WORKER_REFUSALS", [])
+    return target
+
+
+def _floor_breach(kind: str, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Plant one floor's breach; the options of the collection that meets it."""
+    if kind == "reach":
+        monkeypatch.setattr(harness_tier, "_population_floors", dict)
+        return _WHOLE_TREE_OPTIONS
+    if kind == "population":
+        monkeypatch.setattr(harness_tier, "_reach_floors", dict)
+        return _WHOLE_TREE_OPTIONS
+    return _FAST_TIER_OPTIONS
+
+
+_FLOOR_WORDS = {
+    "reach": "LAYER 1 (reach kind)",
+    "population": "LAYER 2 (named population)",
+    "organ": "organ derivation is not answering",
+}
+
+
+@pytest.mark.parametrize("kind", sorted(_FLOOR_WORDS))
+def test_a_floor_refusal_reads_the_same_under_xdist_as_serially(
+    kind: str, refusal_file: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two workers' refusal is raised once by the controller, the serial run's sentence."""
+    options = _floor_breach(kind, monkeypatch)
+    planted: list[Any] = [
+        types.SimpleNamespace(
+            nodeid="apps/test_census_markers.py::test_x",
+            path=pathlib.Path(__file__),
+            get_closest_marker=lambda name: None,
+        )
+    ]
+    with pytest.raises(pytest.UsageError) as serial:
+        serial_collector: Any = _Collector(options, worker=False)
+        harness.pytest_collection_modifyitems(serial_collector, list(planted))
+    sentence = str(serial.value)
+    assert _FLOOR_WORDS[kind] in sentence
+    assert not [w for other, w in _FLOOR_WORDS.items() if other != kind and w in sentence]
+    assert refusal_file.read_text(encoding="utf-8") == sentence + "\n"
+    refusal_file.unlink()
+
+    for _worker_id in ("gw0", "gw1"):
+        worker: Any = _Collector(options, worker=True)
+        items: list[Any] = list(planted)
+        harness.pytest_collection_modifyitems(worker, items)
+        assert items == [] and worker.deselected == planted
+        assert worker.workeroutput[harness.DJB_WORKER_REFUSAL_KEY] == [sentence]
+        harness.pytest_testnodedown(types.SimpleNamespace(workeroutput=worker.workeroutput), None)
+    assert not refusal_file.exists()
+
+    controller: Any = types.SimpleNamespace(config=_Collector(options, worker=False))
+    with pytest.raises(pytest.UsageError) as raised:
+        harness.pytest_sessionfinish(controller, 5)
+    assert raised.value.args == (sentence,)
+    assert refusal_file.read_text(encoding="utf-8") == sentence + "\n"
+    harness.pytest_sessionfinish(controller, 5)
+
+
+def test_a_worker_with_nothing_to_refuse_hands_nothing_on(refusal_file: pathlib.Path) -> None:
+    """A node that went down without a refusal leaves the controller's session alone."""
+    harness.pytest_testnodedown(types.SimpleNamespace(workeroutput={"exitstatus": 0}), None)
+    session: Any = types.SimpleNamespace(config=_Collector({}, worker=False))
+    harness.pytest_sessionfinish(session, 0)
+    assert not refusal_file.exists()
+
+
+@pytest.mark.parametrize("reader", ["quality/djb/scope.py"])
+def test_every_scope_reader_spells_the_census_declaration_alike(reader: str) -> None:
+    """The scope's reader of the marker, its depth and its population clause equal the harness's."""
+    import ast
+
+    tree = ast.parse((REPO_ROOT / reader).read_text(encoding="utf-8"))
+    spelled = {
+        node.targets[0].id: ast.literal_eval(node.value)
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id.startswith("CENSUS_")
+    }
+    assert (spelled["CENSUS_MARKER"], spelled["CENSUS_LINES"], spelled["CENSUS_POPULATION"]) == (
+        harness_tier.DJB_CENSUS_MARKER,
+        harness_tier.DJB_CENSUS_MARKER_LINES,
+        harness_tier.DJB_CENSUS_POPULATION,
+    )

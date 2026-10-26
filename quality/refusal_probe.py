@@ -1,6 +1,6 @@
 """Rule 47's runner: what every bound operation DECLARES, against what the document SAYS.
 
-Started as a subprocess by `quality/checks.py::declared_refusals_documented` —
+Started as a subprocess by `quality/checks/rule_47.py::declared_refusals_documented` —
 never by the default suite. It is a subprocess for the reason
 `quality/hotpath_probe.py` is one and for the reason rule 44 reads ninja off the
 disk rather than importing it: the gate must not stand Django up in its own
@@ -17,8 +17,8 @@ refuses that way on the wire, and the published `x-refusal-codes` a generated
 client switches on has no branch for it. found the live instance.
 
 Output: one JSON object on stdout —
-    {"operations": N, "registry_codes": R, "documented_codes": D,
-     "narrowed_routes": W,
+    {"operations": N, "registry_codes": R, "registry": [code, ...],
+     "documented_codes": D, "narrowed_routes": W,
      "drops": [{"path": ..., "line": ..., "route": ..., "operation_id": ...,
                 "code": ..., "in_code_status": bool, "status": int|null,
                 "declared": bool}, ...]}
@@ -29,8 +29,10 @@ a finding AND an unbound floor — enforcement broken, never a pass.
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -63,6 +65,16 @@ def _where_it_is_written(view: Any) -> tuple[str, int]:
     return "config/api.py", 0
 
 
+#: A contract's refusal bullet: `* `<status> <code>`` — the code a caller is told to handle.
+_REFUSAL_BULLET = re.compile(r"^\s*[*-]\s+`\d{3}\s+([a-z][a-z0-9_]*)`", re.MULTILINE)
+
+
+def _bulleted_codes(view: Any) -> set[str]:
+    """The codes the route's docstring bullets name, above the contract divider."""
+    doc = inspect.getdoc(view) or ""
+    return set(_REFUSAL_BULLET.findall(doc.split("\n---\n", 1)[0]))
+
+
 def main() -> int:
     sys.path.insert(0, str(ROOT))
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.test")
@@ -70,7 +82,12 @@ def main() -> int:
 
     django.setup()
 
+    # THE REGISTRY IS POPULATED AT IMPORT, so the probe imports BOTH doors: the
+    # MCP door (`apps.core.mcp`) registers the machine-door code
+    # (`invalid_arguments`) the REST mount never imports, and a registry read
+    # from one door is one code short of the one rule 41 reads off the tree.
     from apps.accounts.auth import Unauthenticated
+    from apps.core import mcp as _machine_door  # noqa: F401
     from apps.core.api import docs
     from config import api as mount
 
@@ -78,6 +95,7 @@ def main() -> int:
     narrowed = 0
     documented_codes: set[str] = set()
     drops: list[dict[str, Any]] = []
+    unpublished: list[dict[str, Any]] = []
 
     for bound in mount.api._get_bound_routers():
         for path, path_view in bound.path_operations.items():
@@ -113,6 +131,17 @@ def main() -> int:
                     if isinstance(response, dict):
                         published |= set(response.get("x-refusal-codes") or ())
                 documented_codes |= published
+                rel, line = _where_it_is_written(view)
+                for code in sorted(_bulleted_codes(view) - published):
+                    unpublished.append(
+                        {
+                            "path": rel,
+                            "line": line,
+                            "route": getattr(view, "__name__", "?"),
+                            "operation_id": f"{sorted(operation.methods)[0]} {full}",
+                            "code": code,
+                        }
+                    )
 
                 for code in sorted(owed - published):
                     status = mount.CODE_STATUS.get(code)
@@ -134,9 +163,11 @@ def main() -> int:
         {
             "operations": operations,
             "registry_codes": len(docs.REFUSALS),
+            "registry": sorted(docs.REFUSALS),
             "documented_codes": len(documented_codes),
             "narrowed_routes": narrowed,
             "drops": drops,
+            "unpublished_bullets": unpublished,
         },
         sys.stdout,
     )

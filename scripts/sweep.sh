@@ -1,36 +1,5 @@
 #!/usr/bin/env bash
-# THIS FILE IS EXECUTED, AND IT IS BASH — not POSIX sh, and not zsh. The
-# shebang above is honoured by `./this`; `sh this` and `zsh this` IGNORE it,
-# and neither of them fails where the mistake was made. Measured on this tree:
-#
-#   zsh scripts/queue_cited.sh   exit 2 blaming the TREE ("this is not a
-#                                checkout root") for zsh's word-splitting
-#   zsh scripts/kill_mine.sh     an ordinary-looking census of nothing
-#   sh  scripts/sweep.sh         "lifecycle.sh: line 152: syntax error"
-#
-# A wrong shell here does not crash. It ANSWERS, and the answer looks like the
-# tree's fault.
-#
-# TWO TESTS, because on macOS `/bin/sh` IS bash: BASH_VERSION is set under
-# `sh x.sh` and only POSIX MODE tells the two apart (SHELLOPTS carries
-# `posix`). On Linux `/bin/sh` is dash and the first test is the one that
-# fires. Neither test alone covers both machines.
-#
-# A SOURCED library must never carry this. There the interpreter is the
-# caller's ON PURPOSE and an `exit` would kill the caller's shell — the
-# argument is scripts/db.sh's, at scripts/db.sh:50-57, and it is why db.sh is
-# the one executable in this tree deliberately without a belt.
-[ -n "${BASH_VERSION:-}" ] || {
-    echo "${0##*/}: must run under bash — not sh, not zsh. Try \`bash ${0}\`." >&2
-    exit 2
-}
-case ":${SHELLOPTS:-}:" in
-*:posix:*)
-    echo "${0##*/}: bash is in POSIX mode — which is what \`sh ${0}\` does on a" >&2
-    echo "  machine whose /bin/sh is bash. Try \`bash ${0}\`." >&2
-    exit 2
-    ;;
-esac
+. "$(dirname -- "${BASH_SOURCE:-$0}")/bash_only.sh" || exit 2
 # THE ONE CENSUS, AND THE ONE BROOM, for everything a checkout leaves behind.
 #
 #   ./scripts/sweep.sh                              census: every declared class
@@ -182,7 +151,7 @@ esac
 #      a test that the root is the RIGHT one. So an EMPTY directory is legal
 #      evidence — it says "I looked there and found no checkout", which is true,
 #      and which promotes nothing — and this repository's own drive
-#      (`scripts/tests/test_sweep.sh`) uses that shape deliberately, so the
+#      (`quality/tests/test_reap.py`) uses that shape deliberately, so the
 #      population it acts on stays FOREIGN. At the other end, `--roots /`
 #      vouches for the whole machine at the bounded scan depth and this frame
 #      believes it. What the refusal closes is the operator who never thought
@@ -261,12 +230,10 @@ ONE_CLASS=""
 ASSERT_NONE=0
 USAGE="sweep.sh takes --sweep, --force-foreign (only with --roots <dir>), --hot-path, --perf, --roots <dir>, --only <prefix>, --class <name>, --assert-none, --list-classes, --registry"
 
-cannot_look() {
-    echo "!! sweep: $*" >&2
-    echo "   Nothing has been judged. A census that could not look has not cleared" >&2
-    echo "   anything (exit 2 outranks a pass)." >&2
-    exit 2
-}
+# Every exit 2 below is the seam's `gate_die`, with this trailer.
+. "$(dirname -- "${BASH_SOURCE[0]}")/gate_refuse.sh" || exit 2
+NOTHING_JUDGED="Nothing has been judged. A census that could not look has not cleared
+anything (exit 2 outranks a pass)."
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -325,12 +292,12 @@ while [ "$#" -gt 0 ]; do
         # nothing, printed by the command a reader uses to ask what exists.
         # The full census below reaches this same check; these two early exits
         # did not, and they are the two commands most likely to be run first.
-        lc_registry_check || cannot_look "the lifecycle registry is malformed — see above"
+        lc_registry_check || gate_die "$NOTHING_JUDGED" "sweep: the lifecycle registry is malformed — see above"
         lc_classes
         exit 0
         ;;
     --registry)
-        lc_registry_check || cannot_look "the lifecycle registry is malformed — see above"
+        lc_registry_check || gate_die "$NOTHING_JUDGED" "sweep: the lifecycle registry is malformed — see above"
         printf '%-24s %-14s %s\n' "class" "kind" "identity · enumerate · liveness · destroy · warm · disposable"
         for name in $(lc_classes); do
             printf '%-24s %-14s %s\n' "$name" "$(lc_field "$name" 2)" "$(lc_field "$name" 3)"
@@ -412,7 +379,7 @@ if [ "$ASSERT_NONE" -eq 1 ] && [ "$SWEEP" -eq 1 ]; then
     exit 2
 fi
 
-lc_registry_check || cannot_look "the lifecycle registry is malformed — see above"
+lc_registry_check || gate_die "$NOTHING_JUDGED" "sweep: the lifecycle registry is malformed — see above"
 
 if [ -n "$ONE_CLASS" ]; then
     if ! lc_field "$ONE_CLASS" 1 >/dev/null; then
@@ -428,11 +395,11 @@ fi
 # `2>/dev/null`. A census that cannot parse is could-not-look, and it must
 # never be able to read as a machine with nothing on it.
 [ -n "${LC_PYTHON:-}" ] ||
-    cannot_look "this checkout has no .venv/bin/python, and the Temporal scans parse the
+    gate_die "$NOTHING_JUDGED" "sweep: this checkout has no .venv/bin/python, and the Temporal scans parse the
    CLI's JSON with scripts/lifecycle_temporal.py, which is written at the
    version that venv holds. Run ./scripts/setup.sh (or \`uv sync\`) first"
 command -v docker >/dev/null 2>&1 ||
-    cannot_look "no docker on PATH; both servers are asked inside the compose stack"
+    gate_die "$NOTHING_JUDGED" "sweep: no docker on PATH; both servers are asked inside the compose stack"
 
 # THIS CHECKOUT'S OWN IDENTITY — the one thing `--sweep` alone vouches for.
 #
@@ -453,13 +420,13 @@ command -v docker >/dev/null 2>&1 ||
 # derivation-shaped, so every instance of it reads REFUSED and is protected by
 # the refusal (`case_a_refused_shape_survives_force_foreign` drives that).
 OUR_BASE="$(db_name)"
-db_valid_name "$OUR_BASE" || cannot_look "this checkout's derived identity (${OUR_BASE}) is not a name"
+db_valid_name "$OUR_BASE" || gate_die "$NOTHING_JUDGED" "sweep: this checkout's derived identity (${OUR_BASE}) is not a name"
 
 lc_load_live_bases
 if [ "${#LC_LIVE_BASES[@]}" -eq 0 ]; then
     # Nothing to derive liveness FROM is not "nothing is alive". It is the frame
     # unable to look, and that is exit 2, before anything is destroyed.
-    cannot_look "git worktree list named no checkout, so no instance can be shown to have one.
+    gate_die "$NOTHING_JUDGED" "sweep: git worktree list named no checkout, so no instance can be shown to have one.
    Liveness is derived by hashing checkout paths this run can see; with none to
    hash, every identity would read FOREIGN and --force-foreign would take the
    machine. That is the one answer it must never give by accident."
@@ -916,7 +883,7 @@ if [ "$DB_WANTED" -eq 1 ]; then
     : >"${WORK}/databases"
     if ! lc_scan_databases >"${WORK}/databases" 2>"${WORK}/databases.err"; then
         sed 's/^/   | /' "${WORK}/databases.err" >&2
-        cannot_look "pg_catalog could not be read; the database classes were not censused"
+        gate_die "$NOTHING_JUDGED" "sweep: pg_catalog could not be read; the database classes were not censused"
     fi
 
     # THE UNRECOGNIZED PASS RUNS ONCE, OVER THE WHOLE KIND, and before any class
@@ -1006,7 +973,7 @@ if wanted_class schedule || wanted_class task-queue; then
     : >"${WORK}/schedules"
     if ! lc_scan_schedules >"${WORK}/schedules" 2>"${WORK}/schedules.err"; then
         sed 's/^/   | /' "${WORK}/schedules.err" >&2
-        cannot_look "temporal schedule list could not be read; the schedule class was not censused"
+        gate_die "$NOTHING_JUDGED" "sweep: temporal schedule list could not be read through ${DJB_TEMPORAL_CLI:-docker compose exec -T temporal temporal} (its words above); the schedule class was not censused"
     fi
 fi
 # What a schedule is DOING, as one phrase: when it last fired, what became of
@@ -1075,10 +1042,19 @@ fi
 
 if wanted_class open-execution || wanted_class task-queue; then
     : >"${WORK}/executions"
-    if ! lc_scan_open_executions >"${WORK}/executions" 2>"${WORK}/executions.err"; then
+    lc_scan_open_executions "$ONLY" >"${WORK}/executions" 2>"${WORK}/executions.err"
+    scan_rc=$?
+    if [ "$scan_rc" -ne 0 ]; then
         sed 's/^/   | /' "${WORK}/executions.err" >&2
-        cannot_look "temporal workflow list could not be read; the open-execution class was not censused"
+        scan_words="$(grep -v '^temporal workflow list: ' "${WORK}/executions.err" | grep -v '^[[:space:]]*$' | tail -n 1)"
+        case "$(grep -c '^temporal workflow list: exit ' "${WORK}/executions.err")" in
+        0) scan_tries="before any read was made" ;;
+        1) scan_tries="once" ;;
+        *) scan_tries="twice" ;;
+        esac
+        gate_die "$NOTHING_JUDGED" "sweep: temporal workflow list could not be read (exit ${scan_rc}: ${scan_words:-nothing was printed}) through ${DJB_TEMPORAL_CLI:-docker compose exec -T temporal temporal}, ${scan_tries}; the open-execution class was not censused"
     fi
+    [ -s "${WORK}/executions.err" ] && sed 's/^/  note: /' "${WORK}/executions.err"
     while IFS="$(printf '\t')" read -r queue wid age wtype; do
         # `-` is the enumerator's sentinel for an execution with no task queue;
         # it is not a queue and must not join the task-queue population.

@@ -32,28 +32,22 @@ from __future__ import annotations
 import io
 import json
 from collections.abc import Callable
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from django.core.management import call_command
 from mcp.server import MCPServer
-from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 
 from apps.core.actor import actor_for
 from apps.core.audit import AuditEntry
-from apps.core.mcp import SCOPE_KEY, Principal
-from apps.core.services import root_organization
+from apps.core.tests.mcp_context import context_for
 from apps.files.mcp import register
 from apps.files.models import FileVersion, StoredFile
 from apps.files.services import create_file, record_stored
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from apps.accounts.models import User
-    from apps.core.models import Organization, Tenant
-
-    from .conftest import World
+    from apps.core.tests.permissions_world import World
 
 pytestmark = pytest.mark.django_db
 
@@ -72,30 +66,6 @@ TOOL_FOR_ROUTE: dict[str, str] = {
     "version-add": "add_version",
     "upload-confirm": "confirm_upload",
 }
-
-
-@dataclass
-class _FakeRequest:
-    scope: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class _FakeRequestContext:
-    request: _FakeRequest
-
-
-def context_for(user: User, tenant: Tenant | None, org: Organization | None = None) -> Context[Any]:
-    """The context a tool sees, with the principal the middleware would have left.
-
-    The hat defaults to the tenant's root, which is what `config.mcp` resolves for a
-    token whose user holds the ordinary flat membership. A test that means to prove
-    a narrower hat names it.
-    """
-    resolved = org if org is not None else (root_organization(tenant=tenant) if tenant else None)
-    scope = {SCOPE_KEY: Principal(user=user, tenant=tenant, org=resolved)}
-    return Context(
-        request_context=cast(Any, _FakeRequestContext(request=_FakeRequest(scope=scope)))
-    )
 
 
 def files_server() -> MCPServer[Any]:
@@ -178,7 +148,7 @@ def a_measured_document(
     world: World, named_bucket: str, recorded_workflow_starts: None
 ) -> tuple[StoredFile, FileVersion]:
     """A document whose first version has been measured — the only kind with a link."""
-    acting = actor_for(user=world.owner, tenant=world.tenant, org=world.root)
+    acting = actor_for(user=world.user(world.owner), tenant=world.tenant, org=world.root)
     ticket = create_file(
         tenant=world.tenant,
         actor=acting,
@@ -211,7 +181,7 @@ def test_issuing_over_the_machine_door_audits_the_version_it_signed_for(
     document, version = a_measured_document
 
     answered = tool("issue_download_url")(
-        context_for(world.owner, world.tenant), file_id=document.pk
+        context_for(world.user(world.owner), world.tenant, world.root), file_id=document.pk
     )
 
     assert answered.version == 1
@@ -234,7 +204,7 @@ def test_the_machine_door_refuses_another_tenants_document_as_not_found(
 
     with pytest.raises(ToolError) as refused:
         tool("issue_download_url")(
-            context_for(neighbour.user, neighbour.tenant), file_id=document.pk
+            context_for(neighbour.user, neighbour.tenant, neighbour.org), file_id=document.pk
         )
 
     assert "not_found" in str(refused.value)
@@ -257,12 +227,12 @@ def test_the_machine_door_files_a_document_at_the_acting_hat(
     whether the placement law held or not.
     """
     answered = tool("create_file")(
-        context_for(world.region_admin, world.tenant, world.region),
+        context_for(world.user(world.admin_at_a), world.tenant, world.a),
         filename="region.pdf",
         content_type="application/pdf",
         size_bytes=10,
     )
 
-    assert answered.file.organization_id == world.region.pk
-    assert answered.version.organization_id == world.region.pk
+    assert answered.file.organization_id == world.a.pk
+    assert answered.version.organization_id == world.a.pk
     assert answered.expires_in == 900

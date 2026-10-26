@@ -1,0 +1,44 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "imports", "text": ""}
+from pilecap import ListPage
+
+
+
+from ninja import Schema
+
+
+
+from apps.example.models import WidgetEntry
+
+# golden-anchor: {"nth": 0, "scope": [], "side": "after", "text": "\"\"\"One widget, as its detail door answers it: the row and the words on it.\"\"\""}
+class WidgetEntryIn(StrictIn):
+    """One line to append to a widget's ledger."""
+
+    widget_id: UUID = Field(json_schema_extra=example("019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d45"))
+    kind: str = Field(default="note", json_schema_extra=example(WidgetEntry.Kind.NOTE.value))
+    note: str = Field(default="", json_schema_extra=example("Checked and signed off."))
+    organization_slug: str | None = Field(
+        default=None, json_schema_extra=example("northern-branch")
+    )
+
+
+class WidgetEntryOut(Schema):
+    """One ledger line, as every door renders it."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID = Field(json_schema_extra=example("019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d50"))
+    widget_id: UUID = Field(json_schema_extra=example("019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d45"))
+    kind: str = Field(json_schema_extra=example(WidgetEntry.Kind.NOTE.value))
+    note: str = Field(json_schema_extra=example("Checked and signed off."))
+    tenant_id: UUID = Field(json_schema_extra=example("019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d47"))
+    organization_id: UUID = Field(json_schema_extra=example("019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d41"))
+    organization_slug: str = Field(json_schema_extra=example("northern-branch"))
+    created_at: datetime = Field(json_schema_extra=example("2026-09-26T08:24:00Z"))
+
+
+class WidgetEntryPage(ListPage):
+    """A page of ledger lines — the list envelope, for the door with no query string."""
+
+    items: list[WidgetEntryOut]
+
+

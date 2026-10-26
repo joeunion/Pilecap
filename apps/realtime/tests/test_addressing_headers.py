@@ -59,7 +59,7 @@ async def test_a_bearer_handshake_refuses_an_unhonourable_header(
     """The machine socket: foreign, nonexistent and empty all close the same way.
 
     The empty cell is the one this door was quietly wrong
-    about longest: `_requested_slug` fell through to the query parameter on an
+    about longest: the handshake reader fell through to the query parameter on an
     EMPTY header, so a handshake whose `X-Org` came from a template that did not
     interpolate was answered as though it had named nothing.
     """

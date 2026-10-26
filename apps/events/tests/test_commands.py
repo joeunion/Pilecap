@@ -16,7 +16,7 @@ from django.core.management.base import CommandError
 from apps.core.actor import system_actor
 from apps.core.models import Tenant
 from apps.events import services
-from apps.events.models import Outbox
+from apps.events.models import Outbox, WebhookEndpoint
 from apps.events.tests.bodies import in_the_root
 from apps.example.events import WIDGET_CREATED
 from apps.workflows.models import WorkflowRun
@@ -120,3 +120,39 @@ def test_replaying_everything_is_not_a_default() -> None:
 def test_a_bad_date_is_refused_before_anything_is_touched(tenant: Tenant) -> None:
     with pytest.raises(CommandError):
         call_command("replay_events", "--since", "last tuesday", stdout=StringIO())
+
+
+# --- `webhook_endpoints --refused`, the operator's list at upgrade -------------
+
+
+def test_the_refused_list_names_tenant_id_and_class_and_nothing_else(tenant: Tenant) -> None:
+    kept = WebhookEndpoint.objects.create(
+        tenant=tenant,
+        url="https://subscriber.example/hook",
+        secret="s",  # noqa: S106 — a signing secret the test both signs and verifies with
+    )
+    planted = WebhookEndpoint.objects.create(
+        tenant=tenant,
+        url="https://169.254.169.254/latest/?token=abc",
+        secret="s",  # noqa: S106 — a signing secret the test both signs and verifies with
+    )
+
+    out = StringIO()
+    call_command("webhook_endpoints", "--refused", stdout=out)
+
+    lines = out.getvalue().splitlines()
+    assert lines == [f"{tenant.slug}  {planted.pk}  link_local", "1 refused"]
+    assert str(kept.pk) not in out.getvalue()
+    assert "token" not in out.getvalue()
+
+
+def test_the_refused_list_says_so_when_it_saw_none(tenant: Tenant) -> None:
+    WebhookEndpoint.objects.create(tenant=tenant, url="https://subscriber.example/hook", secret="s")  # noqa: S106 — a signing secret the test both signs and verifies with
+    out = StringIO()
+    call_command("webhook_endpoints", "--refused", stdout=out)
+    assert out.getvalue().splitlines() == ["0 refused"]
+
+
+def test_without_a_question_the_command_refuses_to_guess() -> None:
+    with pytest.raises(CommandError):
+        call_command("webhook_endpoints", stdout=StringIO())

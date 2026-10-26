@@ -1,7 +1,7 @@
 """The names of the things this app says happened. `<app>.<noun>.<past verb>`.
 
 Published by `services.py` inside the write's transaction; the payload is
-`ImportOut`, the shape the REST door answers with.
+`DjbImportOut`, the shape the REST door answers with.
 """
 
 from __future__ import annotations

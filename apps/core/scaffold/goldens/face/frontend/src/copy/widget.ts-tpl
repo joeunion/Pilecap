@@ -1,0 +1,335 @@
+// golden: face begin
+import type { LexiconWord } from "@/copy/lexicon";
+
+export const WIDGET_COPY = {
+    /** The noun's plural: the list's title and the record's crumb. */
+    title: "Widgets",
+
+    /** The fact labels a row and the details card use. */
+    addedLabel: "Added",
+    changedLabel: "Last changed",
+
+    /**
+     * The noun's own facts a row shows, keyed by field, in the model's order —
+     * the screen shape's columns (its choices, and the dates and words its edit
+     * sheet edits; the first three). `reads` is how a value reads: a day, or
+     * the word as the wire says it.
+     */
+    columns: {
+        due_at: { label: "Due at", reads: "day" },
+        status: { label: "Status", reads: "word" },
+    },
+
+    /**
+     * The standing state's words. *Onboarded* is the resting state (most rows,
+     * what a reader assumes) and wears no pill; it labels the details card's
+     * fact. *Onboarding* is the departure, and the pill's one word.
+     */
+    onboardedLabel: "Onboarded",
+    onboardingLabel: "Onboarding",
+
+    /** The one act that closes a list whose page has more (§8), and its busy form on the same button. */
+    showMoreAct: "Show more",
+    showingMoreAct: "Showing more…",
+
+    /** The control row's one cut chip (§7, §20): the verb family's state word, unchanged by the press. */
+    archivedChipLabel: "Archived",
+
+    /** The record's two cards: the work (what the thing is) in main, the standing facts in the rail. */
+    aboutTitle: "About",
+    detailsTitle: "Details",
+
+    /** Sentences. */
+    loadingList: "Reading the widgets…",
+    loadingOne: "Reading the widget…",
+    empty: "No widgets yet.",
+    /**
+     * The record's empty: not a claim about the record (that is `not_found`).
+     * It draws no door: the crumb is its one door to the list (§14).
+     */
+    gone: "Nothing to show here.",
+    /** The archived cut's empty (§14, §20): no door, the pressed chip is the way back. */
+    nothingArchived: "Nothing archived.",
+    /** The About card when the widget has no description: the reader's word for the field. */
+    descriptionEmpty: "No description yet.",
+    // golden: face end
+    // golden: version begin
+    /** The one act a save that lost a race offers: re-read the record (patterns.md §1). */
+    reloadAct: "Reload",
+    // golden: version end
+    // golden: move begin
+    // golden: bulk begin
+    /** The move sheet's empty: no node this hat may move the row to (§14). */
+    moveNowhere: "No other place to move this.",
+    /** The move sheet's still shapes, while the destinations are read (§13). */
+    loadingDestinations: "Reading where this can go…",
+    // golden: bulk end
+    // golden: move end
+    // golden: bulk begin
+    /** The selection bar's clear, the × at its trail: its accessible name (§7). */
+    clearSelectionLabel: "Clear the selection",
+    /** The bulk band's ways back (§17): archive's and move's, over the rows that were done. */
+    restoreThemAct: "Restore them",
+    moveThemBackAct: "Move them back",
+    // golden: bulk end
+    // golden: history begin
+    /** The History card (§10): its title, its earlier page, its empty and its still line. */
+    historyTitle: "History",
+    showEarlierAct: "Show earlier",
+    historyEmpty: "No history yet.",
+    loadingHistory: "Reading the history…",
+    // golden: history end
+    // golden: attach begin
+    /** The attach cards (§10): their titles, their empties, their still lines, and the inline field's one press. */
+    notesTitle: "Notes",
+    filesTitle: "Files",
+    notesEmpty: "No notes yet.",
+    filesEmpty: "No files yet.",
+    loadingNotes: "Reading the notes…",
+    loadingFiles: "Reading the files…",
+    addAct: "Add",
+    // golden: attach end
+    // golden: import begin
+    /** The import page's still lines (§13) and the refused rows' heading word. */
+    loadingImport: "Reading the import…",
+    // golden: import end
+    // golden: merge begin
+    /** The merge chooser's empty (§14), and the confirm's still line while the dry run answers (§13). */
+    mergeNoneMatch: "No other widgets match.",
+    loadingMerge: "Reading what moves with it…",
+    // golden: merge end
+    // golden: face begin
+} as const;
+
+/**
+ * THE ONE WIRE-TO-WORD MAP for the Widget's standing state (patterns.md §16).
+ * The pill is the departure: `onboarded_at` set is the resting state and has NO
+ * word (`null`, no pill); unset is *Onboarding*. The wire's key and value never
+ * reach the pill; this function is the only reader of the field that turns it
+ * into a word.
+ */
+export function widgetStateWord(onboardedAt: string | null | undefined): LexiconWord | null {
+    return onboardedAt === null || onboardedAt === undefined ? WIDGET_COPY.onboardingLabel : null;
+}
+// golden: face end
+// golden: archive begin
+/**
+ * THE BAND'S SENTENCE for an archived record (patterns.md §20 Words): *Archived
+ * ⟨day⟩ by ⟨name⟩.* when the wire names the archiver, *Archived ⟨day⟩.* when
+ * `archived_by` or its `name` is null. A person is a name or no clause: never
+ * an address, an id, or a word for an absence. Composed from the wire's two
+ * fields; a sentence, not a lexicon row (rule 72 reads labels).
+ */
+export function archivedSentence(day: string, name: string | null | undefined): string {
+    return name === null || name === undefined || name.trim() === "" ? `Archived ${day}.` : `Archived ${day} by ${name}.`;
+}
+// golden: archive end
+// golden: version begin
+// golden: history begin
+/**
+ * THE FIELDS' WORDS — the edit sheet's labels and the History card's *Changed
+ * ⟨fields⟩* — are the generated schema's property TITLES for the noun's Patch,
+ * verbatim, less `version` (the platform's concurrency token, never a field a
+ * reader edits). Held here, not read from the document at run time (the
+ * document is megabytes, and a face ships none of it), and pinned: a test
+ * compares this map to the document's titles, so a field renamed on the wire
+ * is a red here, never a word that drifted.
+ */
+export const WIDGET_FIELD_WORDS: Readonly<Record<string, string>> = {
+    name: "Name",
+    notes: "Notes",
+    policy_id: "Policy Id",
+    due_at: "Due At",
+    clear_due_at: "Clear Due At",
+};
+// golden: history end
+// golden: version end
+// golden: move begin
+/** The move sheet's title: the act, and the row it moves (§1 Words). */
+export function moveSheetTitle(name: string): string {
+    return `Move ${name}`;
+}
+
+/** The band a moved-away record wears (patterns.md §17): the node, by name. */
+export function movedSentence(node: string): string {
+    return `Moved to ${node}.`;
+}
+// golden: move end
+// golden: duplicate begin
+/**
+ * THE COPY'S BAND (patterns.md §17): *Duplicated from ⟨source⟩.*, the source's
+ * name a live link to it — so the sentence is its two ends around the name.
+ */
+export function duplicatedBand(): { readonly lead: string; readonly tail: string } {
+    return { lead: "Duplicated from", tail: "." };
+}
+// golden: duplicate end
+// golden: attach begin
+/** A tag's ×: its accessible name, *Remove tag ⟨name⟩* — the tag row's way back, not a leaving. */
+export function removeTagLabel(name: string): string {
+    return `Remove tag ${name}`;
+}
+// golden: attach end
+// golden: import begin
+/**
+ * THE IMPORT PAGE'S WORDS (patterns.md §5, §17): its title, the columns the
+ * file carries (the importer row's field titles — the document does not
+ * publish that schema, so they are held here), the counts line, the apply's
+ * count, and the sentences of each state.
+ */
+export const WIDGET_IMPORT_COLUMNS: Readonly<Record<string, string>> = {
+    external_ref: "External Ref",
+    name: "Name",
+    notes: "Notes",
+};
+
+export function importPageTitle(): string {
+    return "Import widgets";
+}
+
+export function importColumnsSentence(): string {
+    const columns = Object.values(WIDGET_IMPORT_COLUMNS).join(", ");
+    return `The file is a CSV whose first row names the columns: ${columns}.`;
+}
+
+export function checkingSentence(file: string): string {
+    return `Checking ${file}…`;
+}
+
+export function importCountsLine(counts: { readonly create: number; readonly update: number; readonly unchanged: number; readonly refused: number }): string {
+    return `${counts.create} new · ${counts.update} changed · ${counts.unchanged} unchanged · ${counts.refused} refused`;
+}
+
+export function importApplyLabel(count: number): string {
+    return count === 1 ? "Import 1 widget" : `Import ${count} widgets`;
+}
+
+export function refusedRowSentence(row: number, detail: string): string {
+    return `Row ${row}: ${detail}`;
+}
+
+export function importedSentence(count: number, day: string): string {
+    return `Imported ${count === 1 ? "1 widget" : `${count} widgets`} on ${day}.`;
+}
+
+export function importRepeatedSentence(day: string): string {
+    return `This file was imported on ${day}.`;
+}
+
+export function nothingToImportSentence(file: string): string {
+    return `Nothing to import in ${file}.`;
+}
+
+/** The list's band while a run is in flight (§17): the file and the rows it will write. */
+export function importingSentence(file: string, rows: number): string {
+    return `Importing ${file}: ${rows === 1 ? "1 row" : `${rows} rows`}.`;
+}
+// golden: import end
+// golden: merge begin
+/** The merge chooser's title: the act, the row it folds, and where to (§1 Words). */
+export function mergeSheetTitle(name: string): string {
+    return `Merge ${name} into…`;
+}
+
+// golden: merge end
+// golden: bulk+merge begin
+/** The selection bar's merge chooser: the two checked rows, the survivor to pick. */
+export function mergePairTitle(a: string, b: string): string {
+    return `Merge ${a} and ${b} into…`;
+}
+// golden: bulk+merge end
+// golden: merge begin
+
+/** The confirm's head: the question, both rows by name. */
+export function mergeQuestion(loser: string, survivor: string): string {
+    return `Merge ${loser} into ${survivor}?`;
+}
+
+/**
+ * THE CONFIRM'S BODY: what the dry run says moves to the survivor — each
+ * owner's own word and count (*3 notes and 1 tag move to ⟨survivor⟩.*), or
+ * that nothing else moves. The owners' titles are the wire's plural; a count
+ * of one takes the word as the wire gives it.
+ */
+export function mergeMovesSentence(repoints: readonly { readonly title: string; readonly left: number }[], survivor: string): string {
+    const parts = repoints.filter((repoint) => repoint.left > 0).map((repoint) => `${repoint.left} ${repoint.title.toLowerCase()}`);
+    if (parts.length === 0) return `Nothing else moves to ${survivor}.`;
+    const listedParts = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+    return `${listedParts} ${parts.length === 1 && repoints.find((repoint) => repoint.left > 0)?.left === 1 ? "moves" : "move"} to ${survivor}.`;
+}
+
+/**
+ * THE MERGED BAND (patterns.md §17): *Merged into ⟨survivor⟩ on ⟨day⟩.*, the
+ * survivor a live link — its two ends around the name; *Merged ⟨day⟩.* when
+ * the route has no survivor's name to give.
+ */
+export function mergedBand(day: string): { readonly lead: string; readonly tail: string; readonly alone: string } {
+    return { lead: "Merged into", tail: ` on ${day}.`, alone: `Merged ${day}.` };
+}
+// golden: merge end
+// golden: bulk begin
+/** The noun's own count words, for the bulk band and the selection bar. */
+function widgetsCounted(count: number): string {
+    return count === 1 ? "1 widget" : `${count} widgets`;
+}
+
+/** The selection bar's count (§7): *⟨n⟩ selected*. */
+export function selectedSentence(count: number): string {
+    return `${count} selected`;
+}
+
+/** A row's checkbox: its accessible name, *Select ⟨name⟩*. */
+export function selectRowLabel(name: string): string {
+    return `Select ${name}`;
+}
+
+/** The bulk move sheet's title: the act, and how many rows it moves. */
+export function moveManyTitle(count: number): string {
+    return `Move ${widgetsCounted(count)}`;
+}
+
+/**
+ * THE BULK BAND'S SENTENCE (patterns.md §17): the verb's state word
+ * and the count — *Archived 3 widgets.* when every row was done, *Archived 2 of
+ * 3 widgets.* when the server refused some. `unchanged` counts as done.
+ */
+export function bulkSentence(state: string, done: number, total: number): string {
+    return done === total ? `${state} ${widgetsCounted(total)}.` : `${state} ${done} of ${widgetsCounted(total)}.`;
+}
+// golden: bulk end
+// golden: history begin
+/**
+ * THE NOUN'S OWN HISTORY WORDS — the word a history row wears for a verb the
+ * wire's trail records on a widget (a service's first word, `create_widget` →
+ * `create`) that the verb table gives no state word. The family's verbs read
+ * their state word off the verb table (`@/screens/widget/widget-history`), so
+ * this map never spells *Archived*, *Moved*, *Duplicated* or *Merged* again.
+ * *Restore* is a family verb whose table row has no state word (no band
+ * follows a restore), so its history word is the noun's, here. Every key is a
+ * verb the wire's trail can say; a verb with no word here reads *Changed*.
+ */
+export const HISTORY_WORDS: Readonly<Record<string, string>> = {
+    create: "Added",
+    restore: "Restored",
+    mark: "Onboarded",
+};
+
+/** *a*, *a and b*, *a, b and c* — the reader's list. */
+function listed(words: readonly string[]): string {
+    if (words.length <= 1) return words.join("");
+    return `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}`;
+}
+
+/**
+ * AN EDIT'S WHAT (patterns.md §10): *Changed ⟨fields⟩*, the fields in the
+ * reader's words (never a key). A field the map has no word for is left out,
+ * and an edit naming none reads *Changed*.
+ */
+export function changedWhat(changed: readonly string[]): string {
+    const fields = changed.flatMap((key) => {
+        const title = WIDGET_FIELD_WORDS[key];
+        return title === undefined ? [] : [title.toLowerCase()];
+    });
+    return fields.length === 0 ? "Changed" : `Changed ${listed(fields)}`;
+}
+// golden: history end

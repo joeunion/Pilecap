@@ -1,16 +1,5 @@
 #!/usr/bin/env bash
-# THIS FILE IS EXECUTED, AND IT IS BASH — not POSIX sh, and not zsh.
-[ -n "${BASH_VERSION:-}" ] || {
-    echo "${0##*/}: must run under bash — not sh, not zsh. Try \`bash ${0}\`." >&2
-    exit 2
-}
-case ":${SHELLOPTS:-}:" in
-*:posix:*)
-    echo "${0##*/}: bash is in POSIX mode — which is what \`sh ${0}\` does on a" >&2
-    echo "  machine whose /bin/sh is bash. Try \`bash ${0}\`." >&2
-    exit 2
-    ;;
-esac
+. "$(dirname -- "${BASH_SOURCE:-$0}")/../../scripts/bash_only.sh" || exit 2
 # THE VERIFIER IMAGE RECIPE — everything that must already be on a box before a
 # verification is worth starting on it, done once, so that every launch after it
 # is a boot and a push rather than twenty minutes of provisioning.
@@ -86,11 +75,10 @@ set -euo pipefail
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 set +x # never; a recipe that traces itself traces whatever it was handed
 
-die() {
-    echo "!! bake: $*" >&2
-    exit 2
-}
-say() { echo "bake: $*"; }
+# `die` and `say` are deploy/lib.sh's.
+DEPLOY_NAME=bake
+# shellcheck source=deploy/lib.sh
+. "$HERE/../lib.sh" || exit 2
 
 #: The marker the bake box's own user-data writes. Its absence is the refusal
 #: that keeps this recipe off a laptop and off a live verifier box.
@@ -170,8 +158,10 @@ BAKE_COMPOSE_PLUGIN="${VERIFIER_ROOT:-}/usr/local/lib/docker/cli-plugins/docker-
 #: that drive needs a real pnpm: on an image without one it answers "no pnpm on
 #: PATH · Nothing was asserted", which is COULD NOT LOOK, and 2 outranks every
 #: green beside it — so a box with no frontend toolchain reaches NO verdict, on
-#: any tree. Step 10's `./scripts/setup.sh` runs `pnpm install --frozen-lockfile`
-#: as well. Measured on a box, 2026-09-18.
+#: any tree. The frozen install itself is the fe leg's own function
+#: (`scripts/fe_gate.sh::fe_leg_frozen_lockfile`), run by whatever installs a
+#: checkout's frontend; this step only puts the runtime and the pinned pnpm on
+#: the image. Measured on a box, 2026-09-18.
 #:
 #: PINNED AND CHECKSUMMED, exactly as the compose plugin above and for the same
 #: two reasons: a download that resolves "latest" is a different runtime on every
@@ -204,7 +194,7 @@ plan() {
     cat <<PLAN
 bake: the verifier image recipe, in order. --plan runs NONE of it.
 
-   1. packages        dnf install docker, git, tar, chrony — and then compose
+   1. packages        dnf install docker, git, tar, chrony, zsh — and then compose
                       v2 ${BAKE_COMPOSE_VERSION} as a PINNED BINARY, downloaded, its
                       sha256 verified, and only then installed into
                       ${BAKE_COMPOSE_PLUGIN}
@@ -245,13 +235,16 @@ bake: the verifier image recipe, in order. --plan runs NONE of it.
                       activated through corepack for ${BAKE_USER}. Not
                       furniture: the gate's fe drive answers 'no pnpm on PATH ·
                       Nothing was asserted' without it, which is COULD NOT LOOK
-                      on every box loop and every bank's selftest shard, and
-                      step 10 runs pnpm install --frozen-lockfile
+                      on every box loop and every bank's selftest shard; the
+                      frozen install is the fe leg's own (scripts/fe_gate.sh)
    9. dependencies    uv sync --frozen  (the warm cache is most of what the
                       image is for)
-  10. stack           ./scripts/setup.sh  (the compose stack up, the template
-                      database — named from the branch step 7 parked on — and
-                      the identity seed)
+  10. stack           ./scripts/setup.sh  (the compose stack up, this
+                      checkout's database — named from the branch step 7
+                      parked on — and the identity seed), then
+                      db_template_refresh (scripts/db.sh): the migration
+                      template for this tree's digest, published into the
+                      image so a cold box clones it instead of migrating
   11. images          docker compose pull  (db redis temporal zitadel mailpit
                       minio meilisearch — pre-pulled so a launch is a boot)
   12. environment     DJB_GATE_SLOTS=${BAKE_GATE_SLOTS} into /etc/environment, read by PAM
@@ -306,8 +299,8 @@ esac
 step() { echo ""; echo "== bake step $*"; }
 
 # >>> the frontend toolchain >>>
-# EXTRACTED AND READ BY `scripts/tests/test_verifier_image.sh` — the two sentinel
-# lines around this block are how that drive reaches the SHIPPED bytes rather
+# EXTRACTED AND READ BY `quality/tests/test_verifier_image.py` — the two sentinel
+# lines around this block are how that module reaches the SHIPPED bytes rather
 # than a copy of them. Keep them.
 #
 # IT IS READ AND NOT RUN, deliberately: running it downloads a tarball from
@@ -349,7 +342,7 @@ install_frontend_toolchain() {
     # second spelling in this file is a version the image and the tree can
     # disagree about until a lockfile refuses on a box nobody is watching.
     pinned="$(sed -n 's/.*"packageManager"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
-        "${BAKE_CHECKOUT}/frontend/package.json" | head -n 1)"
+        "${BAKE_CHECKOUT}/frontend/package.json" | sed -n 1p)"
     case "$pinned" in
     pnpm@[0-9]*) ;;
     *) die "${BAKE_CHECKOUT}/frontend/package.json's \`packageManager\` reads
@@ -404,7 +397,7 @@ step "1/15 packages"
 # listing them twice costs a second and buys the recipe its independence: this
 # line is the statement of what the image needs, not the difference between two
 # files that must then be read together.
-sudo dnf install -y docker git tar chrony
+sudo dnf install -y docker git tar chrony zsh
 
 # AND THE COMPOSE PLUGIN, WHICH IS NOT A PACKAGE HERE. The argument is beside
 # the knobs above; this is the mechanism. Download to a temporary file, verify
@@ -486,8 +479,8 @@ step "7/15 park on ${BAKE_PARK_BRANCH}"
 
 step "8/15 frontend — node v${BAKE_NODE_VERSION} + the checkout's pnpm"
 # AFTER THE CHECKOUT GUARD, because the pnpm half reads a file out of the tree,
-# and BEFORE THE STACK, because `./scripts/setup.sh` runs
-# `pnpm install --frozen-lockfile`. The argument for the whole step is beside
+# and BEFORE THE STACK, so `./scripts/setup.sh` and anything it starts find node
+# and the pinned pnpm on the PATH. The argument for the whole step is beside
 # the knobs; the argument for the asymmetry between a pinned runtime and a
 # derived package manager is inside the block.
 install_frontend_toolchain
@@ -495,11 +488,13 @@ install_frontend_toolchain
 step "9/15 dependencies — uv sync --frozen"
 (cd "$BAKE_CHECKOUT" && sudo -u "$BAKE_USER" uv sync --frozen)
 
-step "10/15 stack — ./scripts/setup.sh"
-# ON THE PARKED BRANCH, which is step 7's whole point: the DATABASE_NAME this
-# writes into the checkout's .env is the one every later run on every box from
-# this image derives, so nothing has to be pinned afterwards.
+step "10/15 stack — ./scripts/setup.sh, then the migration template"
+# >>> the stack >>>
+# On the parked branch (step 7), so the DATABASE_NAME setup derives is every later box's.
 (cd "$BAKE_CHECKOUT" && sudo -u "$BAKE_USER" ./scripts/setup.sh)
+# A failed publish fails the bake: the image without its template is the cold-box regression.
+(cd "$BAKE_CHECKOUT" && sudo -u "$BAKE_USER" bash -c '. scripts/db.sh && db_template_refresh')
+# <<< the stack <<<
 
 step "11/15 images — docker compose pull"
 (cd "$BAKE_CHECKOUT" && sudo -u "$BAKE_USER" docker compose pull)

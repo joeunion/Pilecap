@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from django.apps import AppConfig
 
@@ -49,17 +49,12 @@ def tenant_for_bearer_credential(request: "HttpRequest") -> "Tenant | None":
     `config.settings.discovery` to derive `INSTALLED_APPS`, before Django is
     ready — the constraint `AccountsConfig.ready()` is written around too.
     """
-    from apps.accounts.auth import AUTHORIZATION_HEADER
-    from apps.accounts.services import authenticate_token
-    from apps.core.middleware import TENANT_HEADER
+    from apps.accounts.auth import AUTHORIZATION_HEADER, resolve_bearer
 
     scheme, _, plaintext = request.headers.get(AUTHORIZATION_HEADER, "").partition(" ")
     if scheme.lower() != "bearer" or not plaintext.strip():
         return None
-    resolved = authenticate_token(
-        plaintext=plaintext.strip(),
-        requested_slug=request.headers.get(TENANT_HEADER),
-    )
+    resolved = resolve_bearer(request, plaintext)
     return resolved.tenant if resolved is not None else None
 
 
@@ -68,14 +63,17 @@ class AccountsConfig(AppConfig):
 
     name = "apps.accounts"
     verbose_name = "Accounts"
-    # `workflows` is a dependency because identity configuration is materialised in
-    # Zitadel by `SyncIdentityConfigWorkflow`, started on commit by
-    # `sync_identity_config`, because an external call inside a service's
-    # transaction is C2's classic failure (ADR ident-2).
-    depends_on: tuple[str, ...] = ("core", "workflows")
+    # Runs start through `core.bridge` and the seams live in `core`, so `workflows` is no import.
+    depends_on: tuple[str, ...] = ("core",)
+    ratchet_floors: ClassVar[dict[str, int]] = {
+        "91.block-tail": 3817,
+        "91.docstring-tail": 8330,
+        "91.module-tail": 2253,
+        "91.narrative": 96,
+    }
 
     def ready(self) -> None:
-        """Tell `core.idempotency` how to read a bearer credential.
+        """Fill the two seams `core` declares for this app: bearer tenancy, and a tenant's realm.
 
         The one thing `core` cannot answer for itself. `IdempotencyMiddleware`
         builds a request's scope before the view runs, and for a bearer token
@@ -91,6 +89,13 @@ class AccountsConfig(AppConfig):
         every other call that has to go against the layer direction — and the
         dependency it needs is already declared, in `depends_on` above.
         """
+        from apps.accounts.services import _ask_for_identity_home
+        from apps.core import bridge
         from apps.core.idempotency import register_tenant_resolver
 
         register_tenant_resolver(tenant_for_bearer_credential)
+        # And the one thing `core.create_tenant` cannot do for itself: give the
+        # new tenant a realm of its own. `core` may not name this app, so it
+        # asks through the bridge and this app answers — the
+        # `START_WORKFLOW_ON_COMMIT` shape, the other way round.
+        bridge.register(bridge.ENSURE_IDENTITY_HOME, _ask_for_identity_home)

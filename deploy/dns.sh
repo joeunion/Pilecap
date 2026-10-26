@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "$(dirname -- "${BASH_SOURCE:-$0}")/../scripts/bash_only.sh" || exit 2
 # Route 53, for the names this deployment answers on (ADR deploy-2).
 #
 #   deploy/dns.sh upsert <env> <ip>       the three A records for an environment
@@ -27,8 +28,11 @@
 set -euo pipefail
 set +x
 
-die() { echo "!! dns: $*" >&2; exit 2; }
-say() { echo "dns: $*"; }
+HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# `die` and `say` are deploy/lib.sh's.
+DEPLOY_NAME=dns
+# shellcheck source=deploy/lib.sh
+. "$HERE/lib.sh" || exit 2
 
 ZONE_ID="${DJB_ZONE_ID:-}"
 [ -n "$ZONE_ID" ] || die "DJB_ZONE_ID is required — this deployment's Route 53 hosted zone id. There is no default: a guessed zone is a write into somebody else's DNS. 'aws route53 list-hosted-zones' names yours."

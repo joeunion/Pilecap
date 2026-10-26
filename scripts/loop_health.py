@@ -129,12 +129,21 @@ import re
 import sys
 import tempfile
 
+# THE CHECKOUT ROOT ON `sys.path`, so `quality/` imports from any cwd — this file
+# is run as `python3 scripts/<name>.py`, which puts `scripts/` there and nothing else.
+_ROOT = str(pathlib.Path(__file__).resolve().parent.parent)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from quality.could_not_look import CouldNotLook as CannotJudge  # noqa: E402
+
 BOARD = pathlib.Path(__file__).resolve().parent.parent / "docs/product/readouts.md"
 NEEDED = 2  # signals that must hold before we stop
 
 # The black box, and the ceiling its own Writing rules declare. Both live in
 # docs/product/in-flight.md; the number is repeated here because a stat needs an
 # integer, and the finding text points back at the file that owns the rule.
+# names, never reads: docs/product/in-flight.md — a PM readout's size line, no gate verdict
 IN_FLIGHT = pathlib.Path(__file__).resolve().parent.parent / "docs/product/in-flight.md"
 IN_FLIGHT_CEILING = 16_384
 
@@ -165,10 +174,6 @@ PERSONA_ANY = re.compile(r"\b(" + "|".join(PERSONA_TOKENS) + r")\b", re.IGNORECA
 # heading says CLOSED — the two ways a cycle section announces itself here.
 HEADING = re.compile(r"^##\s+(?P<id>[^\n]+?)\s*(?:[—–-]\s|$)")
 CYCLE_ID = re.compile(r"^[A-Za-z]{0,2}\d+[a-z]?$")
-
-
-class CannotJudge(Exception):
-    """The scoreboard is unreadable or too short to judge. Exit 2."""
 
 
 def _cells(line: str) -> list[str]:

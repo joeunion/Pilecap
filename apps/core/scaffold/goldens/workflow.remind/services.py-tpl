@@ -1,0 +1,56 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "imports", "text": ""}
+from django.utils import timezone
+
+
+
+from pilecap.workflows import start_workflow_on_commit, workflow_id
+
+
+
+from apps.example.events import WIDGET_REMINDED
+from apps.example.types import WidgetReminder
+
+
+
+from pilecap import Conflict
+
+# golden-anchor: {"nth": 0, "scope": ["update_widget"], "side": "after", "text": "_publish_widget(WIDGET_UPDATED, tenant=tenant, widget=locked, actor=actor)"}
+    _remind_widget_on_commit(tenant=tenant, actor=actor, widget=locked)
+# golden-anchor: {"nth": 3, "scope": [], "side": "after", "text": "return widget"}
+def _remind_widget_on_commit(*, tenant: Tenant, actor: Actor, widget: Widget) -> None:
+    """Start the reminder on this commit when the widget names an unreminded moment."""
+    # does-not-cover: a moment set again after its row's run closed without acting is not reminded.
+    if widget.due_at is None or widget.reminded_at is not None:
+        return
+    try:
+        start_workflow_on_commit(
+            workflow="WidgetReminderWorkflow",
+            arg=WidgetReminder(widget_id=str(widget.pk)),
+            tenant=tenant,
+            user=actor.user,
+            org=actor.org,
+            id=workflow_id(tenant=tenant, app="example", noun="widget", key=f"remind-{widget.pk}"),
+            reask_after_failure=True,
+        )
+    except Conflict:
+        # The row's run already finished: one reminder per row, never a second run under its id.
+        return
+
+
+# door: the reminder workflow's one act, reached only from its activity under the run's hat.
+@service
+def mark_widget_reminded(*, tenant: Tenant, actor: Actor, widget: Widget) -> Widget:
+    """Record that the widget's moment arrived and say so once; a repeat keeps the first."""
+    if not may_be_named(actor, widget):
+        raise NotFound()
+    # Every other write on the noun refuses `archived` first.
+    require_live(widget, noun="widget")
+    require(actor, "widget.remind", widget)
+    if widget.reminded_at is not None:
+        return widget
+    widget.reminded_at = timezone.now()
+    widget.save(update_fields=["reminded_at", "updated_at"])
+    _publish_widget(WIDGET_REMINDED, tenant=tenant, widget=widget, actor=actor)
+    return widget
+
+

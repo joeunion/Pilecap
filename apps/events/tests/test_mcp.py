@@ -24,23 +24,22 @@ from __future__ import annotations
 import io
 import json
 from collections.abc import Callable
-from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any
 from uuid import uuid4
 
 import pytest
 from django.core.management import call_command
 from django.test import Client
 from mcp.server import MCPServer
-from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 
 from apps.accounts.models import User
 from apps.core.actor import Actor
 from apps.core.exceptions import refusal_message
-from apps.core.mcp import SCOPE_KEY, Principal
-from apps.core.models import Organization, Tenant
+from apps.core.models import Tenant
 from apps.core.services import root_organization
+from apps.core.tests.mcp_context import context_for
+from apps.core.tests.mcp_context import tool as mcp_tool
 from apps.events import services
 from apps.events.mcp import register
 from apps.events.models import Delivery, WebhookEndpoint
@@ -111,24 +110,6 @@ LIST_QUERY_BUDGET = 4
 # --- A tool call, without a transport ------------------------------------------
 
 
-@dataclass
-class _FakeRequest:
-    scope: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class _FakeRequestContext:
-    request: _FakeRequest
-
-
-def context_for(user: User, tenant: Tenant | None, org: Organization | None = None) -> Context[Any]:
-    resolved = org if org is not None else (root_organization(tenant=tenant) if tenant else None)
-    scope = {SCOPE_KEY: Principal(user=user, tenant=tenant, org=resolved)}
-    return Context(
-        request_context=cast(Any, _FakeRequestContext(request=_FakeRequest(scope=scope)))
-    )
-
-
 def events_server() -> MCPServer[Any]:
     """A server holding this app's tools and nothing else."""
     server: MCPServer[Any] = MCPServer(name="test", version="1")
@@ -137,9 +118,8 @@ def events_server() -> MCPServer[Any]:
 
 
 def tool(name: str) -> Callable[..., Any]:
-    registered = events_server()._tool_manager.get_tool(name)
-    assert registered is not None, f"{name} is not registered"
-    return registered.fn
+    """The function this app's `register` binds to `name`."""
+    return mcp_tool(name, register=register)
 
 
 def introspected() -> dict[str, Any]:
@@ -206,7 +186,9 @@ def test_a_tool_and_its_route_answer_with_the_same_endpoint(
     api.force_login(owner)
     over_http = json.loads(api.get(f"{ENDPOINTS_URL}{endpoint.pk}/").content)
     over_mcp = json.loads(
-        tool("get_endpoint")(context_for(owner, tenant), endpoint_id=endpoint.pk).model_dump_json()
+        tool("get_endpoint")(
+            context_for(owner, tenant, root_organization(tenant=tenant)), endpoint_id=endpoint.pk
+        ).model_dump_json()
     )
     assert as_the_door_renders(over_mcp) == as_the_door_renders(over_http)
 
@@ -225,7 +207,9 @@ def test_the_tool_answers_with_the_same_KEYS_over_the_wire_too(
     )
     api.force_login(owner)
     over_http = json.loads(api.get(f"{ENDPOINTS_URL}{endpoint.pk}/").content)
-    over_mcp = tool("get_endpoint")(context_for(owner, tenant), endpoint_id=endpoint.pk)
+    over_mcp = tool("get_endpoint")(
+        context_for(owner, tenant, root_organization(tenant=tenant)), endpoint_id=endpoint.pk
+    )
     assert set(over_mcp.model_dump(by_alias=True)) == set(over_http)
     assert "secret" not in over_mcp.model_dump(by_alias=True)
 
@@ -234,7 +218,7 @@ def test_the_machine_door_shows_the_secret_once_and_never_again(
     tenant: Tenant, owner: User
 ) -> None:
     """An agent has exactly the same one chance a browser does, and no more."""
-    acting = context_for(owner, tenant)
+    acting = context_for(owner, tenant, root_organization(tenant=tenant))
     created = tool("create_endpoint")(acting, url="https://subscriber.example/hook")
     minted = created.secret
     assert minted
@@ -260,7 +244,9 @@ def test_the_catalogue_twin_is_byte_equal_to_the_route(
     api.force_login(owner)
     over_http = json.loads(api.get(f"{CATALOGUE_URL}?limit=200").content)
     over_mcp = json.loads(
-        tool("list_event_types")(context_for(owner, tenant), limit=200).model_dump_json()
+        tool("list_event_types")(
+            context_for(owner, tenant, root_organization(tenant=tenant)), limit=200
+        ).model_dump_json()
     )
     assert over_mcp == over_http
     assert WIDGET_CREATED in {item["name"] for item in over_mcp["items"]}
@@ -272,7 +258,11 @@ def test_the_delivery_lists_agree_across_the_doors(
     dead = _dead_letter(tenant, owner_actor)
     api.force_login(owner)
     over_http = json.loads(api.get(DEAD_LETTERS_URL).content)
-    over_mcp = json.loads(tool("list_dead_letters")(context_for(owner, tenant)).model_dump_json())
+    over_mcp = json.loads(
+        tool("list_dead_letters")(
+            context_for(owner, tenant, root_organization(tenant=tenant))
+        ).model_dump_json()
+    )
     assert len(over_mcp["items"]) == len(over_http["items"]) == 1
     assert [as_the_door_renders(item) for item in over_mcp["items"]] == [
         as_the_door_renders(item) for item in over_http["items"]
@@ -328,7 +318,9 @@ def test_a_service_refusal_is_byte_identical_through_both_doors(
             owner=owner,
             tenant=tenant,
             request=lambda: api.get(f"{ENDPOINTS_URL}{theirs.pk}/"),
-            call=lambda: tool("get_endpoint")(context_for(owner, tenant), endpoint_id=theirs.pk),
+            call=lambda: tool("get_endpoint")(
+                context_for(owner, tenant, root_organization(tenant=tenant)), endpoint_id=theirs.pk
+            ),
         )
         assert body["code"] == "not_found"
     elif case == "invalid":
@@ -344,7 +336,7 @@ def test_a_service_refusal_is_byte_identical_through_both_doors(
                 content_type=JSON,
             ),
             call=lambda: tool("create_endpoint")(
-                context_for(owner, tenant),
+                context_for(owner, tenant, root_organization(tenant=tenant)),
                 url="https://subscriber.example/hook",
                 event_names=["nope.nope.nope"],
             ),
@@ -362,7 +354,8 @@ def test_a_service_refusal_is_byte_identical_through_both_doors(
                 content_type=JSON,
             ),
             call=lambda: tool("create_endpoint")(
-                context_for(member, tenant), url="https://subscriber.example/hook"
+                context_for(member, tenant, root_organization(tenant=tenant)),
+                url="https://subscriber.example/hook",
             ),
         )
         assert body["code"] == "forbidden"
@@ -389,7 +382,9 @@ def test_the_replay_refusal_is_byte_identical_too(
         owner=owner,
         tenant=tenant,
         request=lambda: api.post(f"{DEAD_LETTERS_URL}{theirs.pk}/replay/"),
-        call=lambda: tool("replay_dead_letter")(context_for(owner, tenant), delivery_id=theirs.pk),
+        call=lambda: tool("replay_dead_letter")(
+            context_for(owner, tenant, root_organization(tenant=tenant)), delivery_id=theirs.pk
+        ),
     )
     assert body["code"] == "not_found"
     assert message == refusal_message(body)
@@ -402,7 +397,7 @@ def test_a_nonexistent_id_and_another_tenants_id_refuse_identically_on_both_door
     theirs = services.register_endpoint(
         tenant=other_tenant, actor=stranger_actor, url="https://elsewhere.example/hook"
     )
-    acting = context_for(owner, tenant)
+    acting = context_for(owner, tenant, root_organization(tenant=tenant))
     messages = []
     for endpoint_id in (theirs.pk, uuid4()):
         with pytest.raises(ToolError) as refused:
@@ -423,7 +418,7 @@ def test_the_tool_list_holds_only_this_tenants_endpoints(
     services.register_endpoint(
         tenant=other_tenant, actor=stranger_actor, url="https://theirs.example/hook"
     )
-    page = tool("list_endpoints")(context_for(owner, tenant))
+    page = tool("list_endpoints")(context_for(owner, tenant, root_organization(tenant=tenant)))
     assert [item.id for item in page.items] == [mine.pk]
     assert len(page.items) == 1
 
@@ -431,23 +426,32 @@ def test_the_tool_list_holds_only_this_tenants_endpoints(
 def test_a_tokenless_tenant_is_refused_rather_than_guessed_at(nomad: User) -> None:
     """A user with no membership resolves no tenant, and a write is refused."""
     with pytest.raises(ToolError) as refused:
-        tool("create_endpoint")(context_for(nomad, None), url="https://subscriber.example/hook")
-    assert "no_tenant" in str(refused.value)
+        tool("create_endpoint")(
+            context_for(nomad, None, None), url="https://subscriber.example/hook"
+        )
+    assert "no_acting_scope" in str(refused.value)
     assert not WebhookEndpoint.objects.exists()
 
 
-def test_a_nomad_reads_an_empty_list_rather_than_everything(nomad: User) -> None:
-    """Fails closed — and since Phase R it says so instead of answering blank.
-
-    **The refusal got stronger; the property did not move.** A principal with no
-    tenant used to get an empty page; it now gets `forbidden`, because
-    `list_endpoints` asks `endpoint.read` and somebody with no membership
-    anywhere holds nothing (ADR core-27). Reading no rows is still what happens,
-    and the assertion is what stops the day it becomes a page of somebody's.
-    """
+@pytest.mark.parametrize(
+    ("url", "name"),
+    [
+        (ENDPOINTS_URL, "list_endpoints"),
+        ("/api/v1/deliveries/", "list_deliveries"),
+        (DEAD_LETTERS_URL, "list_dead_letters"),
+    ],
+)
+def test_a_no_tenant_read_is_the_same_refusal_at_both_doors(
+    api: Client, nomad: User, url: str, name: str
+) -> None:
+    """A caller who resolved no tenant reads `no_acting_scope` over REST and over MCP alike."""
+    api.force_login(nomad)
+    response = api.get(url)
+    assert response.status_code == 403, response.content
+    assert response.json()["code"] == "no_acting_scope"
     with pytest.raises(ToolError) as refused:
-        tool("list_endpoints")(context_for(nomad, None))
-    assert "forbidden" in str(refused.value)
+        tool(name)(context_for(nomad, None, None))
+    assert str(refused.value).startswith("no_acting_scope"), str(refused.value)
 
 
 # --- Query pin (house rule 5, the machine door's own) --------------------------
@@ -460,7 +464,7 @@ def test_the_tool_list_query_budget(
         services.register_endpoint(
             tenant=tenant, actor=owner_actor, url=f"https://sub-{index}.example/hook"
         )
-    acting = context_for(owner, tenant)
+    acting = context_for(owner, tenant, root_organization(tenant=tenant))
     # Cold, like a request that has resolved nothing yet — see the budget's own
     # note: nothing in the READ path resolves the root any more,
     # and this is what keeps that honest: `register_endpoint` above DID ask for
@@ -476,7 +480,7 @@ def test_the_delivery_tool_reads_the_event_name_without_an_n_plus_one(
 ) -> None:
     for _ in range(12):
         _dead_letter(tenant, owner_actor)
-    acting = context_for(owner, tenant)
+    acting = context_for(owner, tenant, root_organization(tenant=tenant))
     # Cold, like a request that has resolved nothing yet — see the budget's own
     # note: the dead letters above DID ask for one (a write is
     # still asked at the root), so emptying the memo is what keeps this pin able
@@ -487,3 +491,42 @@ def test_the_delivery_tool_reads_the_event_name_without_an_n_plus_one(
     assert len(page.items) == 12
     assert {item.event_name for item in page.items} == {WIDGET_CREATED}
     assert isinstance(Delivery.objects.first(), Delivery)
+
+
+def test_a_private_target_is_the_same_refusal_through_both_doors(
+    api: Client, tenant: Tenant, owner: User
+) -> None:
+    """The machine door refuses a private target with the body the REST door sends."""
+    target = "https://169.254.169.254/latest/meta-data/"
+    body, message = _rest_and_mcp_refusal(
+        api=api,
+        owner=owner,
+        tenant=tenant,
+        request=lambda: api.post(
+            ENDPOINTS_URL, data=json.dumps({"url": target}), content_type="application/json"
+        ),
+        call=lambda: tool("create_endpoint")(
+            context_for(owner, tenant, root_organization(tenant=tenant)), url=target
+        ),
+    )
+    assert body["code"] == "invalid"
+    assert body["errors"]["url"] == ["The host is or resolves to a link-local address."]
+    assert message == refusal_message(body)
+    assert not WebhookEndpoint.objects.for_tenant(tenant).exists()
+
+
+def test_the_update_tool_refuses_a_private_target_too(
+    tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    endpoint = services.register_endpoint(
+        tenant=tenant, actor=owner_actor, url="https://subscriber.example/hook"
+    )
+    with pytest.raises(ToolError) as refused:
+        tool("update_endpoint")(
+            context_for(owner, tenant, root_organization(tenant=tenant)),
+            endpoint_id=endpoint.pk,
+            url="https://127.0.0.1/hook",
+        )
+    assert "loopback" in str(refused.value)
+    endpoint.refresh_from_db()
+    assert endpoint.url == "https://subscriber.example/hook"

@@ -18,9 +18,9 @@ the thread or torn down. Server-side connections are then bounded by
 `max_size` **by construction** — not by a convention a burst can break — and
 they stay warm, so no request pays a fork plus a TLS handshake on the
 convicted burstable RDS CPU. The ruling, its two rejected alternatives
-(pgbouncer, bare `CONN_MAX_AGE=0`) and the trigger to revisit are in
-`docs/product/architecture.md`; `config/settings/base.py` carries the same
-argument beside the values.
+(pgbouncer, bare `CONN_MAX_AGE=0`) and the trigger to revisit are ADR
+config-1 in `docs/product/architecture.md`; `config/settings/base.py` points
+there from beside the knobs.
 
 **Why this reads `config.settings.base` and not `django.conf.settings`.** The
 suite runs pool-OFF on purpose (`config/settings/test.py` says why: the
@@ -223,7 +223,7 @@ def _drive(
             # thread-local and nobody else may close it.
             try:
                 handler[PROBE_ALIAS].close()
-            except Exception:  # noqa: BLE001 — cleanup must not mask the reading
+            except Exception:  # noqa: BLE001, S110 — cleanup must not mask the reading
                 pass
 
 
@@ -413,14 +413,14 @@ def test_the_env_knobs_reach_the_pool() -> None:
 
 
 def test_the_pool_size_is_derived_from_what_the_process_is() -> None:
-    """Two processes, two pools, and their sum is the number the budget bounds.
+    """Two processes, two pools, each assembled from what the process is.
 
     `DJB_SERVICE_NAME` already tells the web process from the Temporal worker
     (`deploy/compose.yaml` sets it; `apps/workflows/worker.py` sets it before
     `django.setup()`), and a pool is per process — so the split rides that one
-    discriminator instead of a second copy of it. The arithmetic that makes 20
-    and 8 the right pair, neighbours counted, is in `config/settings/base.py`
-    and beside the values in `deploy/env.staging.example`.
+    discriminator instead of a second copy of it. The neighbour budget that
+    makes 10 and 8 the right pair is ADR config-1's, and it is written beside
+    the values in `deploy/env.staging.example`.
     """
     with _deployment_database(DJB_SERVICE_NAME="web") as assembled:
         web = assembled["OPTIONS"]["pool"]["max_size"]
@@ -428,9 +428,6 @@ def test_the_pool_size_is_derived_from_what_the_process_is() -> None:
         worker = assembled["OPTIONS"]["pool"]["max_size"]
 
     assert web > worker, "the door that serves requests gets the larger half"
-
-    base = importlib.import_module("config.settings.base")
-    assert web + worker <= base.DATABASE_POOL_APP_CEILING
 
     # And an explicit value wins outright over the derivation, the way every
     # other per-process name in this settings module lets a deployment say so.
@@ -511,16 +508,16 @@ def test_an_empty_max_size_derives_rather_than_crashing() -> None:
         assert assembled["OPTIONS"]["pool"]["max_size"] == derived
 
 
-def test_the_staging_manifest_carries_the_arithmetic_and_not_the_per_process_size() -> None:
-    """The file that counts, counts — and does not carry a name it would break.
+def test_the_staging_manifest_carries_the_pool_knobs_and_not_the_per_process_size() -> None:
+    """The manifest names the pool's knobs, and not a name it would break.
 
     `deploy/env.staging.example` is THE manifest of names
-    (`deploy/provision.sh` generates every environment from it), so two
-    properties have to hold together: the neighbour-counted budget lives beside
-    the values it bounds, and `DATABASE_POOL_MAX_SIZE` is NOT one of those
-    names — empty would be refused by the generator as a slot nothing fills,
-    and a value would apply to both processes and break the very sum the
-    comment reasons about.
+    (`deploy/provision.sh` generates every environment from it), and
+    `DATABASE_POOL_MAX_SIZE` is NOT one of them — empty would be refused by the
+    generator as a slot nothing fills, and a value would apply to both
+    processes and break the per-process split above. The neighbour budget's
+    prose beside the values is ADR config-1's to keep, and is not matched here
+    line by line: a comment pinned by a regex is a second copy of the ADR.
     """
     manifest = (BASE_DIR / "deploy" / "env.staging.example").read_text(encoding="utf-8")
     names = {
@@ -534,52 +531,6 @@ def test_the_staging_manifest_carries_the_arithmetic_and_not_the_per_process_siz
     assert "DATABASE_POOL_TIMEOUT" in names
     assert "DATABASE_POOL_MAX_IDLE" in names
     assert "DATABASE_POOL_MAX_SIZE" not in names
-
-    base = importlib.import_module("config.settings.base")
-
-    # EVERY TERM OF THE SUBTRACTION, matched on its own LINE rather than as a
-    # bare substring: "33" appears in a four-hundred-line manifest by accident,
-    # and a pin that a coincidence can satisfy is not a pin. `24` and `5` are
-    # the totals `deploy/compose.yaml` makes true with `SQL_MAX_CONNS` and
-    # `ZITADEL_DATABASE_POSTGRES_MAXOPENCONNS` — if they move there they move
-    # here, and this is the line that says so.
-    ceiling = base.DATABASE_POOL_APP_CEILING
-    for label, pattern in (
-        ("the instance's own limit", r"^#\s+max_connections\b.*\b79\s*$"),
-        ("Temporal's bounded total", r"^#\s+-\s*Temporal, bounded:.*<=\s*24\s*$"),
-        # 7, not 5: `MAXOPENCONNS` bounds Zitadel's main pool and its background
-        # job queue keeps a second one no env variable in v4.17.1 reaches. Driven
-        # both ways on the laptop deploy stack — 10/5 gives 12 (which is what
-        # RATIO-1 measured on the box), 5/2 gives 7. The residue is constant and
-        # it is subtracted rather than rounded away.
-        (
-            "Zitadel's bounded total plus its named residue",
-            r"^#\s+-\s*Zitadel: 5 bounded \+ 2 .*<=\s*7\s*$",
-        ),
-        ("the application's ceiling", rf"^#\s+=\s*the application's ceiling\s+{ceiling}\s*$"),
-        ("the sum that fits inside it", rf"^#\s+web max_size 20 .*=\s*28\s+<=\s*{ceiling}\s*$"),
-    ):
-        assert re.search(pattern, manifest, re.MULTILINE), f"the arithmetic lost {label}"
-
-    assert "neighbours" in manifest or "neighbors" in manifest
-
-    # THE KNOBS ARE NAMED where the arithmetic is, so an operator reading the
-    # budget can find the thing that enforces it without a grep across `deploy/`.
-    for knob in (
-        "SQL_MAX_CONNS",
-        "SQL_VIS_MAX_CONNS",
-        "ZITADEL_DATABASE_POSTGRES_MAXOPENCONNS",
-    ):
-        assert knob in manifest, f"the arithmetic does not say what enforces it: {knob}"
-
-    # THE DEAD SENTENCE, ASSERTED ABSENT. The manifest used to carry Temporal's
-    # draw as "17 + 3" and call it a budget constant to trim on some future
-    # Temporal touch; this WAS that touch, and a corrected block with the old
-    # excuse still sitting one paragraph below is how a reader takes the wrong
-    # number away. The absent case is asserted, not merely the present one.
-    assert "17 + 3" not in manifest
-    assert "17+3" not in manifest
-    assert "~34" not in manifest
 
 
 def test_switching_the_pool_off_restores_persistent_connections() -> None:

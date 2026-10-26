@@ -11,7 +11,7 @@ other three clauses plus the fifth door."
 
 **Two members, and the second one was this pin's original finding.** An
 earlier cycle reconciliation listed the storage seams the wall had to dispose
-of as three: `config/settings`' `STORAGES`, `apps/core/storage.py`'s key
+of as three: `config/settings`' `STORAGES`, the core app's `storage.py` key
 builder and `apps/exports`' `default_storage` writes. `apps/core/health.py::check_object_storage`
 was a **fourth** that post-dated the list — legitimate, because a readiness
 probe has to reach the organ it reports on and `core` importing `files`
@@ -21,7 +21,7 @@ to allow-list, which rule 48 now does by path and with the reason.
 **All three of the reconciliation's seams are disposed of, which is why the pin
 reads two and not five** (the list above is kept as history, not as a
 description of this tree): `apps/exports` was re-pointed onto
-`files.services.store_bytes`; `apps/core/storage.py` and its
+`files.services.store_bytes`; the core app's `storage.py` and its
 `tenant_prefixed_key` were **deleted whole** once that took the
 last caller, so the key builder this file used to name no longer exists; and
 `config/settings`' `STORAGES` is fenced by rule 48's fifth clause rather than by

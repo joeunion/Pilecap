@@ -1,7 +1,7 @@
 """The names of the things this app says happened.
 
 Names only. `services.py` emits each one inside the write's transaction, with
-the note as the REST door renders it (`NoteOut`), so a webhook subscriber and a
+the note as the REST door renders it (`DjbNoteOut`), so a webhook subscriber and a
 client reading the same note see one shape.
 
 `djb_notes.note.moved` is said once per note a merge re-points from its loser to

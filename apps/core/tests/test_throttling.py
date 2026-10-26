@@ -9,15 +9,29 @@ service's own `RateLimited` produces.
 from __future__ import annotations
 
 import json
-from typing import Any
+import socket
+import threading
+from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, cast
+from urllib.parse import urlparse
+from uuid import uuid4
 
 import pytest
 from django.core.cache import cache
-from django.test import Client
+from django.http import HttpRequest
+from django.test import Client, RequestFactory
 
 from apps.accounts.models import User
 from apps.core.models import Tenant
-from apps.core.throttling import AuthRateThrottle, TenantRateThrottle, default_throttles
+from apps.core.throttling import (
+    AnonRateThrottle,
+    AuthRateThrottle,
+    RateLimit,
+    TenantRateThrottle,
+    default_throttles,
+    recorded,
+)
 
 pytestmark = pytest.mark.django_db
 
@@ -134,3 +148,115 @@ def test_the_shipped_rates_reach_ninja_and_are_generous_enough_to_leave_on(
     for scope, rate in rates.items():
         count, _, _period = str(rate).partition("/")
         assert int(count) >= 60, f"{scope} is tight enough that somebody will disable it"
+
+
+# --- under concurrency: one shared throttle object, many threads, both stores --
+
+THREADS = 16
+PER_THREAD = 100
+LIMIT = 50
+
+
+def _redis_answers(url: str) -> bool:
+    parsed = urlparse(url)
+    try:
+        with socket.create_connection(
+            (parsed.hostname or "127.0.0.1", parsed.port or 6379), timeout=0.5
+        ):
+            return True
+    except OSError:
+        return False
+
+
+@pytest.fixture(params=["local", "redis"])
+def store(request: pytest.FixtureRequest, settings: Any) -> Iterator[str]:
+    """Both counters the throttles run on; the Redis one under a key prefix of its own."""
+    if request.param == "redis":
+        if not _redis_answers(settings.CACHE_URL):
+            pytest.skip(f"no Redis listening on {settings.CACHE_URL}; start the compose stack")
+        settings.CACHES = {
+            "default": {
+                "BACKEND": "django_redis.cache.RedisCache",
+                "LOCATION": settings.CACHE_URL,
+                "KEY_PREFIX": f"ls-throttle-{uuid4().hex}",
+                "OPTIONS": {"CLIENT_CLASS": "django_redis.client.DefaultClient"},
+            }
+        }
+        yield "redis"
+        # Never `clear()`: on Redis that is FLUSHDB over every checkout's cache.
+        cast(Any, cache).delete_pattern("*")
+        return
+    yield "local"
+
+
+def _request(*, auth: Any = None, address: str = "203.0.113.7") -> HttpRequest:
+    made = RequestFactory().get("/", REMOTE_ADDR=address)
+    made.auth = auth  # type: ignore[attr-defined]
+    return made
+
+
+def _in_threads(threads: int, work: Callable[[int], list[Any]]) -> list[list[Any]]:
+    """`work(i)` on `threads` threads released together; each thread's results, in order."""
+    start = threading.Barrier(threads)
+
+    def run(index: int) -> list[Any]:
+        start.wait()
+        return work(index)
+
+    with ThreadPoolExecutor(max_workers=threads) as pool:
+        return list(pool.map(run, range(threads)))
+
+
+def test_one_credential_sixteen_threads_exact_count(store: str) -> None:
+    """Exactly `limit` of 1600 simultaneous requests are admitted — never `limit ± threads`."""
+    throttle = AuthRateThrottle(f"{LIMIT}/min")
+
+    def spend(_index: int) -> list[bool]:
+        return [throttle.allow_request(_request(auth="credential-one")) for _ in range(PER_THREAD)]
+
+    admitted = sum(sum(one) for one in _in_threads(THREADS, spend))
+    assert admitted == LIMIT, f"{store}: {admitted} admitted of a {LIMIT} allowance"
+
+
+def test_headers_are_consistent_under_concurrency(store: str) -> None:
+    """`Remaining` falls through every value once and never rises; `Reset` agrees."""
+    throttle = AuthRateThrottle(f"{LIMIT}/min")
+
+    def spend(_index: int) -> list[tuple[bool, RateLimit]]:
+        seen = []
+        for _ in range(PER_THREAD):
+            made = _request(auth="credential-one")
+            allowed = throttle.allow_request(made)
+            measured = recorded(made)
+            assert measured is not None
+            seen.append((allowed, measured))
+        return seen
+
+    per_thread = _in_threads(THREADS, spend)
+    for seen in per_thread:
+        remaining = [measured.remaining for _allowed, measured in seen]
+        assert remaining == sorted(remaining, reverse=True), f"{store}: {remaining}"
+    every = [pair for seen in per_thread for pair in seen]
+    admitted = sorted(measured.remaining for allowed, measured in every if allowed)
+    assert admitted == list(range(LIMIT)), f"{store}: {admitted}"
+    assert all(measured.remaining == 0 for allowed, measured in every if not allowed)
+    resets = {measured.reset for _allowed, measured in every}
+    assert max(resets) - min(resets) <= 1, f"{store}: {sorted(resets)}"
+    assert all(measured.limit == LIMIT for _allowed, measured in every)
+
+
+def test_anonymous_buckets_are_per_address(store: str) -> None:
+    """Two addresses, eight threads each: two buckets, each admitting exactly `limit`."""
+    throttle = AnonRateThrottle(f"{LIMIT}/min")
+    addresses = ("198.51.100.1", "198.51.100.2")
+
+    def spend(index: int) -> list[tuple[str, bool]]:
+        address = addresses[index % 2]
+        return [
+            (address, throttle.allow_request(_request(address=address))) for _ in range(PER_THREAD)
+        ]
+
+    results = [pair for seen in _in_threads(THREADS, spend) for pair in seen]
+    for address in addresses:
+        admitted = sum(1 for at, allowed in results if at == address and allowed)
+        assert admitted == LIMIT, f"{store}: {address} admitted {admitted}"

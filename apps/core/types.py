@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from apps.core.roads import road
+
 
 @dataclass
 class ProbeOutcome:
@@ -44,6 +46,8 @@ class ProbeOutcome:
         return not self.incomplete
 
 
+# No Widget example: Widget does not adopt this road yet, so the example is an owner's purge.
+@road("sweep_result", example="apps/connections/services.py::purge_inbound_webhooks")
 @dataclass(frozen=True)
 class Swept:
     """What one sweep walked, and how many rows of it went.

@@ -26,10 +26,11 @@ from apps.accounts.services import issue_token, revoke_token
 from apps.core.actor import actor_for
 from apps.core.asyncdb import run_db
 from apps.core.models import Organization, Tenant
+from apps.core.tests.wire import socket_bearer
 from apps.realtime.bridge import push_event
 from apps.realtime.consumers import TenantEventsConsumer
 from apps.realtime.schemas import CLOSE_KICKED, EventMessage
-from apps.realtime.tests.test_consumers import PATH, an_event, bearer_headers, opened
+from apps.realtime.tests.sockets import PATH, an_event, opened
 from apps.realtime.tests.test_hierarchy import Network, _build_network
 
 pytestmark = [pytest.mark.django_db(transaction=True), pytest.mark.asyncio]
@@ -115,7 +116,7 @@ async def hatted_bearer_headers(
         scopes=scopes,
         actor=actor_for(user=user, tenant=tenant),
     )
-    return [*bearer_headers(str(plaintext)), (b"x-org", org.slug.encode())]
+    return [*socket_bearer(str(plaintext)), (b"x-org", org.slug.encode())]
 
 
 # --- the frame narrows to the credential ---------------------------------------
@@ -133,7 +134,7 @@ async def test_a_socket_whose_ceiling_names_another_section_hears_nothing(
     """
     plaintext = await scoped_token(user=owner, tenant=tenant, scopes=["messaging:read"])
 
-    async with opened(PATH, bearer_headers(plaintext)) as (socket, handshake):
+    async with opened(PATH, socket_bearer(plaintext)) as (socket, handshake):
         assert handshake.accepted is True
 
         await push_event(tenant_id=tenant.pk, event=an_event_named(WIDGET_EVENT))
@@ -148,7 +149,7 @@ async def test_a_socket_scoped_to_the_emitting_section_hears_it(
 ) -> None:
     plaintext = await scoped_token(user=owner, tenant=tenant, scopes=["widgets:read"])
 
-    async with opened(PATH, bearer_headers(plaintext)) as (socket, handshake):
+    async with opened(PATH, socket_bearer(plaintext)) as (socket, handshake):
         assert handshake.accepted is True
         await push_event(tenant_id=tenant.pk, event=an_event())
         assert (await socket.receive_json())["name"] == WIDGET_EVENT
@@ -164,7 +165,7 @@ async def test_a_write_scope_hears_its_own_section(tenant: Tenant, owner: User) 
     """
     plaintext = await scoped_token(user=owner, tenant=tenant, scopes=["widgets:write"])
 
-    async with opened(PATH, bearer_headers(plaintext)) as (socket, handshake):
+    async with opened(PATH, socket_bearer(plaintext)) as (socket, handshake):
         assert handshake.accepted is True
 
         await push_event(tenant_id=tenant.pk, event=an_event())
@@ -187,7 +188,7 @@ async def test_a_token_with_no_ceiling_hears_everything_it_always_did(
     """
     plaintext = await scoped_token(user=owner, tenant=tenant, scopes=None)
 
-    async with opened(PATH, bearer_headers(plaintext)) as (socket, handshake):
+    async with opened(PATH, socket_bearer(plaintext)) as (socket, handshake):
         assert handshake.accepted is True
         await push_event(tenant_id=tenant.pk, event=an_event())
         assert (await socket.receive_json())["name"] == WIDGET_EVENT
@@ -231,7 +232,7 @@ async def test_the_narrowest_possible_token_is_still_kicked(tenant: Tenant, owne
         actor=actor_for(user=owner, tenant=tenant),
     )
 
-    async with opened(PATH, bearer_headers(plaintext)) as (socket, handshake):
+    async with opened(PATH, socket_bearer(plaintext)) as (socket, handshake):
         assert handshake.accepted is True
         # A widget frame is filtered out, which is what makes this socket the
         # narrow one — and then the kick still lands.
@@ -352,7 +353,7 @@ async def test_a_hatted_bearer_socket_is_still_kicked(network: Network) -> None:
         scopes=["messaging:read"],
         actor=actor_for(user=network.rival, tenant=network.tenant),
     )
-    headers = [*bearer_headers(str(plaintext)), (b"x-org", network.branch_b.slug.encode())]
+    headers = [*socket_bearer(str(plaintext)), (b"x-org", network.branch_b.slug.encode())]
 
     async with opened(PATH, headers) as (socket, handshake):
         assert handshake.accepted is True
@@ -413,12 +414,12 @@ async def test_a_socket_for_a_dark_tenant_is_closed_no_tenant(tenant: Tenant, ow
     )
 
     await run_db(suspend_tenant, tenant=tenant, reason="R1-F3", actor=system_actor(tenant=tenant))
-    async with opened(PATH, bearer_headers(plaintext)) as (_socket, handshake):
+    async with opened(PATH, socket_bearer(plaintext)) as (_socket, handshake):
         assert handshake.accepted is False
         assert handshake.code == CLOSE_NO_TENANT, handshake.code
 
     await run_db(resume_tenant, tenant=tenant, actor=system_actor(tenant=tenant))
-    async with opened(PATH, bearer_headers(plaintext)) as (socket, handshake):
+    async with opened(PATH, socket_bearer(plaintext)) as (socket, handshake):
         assert handshake.accepted is True
         await push_event(tenant_id=tenant.pk, event=an_event())
         assert (await socket.receive_json())["name"] == WIDGET_EVENT

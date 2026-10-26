@@ -1,38 +1,11 @@
-"""P8 — the `accounts` sweep, **measured rather than argued**. The last one.
+"""The `accounts` key sweep, measured: every answer the app gave before, it gives after.
 
-Four keys leave the shape they were in: `accounts.user.erase` and
-`accounts.user.deactivate` become `user.erase` and `user.deactivate` (three
-parts to two, on a kind the registry already derives from `User`),
-`sso_identity.provision` becomes `sso_identity.create` (the derived verb it was
-always a synonym of), and `identity_platform.configure` becomes
-`deployment.configure` — a key on the VIRTUAL kind `core.authz.VIRTUAL_KINDS`
-declares, because configuring the installation is a platform-operator act with
-no tenant, no membership and no row for a collection to be about.
-
-The claim that has to survive all of that is that **every answer this app gave
-before it, it gives after it**, including for a caller still saying the old
-words. So this module carries what every other sweep carries:
-
-* **the matrix** — `authz_matrix.matrix(world)` re-run here against the document
-  derived on the baseline tree, cell for cell, over the OLD key names;
-* **the flip** — a planted cell, so the comparison can be shown to fail;
-* **the code half** — `policies.py` asks no role by value;
-* **the words** — the four renames answer, the sentences do not move, and every
-  key this app declares now conforms.
-
-**Two things that must NOT move, asserted here and not only described.** A
-branch administrator still cannot erase somebody who is not themselves (ADR
-ident-6: the ceiling is read at the tenant's ROOT, and the rename moved the
-*question* from a rank comparison to a held key without moving the node); and a
-superuser with no membership anywhere still configures the deployment, which is
-the whole mechanism the virtual kind exists for — `allows` skips the data half
-for a kindless key and the predicate is the entire rule.
+The matrix asks the OLD key names, so `RENAMED_PERMISSIONS` is what answers them.
 """
 
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -56,10 +29,6 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 pytestmark = pytest.mark.django_db
 
-#: The shapes rule 54 (c) names, as one expression — the same one the criterion
-#: pastes. `holds(...)` is deliberately absent: asking the data half what a
-#: person holds IS the remedy, and a census that flagged it would forbid the fix.
-ROLE_BY_VALUE = re.compile(r"is_privileged|ADMIN_RANK|rank\(|effective_role|actor_role|ROLE_RANK")
 
 #: The four renames the sweep declares, old word to new. Pinned here as well as
 #: in `policies.py` because a rename is a promise about what a CALLER may still
@@ -172,23 +141,6 @@ def test_a_flipped_cell_is_red(tree: World) -> None:
 
 
 # --- P8.1 · the words --------------------------------------------------------
-
-
-def test_the_apps_policies_read_no_role() -> None:
-    """**P8.2, the code half.** `apps/accounts/policies.py` asks no role by value.
-
-    A predicate answers "may this person do this to THAT row"; "how much
-    authority does this person have" is the DATA half's question and it has one
-    owner. The grep is the same one rule 54 (c) runs, pointed at this one file,
-    so a regression here reds in the rung before it reds in the gate.
-    """
-    source = (Path(settings.BASE_DIR) / "apps/accounts/policies.py").read_text()
-    offenders = [
-        f"{number}: {line.strip()}"
-        for number, line in enumerate(source.splitlines(), start=1)
-        if ROLE_BY_VALUE.search(line)
-    ]
-    assert offenders == [], offenders
 
 
 def test_every_declared_key_of_this_app_conforms() -> None:

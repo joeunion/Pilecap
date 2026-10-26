@@ -133,6 +133,7 @@ def _rows(world: World) -> dict[str, dict[str, Any]]:
     }
 
 
+# does-not-cover: the tree's row classes and a version; trigger: an object axis on a tree.
 def matrix(world: World) -> dict[str, dict[str, dict[str, bool]]]:
     """`key → row class → actor → allows(...)`. The same function on both trees."""
     rows = _rows(world)
@@ -266,22 +267,6 @@ def test_a_flipped_cell_is_red(tree: World) -> None:
     assert moved == [(key, row_class, name)], moved
 
 
-def test_the_apps_policies_read_no_role() -> None:
-    """**P7.6.2, the code half.** `apps/files/policies.py` asks no role by value.
-
-    A predicate answers "may this person do this to THAT row"; "how much
-    authority does this person have" is the DATA half's question and it has one
-    owner. The grep is the same one rule 54 (c) runs, pointed at this one file,
-    so a regression here reds in the rung before it reds in the gate.
-    """
-    import re
-
-    source = (Path(settings.BASE_DIR) / "apps/files/policies.py").read_text()
-    pattern = re.compile(r"is_privileged|ADMIN_RANK|rank\(|effective_role|actor_role|ROLE_RANK")
-    hits = [line for line in source.splitlines() if pattern.search(line)]
-    assert hits == [], hits
-
-
 def test_the_two_models_yield_one_kind_and_it_is_the_one_the_keys_use() -> None:
     """**P7.6.1.** `file` is a kind, and both models answer to it.
 
@@ -332,35 +317,20 @@ def test_the_retired_kind_names_still_answer_through_their_aliases(tree: World) 
             assert allows(actor, old, None) == allows(actor, "file.read", None), (actor, old)
 
 
-def test_what_a_member_may_do_is_still_the_transitional_residue(tree: World) -> None:
-    """**P7.6.2, deferred half — the PM's ruling of 2026-09-16, asserted.**
+def test_what_a_member_may_do_is_declared_and_the_predicates_still_narrow(tree: World) -> None:
+    """`member` holds the four write keys by this app's `DEFAULT_ROLES`, never by the residue.
 
-    The sweep's shape puts "a `member` may file and may replace" in
-    `DEFAULT_ROLES`, as data. Those entries move `defaults_for("member")`, which
-    is a pin of the flat product two core tests hold, and no per-app sweep may
-    move it alone — so this app declares no `DEFAULT_ROLES` at all and
-    `can_file` and `can_replace` keep their membership halves as residue.
-
-    This test is the RECORD of that: it fails the day somebody adds the entries
-    without the core rung that makes room for them, and the day the residue
-    quietly stops holding.
+    The archive pair's `may_archive` still refuses a member; the matrix above proves it per cell.
     """
     from apps.core.authz import defaults_for, vocabulary
     from apps.files import policies
 
-    assert not hasattr(policies, "DEFAULT_ROLES"), "the deferred entries landed early"
+    writes = {"file.create", "file.replace", "file.archive", "file.restore"}
+    assert policies.DEFAULT_ROLES == {key: frozenset({"member"}) for key in writes}
 
     member = defaults_for("member")
     assert "file.read" in member  # by the `*.read` pattern `roles.py` declares
-    assert "file.create" not in member  # the declaration's answer: not yet
-    assert "file.replace" not in member
-    assert "file.archive" not in member
+    assert writes <= member
 
     words = vocabulary()
-    assert "member" in words["file.create"].default_roles
-    assert "member" in words["file.replace"].default_roles
-    # The archive pair is a PREDICATE-bearing key now (`may_archive`), and the
-    # vocabulary offers such a key to every role and lets the predicate decide —
-    # so a member is refused by `may_archive`, not by the role column. The
-    # matrix above is what proves the refusal cell by cell.
     assert words["file.archive"].predicate is words["file.restore"].predicate

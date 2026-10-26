@@ -19,9 +19,10 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import timedelta
 from typing import Any
+from urllib.parse import urlsplit
 
 import pytest
 from django.core import mail as django_mail
@@ -38,6 +39,8 @@ from apps.core.actor import system_actor
 from apps.core.models import Invitation, Membership, Tenant
 from apps.core.observability import configure
 from apps.core.services import PROVISION_INVITED_PERSON_WORKFLOW, invite_member
+from apps.core.tests import test_surfaces as surface_world
+from apps.workflows import context as workflow_context
 from apps.workflows.models import WorkflowRun
 
 # --- the client's v2 half ----------------------------------------------------
@@ -149,22 +152,53 @@ def test_an_unreadable_lifetime_is_none_rather_than_a_guess(instance: FakeZitade
 # --- the activity ------------------------------------------------------------
 
 
-def _payload(email: str = "ada.lovelace@example.com") -> InvitedPerson:
-    return InvitedPerson(
-        invitation_id="inv-1",
-        email=email,
-        message=InvitationMessage(
-            to=[email], subject="You have been invited to Acme", template="invitation", context={}
-        ),
-    )
+@pytest.fixture
+def invited(
+    instance: FakeZitadel,
+    homed: str,
+    tenant: Tenant,
+    owner: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[Callable[..., InvitedPerson]]:
+    """What the run is started with, for a REAL invitation in a tenant whose realm exists.
+
+    The activity reads the invitation's role off its row and provisions the
+    person in the tenant's realm, so the payload names a real invitation and
+    the tenant rides on the headers exactly as the interceptor restores it.
+    """
+    tokens = workflow_context.set_principal(tenant_id=str(tenant.pk), user_id=None, org_id=None)
+    # A worker thread's connection hygiene, stood down on the test's own thread.
+    monkeypatch.setattr("apps.accounts.activities.close_old_connections", lambda: None)
+
+    def payload(email: str = "ada.lovelace@example.com", role: str = "") -> InvitedPerson:
+        invitation = invite_member(
+            tenant=tenant,
+            email=email,
+            role=role or None,
+            invited_by=owner,
+            actor=system_actor(tenant=tenant),
+        )[0]
+        return InvitedPerson(
+            invitation_id=str(invitation.pk),
+            email=email,
+            message=InvitationMessage(
+                to=[email],
+                subject="You have been invited to Acme",
+                template="invitation",
+                context={},
+            ),
+        )
+
+    yield payload
+    workflow_context.reset_principal(tokens)
 
 
 def test_the_activity_does_both_calls_and_comes_back_with_a_link(
     instance: FakeZitadel,
+    invited: Callable[..., InvitedPerson],
 ) -> None:
-    identity = provision_invited_identity(_payload())
+    identity = provision_invited_identity(invited())
 
-    assert identity.created is True
     assert identity.zitadel_user_id in instance.users
     assert identity.set_credentials_url.startswith(
         "http://zitadel.test/ui/login/user/invite?userID="
@@ -176,29 +210,31 @@ def test_the_activity_does_both_calls_and_comes_back_with_a_link(
     assert identity.already_initialized is False
 
 
-def test_the_activity_retried_settles_on_one_account(instance: FakeZitadel) -> None:
+def test_the_activity_retried_settles_on_one_account(
+    instance: FakeZitadel, invited: Callable[..., InvitedPerson]
+) -> None:
     """Temporal's at-least-once, which is the normal case and not an edge one."""
-    first = provision_invited_identity(_payload())
-    second = provision_invited_identity(_payload())
+    payload = invited()
+    first = provision_invited_identity(payload)
+    second = provision_invited_identity(payload)
 
     assert first.zitadel_user_id == second.zitadel_user_id
     assert len(instance.users) == 1
-    assert second.created is False
     # A fresh code each attempt, and it is the fresh one that goes out — which is
     # why the two calls are ONE activity.
     assert first.set_credentials_url != second.set_credentials_url
 
 
 def test_the_activity_reports_an_initialized_person_instead_of_failing(
-    instance: FakeZitadel,
+    instance: FakeZitadel, invited: Callable[..., InvitedPerson], homed: str
 ) -> None:
     """Somebody who already signs in here, invited into a second tenant."""
     existing = zitadel.ensure_invited_user(
-        email="ada.lovelace@example.com", first_name="Ada", last_name="Lovelace"
+        email="ada.lovelace@example.com", first_name="Ada", last_name="Lovelace", org_id=homed
     )
     instance.initialized_users.add(existing.id)
 
-    identity = provision_invited_identity(_payload())
+    identity = provision_invited_identity(invited())
 
     assert identity.already_initialized is True
     assert identity.set_credentials_url == ""
@@ -206,7 +242,7 @@ def test_the_activity_reports_an_initialized_person_instead_of_failing(
 
 
 def test_no_log_record_carries_the_invite_code(
-    instance: FakeZitadel, caplog: pytest.LogCaptureFixture
+    instance: FakeZitadel, caplog: pytest.LogCaptureFixture, invited: Callable[..., InvitedPerson]
 ) -> None:
     """**The criterion this test would be worth least without.**
 
@@ -218,7 +254,7 @@ def test_no_log_record_carries_the_invite_code(
     """
     configure()
     with caplog.at_level(logging.INFO):
-        identity = provision_invited_identity(_payload())
+        identity = provision_invited_identity(invited())
 
     code = instance.invite_codes[identity.zitadel_user_id][-1]
     emitted = "\n".join(record.getMessage() for record in caplog.records)
@@ -441,7 +477,9 @@ def test_no_template_markup_survives_either_branch() -> None:
 # --- A7.3 · both links follow `invite_url`, and there is no second builder ----
 
 
-def test_ours_the_activitys_link_is_our_page(instance: FakeZitadel, settings: Any) -> None:
+def test_ours_the_activitys_link_is_our_page(
+    instance: FakeZitadel, settings: Any, invited: Callable[..., InvitedPerson]
+) -> None:
     """The invitation email's link follows the door, exactly as day zero's does.
 
     Two producers of a credential-setting link exist in this tree — this
@@ -452,7 +490,7 @@ def test_ours_the_activitys_link_is_our_page(instance: FakeZitadel, settings: An
     """
     settings.SIGN_IN_DOOR = "ours"
 
-    identity = provision_invited_identity(_payload())
+    identity = provision_invited_identity(invited())
 
     code = instance.invite_codes[identity.zitadel_user_id][-1]
     assert identity.set_credentials_url == zitadel.invite_url(
@@ -477,7 +515,7 @@ def test_every_credential_setting_link_in_the_tree_comes_from_invite_url() -> No
         the path — `zitadel_measure`'s own description of what C7 measures —
         is not counted as a second spelling of it. A comment cannot build a
         URL; a constant can.
-    (2) Both producers of a credential-setting link call `invite_url`. The
+    (2) Every producer of a credential-setting link calls `invite_url`. The
         population is named here because it is small and because naming it is
         what makes a THIRD producer a failure rather than an omission.
     """
@@ -500,9 +538,11 @@ def test_every_credential_setting_link_in_the_tree_comes_from_invite_url() -> No
     )
     assert spellers == ["apps/accounts/zitadel.py"], spellers
 
+    # The invitation activity reaches its link through the realm port now, so the
+    # port's Zitadel adapter is the producer that calls the builder for it.
     producers = (
-        "apps/accounts/activities.py",
         "apps/accounts/management/commands/zitadel_first_admin.py",
+        "apps/accounts/realms/zitadel.py",
     )
     for name in producers:
         assert "zitadel.invite_url(" in source_text(Path(django_settings.BASE_DIR) / name), name
@@ -530,3 +570,37 @@ def test_the_email_leads_with_the_credential_setting_link_under_either_door() ->
     assert link in text
     assert "&amp;" not in text
     assert f'href="{link.replace("&", "&amp;")}"' in html
+
+
+# --- the link a REAL invitation mails lands on the role's surface --------------
+
+customer_role = surface_world.customer_role
+two_faces = surface_world.two_faces
+
+
+@pytest.mark.parametrize(
+    ("role", "host"),
+    [("customer", surface_world.CUSTOMER_HOST), ("member", surface_world.STAFF_HOST)],
+)
+def test_the_set_credentials_link_lands_on_the_host_of_the_invited_role(
+    instance: FakeZitadel,
+    settings: Any,
+    two_faces: Any,
+    invited: Callable[..., InvitedPerson],
+    homed: str,
+    role: str,
+    host: str,
+) -> None:
+    """A customer's link on the customer host, a staff member's on the staff host.
+
+    The role is read off the invitation row the run was started for, and the
+    link is built by the one URL seam through the realm port — so the mail a
+    real invitation sends carries the host of the surface the role belongs to,
+    and the person is made in the tenant's realm, never the staff org.
+    """
+    settings.SIGN_IN_DOOR = "ours"
+
+    identity = provision_invited_identity(invited(email=f"{role}@example.com", role=role))
+
+    assert urlsplit(identity.set_credentials_url).hostname == host
+    assert instance.users[identity.zitadel_user_id]["details"]["resourceOwner"] == homed

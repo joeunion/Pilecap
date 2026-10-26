@@ -16,22 +16,21 @@ PM skill's own vocabulary. Nothing here survives a CLOSE except by moving to
 
 **Stage:** *(no cycle is open)*
 
-## Live dispatch table
+## Dispatch ledger
 
-| # | Task | Role · model | State | Sent | Returned | Result |
-|---|---|---|---|---|---|---|
+The dispatch ledger is derived: `.venv/bin/python scripts/ledger_derive.py` (briefs → reports → pull requests).
 
 <!-- worked example — replace with your product's first real entry -->
 
-> ## EXAMPLE — one dispatch row; delete when the first real one lands
+> ## EXAMPLE — the header block a brief opens with, straight after its title (`ledger_derive.BRIEF_FIELDS`)
 >
-> | # | Task | Role · model | State | Sent | Returned | Result |
-> |---|---|---|---|---|---|---|
-> | 1-3 | ORD-1: the tenant leak in the orders list door — rule 8's scope widened to `apps/*/api/**` with a canary in a package route; red-first, both doors | development · opus · worktree | returned — MERGED (← 4f1e0a2) | 2026-03-05 | 2026-03-06 | leak reproduced two-tenant then closed; canary fires; `--loop` exit 0 |
+> ```
+> rung: ORD-1
+> role: builder
+> branch: pm/ord-1
+> ```
 >
-> The Result cell is where the rung's evidence lands — the merge sha, the
-> gate's exit status, what went red before it went green. A cell that names
-> no artifact is a hypothesis wearing a status.
+> A brief that names no block is a dispatch the derivation cannot see: exit 2, naming the file.
 
 ## Friction log
 
@@ -41,13 +40,10 @@ frictionless cycle, and there has never been one.)*
 
 ## Dispatch ledger states
 
-States: *dispatching* → *sent* → *returned*. Advance to `sent` in the same
-action as the call, **and a `sent` row names its agent** — a row that cannot
-name its agent is not sent. At CLOSE, sweep the table: any row still at
-`dispatching` or `sent` with no live or returned agent behind it is a
-finding. **When checking whether the loop is alive, ask the agent list —
-never this table.**
-
-Closed-cycle ledgers move out of this file at CLOSE, into
-`docs/product/archive/` (one file, `in-flight-closed`), so this one stays
-readable cold.
+States: *sent* (the brief's dispatch commit) → *returned* (its report) → the
+pull request's own state — printed by `ledger_derive.py`, never typed. A brief
+with no header block is a dispatch the derivation cannot see (exit 2). At CLOSE,
+`ledger_derive.py --stale --hours N` names every `sent` row with no report and
+no pull request activity; **whether the loop is alive is the agent list's to
+confirm — never the table's.** Nothing is moved at CLOSE: the derivation is the
+history.

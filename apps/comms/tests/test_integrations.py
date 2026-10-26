@@ -23,6 +23,8 @@ answered it. This is comms' answer, and every test here is one property of it:
   slot. Two questions, two keys, and neither re-decides the other.
 """
 
+# names, never reads: docs/runbooks/deploy.md — a substring a row's remedy must carry; never opened
+
 from __future__ import annotations
 
 from collections.abc import Iterator

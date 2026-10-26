@@ -64,6 +64,7 @@ from apps.connections.services import create_connection
 from apps.core.actor import Actor, actor_for, system_actor
 from apps.core.exceptions import Conflict, Forbidden, Invalid, NotFound
 from apps.core.models import Tenant
+from apps.core.tests.wire import REQUEST_FIXED_QUERIES
 from config.api import as_the_door_renders
 
 pytestmark = pytest.mark.django_db
@@ -72,23 +73,8 @@ JSON = "application/json"
 LIST_URL = "/api/v1/delivery-policies/"
 TEMPLATE_LIST_URL = "/api/v1/templates/"
 
-#: Measured at ten policy rows, not guessed: the session row + the user row +
-#: 1 SAVEPOINT (ATOMIC_REQUESTS) + the membership lookup TenantMiddleware makes
-#: + the acting-org lookup beside it + COUNT + the page + 1 RELEASE SAVEPOINT.
-#: `DeliveryPolicy` is tenant-scoped and its steps are a column, so there is no
-#: relation to follow and no N+1 to hide — which is exactly what this pin is
-#: here to keep true if somebody later makes steps a table.
-# ADR core-18 took one statement OFF this pin: the default list issues no
-# COUNT any more — `has_more` comes from fetching one row more than asked
-# for. `?include_count=true` puts it back, and costs exactly one more.
-# PR4.b (ADR core-27) adds exactly THREE: a read is a permission now, so the
-# selector behind this door calls `require(actor, "<kind>.read", ...)` once,
-# and the first `require` of a request reads the actor's three permission
-# tables — the memberships on the chain, their grants, and the delta rows for
-# the role keys those name. Three and not six because PR0's memo rides on the
-# actor: a second `require` in the same request costs nothing, which is what a
-# route that fetches through a `get_` and then calls a service is standing on.
-LIST_QUERY_BUDGET = 10
+#: The policy list at ten rows: the fixed request cost plus the page.
+LIST_QUERY_BUDGET = REQUEST_FIXED_QUERIES + 1
 
 
 def body(response: Any) -> dict[str, Any]:
@@ -232,7 +218,8 @@ def test_the_mcp_twins_answer_with_the_same_body(
     MCP test in this repository is written — and the assertion is that the
     machine door hands back the *same object* the human door does, key for key.
     """
-    from apps.comms.tests.test_mcp import context_for, tool
+    from apps.comms.tests.test_mcp import tool
+    from apps.core.tests.mcp_context import context_for
 
     created = create_policy(tenant=tenant, actor=owner_actor, name="oncall", steps=steps())
     ctx = context_for(owner, tenant, owner_actor.org)
@@ -676,7 +663,7 @@ SURGE_KEYS = ("suppression_surge.create",)
 #: not read it. `test_suppression_wall.py`'s shape, and its reason: the baseline
 #: is a shared file at the root of the tree and this app owns neither it nor the
 #: right to conflict four other lanes on it.
-ESP_SECRET = "w55-comms-signs-with-its-own-string"  # pragma: allowlist secret
+ESP_SECRET = "w55-comms-signs-with-its-own-string"  # noqa: S105 — a signing secret the test both signs and verifies with  # pragma: allowlist secret
 
 
 @pytest.fixture
@@ -887,7 +874,8 @@ def test_a_branch_administrator_is_refused_the_configuration_routes_at_both_door
     """
     from mcp.server.mcpserver.exceptions import ToolError
 
-    from apps.comms.tests.test_mcp import context_for, tool
+    from apps.comms.tests.test_mcp import tool
+    from apps.core.tests.mcp_context import context_for
 
     branch_admin = branch_admin_of(branches)
     api.force_login(branches.manager)

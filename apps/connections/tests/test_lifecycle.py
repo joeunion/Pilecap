@@ -34,14 +34,11 @@ from apps.connections.workflows import PurgeInboundWebhooksWorkflow
 from apps.core.audit import AuditEntry
 from apps.core.lifecycle import LifecycleKind, lifecycle_of
 from apps.core.models import Tenant
+from apps.core.schedules import DAILY, platform_id
 from apps.core.time import in_days, now
+from apps.core.types import Swept
 
 TASK_QUEUE = "djb-connections-tests"
-
-#: The declaration's own name, in one place: the tooth resolves this dotted
-#: path, and a test that spelled it a second time could go green against a
-#: model that had quietly stopped pointing here.
-PURGED_BY = "apps.connections.services.purge_inbound_webhooks"
 
 # Comfortably outside the ninety-day window, and comfortably inside it. Written
 # as offsets from the declared retention rather than as bare numbers, so the day
@@ -140,6 +137,35 @@ def test_the_purge_takes_processed_deliveries_and_leaves_the_open_promises(
     assert Connection.objects.for_tenant(tenant).filter(pk=connection.pk).exists()
 
 
+def test_the_purge_sweeps_a_handled_receipt_and_never_a_failed_one(
+    tenant: Tenant, connection: Connection
+) -> None:
+    """Same age, past the window: `handled` goes, `handler_failed` stays for its replay."""
+    handled = store(
+        tenant=tenant,
+        connection=connection,
+        delivery_id="old-handled",
+        status=InboundWebhook.Status.HANDLED,
+        handed_off_days=WELL_PAST,
+    )
+    failed = store(
+        tenant=tenant,
+        connection=connection,
+        delivery_id="old-handler-failed",
+        status=InboundWebhook.Status.HANDLER_FAILED,
+        handed_off_days=WELL_PAST,
+    )
+
+    removed = services.purge_inbound_webhooks(
+        before=in_days(-activities.INBOUND_WEBHOOK_RETENTION_DAYS), tenant=None
+    )
+
+    assert removed.count == 1
+    surviving = set(InboundWebhook.objects.for_tenant(tenant).values_list("pk", flat=True))
+    assert surviving == {failed.pk}
+    assert handled.pk not in surviving
+
+
 def test_a_second_sweep_in_the_same_window_removes_nothing(
     tenant: Tenant, connection: Connection
 ) -> None:
@@ -224,93 +250,31 @@ def test_the_purge_leaves_the_platform_audit_row(tenant: Tenant, connection: Con
 
 
 def test_the_schedule_this_app_declares() -> None:
-    """Daily, on this deployment's queue, carrying the retention on its action.
-
-    The window rides on the ACTION rather than being read inside the activity,
-    so an operator can see it on the schedule instead of in the source — and so
-    both lifetime classes read the same number out of the same value.
-    """
-    schedule = activities.purge_inbound_webhooks_schedule(task_queue=TASK_QUEUE)
+    """Daily under one `platform:connections:purge:<queue>` id; the window rides the action."""
+    declaration = activities.PURGE_INBOUND_WEBHOOKS
+    schedule = declaration.schedule(TASK_QUEUE)
 
     action: Any = schedule.action
+    expected = platform_id(app="connections", noun="purge", key=TASK_QUEUE)
+    assert declaration.schedule_id(TASK_QUEUE) == expected
+    assert action.id == expected
     assert action.workflow == PURGE_WORKFLOW
-    assert action.id == activities.purge_workflow_id(task_queue=TASK_QUEUE)
     assert action.task_queue == TASK_QUEUE
     assert action.args == [
         PurgeInboundWebhooks(retention_days=activities.INBOUND_WEBHOOK_RETENTION_DAYS)
     ]
-    assert schedule.spec.intervals[0].every == activities.PURGE_EVERY
+    assert schedule.spec.intervals[0].every == DAILY
 
 
 def test_two_queues_are_two_schedules_pointing_at_their_own_queue() -> None:
-    """ADR events-2's property, restated for this app's machine.
-
-    A schedule id is global to the Temporal namespace. A constant one makes
-    every worker's startup a silent fight over where the sweep runs, as
-    observed live on a laptop with five worktrees against one dev server.
-    """
-    one = activities.purge_schedule_id(task_queue="djb-alpha")
-    two = activities.purge_schedule_id(task_queue="djb-beta")
+    """A schedule id is global to the namespace, so each queue has its own (ADR events-2)."""
+    declaration = activities.PURGE_INBOUND_WEBHOOKS
+    one = declaration.schedule_id("djb-alpha")
+    two = declaration.schedule_id("djb-beta")
 
     assert one != two
-    assert "djb-alpha" in one
-    assert "djb-beta" in two
-    assert activities.purge_workflow_id(task_queue="djb-alpha") != activities.purge_workflow_id(
-        task_queue="djb-beta"
-    )
-
-
-def test_the_chain_rule_31_walks_is_written_down_end_to_end() -> None:
-    """The tooth, asserted from inside the app whose promise it guards.
-
-    Every link, in the order the rule walks them. It is deliberately not one
-    "the gate is green" assertion: when this breaks, the failing line says WHICH
-    link went, which is the difference between a five-minute fix and an
-    afternoon.
-
-    **Read off this app's own exports, never off `apps.workflows`' discovery.**
-    `apps.connections` may not import the platform app (the layer contract holds
-    the platform apps independent, and this app's `AppConfig` docstring is about
-    exactly that), so what is asserted here is the half this app owns: that the
-    three module attributes discovery goes looking for — `ACTIVITIES`,
-    `WORKFLOWS`, `SCHEDULES`, in the conventional files — are exported, and that
-    each link inside them points at the next. That the platform's `_discover`
-    then finds them is the platform's own test's subject
-    (`apps/workflows/tests/test_machinery_lifetime.py`), and rule 31's tooth
-    walks the whole chain through the live registry on every gate run.
-    """
-    from temporalio import activity as temporal_activity
-    from temporalio import workflow as temporal_workflow
-
-    from apps.connections import workflows as connections_workflows
-
-    # 1. the declaration names a callable, and the callable is the service.
-    declared = lifecycle_of(InboundWebhook)
-    assert declared is not None
-    assert declared.kind is LifecycleKind.PURGED
-    assert declared.purged_by == PURGED_BY
-    module, _, attribute = PURGED_BY.rpartition(".")
-    assert module == services.__name__
-    assert getattr(services, attribute) is services.purge_inbound_webhooks
-
-    # 2. an activity calls it, and it is in the list the worker collects.
-    assert activities.purge_inbound_webhooks in activities.ACTIVITIES
-    definition = temporal_activity._Definition.from_callable(activities.purge_inbound_webhooks)
-    assert definition is not None
-    assert definition.name == "purge_inbound_webhooks"
-
-    # 3. a workflow in this app's WORKFLOWS executes that activity by name, and
-    #    Temporal knows it by the name the schedule's action uses.
-    assert connections_workflows.WORKFLOWS == [PurgeInboundWebhooksWorkflow]
-    workflow_definition = temporal_workflow._Definition.from_class(PurgeInboundWebhooksWorkflow)
-    assert workflow_definition is not None
-    assert workflow_definition.name == PURGE_WORKFLOW
-    assert '"purge_inbound_webhooks"' in inspect.getsource(PurgeInboundWebhooksWorkflow)
-
-    # 4. a ScheduleDeclaration in this app's SCHEDULES names that workflow.
-    assert activities.SCHEDULES == [activities.PURGE_INBOUND_WEBHOOKS]
-    action: Any = activities.PURGE_INBOUND_WEBHOOKS.schedule(TASK_QUEUE).action
-    assert action.workflow == PURGE_WORKFLOW
+    assert one.endswith(":djb-alpha")
+    assert two.endswith(":djb-beta")
 
 
 def test_the_purge_workflow_owns_no_run() -> None:
@@ -321,6 +285,16 @@ def test_the_purge_workflow_owns_no_run() -> None:
     housekeeping. The marker says "I own no row", never "I am exempt".
     """
     assert PurgeInboundWebhooksWorkflow.owns_no_run is True
+
+
+def test_the_sweep_is_on_the_daily_factorys_one_signature() -> None:
+    """ADR core-22 absence 1: `(*, before, tenant: None) -> Swept`, `daily_purge`'s shape."""
+    signature = inspect.signature(services.purge_inbound_webhooks, eval_str=True)
+
+    assert list(signature.parameters) == ["before", "tenant"]
+    assert {p.kind for p in signature.parameters.values()} == {inspect.Parameter.KEYWORD_ONLY}
+    assert signature.parameters["tenant"].annotation is None
+    assert signature.return_annotation is Swept
 
 
 # --- X1-3: the census --------------------------------------------------------

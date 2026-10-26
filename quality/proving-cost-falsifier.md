@@ -12,7 +12,7 @@ measurement and by a factor of eleven on the noisy one, and — the part worth
 carrying forward — **the normalisation the design rests on makes the number
 *less* stable, not more.**
 
-Nothing was recorded. There is no `quality/proving.yaml`, no `proving-cost` leg
+Nothing was recorded. There is no `proving.yaml` in `quality/`, no `proving-cost` leg
 in `scripts/check.sh`, no plugin registered from a root `conftest.py`, and no
 new dependency. What exists is this file: the design, the numbers, the
 diagnosis, and what a next attempt would have to do differently.
@@ -21,7 +21,7 @@ diagnosis, and what a next attempt would have to do differently.
 
 ## What was built and measured
 
-`quality/proving_cost.py` (a pytest plugin, since removed — its source is at
+`proving_cost.py` (a pytest plugin under `quality/`, since removed — its source is at
 the bottom of this file) measured, per session:
 
 - **calibration** — seconds for one `sha256` over 20MB of deterministic bytes,
@@ -173,7 +173,7 @@ working measurement rather than from a description of one.
 ## Appendix — the instrument, verbatim
 
 Removed from the tree with the leg (a module nothing imports is a wish). Drop
-it back at `quality/proving_cost.py` and add `pytest_plugins =
+it back into `quality/` as `proving_cost.py` and add `pytest_plugins =
 ("quality.proving_cost",)` to a root `conftest.py` to re-run the measurement.
 It writes `quality/.proving_cost.json` after every pytest session.
 
@@ -288,7 +288,7 @@ def pytest_configure(config: Any) -> None:
     config.pluginmanager.register(ProvingCost(), "djb-proving-cost")
 ```
 
-The checker half — which read this record against a `quality/proving.yaml` of
+The checker half — which read this record against a `proving.yaml` of
 recorded ceilings, exit 0 clean / 1 growth / 2 record missing, malformed, from
 a red or empty suite, or from a different run than the one that just happened —
 was written and is deliberately not preserved: it enforces the metric this file

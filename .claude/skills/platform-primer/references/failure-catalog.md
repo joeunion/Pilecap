@@ -129,6 +129,12 @@ tell is the code shape; the mechanism is the rule.
   because the guess is usually *nearly* right. Fix:
   `uv run python manage.py introspect` — the real models, routes, tools,
   consumers, workflows and non-secret settings, as JSON, every time.
+- **The second road.** Writing a helper for a job the platform already does
+  one way — a refusal body, a discovery walk, an exit-2 banner — because the
+  prose that described the shape was out of date or never read. House rule 84
+  refuses a second marker for one job and counts the unmarked copies by shape,
+  down-only. Fix: `uv run python manage.py roads <job>` before the first line;
+  call the road it prints.
 - **The merge migration.** Two leaves in one app, and a reach for
   `makemigrations --merge`. Rule 6 blocks the artifact and
   `django-linear-migrations` turns the collision into a git conflict on

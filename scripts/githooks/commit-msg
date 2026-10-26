@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Commit-msg: the layer step writes the `Layer-Sanction:` trailer a sanctioned commit carries (rule 95).
+set -euo pipefail
+message="$(cd "$(dirname "$1")" && pwd -P)/$(basename "$1")"
+cd "$(git rev-parse --show-toplevel)"
+# The index this commit is made from, kept before the neutralisation `pre-commit` carries.
+hook_index="${GIT_INDEX_FILE:-}"
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR \
+    GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE GIT_PREFIX
+exec env ${hook_index:+GIT_INDEX_FILE="$hook_index"} .venv/bin/python -m quality.djb.cli hook commit-msg "$message"

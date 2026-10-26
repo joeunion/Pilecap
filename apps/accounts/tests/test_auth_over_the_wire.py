@@ -1,48 +1,10 @@
-"""`API_AUTH` as the four kinds of caller actually meet it, over a real request.
+"""`API_AUTH` as the four kinds of caller meet it, over the real ASGI stack with CSRF on.
 
-`django.test.Client` sets `_dont_enforce_csrf_checks` on every request it makes,
-so the entire suite drives a stack with CSRF switched off — which is how a
-bearer `POST` could answer **403 "CSRF check Failed"** over the wire while every
-test in the tree was green (queue V4). Nothing here uses it. This builds the
-real ASGI application `uvicorn` serves and speaks HTTP to it through
-`httpx.ASGITransport`, exactly as `apps/core/tests/test_mcp.py` drives the
-machine door: real middleware, real `CsrfViewMiddleware`, real session cookie,
-real token.
-
-**The four probes, and the fifth that provoked the change.** ninja runs the
-authenticators in `API_AUTH` order and stops at the first that returns
-something; `ninja.security.APIKeyCookie._get_key` **raises** `HttpError(403)`
-when its CSRF check fails rather than declining, and `_run_authentication` turns
-any exception into the response. So the cookie authenticator answers for callers
-that never sent a cookie unless it declines first:
-
-* **no credential at all** → 401. It was 403 "CSRF check Failed", which tells an
-  anonymous client to go and find a CSRF token when what it needs is to
-  authenticate, and implies a session it does not have. This is R1.
-* **bearer, no cookie** → 201. The machine door; a token is not a cookie, so
-  there is no cross-site request to forge (this is queue V1's regression, said
-  here beside its siblings).
-* **bad bearer** → 401, not a 403 about a cookie it never sent.
-* **session, no CSRF token** → 403. Unchanged, and the whole point: this is the
-  attack CSRF exists for.
-* **session + CSRF token** → 201. The browser that plays by the rules.
-
-The two session probes build their cookies the way the framework does —
-`SessionStore` with the auth keys `login()` writes, and a server-issued
-`csrftoken` fetched over the same connection. Nothing is forged in a way a
-browser could not be.
-
-This module names no domain app. It drives `/api/v1/widgets/` as a URL, because
-authentication happens before any route function runs and the widget router is
-the one write route the template always mounts — and `accounts` sits *below*
-`apps.example` in the layer contract, so importing it here would cost an
-exemption for a property that has nothing to do with widgets.
+`django.test.Client` switches CSRF off; nothing here uses it.
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from importlib import import_module
 from typing import Any
 
@@ -55,11 +17,7 @@ from apps.accounts.models import User
 from apps.accounts.services import issue_token, revoke_token
 from apps.core.actor import actor_for
 from apps.core.models import Tenant
-
-# The transport harness for the machine door, from the module that owns it —
-# `apps/core/tests/test_mcp.py`. Copying it here would be a second thing to keep
-# in step with the MCP protocol version, and `core` sits below `accounts`.
-from apps.core.tests.test_mcp import MCP_HEADERS, running
+from apps.core.tests.wire import MCP_HEADERS, MCP_URL, rpc, wire
 
 # `transaction=True` because the request commits: the widget route's service
 # registers work on `transaction.on_commit`, and a test that never commits would
@@ -68,8 +26,6 @@ from apps.core.tests.test_mcp import MCP_HEADERS, running
 pytestmark = [pytest.mark.django_db(transaction=True), pytest.mark.asyncio]
 
 WIDGETS_URL = "/api/v1/widgets/"
-MCP_URL = "/mcp"
-BASE_URL = "http://testserver"
 
 # The two sentences this door says no with, written out rather than imported
 # from the module they pin: a pin derived from the thing it pins cannot fail,
@@ -87,45 +43,6 @@ SESSION_DESTINATION = "self:session"
 # under test — it is a source of a real, server-issued token, which is the only
 # kind worth asserting against.
 CSRF_SOURCE_URL = "/admin/login/"
-
-
-@asynccontextmanager
-async def wire() -> AsyncIterator[httpx.AsyncClient]:
-    """An HTTP client speaking to the real application, with nothing switched off."""
-    from config.asgi import build_application
-
-    application = build_application()
-    transport = httpx.ASGITransport(app=application)
-    async with httpx.AsyncClient(transport=transport, base_url=BASE_URL) as client:
-        yield client
-
-
-@asynccontextmanager
-async def both_doors() -> AsyncIterator[httpx.AsyncClient]:
-    """`wire()`, with the machine door's session manager running as well.
-
-    One application and one client, so a probe of `/api/v1/…` and a probe of
-    `/mcp` in the same test are two doors onto the same process rather than two
-    processes that happen to agree. `running(...)` is what `/mcp` needs: the
-    Streamable HTTP transport keeps a session manager, and a POST to it without
-    one is a transport error rather than the refusal under test.
-    """
-    from config.asgi import build_application
-
-    application = build_application()
-    async with running(application):
-        transport = httpx.ASGITransport(app=application)
-        async with httpx.AsyncClient(transport=transport, base_url=BASE_URL) as client:
-            yield client
-
-
-def tools_list() -> dict[str, Any]:
-    """The cheapest thing a real MCP client asks for, as JSON-RPC.
-
-    The credential is refused at the mount, before any tool is reached, so the
-    method here only has to be one a client really sends.
-    """
-    return {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
 
 
 @pytest.fixture
@@ -320,13 +237,13 @@ async def test_a_revoked_bearer_reads_the_same_sentence_on_both_doors(
     control — the caller who sent nothing keeps the sentence and the remedies
     they always had, including the session remedy REST can honour.
     """
-    async with both_doors() as client:
+    async with wire() as client:
         bearer = {"authorization": f"Bearer {revoked_bearer}"}
         over_rest = await client.get(WIDGETS_URL, headers=bearer)
         over_mcp = await client.post(
             MCP_URL,
             headers={**MCP_HEADERS, **bearer},
-            json=tools_list(),
+            json=rpc("tools/list", {}),
         )
         sent_nothing = await client.get(WIDGETS_URL)
 

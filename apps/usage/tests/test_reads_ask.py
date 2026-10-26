@@ -25,14 +25,11 @@ branch-anti-oracle cases live in `test_selectors.py` and none of them moved.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any
 
 import pytest
 from django.test import Client
-from mcp.server import MCPServer
-from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 
 from apps.accounts.models import User
@@ -40,10 +37,10 @@ from apps.accounts.services import create_user, issue_token
 from apps.core.actor import actor_for
 from apps.core.authz import refusal_sentence
 from apps.core.exceptions import Forbidden
-from apps.core.mcp import SCOPE_KEY, Principal
 from apps.core.middleware import ORG_HEADER
 from apps.core.models import Grant, Membership, Organization, Tenant
 from apps.core.services import add_membership
+from apps.core.tests.mcp_context import context_for, tool
 from apps.usage.api import _window
 from apps.usage.mcp import register
 from apps.usage.selectors import get_usage
@@ -79,7 +76,7 @@ def reader(world: World) -> Reader:
         organization=world.root,
         is_default=True,
         role=Membership.Role.MEMBER,
-        actor=world.root_actor,
+        actor=world.owner,
     )
     return Reader(user=person, membership=membership, tenant=world.tenant, org=world.root)
 
@@ -96,31 +93,6 @@ def withhold(membership: Membership, permission: str) -> Grant:
 
 def _month(world: World) -> Any:
     return _window(period=PeriodKind.MONTH, on=None)
-
-
-@dataclass
-class _FakeRequest:
-    scope: dict[str, Any]
-
-
-@dataclass
-class _FakeRequestContext:
-    request: _FakeRequest
-
-
-def context_for(user: User, tenant: Tenant, org: Organization) -> Context[Any]:
-    """The context a tool sees, with the principal the middleware would have left."""
-    scope = {SCOPE_KEY: Principal(user=user, tenant=tenant, org=org)}
-    return Context(
-        request_context=cast(Any, _FakeRequestContext(request=_FakeRequest(scope=scope)))
-    )
-
-
-def tool(name: str) -> Callable[..., Any]:
-    server: MCPServer[Any] = MCPServer(name="test", version="1")
-    register(server)
-    found: Callable[..., Any] = cast(Any, server._tool_manager._tools[name]).fn  # noqa: SLF001
-    return found
 
 
 # --- PR4.h.1 · the selector asks, for the kind it totals -----------------------
@@ -209,7 +181,7 @@ def test_a_withheld_usage_read_is_forbidden_on_both_doors(
     assert body["detail"] == sentence
 
     with pytest.raises(ToolError) as refused:
-        tool("get_usage")(ctx=context_for(reader.user, world.tenant, world.root))
+        tool("get_usage", register=register)(ctx=context_for(reader.user, world.tenant, world.root))
 
     said = str(refused.value)
     assert "forbidden" in said, said

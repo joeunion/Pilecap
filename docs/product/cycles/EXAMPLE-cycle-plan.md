@@ -53,7 +53,7 @@ landing tree `/complete/` is 404.
 **C1.** `GET /api/orders/?page=1` (a 50-row page, the size the router's pagination class sets) against the seeded database (`uv run
 python manage.py seed_orders --tenant demo --count 500`) issues **≤ 5**
 queries, asserted by `django_assert_num_queries(5)` in
-`apps/orders/tests/test_api.py::test_list_orders_query_budget`. *Absent case:*
+`apps/<orders>/tests/test_api.py::test_list_orders_query_budget`. *Absent case:*
 on the baseline tree the same test with the pin at 5 **fails** with 53 queries
 — this is the demonstration that the pin can fail.
 
@@ -74,7 +74,7 @@ plan-ratified in writing and the new hashes recorded at CLOSE.
   (`test_create_order_with_existing_customer`).
 - A user with no membership gets **an empty list**, not another tenant's
   draft (`test_no_membership_sees_nothing`).
-- `makemigrations --check` clean; one leaf in `apps/orders/migrations/`;
+- `makemigrations --check` clean; one leaf in `apps/<orders>/migrations/`;
   `max_migration.txt` matches.
 
 ## What these criteria would NOT catch (the declared blind spots)

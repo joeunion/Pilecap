@@ -3,7 +3,7 @@
 The properties, not the mechanisms: liveness answers without a database,
 readiness reports one boolean per dependency, a failing dependency turns the
 whole answer into a 503 with that member `false`, and neither endpoint asks for
-a credential or leaks anything past those booleans.
+a credential or leaks anything past those booleans (DEBUG adds the database's name).
 
 The last section is about the membership itself — which organs are in the
 report, and which one is kept out on purpose.
@@ -53,6 +53,30 @@ def test_readyz_reports_every_dependency(api: Client, monkeypatch: pytest.Monkey
         "channel_layer": True,
         "temporal": True,
     }
+
+
+@pytest.mark.django_db
+@override_settings(DEBUG=True)
+def test_readyz_names_the_database(api: Client, monkeypatch: pytest.MonkeyPatch) -> None:
+    """On a DEBUG stack, the database this process serves — a drive compares it to its own."""
+    monkeypatch.setattr(health, "check_temporal", lambda: True)
+
+    response = api.get(reverse("readyz"))
+
+    assert response.status_code == 200
+    assert response.json()["database"] == settings.DATABASES["default"]["NAME"]
+
+
+@pytest.mark.django_db
+@override_settings(DEBUG=False)
+def test_readyz_names_no_database_off_debug(api: Client, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A deployed replica's body stays booleans only."""
+    monkeypatch.setattr(health, "check_temporal", lambda: True)
+
+    body = api.get(reverse("readyz")).json()
+
+    assert "database" not in body
+    assert all(isinstance(value, bool) for value in body.values())
 
 
 @pytest.mark.django_db

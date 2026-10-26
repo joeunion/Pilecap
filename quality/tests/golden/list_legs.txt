@@ -1,0 +1,5 @@
+static	db	0	db-pin,ruff,sdk-reference,mypy,import-linter,djb-checks,house-rules,migrations,goalpost-census,queue-index,ledger-check,archaeology,adr-census,dangling-docs,ci-env,collection-census,deploy-check,plant-collisions,fe,collectstatic,threat-census
+supply-chain	network	0	supply-chain
+pytest-x2	db,redis,temporal,minio,meilisearch	N-capable	pytest-x2
+selftest	db,docker,temporal,zitadel,mailpit,network	N-capable	selftest,drive_preamble,gate-tests
+full-house-rules	none	0	full-house-rules

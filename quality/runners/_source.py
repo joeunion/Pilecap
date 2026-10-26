@@ -32,7 +32,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from quality.runners import _css  # noqa: E402
+from quality.runners import (
+    _css,  # noqa: E402
+    _kindscope,  # noqa: E402
+)
 
 SCRIPT_SUFFIXES = _css.SCRIPT_SUFFIXES
 #: Test, story and spec modules exercise a face; they are not the face.
@@ -53,8 +56,7 @@ class Literal:
 
 @dataclass
 class Source:
-    """One script: the raw text, the text with comments blanked, the text with
-    comments AND string contents blanked, and every literal it holds."""
+    """One script: raw, comments blanked, comments and strings blanked, and its literals."""
 
     path: str
     raw: str
@@ -186,7 +188,7 @@ def scripts(roots: list[str], *, under: tuple[str, ...] = _css.SRC_ROOT) -> list
     out: list[Source] = []
     seen: set[Path] = set()
     for root in roots:
-        for path in _css.files_under(Path(root)):
+        for path in _kindscope.files_under(Path(root), _css.SUFFIXES, under=_css.SRC_ROOT):
             if path in seen or path.suffix not in SCRIPT_SUFFIXES or exempt(path):
                 continue
             if path.parts[: len(under)] != under:

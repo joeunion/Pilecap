@@ -56,6 +56,7 @@ VOLATILE = {
     "savedSearch",
     "savedSearchId",
     "webhookId",
+    "dashboardId",
     "createdBy",
     # bookkeeping
     "createdAt",
@@ -126,18 +127,27 @@ def main(argv: list[str] | None = None) -> int:
     for member in result["alerts"]:
         if member.get("delivered_by") != "clickstack":
             continue
-        # One shape per kind — `transition`, `recovery`, `probe` — looked up the
+        # One shape per kind — `census.KINDS`, the tuple apply.py reads — looked up the
         # same way apply.py looks it up, so the two cannot drift into expecting
         # different sets. A kind with no shape would silently drop a member from
         # `expected` and report the live alert as NOT IN THE CENSUS, which is a
         # false red in the direction that gets a check ignored.
         kind = member["kind"]
-        if kind not in ("transition", "recovery", "probe"):
+        if kind not in census_module.KINDS:
             print(f"REFUSING: census member {member['name']!r} has unknown kind {kind!r}.")
             return 2
         shape = definitions[kind]
-        expected.add(shape["saved_search"]["name"].format(**member))
-    live = {str((alert.get("savedSearch") or {}).get("name")) for alert in alerts}
+        if kind == "traces":
+            expected.add(f"tile:{shape['tile']['name'].format(**member)}")
+        else:
+            expected.add(shape["saved_search"]["name"].format(**member))
+    live = set()
+    for alert in alerts:
+        if alert.get("source") == "tile":
+            tiles = (alert.get("dashboard") or {}).get("tiles") or []
+            live.update(f"tile:{(tile.get('config') or {}).get('name')}" for tile in tiles)
+        else:
+            live.add(str((alert.get("savedSearch") or {}).get("name")))
 
     print(json.dumps(export, indent=2, sort_keys=True))
     print()

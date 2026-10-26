@@ -54,354 +54,14 @@ EXEMPT_APPS = {"zzz_canary", "example"}
 #: one `quality/` file (`quality/budgets.yaml`) is the engine's own data.
 #: `config/api.py` and `config/mcp.py` are the mounts rule 44 is ABOUT — a wrap
 #: of a library's private lives where the mounting happens.
-#:
-#: 13 -> 11: rule 5 dropped the two plants into
-#: `quality/perf-realtime-measurement.md` and `quality/perf-ledgers-measurement.md`
-#: (see `TOTAL_PLANTS` above).
-#:
-#: 11 -> 13 (P15 R7): rule 41's top-level-key census plants its canary and its
-#: negative into `config/api.py`, the module whose `ContractAPI.get_openapi_schema`
-#: builds the document the census is about. A canary for a document key planted
-#: anywhere else would be proving the check against a document nothing serves —
-#: the same reasoning that puts rule 3's third clause into `config/urls.py`.
-#:
-#: 18 -> 38 (P16 R-d): rules 51-53's nineteen plants and rule 50's
-#: fetch-credentials precision-fix negative, all twenty under `frontend/` —
-#: the first population that cannot plant in the scaffold at all (the scaffold
-#: is a Django app; a JS rule reads the frontend tree). The arrival that
-#: forced the ratio test's safe set to say what it always meant — see the
-#: safe-set ruling of 2026-09-02, cycles/2026-09-02-velocity-intake.md.
-#:
-#: 45 -> 49 (P21 X7): rule 60's second class — the drawers table is the rule's
-#: one reader — needs four more forms and not one of them can live in an app.
-#: Two plant a template-owned script that opens a drawer (`scripts/`), one with
-#: a row for it and one without; two plant a row into the table itself
-#: (`docs/product/build-contract.md`), one naming a reader the tree does not
-#: have and one reserving a name as `held`. The rule's subject is which files
-#: the TEMPLATE owns and where the seams beside them are written down, so a
-#: form inside an app would be a canary about somewhere the rule does not look.
-#: 49 -> 52 (2026-09-22, HOTFIX-CANARY-1): rule 60's three extra files; see
-#: `TOTAL_PLANTS`.
-#: 52 -> 63 (rules 61 and 62): eleven more, and none can live in an app. Rule
-#: 61's five append into the two compose stacks (`compose.yaml`,
-#: `deploy/compose.yaml`) — its kind's roots are those files; rule 62's six
-#: create workflows under `.github/workflows/zzz_canary/`.
-#: 63 -> 66 (rule 63): the pattern book's three forms, every one appended into
-#: the product's drawer beside the book (`docs/product/design/`) — the rule's
-#: subject is the book, so a form inside an app would prove somewhere it never
-#: reads.
-#: 66 -> 90 (rules 64-67, the scales): twenty-four forms, every one under
-#: `frontend/src/` (its `zzz_canary` segment and the tokens layer's) or
-#: appended into the pattern book's drawer — the JS layer is the rules'
-#: subject, and the scaffold is a Django app.
-#: 90 -> 94 (rule 63's second clause): two canaries and two negatives, each
-#: a face module created under `frontend/src/{screens,components}/zzz_canary/`.
-#: 94 -> 126 (rules 68-73, the act, dialog, route and word instruments):
-#: twenty canaries, ten negatives and two extra files, every one under
-#: `frontend/src/` — created under a `zzz_canary` segment (in `app/`, `copy/`
-#: or the bare tree) or appended into the route table
-#: (`frontend/src/screens/routes.ts`), which is the file rule 71 is about.
-#: 126 -> 130 (rules 68 and 69 widened): one canary and one negative each, all
-#: created under `frontend/src/zzz_canary/` — rule 68's stylesheet clause
-#: (`pointer-events: none` on a pressable) and rule 69's script word `loader`.
-#: 130 -> 146 (rules 77-80, the noun-verb family's face rules): eleven canaries
-#: and five negatives — the road, the acts and the words plant under
-#: `frontend/src/{screens,copy}/zzz_canary/` or `frontend/src/zzz_canary/`, and
-#: the verb table's three append into the pattern book's drawer
-#: (`docs/product/design/patterns.local.md`), which is the book rule 80 reads.
-#: 146 -> 149 (rule 77 reads import and attach): two canaries and one
-#: negative, created under `frontend/src/screens/zzz_canary/`.
-OUTSIDE_APPS_PLANTS = 149
+#: Pinned from the bucket walk's `outside`; rule 97's 3 drawer removals are 3 of it.
+OUTSIDE_APPS_PLANTS = 205
 
-#: Measured once, then re-measured every time a rule arrived. Rule 43 added
-#: five product-app plants across three entries. Rule 44 added six — four in the
-#: scaffold, two in `config/`, and NONE in a product app, the reason its
-#: test-module negative went to `apps/zzz_canary/tests/test_probe.py` rather than
-#: beside the real `apps/core/tests/test_method_refusal.py` it is modelled on.
-#: Rule 41's tag clause added five, ALL in the scaffold: the
-#: unbacked promise is two files and the kept promise is three, and the product
-#: apps gained none — a route that promises a role is a shape the probe app can
-#: hold as well as a real one. Rules 45, 46 and 47 added
-#: eighteen plants — ten in the scaffold, five in the worked example, and THREE
-#: in real product apps, each of which is a fact ABOUT a real app that the
-#: scaffold cannot carry (a one-door app growing a second door; an app already
-#: at its recorded ratchet taking on another debt; the module that installs the
-#: tools ceiling, stripped of it). Each carries its dated trigger and each
-#: trigger names a HEALTHY condition — the day the app grows the door, the day
-#: the debt is paid — never "the day this app stays broken", the rule adopted
-#: when rule 5's last real-app plant was retired.
-#: Rule 31 arrived with three canaries and four negatives, and
-#: rule 20's static tightening added one of each — ten plants, ALL TEN into the
-#: worked example and NONE into a product app. They cannot live in the scaffold
-#: for a mechanical reason worth recording: rule 31 reads the LIVE app registry
-#: through a Django boot, and `apps/zzz_canary` is scaffolded only for the
-#: batched `via: django` probe — an `ast`-planted model there would not be in
-#: `INSTALLED_APPS` and so would not be in `get_models()` at all. The worked
-#: example is an installed app that the template promises will keep every shape
-#: a rule needs to see, which is exactly what a lifecycle declaration is.
-#: The reason this file exists.
-#: Re-measured when rule 37 added seven plants, all seven in
-#: the worked example — the tenant-blind index shapes it refuses are model
-#: Meta edits, and the example app is where a refusable Meta lives without a
-#: product app staying ill (the rule above). Scaffold and product unchanged.
-#: Pinned by the PM as the merge-reconciliation commit after five server-side
-#: 529s killed the builder at exactly this line; the numbers are the census's
-#: own measured output, not a hand count (ratio 0.823 against the 0.80 floor).
-#: Re-measured when rule 33 arrived with three canaries and four
-#: negatives — five into the worked example, ONE into `config/settings/base.py`
-#: (the excepted reader, planted in the tree the exception names) and ONE into a
-#: real product app, `apps/search/selectors.py`. That last one is the class
-#: rules 45–47 recorded: the fence's allow-list names the chokepoint by path, so an
-#: allow-listed import proved anywhere else would be proving something about a
-#: module the rule does not talk about.
-#: Re-measured when rule 11 gained ONE negative, in the scaffold —
-#: `apps/zzz_canary/search.py`, proving that the filename the search registry's
-#: discovery seam requires of every adopting app (`registry.DECLARATION_MODULE`)
-#: is canonical everywhere rather than recorded per app. It belongs in the
-#: scaffold and nowhere else: the fact under proof is that ANY app may carry
-#: this file, which is exactly what a probe app can hold and what a plant into
-#: a real app would muddle with that app's own reasons for having one. Example,
-#: product and outside all unchanged; scaffold 92 -> 93.
-#: Re-measured when rule 48 (the storage wall) arrived: ten plants — EIGHT into
-#: the worked example, across four module shapes (`services.py`, `api.py`,
-#: `selectors.py`, `activities.py`), because the wall has four clauses and a
-#: fifth door and none of them may read as one file's habit; ONE into
-#: `config/settings/base.py` (the excepted reader, planted in the tree the
-#: exception names — rule 33's own shape); and ONE into a real product app,
-#: `apps/core/health.py`. That last is the rules 45–47 class again and rule 33's
-#: precedent exactly: the fence's allow-list names the readiness probe BY PATH, because
-#: `core` cannot import `files` (house rule 7) and a probe that could not reach
-#: the organ could not report on it — so an allow-listed import proved in the
-#: scaffold would be proving something about a module the rule does not talk
-#: about. Its trigger is the healthy one: the day `core` no longer needs its own
-#: client. Scaffold unchanged at 93; example 179 -> 187; outside 12 -> 13;
-#: product 47 -> 48.
-#:
-#: **Rule 49 moved example 187 -> 195 and the total 343 -> 351.**
-#: Eight plants, all into `apps/example/services.py` and none anywhere else,
-#: which is the shape a signature rule should have: what rule 49 reads is a
-#: `@service`'s declaration, and the worked example is where services are
-#: planted. Four canaries (an audited write with no actor; the same with a
-#: DEFAULTED actor; a defaulted tenant; and an already-allow-listed name
-#: carrying a defaulted actor, which must fire anyway) and four negatives (the
-#: conformant pair; required-but-NULLABLE, which is `revoke_token`'s shape and
-#: must stay silent; the re-keyed wall's `kind == "system"` spelling, which is
-#: the fix and must never read as the defect; and a `@service` outside the
-#: audited population entirely). Scaffold unchanged at 93, product unchanged at
-#: 48, outside unchanged at 13 — the rule needs no scaffold model and no real
-#: product app, because it reads signatures rather than a registry.
-#:
-#: Outside 13 -> 11 and the total 351 -> 349: rule 5 dropped a canary and a
-#: negative that plant into `quality/perf-realtime-measurement.md` and
-#: `quality/perf-ledgers-measurement.md` — the citation-doc verification they
-#: proved was retired along with the docs it read.
-#:
-#: **349 -> 362, and NINE OF THE THIRTEEN ARE ARREARS.** Measured at P15 R7;
-#: recorded here in two parts because they are two different facts.
-#:
-#: The earlier pass (193fa86) landed nine plants and moved no number: rule 42's
-#: four into the scaffold (93 -> 97), rule 26's one into the worked example
-#: (195 -> 196), and rule 17's FOUR into two real product apps (48 -> 52), which
-#: also put four entries past `PRODUCT_APP_PLANT_ENTRIES` with no dated
-#: MOVE-TRIGGER between them. The whole module was red on main at d13bdc2 —
-#: three failures, this assertion among them — and it stayed red because
-#: `--loop` runs the fast tier plus the rung's OWN app, and R6's rung touched
-#: only `quality/`, which owns none of these tests. That is worth more than the
-#: arithmetic: **a census in `apps/core/tests/` cannot see a plant added in
-#: `quality/`** until somebody's rung happens to widen the tier. R7's did.
-#: The four rule-17 entries are added to `PRODUCT_APP_PLANTS` below with their
-#: trigger written into `rules.yaml`, which is the repair R6 owed.
-#:
-#: R7's own four are the remaining ones and they are the cheap kind: two into
-#: the scaffold (97 -> 99 — rule 3's envelope-without-controls canary and its
-#: direct-cursor negative) and two outside `apps/` (11 -> 13 — rule 41's
-#: top-level-key census, planted into `config/api.py`, which is the module that
-#: OWNS the document and the only place a canary about it would be proving
-#: anything). No product app, no worked example.
-#:
-#: The permissions lane's gate rung landed FIFTY-THREE more, every one of them
-#: into the SCAFFOLD (99 -> 152) and none into a product app or the worked
-#: example. Three rules moved and the reason is the same in all three: a rule
-#: about the authorization VOCABULARY needs a kind of its own to be about, and a
-#: kind no other app in the tree derives is the only way its negatives can be
-#: shown silent for the rule's restraint rather than for a real app's
-#: coincidence.
-#:
-#: * rule 13's four kind clauses — five forms, nineteen plants. Each plants a
-#:   `services.py` plus the probe app's `apps.py` and `models.py` (the registry
-#:   reads `apps/*/models.py` through the same app derivation `INSTALLED_APPS`
-#:   uses, so without an `apps.py` the model beside it is one nobody's registry
-#:   holds), and three of them a `policies.py` as well, so the planted app is a
-#:   whole app rather than a table nobody has a capability over.
-#: * rule 54, born here — thirteen forms, thirty-two plants, across a
-#:   `policies.py`, a `roles.py`, a `models.py`, a `services.py` and a
-#:   `selectors.py`, which is the five files the five clauses are about.
-#: * rule 24's extension to the permission rows — two forms, two plants, into
-#:   the scaffold's `api.py` and `services.py`: the two writers this rule
-#:   allow-lists are core's own, so no product app has a permission row to
-#:   write and the DOOR is the shape that matters.
-#:
-#: The permissions lane's ENFORCEMENT rung landed twenty-eight more — seventeen
-#: into the worked example (196 -> 213) and eleven into `apps/accounts`
-#: (52 -> 63), which is the largest arrival of product-app plants this census
-#: has recorded and the one with the plainest reason. Three rules landed:
-#:
-#: * rule 55 (`tenant-wide-kinds-ask-at-the-root`) — nine forms, one of them in
-#:   `accounts` because the defect it is named after happened there and the
-#:   tenant's identity provider is the only row in the tree that IS the shape;
-#: * rules 56 and 57 (`one-router-for-home-realm`,
-#:   `one-writer-of-the-identity-join`) — twelve forms, ten of them in
-#:   `accounts` for a mechanical reason rather than a habit: the scaffold is a
-#:   Django app with no identity provider, no `SsoDomain` and no
-#:   `zitadel_sub`, so a form planted there would be proving a recogniser
-#:   against a model nobody has. Every one carries the same dated trigger, and
-#:   the condition is a HEALTHY one — the day a second app reaches either
-#:   surface — never "the day this app stays ill";
-#: * rule 26's widening — three canaries and three negatives, all in the
-#:   worked example.
-#:
-#: HOTFIX-RATCHET landed TWO more, both into the SCAFFOLD (152 -> 154) and
-#: neither into a product app or the worked example: rule 54's seventh negative
-#: (`owned_child_via_constant.py` at `apps/zzz_canary/models.py`, plus the probe
-#: app's `apps.py` that every model plant in this rule carries). It is the form
-#: clause (a)'s owned-child skip had no fixture for — an `authz_kind_of` bound
-#: to a module constant rather than written as a literal, which the runtime
-#: registry skips and the AST census did not — and the scaffold is where it
-#: belongs for the reason every rule-54 plant is there: the kind has to be one
-#: nothing else in the tree derives, or the negative goes silent on a real app's
-#: coincidence rather than on the rule's restraint.
-#: The follow-up landed SEVEN more, again all into the SCAFFOLD (154 -> 161)
-#: and none into a product app or the worked example. All three close the same
-#: seam from different sides — how `authz_kind_of` is read — and each is a plant
-#: because the previous number moved without one and a regression rode in under
-#: it: a canary for the concrete `authz_kind_of = None` (the base class's own
-#: default restated, which is no declaration at all and which the runtime
-#: refuses to start on), a negative for the ABSTRACT base that really does ship
-#: that line, and a selector negative whose child's derived name differs from
-#: its aggregate's kind, so a reader that resolves the declaration and one that
-#: does not give visibly different answers.
-#: 468 -> 481 (P20 R4-F): the socket/realtime surface review's three rules.
-#: Rule 58 (join discipline) lands five — one whole plant of the fifteenth
-#: app's consumer in the worked example, two appended to the real consumer
-#: and two negatives; rule 59 (an org-scoped event carries its branch) lands
-#: five — three in the worked example and its `events.py`, two in
-#: `apps/usage`; and rule 36's new status-writer class lands three, two of
-#: them into `apps/core/services.py`, which is where the two operator
-#: services that darken a tenant are and nowhere else.
-#: The union of the two (R4-F folded onto RATCHET-F): 477 + 13 = 490 in total,
-#: the scaffold at 161 (RATCHET-F's) and the worked example at 218 (R4-F's);
-#: each side's arithmetic kept, the census below re-derives the number.
-#: 490 -> 495 (P20 PR5.1, the read ratchet's flip): FIVE more, every one into
-#: the SCAFFOLD (161 -> 166) and none into a product app or the worked example.
-#: Rule 54 gains two forms about the valve population, and each carries the
-#: probe app's `apps.py` the way every rule-54 plant does: a negative for the
-#: valve on a read the ANNOTATION puts outside clauses (d)/(e) — counted on the
-#: status line, never a finding — and a canary for a docstring that SPELLS the
-#: marker instead of opening a comment with it, which must still fire, because
-#: prose that silenced the clause would be an off switch written by accident.
-#: The scaffold is where both belong for this rule's standing reason: the kind
-#: has to be one nothing else in the tree derives.
-#: 495 -> 501 (P20 PR5.3, every key-bearing declaration censused): SIX more,
-#: again every one into the SCAFFOLD (166 -> 172) and none into a product app
-#: or the worked example. Rule 54 gains the pair for a `POLICIES` entry naming a
-#: key the vocabulary does not hold — a predicate for a capability nobody can be
-#: given, and a defect whose whole shape is that it is invisible — and each
-#: fixture carries the probe app and its models the way every rule-54 plant
-#: over a kind does.
-#: 501 -> 504 (rule 59's undecided-noun class): THREE more, every one into the
-#: WORKED EXAMPLE (218 -> 221) and none into the scaffold or a product app. The
-#: class refuses a declared event name whose noun no app decided, so its forms
-#: are declarations rather than call sites and they belong beside the rule's
-#: other `events.py` plant: one canary (a noun nobody decided) and two
-#: negatives (a noun the app decides, and a noun decided as None because no row
-#: is behind it — `None` is a DECIDED answer and the class must not read it as
-#: a missing one).
-#: 221 -> 223 in the worked example and 71 -> 69 in the product apps
-#: (2026-09-21): rule 59's remaining two `apps/usage` plants moved to
-#: `apps/example/services.py`. NOT a new plant — the TOTAL is unmoved, and that
-#: is the shape of a re-homing as opposed to an addition. The two forms leaned
-#: on `usage`'s `EVENT_KINDS` for the noun they announce, so a product that
-#: ships without the metering ingredient got a dead canary and a vacuous
-#: negative out of them; `WIDGET_CREATED` is the same org-scoped shape in the
-#: one app whose whole job is to hold one of everything.
-#: 504 -> 511 (rule 60's ownership partition): SEVEN more, every one OUTSIDE
-#: `apps/` (38 -> 45) and none into the scaffold, the worked example or a
-#: product app. The rule reads which files the TEMPLATE owns, so its forms
-#: are a document the template owns, a file in a directory it owns, the same
-#: file one directory over in the product's drawer, and the base declaration
-#: each of them needs — a tree with no declared base is the state THIS
-#: repository is permanently in, which is why three of the seven are that
-#: declaration.
-#: 515 -> 518 (2026-09-22, HOTFIX-CANARY-1, cycle plan § 8b): THREE more, every
-#: one OUTSIDE `apps/` (49 -> 52) and none into the scaffold, the worked example
-#: or a product app. Rule 60's controls hold on a tree that declares a template
-#: base: negative 2 removes the base for its plant (`scripts/local/template-base`,
-#: `mode: absent`), and negatives 3 and 4 each name their own plant as a
-#: divergence in the product's decision record (`docs/product/architecture.md`,
-#: `mode: append`) — rule 60's own valve, so both stay class (b) controls on a
-#: product's tree.
-#: 518 -> 529 (rules 61 and 62): the eleven plants above, every one OUTSIDE
-#: `apps/` (52 -> 63) — the compose stacks and the CI workflows are the rules'
-#: subjects, so a form inside an app would prove somewhere the rule never reads.
-#: 529 -> 533 (rule 20's queryset binding walk and the instance-delete arm):
-#: four more, every one into the worked example (223 -> 227) — three canaries
-#: (a bound queryset's `.update`, a same-module helper's answer `.update`d, a
-#: read-back row's `.delete()`) and one negative (`dict.update` on values that
-#: are not querysets).
-#: 533 -> 534 (rule 20): one more negative into the worked example (227 -> 228)
-#: — an integer index on a queryset expression answers a row, not a queryset.
-#: 534 -> 537 (rule 63): two canaries and one negative, all OUTSIDE `apps/`
-#: (63 -> 66), appended into the pattern book's drawer.
-#: 537 -> 561 (rules 64-67): fifteen canaries, eight negatives and one extra
-#: file (rule 66's ledger row for its negative), all OUTSIDE `apps/` (66 -> 90).
-#: 561 -> 565 (rule 63's face clause): four more, all OUTSIDE `apps/` (90 -> 94).
-#: 565 -> 597 (rules 68-73): twenty canaries, ten negatives and rule 71's two
-#: extra files (the rows its negatives' pages need), all OUTSIDE `apps/`
-#: (94 -> 126).
-#: 597 -> 601 (rules 68 and 69 widened): two canaries and two negatives, all
-#: OUTSIDE `apps/` (126 -> 130).
-#: 601 -> 617 (rules 74 and 75, the noun-verb family's first two): sixteen, every
-#: one into the probe scaffold (172 -> 188). Rule 75's three canaries and three
-#: negatives, one file each; rule 74's two canaries and one negative, each a
-#: model plus its road — and each carrying the probe's `api.py` base as a
-#: `mode: default` extra (and the negative its `mcp.py` twins), which writes
-#: nothing when the whole corpus runs and is the base under `--rule 74` alone.
-#: 617 -> 622 (rule 76, a versioned row's writes move `updated_at`): two
-#: canaries and three negatives, one file each, all into the probe scaffold
-#: (188 -> 193).
-#: 622 -> 637 (rule 74's move, update, bulk, history and system-policy
-#: clauses): fifteen, every one into the probe scaffold (193 -> 208) — five
-#: canaries (nine files: two carry the probe router and their route) and the
-#: whole-family negative (four files) plus the archive negative's policy pair
-#: (two: the probe's `policies.py` base and the appended pair).
-#: 637 -> 638 (rule 47's third canary, the drop through `@also_refuses`):
-#: one, into the worked example's `api.py` like its two siblings (228 -> 229).
-#: 638 -> 675 (the family's closing clauses): thirty-seven. Into the probe
-#: scaffold, twenty-four (208 -> 232): rule 74's duplicate, merge, import,
-#: attach (model, route and the probe router base) and bare-column canaries and
-#: the merge/duplicate negative (six files), and rule 41's two second-hop
-#: canaries and their negative (route, service and app config each) plus the
-#: documented-query canary and negative. Into the worked example, eleven
-#: (229 -> 240): rule 48's door content read and its activity negative, rule
-#: 81's two canaries and two negatives, rule 82's two canaries and three
-#: negatives. Into a product app, two (rule 17's imported-base canary and
-#: negative, both into `apps/workflows/schemas.py`).
-#: 675 -> 678 (rule 74's no-body canary, landed with the adopters' bodiless
-#: archive and restore): three, into the probe scaffold (232 -> 235) — the
-#: model, the probe router base and the bodied routes.
-#: 678 -> 681 (rules 81 and 82 re-homed one form each into the scaffold, so
-#: neither canary plan lives wholly in the optional example): three, into the
-#: probe scaffold (235 -> 238) — rule 81's model-and-filter file, rule 82's
-#: service and its model.
-#: 681 -> 697 (rules 77-80, the family's face rules): sixteen, every one
-#: outside `apps/` (130 -> 146 above).
-#: 697 -> 700 (rule 77 reads import and attach): three, outside `apps/`
-#: (146 -> 149 above).
-#: 700 -> 705 (rule 83): two canaries in real api modules (the product bucket)
-#: and three negative files in the scaffold (238 -> 241).
-TOTAL_PLANTS = 705
-SCAFFOLD_PLANTS = 241
-EXAMPLE_PLANTS = 240
+#: Pinned from this module's bucket walk:
+#: `{'scaffold': 375, 'example': 267, 'product': 83, 'outside': 205, ...}`.
+TOTAL_PLANTS = 932
+SCAFFOLD_PLANTS = 375
+EXAMPLE_PLANTS = 267
 
 #: The judgement: every plant into a real product app, by rule and site. Each
 #: one carries a dated MOVE-TRIGGER beside it in `quality/rules.yaml`; the test
@@ -441,14 +101,14 @@ PRODUCT_APP_PLANTS = {
     ("35", "negatives", "apps/events/selectors.py"),
     ("36", "canaries", "apps/realtime/bridge.py"),
     ("36", "negatives", "apps/realtime/bridge.py"),
-    # Rule 36's status-writer class (P20 R4-F3). `apps/core/services.py` holds
+    # Rule 36's status-writer class (P20 R4-F3). `apps/core/services/tenants.py` holds
     # `suspend_tenant` and `close_tenant` — the only two services in the tree
     # that put a tenant beyond use — and a scaffold copy would be proving the
     # recogniser against a tenant nobody can suspend. The trigger is the
     # healthy one, written beside the entries: the day a second app learns to
     # darken a tenant.
-    ("36", "canaries", "apps/core/services.py"),
-    ("36", "negatives", "apps/core/services.py"),
+    ("36", "canaries", "apps/core/services/tenants.py"),
+    ("36", "negatives", "apps/core/services/tenants.py"),
     # Rule 58's three (P20 R4-F1). The JOIN half and the MOUNT half both have
     # to be demonstrated where the seam is: `apps/realtime/consumers.py` is
     # the one consumer this template has, and a scaffold consumer would be
@@ -524,11 +184,17 @@ PRODUCT_APP_PLANTS = {
     ("17", "canaries", "apps/realtime/schemas.py"),
     ("17", "negatives", "apps/workflows/schemas.py"),
     ("17", "negatives", "apps/realtime/schemas.py"),
+    ("17", "canaries", "apps/core/schemas.py"),
+    ("17", "negatives", "apps/core/schemas.py"),
     # Rule 83's two canaries: a second app on the platform's path and on its
     # tag, which the probe app cannot be for one path while rule 32 owns its
     # `PREFIX` — each is a real api module by construction.
     ("83", "canaries", "apps/events/api.py"),
     ("83", "canaries", "apps/usage/api.py"),
+    # Rule 85's one-key-two-apps canary: a surface key collides only across two
+    # apps, and the probe is one — the second declarer is a real app's own
+    # `surfaces.py`, created for the length of the run.
+    ("85", "canaries", "apps/usage/surfaces.py"),
 }
 
 #: Three counts, and rule 43 is what pulled them apart — before it all three
@@ -562,8 +228,25 @@ PRODUCT_APP_PLANTS = {
 #:
 #: 67 -> 69 and 71 -> 73 (2026-09-29): rule 83's two canaries, one entry and
 #: one file each, into `apps/events/api.py` and `apps/usage/api.py`.
-PRODUCT_APP_PLANT_ENTRIES = 69
-PRODUCT_APP_PLANT_FILES = 73
+#:
+#: 69 -> 71 and 73 -> 75 (2026-09-30): rule 83's display-title and schema-name
+#: canaries, one entry and one file each, both into `apps/usage/api.py`.
+#:
+#: 71 -> 73 and 75 -> 77 (2026-09-30): rule 17's rename reading — a renamed
+#: canary and a renamed negative, one entry and one file each, into
+#: `apps/workflows/schemas.py` (the move pair's module); printed `product
+#: entries 73` beside the bucket line above.
+#:
+#: 73 -> 74 and 77 -> 78 (2026-09-30): rule 85's one-key-two-apps canary, one
+#: entry and one file, a `surfaces.py` in `apps/usage/` (created for the run); the
+#: move-trigger test printed `74 == 73` and the bucket walk `'product': 78`.
+#:
+#: 74 -> 77 and 78 -> 81 (2026-10-02): rule 17's published-schema reading — a
+#: canary (the JSON type moves) and two negatives (a re-spelling, a narrowing),
+#: one entry and one file each, into `apps/workflows/schemas.py`; the
+#: move-trigger test printed `77 == 74` and the bucket walk `'product': 81`.
+PRODUCT_APP_PLANT_ENTRIES = 79
+PRODUCT_APP_PLANT_FILES = 83
 
 #: A trigger is DATED and says the word. Both halves matter: a condition with no
 #: date is a note somebody wrote once, and a date with no condition is a
@@ -581,8 +264,8 @@ def _rules() -> list[dict[str, Any]]:
 def _real_app_names() -> set[str]:
     """Every app that really exists in this tree — a directory with an apps.py.
 
-    Derived exactly as `quality/checks.py::_app_dirs` derives it, so
-    `apps/gadget` and `apps/gizmos` (which rule 16's canaries CREATE and
+    Derived exactly as `quality/checks/_hub.py::_app_dirs` derives it, so
+    `gadget` and `gizmos` under `apps/` (which rule 16's canaries CREATE and
     `restore()` removes) are outside the population without being named.
     """
     return {d.name for d in (ROOT / "apps").iterdir() if (d / "apps.py").exists()}

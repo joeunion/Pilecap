@@ -20,14 +20,12 @@ from __future__ import annotations
 import io
 import json
 from collections.abc import Callable
-from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any
 
 import pytest
 from django.core.management import call_command
 from django.test import Client
 from mcp.server import MCPServer
-from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 
 from apps.accounts.models import User
@@ -36,90 +34,22 @@ from apps.comms.models import Message, MessageTemplate, Recipient
 from apps.comms.services import send
 from apps.comms.tests.conftest import make_preference, make_recipient, make_template
 from apps.core.actor import Actor
-from apps.core.mcp import SCOPE_KEY, Principal
 from apps.core.models import Organization, Tenant
 from apps.core.services import root_organization
+from apps.core.tests.mcp_context import context_for
+from apps.core.tests.mcp_context import tool as core_tool
+from apps.core.verbs import derive_tool_name
 from config.api import as_the_door_renders
 
 pytestmark = pytest.mark.django_db
 
 MESSAGES_URL = "/api/v1/messages/"
 
-# For every REST capability, the tool that is its twin. A new route with no
-# entry here fails the parity test, and an entry with no tool fails it too.
-TOOL_FOR_ROUTE: dict[str, str] = {
-    "message-list": "list_messages",
-    "message-detail": "get_message",
-    "message-send": "send_message",
-    "template-list": "list_templates",
-    "template-detail": "get_template",
-    "template-create": "create_template",
-    "template-revise": "revise_template",
-    "template-retire": "retire_template",
-    "recipient-list": "list_recipients",
-    "recipient-detail": "get_recipient",
-    "recipient-create": "create_recipient",
-    "recipient-update": "update_recipient",
-    "recipient-archive": "archive_recipient",
-    "recipient-restore": "restore_recipient",
-    "recipient-suppress": "suppress_recipient",
-    "recipient-unsuppress": "unsuppress_recipient",
-    # C2-comms-b. `policies-list` rather than `policy-list` is deliberate and is
-    # explained where the route is declared: house rule 17 derives the tool name
-    # from the url_name, and the singular noun would have produced `list_policys`.
-    "policies-list": "list_policies",
-    "policy-detail": "get_policy",
-    "policy-create": "create_policy",
-    "policy-revise": "revise_policy",
-    "policy-retire": "retire_policy",
-    "preference-list": "list_preferences",
-    "consent-grant": "grant_consent",
-    "consent-revoke": "revoke_consent",
-    "quiet_hours-set": "set_quiet_hours",
-    # `engagement-list` rather than `message-engagement-list`, for the
-    # reason the policies entry above records: the tool name is DERIVED from the
-    # url_name by splitting on the last hyphen, and the longer spelling would
-    # have produced `list_message-engagements` — a hyphen inside a machine-door
-    # name.
-    "message-cancel": "cancel_message",
-    "engagement-list": "list_engagements",
-    "device-register": "register_device",
-    "device-retire": "retire_device",
-}
-
-# Measured at ten rows, not guessed: the page, and only the page. There is no
-# session row, no middleware and no savepoint out here — a tool call is not a
-# request — and after ADR core-18 there is no COUNT either unless the caller
-# sends `include_count`, which is what took this from 2 to 1.
-# PR4.b (ADR core-27) adds exactly THREE: a read is a permission now, so the
-# selector behind this door calls `require(actor, "<kind>.read", ...)` once,
-# and the first `require` of a request reads the actor's three permission
-# tables — the memberships on the chain, their grants, and the delta rows for
-# the role keys those name. Three and not six because PR0's memo rides on the
-# actor: a second `require` in the same request costs nothing, which is what a
-# route that fetches through a `get_` and then calls a service is standing on.
+#: A tool call is not a request: the page and the three reads `<kind>.read` costs once.
 LIST_QUERY_BUDGET = 4
 
 
 # --- A tool call, without a transport ------------------------------------------
-
-
-@dataclass
-class _FakeRequest:
-    scope: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class _FakeRequestContext:
-    request: _FakeRequest
-
-
-def context_for(user: User, tenant: Tenant | None, org: Organization | None = None) -> Context[Any]:
-    resolved = org if org is not None else (root_organization(tenant=tenant) if tenant else None)
-    scope = {SCOPE_KEY: Principal(user=user, tenant=tenant, org=resolved)}
-    return Context(
-        request_context=cast(Any, _FakeRequestContext(request=_FakeRequest(scope=scope)))
-    )
 
 
 def comms_server() -> MCPServer[Any]:
@@ -130,9 +60,8 @@ def comms_server() -> MCPServer[Any]:
 
 
 def tool(name: str) -> Callable[..., Any]:
-    registered = comms_server()._tool_manager.get_tool(name)
-    assert registered is not None, f"{name} is not registered"
-    return registered.fn
+    """The comms tool `name`, as `register` binds it."""
+    return core_tool(name, register=register)
 
 
 def introspected() -> dict[str, Any]:
@@ -145,24 +74,25 @@ def introspected() -> dict[str, Any]:
 # --- Door parity ----------------------------------------------------------------
 
 
-def test_every_rest_capability_is_on_the_machine_door_too() -> None:
+def comms_routes() -> set[str]:
+    """Every comms route's url_name, off the live registry."""
     payload = introspected()
-    routes = {
+    return {
         str(route["name"]).removeprefix("api:")
         for route in payload["routes"]
         if str(route["view"]).startswith("apps.comms.api.")
     }
-    assert routes == set(TOOL_FOR_ROUTE), (
-        "A comms route has no entry in TOOL_FOR_ROUTE: either the machine door "
-        "is missing a capability the human door has, or this table is stale."
-    )
-    tools = {str(one["name"]) for one in payload["tools"]}
-    assert set(TOOL_FOR_ROUTE.values()) <= tools
+
+
+def test_every_rest_capability_is_on_the_machine_door_as_its_derived_name() -> None:
+    tools = {str(one["name"]) for one in introspected()["tools"]}
+    missing = {name: derive_tool_name(name) for name in comms_routes()}
+    assert {url: twin for url, twin in missing.items() if twin not in tools} == {}
 
 
 def test_the_app_registers_those_tools_and_no_others() -> None:
     registered = {one.name for one in comms_server()._tool_manager.list_tools()}
-    assert registered == set(TOOL_FOR_ROUTE.values())
+    assert registered == {derive_tool_name(name) for name in comms_routes()}
 
 
 def test_every_tool_describes_itself() -> None:
@@ -189,7 +119,9 @@ def test_a_tool_and_its_route_answer_with_the_same_row(
     api.force_login(owner)
     over_http = json.loads(api.get(f"{MESSAGES_URL}{message.pk}/").content)
     over_mcp = json.loads(
-        tool("get_message")(context_for(owner, tenant), message_id=message.pk).model_dump_json()
+        tool("get_message")(
+            context_for(owner, tenant, root_organization(tenant=tenant)), message_id=message.pk
+        ).model_dump_json()
     )
     assert as_the_door_renders(over_mcp) == as_the_door_renders(over_http)
 
@@ -222,7 +154,9 @@ def test_the_tool_answers_with_the_same_KEYS_over_the_wire_too(
     )
     api.force_login(owner)
     over_http = json.loads(api.get(f"{MESSAGES_URL}{message.pk}/").content)
-    over_mcp = tool("get_message")(context_for(owner, tenant), message_id=message.pk)
+    over_mcp = tool("get_message")(
+        context_for(owner, tenant, root_organization(tenant=tenant)), message_id=message.pk
+    )
     assert set(over_mcp.model_dump(by_alias=True)) == set(over_http)
 
 
@@ -244,7 +178,7 @@ def test_the_list_tool_and_the_list_route_agree(
     )
     api.force_login(owner)
     over_http = json.loads(api.get(MESSAGES_URL).content)
-    page = tool("list_messages")(context_for(owner, tenant))
+    page = tool("list_messages")(context_for(owner, tenant, root_organization(tenant=tenant)))
     assert len(page.items) == len(over_http["items"])
     assert [str(item.id) for item in page.items] == [row["id"] for row in over_http["items"]]
 
@@ -256,7 +190,7 @@ def test_the_tool_sends_and_the_row_says_queued(
     tenant: Tenant, owner: User, recipient: Recipient, receipt: MessageTemplate
 ) -> None:
     out = tool("send_message")(
-        context_for(owner, tenant),
+        context_for(owner, tenant, root_organization(tenant=tenant)),
         recipient_id=recipient.pk,
         template="receipt",
         context={"name": "Ada"},
@@ -275,7 +209,7 @@ def test_the_tool_refuses_the_same_send_the_route_refuses(
     must never happen.
     """
     out = tool("send_message")(
-        context_for(owner, tenant),
+        context_for(owner, tenant, root_organization(tenant=tenant)),
         recipient_id=recipient.pk,
         template="newsletter",
         context={"name": "Ada"},
@@ -293,7 +227,7 @@ def test_the_tool_sends_once_they_consent(
 ) -> None:
     make_preference(actor=owner_actor, recipient=recipient, consented=True)
     out = tool("send_message")(
-        context_for(owner, tenant),
+        context_for(owner, tenant, root_organization(tenant=tenant)),
         recipient_id=recipient.pk,
         template="newsletter",
         context={"name": "Ada"},
@@ -307,7 +241,7 @@ def test_a_bad_context_is_a_tool_error_naming_the_field(
     """Bad input *does* raise — it is the one thing an agent should fix and retry."""
     with pytest.raises(ToolError) as raised:
         tool("send_message")(
-            context_for(owner, tenant),
+            context_for(owner, tenant, root_organization(tenant=tenant)),
             recipient_id=recipient.pk,
             template="receipt",
             context={},
@@ -334,7 +268,9 @@ def test_a_tool_cannot_reach_another_tenants_message(
         actor=stranger_actor,
     )
     with pytest.raises(ToolError) as raised:
-        tool("get_message")(context_for(owner, tenant), message_id=theirs.pk)
+        tool("get_message")(
+            context_for(owner, tenant, root_organization(tenant=tenant)), message_id=theirs.pk
+        )
     assert "not_found" in str(raised.value)
 
 
@@ -355,6 +291,6 @@ def test_the_list_tool_has_a_query_budget_too(
             tenant=tenant,
             actor=owner_actor,
         )
-    acting = context_for(owner, tenant)
+    acting = context_for(owner, tenant, root_organization(tenant=tenant))
     with django_assert_num_queries(LIST_QUERY_BUDGET):
         tool("list_messages")(acting)

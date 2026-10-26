@@ -1,0 +1,61 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "imports", "text": ""}
+from decimal import Decimal
+
+# golden-anchor: {"nth": 0, "scope": [], "side": "before", "text": "JSON = \"application/json\""}
+STATS_URL = "/api/v1/widgets/stats/"
+# golden-anchor: {"nth": 7, "scope": [], "side": "after", "text": ")"}
+# The measured-number shape, written out at both levels (ADR core-7).
+STATS_KEYS = frozenset({"count"})
+MEASURED_KEYS = frozenset({"value", "basis"})
+BASIS_KEYS = frozenset({"formula", "inputs"})
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_the_two_doors_agree_on_a_measured_number_and_its_basis(
+    bearer: str, widget: Widget
+) -> None:
+    """`/widgets/stats/` and its tool: one shape, one value, one basis."""
+    bearer_header = {"authorization": f"Bearer {bearer}"}
+
+    async with wire() as client:
+        over_http = await client.get(STATS_URL, headers={**bearer_header, "accept": JSON})
+        assert over_http.status_code == 200, over_http.text
+
+        headers = {**MCP_HEADERS, **bearer_header}
+        await initialize(client, headers, "stats-parity")
+
+        called = await client.post(
+            MCP_URL,
+            headers=headers,
+            json=rpc("tools/call", {"name": "get_widget_stats", "arguments": {}}, 2),
+        )
+        assert called.status_code == 200, called.text
+
+    answered = called.json()
+    assert "error" not in answered, answered
+    over_mcp = answered["result"]["structuredContent"]
+    rest_body = over_http.json()
+
+    # (1) the shape, against the written-out contract.
+    assert set(rest_body) == STATS_KEYS
+    assert set(rest_body["count"]) == MEASURED_KEYS
+    assert set(rest_body["count"]["basis"]) == BASIS_KEYS
+
+    # (2) the two doors: the key sets first.
+    assert set(over_mcp) == set(rest_body)
+    assert set(over_mcp["count"]) == set(rest_body["count"])
+    assert set(over_mcp["count"]["basis"]) == set(rest_body["count"]["basis"])
+    # Then the whole structure, verbatim: `Decimal` is a string on both sides.
+    assert over_mcp == rest_body
+    assert rest_body["count"]["value"] == "1", "a Decimal on the wire is a string, not a float"
+
+    # (3) the basis is honest: the value recomputed from the inputs agrees.
+    basis = rest_body["count"]["basis"]
+    assert basis["formula"] == "live + archived"
+    recomputed = sum(Decimal(str(value)) for value in basis["inputs"].values())
+    assert recomputed == Decimal(str(rest_body["count"]["value"]))
+    # And the one row this fixture made is really in there.
+    assert recomputed == Decimal(1)
+
+

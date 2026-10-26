@@ -280,6 +280,7 @@ _ARGUMENTS: dict[str, Any] = {
     "body": io.BytesIO(b"a rewindable body"),
     "expires_in": 60,
     "chunk": 1024,
+    "store": None,
 }
 
 #: Functions on the seam that take a tenant and a key but do not reach the store

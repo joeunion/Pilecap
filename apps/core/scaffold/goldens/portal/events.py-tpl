@@ -1,0 +1,6 @@
+PORTAL_REQUEST_SUBMITTED = "example_portal.portal_request.submitted"
+
+# Said once per request a widget merge carries from the merged widget to the one
+# that survived: the request's widget changed, and a subscriber following the
+# request hears which widget it is about now.
+PORTAL_REQUEST_MOVED = "example_portal.portal_request.moved"

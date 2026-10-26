@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The `--loop` secret scan, narrowed to THE ACTIVE RUNG'S OWN CHANGES.
-# Sourced by scripts/check.sh and by scripts/tests/test_secrets_scan.sh.
+# Sourced by scripts/check.sh and by quality/tests/test_secrets.py.
 # BASH ONLY, for the reason gate_ledger.sh states: sourced into an interactive
 # zsh, `local path` ties to $PATH and every helper dies silently.
 #
@@ -70,7 +70,7 @@ SECRETS_SCAN_BASIS=""
 #: WHY IT IS A CALLER-SET VARIABLE AND NOT A SECOND DERIVATION: there is exactly
 #: one answer in this tree to "what did the active rung change", and a second
 #: `git diff` written beside it is the thing that drifts first (the amendment is
-#: spelled out at the head of scripts/loop_tier.sh). Moving the fork point keeps
+#: spelled out at the head of quality/djb/scope.py). Moving the fork point keeps
 #: one derivation and one set of edge cases; forking the function would keep
 #: two.
 #:
@@ -192,6 +192,7 @@ secrets_scan_changed_files() {
     # resolves to a commit that is not HEAD. On a laptop, where the derivation
     # answers for itself, an exported knob changes nothing at all.
     SECRETS_SCAN_BASE_CARRIED=""
+    SECRETS_SCAN_BASE=""
     if [ -n "${DJB_LOOP_SCOPE_BASE:-}" ] && { [ -z "$base" ] || [ "$base" = "$head" ]; }; then
         carried=$(git rev-parse -q --verify "${DJB_LOOP_SCOPE_BASE}^{commit}" 2>/dev/null || true)
         if [ -n "$carried" ] && [ "$carried" != "$head" ]; then
@@ -230,6 +231,8 @@ secrets_scan_changed_files() {
         fi
     fi
 
+    # The fork point the committed half was diffed from, or empty (`base` is HEAD or absent).
+    [ -z "$base" ] || [ "$base" = "$head" ] || SECRETS_SCAN_BASE=$base
     # The uncommitted half, in every case above: HEAD against the index AND the
     # working tree, so a staged new file and an unstaged edit are both this
     # rung's business the moment they exist.

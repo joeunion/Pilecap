@@ -21,6 +21,7 @@ from typing import Any
 
 import pytest
 from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import Client, override_settings
@@ -356,6 +357,26 @@ def test_the_frozen_census_is_the_whole_live_vocabulary() -> None:
     assert set(scopes.FROZEN_FAMILIES) == set(scopes.families())
 
 
+def test_a_drawer_family_the_vocabulary_lacks_is_refused_with_the_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Planted: a product's drawer freezes a family no app here declares."""
+    from apps.core.api import frozen_families
+
+    core = tuple(scopes.FROZEN_FAMILIES)
+    assert frozen_families.with_drawer(core, tmp_path / "absent.yaml") == core
+    drawer = tmp_path / "frozen_families.yaml"
+    drawer.write_text("families:\n  - zzz_gone\n", encoding="utf-8")
+    monkeypatch.setattr(scopes, "FROZEN_FAMILIES", frozen_families.with_drawer(core, drawer))
+    findings = scopes.family_freeze_findings()
+    assert len(findings) == 1, findings
+    assert "'zzz_gone'" in findings[0] and "zzz_gone:read" in findings[0], findings[0]
+    assert "last cheap rename" in findings[0].lower(), findings[0]
+    drawer.write_text("families: zzz_gone\n", encoding="utf-8")
+    with pytest.raises(ImproperlyConfigured, match="quality/local/frozen_families.yaml"):
+        frozen_families.drawer_families(drawer)
+
+
 def test_a_frozen_key_that_vanished_is_refused_with_the_reason() -> None:
     """Planted: the live vocabulary loses a key a minted token may hold."""
     live = [family for family in scopes.families() if family != "roles"]
@@ -373,6 +394,12 @@ def test_the_retired_key_coming_back_is_refused_too() -> None:
     assert "organizations" in " ".join(findings)
 
 
+@pytest.mark.template_only(
+    reason=(
+        "the platform's retired words (`notes`, `tags`, `imports`) are unclaimed only on "
+        "the template's own tree; a product may own any of them"
+    )
+)
 def test_a_key_that_moved_to_the_namespace_word_is_told_its_successor() -> None:
     """A holder of a 2.4.0 platform key is told the key it became, not refused blankly.
 
@@ -416,6 +443,12 @@ def test_a_released_word_reclaimed_by_a_product_is_the_products_family(
     assert scopes.ceiling_from_request(["notes:read"]) == ["notes:read"]
 
 
+@pytest.mark.template_only(
+    reason=(
+        "the platform's retired words (`notes`, `tags`, `imports`) are unclaimed only on "
+        "the template's own tree; a product may own any of them"
+    )
+)
 def test_a_released_word_nobody_reclaimed_is_refused_naming_its_successor() -> None:
     """Without a product that owns `notes`, the old key is refused — and told where it went."""
     assert "notes" not in scopes.families()
@@ -1135,7 +1168,7 @@ def test_the_derivation_is_asked_only_by_the_door_plumbing() -> None:
 
 
 def test_the_scope_literal_census_tolerates_a_file_that_vanishes_at_open() -> None:
-    """The falsifier for the tolerant read. RED before RACE-1: `FileNotFoundError`.
+    """The falsifier for the tolerant read. RED without it: `FileNotFoundError`.
 
     The plant holds no scope-shaped string, so passing means it was skipped.
     """

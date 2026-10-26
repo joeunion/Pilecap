@@ -15,28 +15,12 @@ from dataclasses import dataclass, field
 
 
 @dataclass
-class RunFinished:
-    """What `mark_run_finished` is told when this app's workflow ends.
-
-    The activity belongs to `apps.workflows` and is invoked **by name**, like
-    every activity (house rule 9) — so the shape crosses the boundary and the
-    class does not. It has to be restated rather than imported: `apps.events`
-    and `apps.workflows` are siblings in the layer contract and neither may
-    import the other, which is the same reason `core.bridge` exists. Keep the
-    three fields matching `apps.workflows.types.MarkRunFinished`; the worker
-    deserialises into that.
-    """
-
-    workflow_id: str
-    status: str
-    error: str = ""
-
-
-@dataclass
 class DispatchEvent:
-    """Ask the dispatch workflow to fan one event out."""
+    """Ask the dispatch workflow to fan one event out, with the deployment's retry floor."""
 
     event_id: str
+    #: The first-retry interval in seconds, read on the Django side; `None` is the SDK's default.
+    retry_floor: float | None = None
 
 
 @dataclass

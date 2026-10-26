@@ -86,6 +86,18 @@ export const SERVER_CLOSE_CODES = {
         state: "socket_credential_withdrawn",
         why: "",
     },
+    CLOSE_TOO_MANY_SOCKETS: {
+        code: 4429,
+        reachesAClient: false,
+        state: null,
+        why: "sent before accept, same as 4401 (WATCH F12).",
+    },
+    CLOSE_SESSION_EXPIRED: {
+        code: 4419,
+        reachesAClient: true,
+        state: null,
+        why: "post-accept and therefore delivered, but no state is designed for it yet — a sentence for it would be improvised.",
+    },
 } as const satisfies Record<string, CloseCodeFact>;
 
 /**

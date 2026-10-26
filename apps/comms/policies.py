@@ -1,59 +1,4 @@
-"""Who may say what to whom, and **when**. Policies are code; roles are data.
-
-`core.authz.require(actor, "message.send", recipient)` finds these by
-discovery — this file is never registered anywhere.
-
-**Since T4 this module holds a second kind of policy and the file's title grew a
-word for it: the tenant quiet-hours SEAM.** It is here rather than in
-`services.py` for two reasons that agree. The owner's ruling of 2026-08-24 calls
-a quiet window *policy*, and this is the app's policy module — the one place a
-reader already comes to ask "what is this product allowed to say, and to whom".
-And `providers.py`'s own docstring makes the mechanical half of the argument
-about its own registry: a services module whose public names are nouns is a
-services module doing something other than services (house rule 16). A window
-resolver and a window lookup are nouns.
-
-The rule for this app is one sentence: **anybody in the tenant may send, and
-only an owner or an admin may change what the tenant is allowed to send.**
-That asymmetry is the point of the whole app. Sending is ordinary product work
-— an invoice, a receipt, a reminder — and gating it behind a role would only
-push features into calling `django.core.mail` directly, which is the exact
-bypass `send()` exists to close. Consent, quiet hours and suppression are not
-gated by a role at all: they are enforced inside `send()` against the
-recipient's own preferences, where no caller can reach around them.
-
-Changing a template, granting or revoking consent, or lifting a suppression is
-the other kind of act: it changes what the product may say to somebody, on that
-person's behalf, so it takes a privileged role. Those services landed with
-C1-1b and every one of them calls `require` — which is what makes the asymmetry
-a property of the app rather than a claim in a docstring: a service with no
-`require` is a house-rule-13 violation, and an action with no policy is
-invisible in `introspect`.
-
-**The privileged half of that asymmetry is no longer a rank comparison.** This
-file used to answer "how much authority does this person have" by reading a role
-by value off the membership row, which is a second opinion about a role no
-tenant can edit (rule 54 (c), architect §C7). The predicate is gone and the keys
-it guarded — the templates, the delivery policies and consent — are held by
-`admin`'s `*` pattern and by `owner`, which is the same answer said once instead
-of twice. Archiving and restoring a contact left that list when `Recipient`
-became `Archivable`: they are the family's keys now, asked by
-`core.policies.may_archive` at the contact's own node. Nothing a caller can see moved:
-`tests/test_authz_sweep.py` measures every cell of this app's matrix against the
-baseline and 0 of them did.
-
-**DEFERRED, and deliberately: `DEFAULT_ROLES` for the member half.** The other
-predicates here admit any membership (`can_send`, `can_keep_devices`), and the
-shape they will eventually take is a `DEFAULT_ROLES` entry saying so as data.
-They stay predicates for now because a `DEFAULT_ROLES` write entry moves what a
-plain `member` DECLAREDLY holds, which is a pin of the flat product
-(`apps/core/tests/test_vocabulary.py`'s template-roles test, and the scope echo
-at the mint that reads the declaration and not the transitional set) — a
-cross-app move that belongs to one later rung rather than to eight per-app
-sweeps, each moving it a little. Until then the compat residue in
-`core.authz._attach_default_roles` clause (5) admits `member` exactly as it
-always did, and the predicate narrows it exactly as it always did.
-"""
+"""Who may say what to whom, and when: predicates as code, roles as data (rule 54, ADR core-27)."""
 
 from __future__ import annotations
 
@@ -64,24 +9,12 @@ from typing import Any
 
 from apps.comms.models import ChannelPreference, is_quiet_at, quiet_opens_in, quiet_zone
 from apps.core.actor import Actor
-from apps.core.authz import Policy, membership_for
+from apps.core.authz import Policy, is_member
 from apps.core.log import get_logger
 from apps.core.models import Tenant
 from apps.core.policies import may_archive
 
 log = get_logger("apps.comms.policies")
-
-
-def _is_member(actor: Actor) -> bool:
-    """Whether this actor holds any membership in the tenant they are acting in.
-
-    **Not a role read.** It asks whether there is a membership at all, never
-    which one — the whole of rule 54 (c)'s subject is comparing the ROLE on that
-    row against a rank, and there is no comparison here to make. What a
-    membership gets by default is the role's collection, which is data a tenant
-    owns and can edit; this is the reach question underneath it.
-    """
-    return membership_for(actor) is not None
 
 
 def can_send(actor: Actor, obj: Any = None) -> bool:
@@ -93,7 +26,7 @@ def can_send(actor: Actor, obj: Any = None) -> bool:
     sibling branch is not "forbidden", it is `not_found` — a 403 there would
     tell the caller that somebody else's customer exists.
     """
-    return _is_member(actor)
+    return is_member(actor)
 
 
 def can_record_status(actor: Actor, obj: Any = None) -> bool:
@@ -153,7 +86,7 @@ def can_keep_devices(actor: Actor, obj: Any = None) -> bool:
     down, by `may_be_named` in the services: a contact in a sibling branch is
     `not_found`, never `forbidden`, for `can_send`'s reason.
     """
-    return _is_member(actor)
+    return is_member(actor)
 
 
 def can_record_surge(actor: Actor, obj: Any = None) -> bool:
@@ -245,6 +178,21 @@ POLICIES: dict[str, Policy] = {
     # 54 (c) is against. Dropping it moves no cell: a key with no predicate is
     # held by `owner` and by every declared role whose pattern matches, and
     # `member`'s pattern is `*.read`.
+}
+
+# The member half of every key above, as data; each predicate narrows what this offers.
+DEFAULT_ROLES: dict[str, frozenset[str]] = {
+    "device.create": frozenset({"member"}),
+    "device.retire": frozenset({"member"}),
+    "message.cancel": frozenset({"member"}),
+    "message.record_status": frozenset({"member"}),
+    "message.send": frozenset({"member"}),
+    "message_engagement.create": frozenset({"member"}),
+    "recipient.archive": frozenset({"member"}),
+    "recipient.create": frozenset({"member"}),
+    "recipient.restore": frozenset({"member"}),
+    "recipient.update": frozenset({"member"}),
+    "suppression_surge.create": frozenset({"member"}),
 }
 
 
@@ -354,22 +302,12 @@ _QUIET_HOURS: Callable[[Tenant], QuietWindow | None] | None = None
 
 
 def register_quiet_hours(resolver: Callable[[Tenant], QuietWindow | None]) -> None:
-    """Tell `send()` how to find a tenant's quiet window. **A product's call.**
+    """Tell the consent wall how to find a tenant's quiet window — a product's call, from `ready()`.
 
-        # apps/<your-app>/apps.py
-        def ready(self) -> None:
-            from apps.comms.services import register_quiet_hours
-            register_quiet_hours(my_window_for)
+        from apps.comms.policies import register_quiet_hours
+        register_quiet_hours(my_window_for)
 
-    The resolver is handed a `Tenant` and answers a `QuietWindow` or `None`.
-    `None` means this tenant has no window, which is the same answer an
-    unregistered seam gives for every tenant — so a product can switch the
-    feature on for one tenant and change nothing for the rest.
-
-    It is called inside the consent wall, on the send path, so it should be
-    cheap and it must not raise: a resolver that throws is a product bug that
-    would stop the tenant sending at all, and `tenant_quiet_window` refuses to
-    let it — see there.
+    The resolver answers a `QuietWindow` or `None` (no window); it must be cheap and must not raise.
     """
     global _QUIET_HOURS
     _QUIET_HOURS = resolver

@@ -37,7 +37,9 @@ from apps.core.mcp import (
     tool_scopes,
 )
 from apps.core.models import Tenant
-from apps.core.tests.test_mcp import MCP_HEADERS, PROTOCOL_VERSION, _result, _rpc, running
+from apps.core.tests.test_mcp import MCP_HEADERS, _result, _rpc, running
+from apps.core.tests.wire import call as _call
+from apps.core.tests.wire import session as _session
 
 pytestmark = [pytest.mark.django_db(transaction=True), pytest.mark.asyncio]
 
@@ -50,47 +52,6 @@ NEW_ORGANIZATION = {
     "name": "Nope",
     "slug": "nope",
 }
-
-
-async def _session(client: httpx.AsyncClient, headers: dict[str, str]) -> None:
-    """Complete the MCP handshake so later calls are accepted."""
-    await client.post(
-        "/mcp",
-        headers=headers,
-        json=_rpc(
-            "initialize",
-            {
-                "protocolVersion": PROTOCOL_VERSION,
-                "capabilities": {},
-                "clientInfo": {"name": "test", "version": "1"},
-            },
-        ),
-    )
-    await client.post(
-        "/mcp", headers=headers, json={"jsonrpc": "2.0", "method": "notifications/initialized"}
-    )
-
-
-async def _call(
-    client: httpx.AsyncClient,
-    headers: dict[str, str],
-    name: str,
-    arguments: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Call one tool.
-
-    The arguments have to VALIDATE even when the call is going to be refused:
-    the transport parses a tool's arguments before it runs the tool body, and
-    therefore before the frame the ceiling is checked in — so a call with a
-    missing argument is answered about the argument rather than about the
-    credential.
-    """
-    response = await client.post(
-        "/mcp",
-        headers=headers,
-        json=_rpc("tools/call", {"name": name, "arguments": arguments or {}}, request_id=2),
-    )
-    return _result(response)
 
 
 async def _listed(client: httpx.AsyncClient, headers: dict[str, str]) -> list[dict[str, Any]]:

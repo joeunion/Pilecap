@@ -20,7 +20,7 @@ proved against the thing that cannot fail.
 **Which of the fallback's two paths runs here, and it is no longer a choice
 this module makes.** `PostgresEngine` reads the declared `search_vector` column
 when the model has one and computes the identical vector inline when it does
-not. `apps/example.Widget` HAS one — so the `widgets` half of the
+not. `example.Widget` HAS one — so the `widgets` half of the
 planted pair now exercises the real-column path and the tenant-scoped `orgs`
 half (over `core.Organization`, which declares no column) exercises the computed
 one. Both branches therefore have a live driver, which is a better position than
@@ -51,7 +51,7 @@ from apps.example.services import create_widget
 from apps.search import engine as engine_module
 from apps.search import selectors
 from apps.search.events import SEARCH_ENGINE_DEGRADED, SEARCH_ENGINE_RECOVERED
-from apps.search.selectors import PostgresEngine, search
+from apps.search.selectors import PostgresEngine, get_search_page
 from apps.search.types import (
     EngineHit,
     EngineUnavailable,
@@ -189,7 +189,7 @@ def test_a_dead_index_is_answered_from_postgres_rather_than_refused(
     Not the next one, and not an empty page: the rows are the real widgets the
     world fixture committed, found by their real words.
     """
-    page = search(tenant=world.tenant, actor=world.owner_actor, q="Widget", kinds=["widgets"])
+    page = get_search_page(tenant=world.tenant, actor=world.owner, q="Widget", kinds=["widgets"])
 
     assert page.engine == "postgres"
     assert page.items, "the fallback answered nothing at all"
@@ -197,10 +197,10 @@ def test_a_dead_index_is_answered_from_postgres_rather_than_refused(
 
 
 def test_the_wire_answers_200_and_says_which_engine_answered(
-    api: Any, world: World, declared: tuple[Searchable, ...], dead: DeadEngine
+    world: World, declared: tuple[Searchable, ...], dead: DeadEngine
 ) -> None:
     """Zero 5xx at the door, and the honest surface saying why (ADR search-2)."""
-    api.force_login(world.owner)
+    api = world.session(world.owner)
     response = api.get(SEARCH_URL, {"q": "Widget", "kinds": "widgets"})
 
     assert response.status_code == 200, response.content
@@ -219,18 +219,20 @@ def test_the_fallback_receives_the_same_walls(
     the same resolved ids. A fallback that widened the scope would be a
     degradation nobody survives.
     """
-    page = search(tenant=world.tenant, actor=world.region_actor, q="Widget", kinds=["widgets"])
+    page = get_search_page(
+        tenant=world.tenant, actor=world.admin_at_a, q="Widget", kinds=["widgets"]
+    )
 
     assert page.engine == "postgres"
     found = {hit.id for hit in page.items}
     visible = set(
         Widget.objects.filter(
-            tenant=world.tenant, organization__in=[world.region, world.branch]
+            tenant=world.tenant, organization__in=[world.a, world.a1]
         ).values_list("id", flat=True)
     )
     unreachable = set(
         Widget.objects.filter(
-            tenant=world.tenant, organization__in=[world.root, world.sibling]
+            tenant=world.tenant, organization__in=[world.root, world.b]
         ).values_list("id", flat=True)
     )
     assert found == visible
@@ -262,7 +264,7 @@ def test_another_tenants_rows_are_absent_from_the_fallback(
         actor=actor_for(user=stranger, tenant=other_tenant, org=other_root_org),
         name="Widget next door",
     )
-    page = search(tenant=world.tenant, actor=world.owner_actor, q="Widget", kinds=["widgets"])
+    page = get_search_page(tenant=world.tenant, actor=world.owner, q="Widget", kinds=["widgets"])
 
     theirs = set(Widget.objects.filter(tenant=other_tenant).values_list("id", flat=True))
     assert theirs, "the neighbour row was never created — this test could not fail"
@@ -289,7 +291,7 @@ def test_a_tenant_scoped_kind_is_walled_by_the_tenant_clause_alone(
     after the tenant, and both tenants' fixtures produce organizations whose
     names share a word, so an unwalled read WOULD return theirs.
     """
-    page = search(tenant=world.tenant, actor=world.owner_actor, q="", kinds=["orgs"])
+    page = get_search_page(tenant=world.tenant, actor=world.owner, q="", kinds=["orgs"])
 
     theirs = set(Organization.objects.filter(tenant=other_tenant).values_list("id", flat=True))
     mine = set(Organization.objects.filter(tenant=world.tenant).values_list("id", flat=True))
@@ -308,10 +310,8 @@ def test_a_just_created_row_is_found_with_nothing_drained(
     degraded engine reads the rows themselves, so a row committed a microsecond
     ago is already findable — the one thing that is BETTER while degraded.
     """
-    created = create_widget(
-        tenant=world.tenant, actor=world.owner_actor, name="Freshly minted flange"
-    )
-    page = search(tenant=world.tenant, actor=world.owner_actor, q="flange", kinds=["widgets"])
+    created = create_widget(tenant=world.tenant, actor=world.owner, name="Freshly minted flange")
+    page = get_search_page(tenant=world.tenant, actor=world.owner, q="flange", kinds=["widgets"])
 
     assert created.pk in {hit.id for hit in page.items}
 
@@ -329,7 +329,7 @@ def test_requests_inside_the_cooldown_never_ask_the_dead_engine(
     once per request.
     """
     for _ in range(4):
-        search(tenant=world.tenant, actor=world.owner_actor, q="Widget", kinds=["widgets"])
+        get_search_page(tenant=world.tenant, actor=world.owner, q="Widget", kinds=["widgets"])
 
     assert len(dead.queries) == 1, dead.queries
 
@@ -338,11 +338,11 @@ def test_the_cooldown_expiring_lets_one_request_probe_again(
     world: World, declared: tuple[Searchable, ...], dead: DeadEngine
 ) -> None:
     """TTL expiry re-probes. Driven by expiring the key, not by sleeping."""
-    search(tenant=world.tenant, actor=world.owner_actor, q="Widget", kinds=["widgets"])
+    get_search_page(tenant=world.tenant, actor=world.owner, q="Widget", kinds=["widgets"])
     assert len(dead.queries) == 1
 
     cache.delete(selectors.COOLDOWN_KEY)
-    search(tenant=world.tenant, actor=world.owner_actor, q="Widget", kinds=["widgets"])
+    get_search_page(tenant=world.tenant, actor=world.owner, q="Widget", kinds=["widgets"])
 
     assert len(dead.queries) == 2
 
@@ -354,11 +354,11 @@ def test_the_transition_announces_once_and_a_second_failure_announces_nothing(
     world: World, declared: tuple[Searchable, ...], dead: DeadEngine
 ) -> None:
     """Transitions only. A per-request announcement is an alert somebody silences."""
-    search(tenant=world.tenant, actor=world.owner_actor, q="Widget", kinds=["widgets"])
+    get_search_page(tenant=world.tenant, actor=world.owner, q="Widget", kinds=["widgets"])
     assert names(world.tenant.pk).count(SEARCH_ENGINE_DEGRADED) == 1
 
     cache.delete(selectors.COOLDOWN_KEY)
-    search(tenant=world.tenant, actor=world.owner_actor, q="Widget", kinds=["widgets"])
+    get_search_page(tenant=world.tenant, actor=world.owner, q="Widget", kinds=["widgets"])
 
     assert len(dead.queries) == 2, "the re-probe never happened — this proves nothing"
     assert names(world.tenant.pk).count(SEARCH_ENGINE_DEGRADED) == 1
@@ -368,18 +368,18 @@ def test_recovery_announces_when_the_primary_answers_again(
     world: World, declared: tuple[Searchable, ...], flaky: FlakyEngine
 ) -> None:
     """The pair closes: down, then up, each said exactly once."""
-    page = search(tenant=world.tenant, actor=world.owner_actor, q="Widget", kinds=["widgets"])
+    page = get_search_page(tenant=world.tenant, actor=world.owner, q="Widget", kinds=["widgets"])
     assert page.engine == "postgres"
     assert names(world.tenant.pk).count(SEARCH_ENGINE_DEGRADED) == 1
 
     flaky.alive = True
     cache.delete(selectors.COOLDOWN_KEY)
-    back = search(tenant=world.tenant, actor=world.owner_actor, q="Widget", kinds=["widgets"])
+    back = get_search_page(tenant=world.tenant, actor=world.owner, q="Widget", kinds=["widgets"])
 
     assert back.engine == "meili"
     assert names(world.tenant.pk).count(SEARCH_ENGINE_RECOVERED) == 1
 
-    search(tenant=world.tenant, actor=world.owner_actor, q="Widget", kinds=["widgets"])
+    get_search_page(tenant=world.tenant, actor=world.owner, q="Widget", kinds=["widgets"])
     assert names(world.tenant.pk).count(SEARCH_ENGINE_RECOVERED) == 1
 
 
@@ -387,7 +387,7 @@ def test_a_healthy_engine_announces_nothing_at_all(
     world: World, declared: tuple[Searchable, ...], recording: RecordingEngine
 ) -> None:
     """The negative that keeps the three above honest."""
-    search(tenant=world.tenant, actor=world.owner_actor, q="Widget", kinds=["widgets"])
+    get_search_page(tenant=world.tenant, actor=world.owner, q="Widget", kinds=["widgets"])
 
     assert names(world.tenant.pk) == []
 
@@ -415,13 +415,12 @@ def test_no_engine_at_all_is_a_registered_refusal(
     monkeypatch.setattr(PostgresEngine, "query", collapse)
 
     with pytest.raises(SearchUnavailable) as refused:
-        search(tenant=world.tenant, actor=world.owner_actor, q="Widget", kinds=["widgets"])
+        get_search_page(tenant=world.tenant, actor=world.owner, q="Widget", kinds=["widgets"])
 
     assert refused.value.code == "search_unavailable"
 
 
 def test_the_door_renders_that_refusal_as_503_with_its_code(
-    api: Any,
     world: World,
     declared: tuple[Searchable, ...],
     dead: DeadEngine,
@@ -433,7 +432,7 @@ def test_the_door_renders_that_refusal_as_503_with_its_code(
         raise EngineUnavailable("Postgres did not answer a search either.")
 
     monkeypatch.setattr(PostgresEngine, "query", collapse)
-    api.force_login(world.owner)
+    api = world.session(world.owner)
     response = api.get(SEARCH_URL, {"q": "Widget", "kinds": "widgets"})
 
     assert response.status_code == 503, response.content
@@ -457,7 +456,7 @@ def test_the_announcement_pair_joins_the_alert_census_with_no_edit() -> None:
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[3]
-    out = subprocess.run(
+    out = subprocess.run(  # noqa: S603 — argv list built here from constants and paths; `python`, no shell
         [sys.executable, str(root / "deploy/observability/alerts/census.py"), "--json"],
         capture_output=True,
         text=True,

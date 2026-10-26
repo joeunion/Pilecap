@@ -66,7 +66,7 @@ from apps.accounts.tests.conftest import (
     ORG_LOGIN_POLICY_OWN,
     FakeZitadel,
 )
-from apps.core.tests.template_shape import template_shape
+from apps.core.tests.template_shape import IDENTITY_SHAPE, template_shape
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -116,15 +116,15 @@ def _seed(capsys: Any) -> str:
 def _posture_writer() -> str:
     """The command THIS deployment declares writes its sign-in posture.
 
-    `DJB_IDENTITY_SHAPE`'s `posture_writer` key; `config/settings/base.py` is
-    the authority. The template's own answer is `zitadel_seed`, and the cases
+    `DJB_IDENTITY_SHAPE`'s `posture_writer` key; `apps/core/tests/template_shape.py` is the
+    authority. The template's own answer is `zitadel_seed`, and the cases
     below that assert `zitadel_seed`'s IDENTITY or its wording carry
     `@template_shape("posture_writer")` and skip on a product that named its
     own. The three that assert IDEMPOTENCE do not skip: "running the posture
     writer twice writes nothing the second time" is every product's property,
     and it is asked of whichever command the product declared.
     """
-    return str(settings.IDENTITY_SHAPE["posture_writer"])
+    return str(IDENTITY_SHAPE["posture_writer"])
 
 
 def _writer_options(name: str) -> tuple[str, ...]:

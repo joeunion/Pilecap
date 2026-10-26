@@ -30,6 +30,7 @@ from apps.accounts.models import User
 from apps.core.api.docs import (
     DOOR_LEVEL_REFUSALS,
     TITLE_MAX_LENGTH,
+    URL_NAME_EXTENSION,
     contract_half,
     contract_of,
     declared_refusals,
@@ -50,6 +51,7 @@ from apps.core.idempotency import HEADER as IDEMPOTENCY_HEADER
 from apps.core.idempotency import REPLAYED_HEADER
 from apps.core.middleware import ORG_HEADER, TENANT_HEADER
 from apps.core.models import Membership, Tenant
+from apps.core.tests.permissions_world import platform_labels
 from config.api import api
 
 WRITE_METHODS = {"post", "put", "patch"}
@@ -364,12 +366,62 @@ def test_a_collection_route_does_not_claim_a_404_it_cannot_make(
                 f"{method.upper()} {path} pages but does not document its cursor refusal"
             )
             continue
-        assert path in {
-            # Both address one row without naming it: the governing policy is
-            # resolved from the acting hat, the connection from the stored state.
-            "/api/v1/widgets/policies/governing/",
-            "/api/v1/connections/oauth/callback/",
-        }, f"{method.upper()} {path} documents a 404 it cannot make"
+        assert (
+            path
+            in {
+                # Both address one row without naming it: the governing policy is
+                # resolved from the hat, the connection from the stored state.
+                "/api/v1/widgets/policies/governing/",
+                "/api/v1/connections/oauth/callback/",
+            }
+            or operation.get(URL_NAME_EXTENSION) in _product_valved_404s()
+        ), f"{method.upper()} {path} documents a 404 it cannot make"
+
+
+def _product_valved_404s() -> frozenset[str]:
+    """The url names of product routes whose own `@refuses(...)` declares `not_found`."""
+    from apps.core.api import mount
+
+    platform = platform_labels()
+    return frozenset(
+        name
+        for _path, name, operation in mount.bound_operations()
+        if name
+        and operation.view_func.__module__.split(".")[0] == "apps"
+        and operation.view_func.__module__.split(".")[1] not in platform
+        and "not_found" in (declared_refusals(operation.view_func) or ())
+    )
+
+
+def test_a_product_route_claims_a_collection_404_only_through_its_own_valve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A product's governing read is judged by its own `@refuses`; a platform route never is."""
+
+    def view_in(module: str, *codes: str) -> Any:
+        def view() -> None: ...
+
+        view.__module__ = module
+        return refuses(*codes)(view) if codes else view
+
+    class Op:
+        def __init__(self, view_func: Any) -> None:
+            self.view_func = view_func
+
+    from apps.core.api import mount
+
+    bound = [
+        (
+            "/gears/policies/governing/",
+            "gear-governing",
+            Op(view_in("apps.zzzproduct.api", "not_found")),
+        ),
+        ("/gears/", "gear-list", Op(view_in("apps.zzzproduct.api"))),
+        ("/gears/other/", "gear-other", Op(view_in("apps.zzzproduct.api", "forbidden"))),
+        ("/widgets/x/", "widget-x", Op(view_in("apps.example.api", "not_found"))),
+    ]
+    monkeypatch.setattr(mount, "bound_operations", lambda: bound)
+    assert _product_valved_404s() == {"gear-governing"}
 
 
 def test_every_paginated_list_documents_the_cursor_refusals(document: dict[str, Any]) -> None:
@@ -504,9 +556,11 @@ def test_every_authenticated_operation_publishes_the_addressing_refusal(
 def _privileged_role_words() -> set[str]:
     """What this tree calls privileged, asked of the model rather than listed.
 
-    `Membership.is_privileged` is the declaration; every role value is put to it
-    and the ones that come back true are the words a docstring spells. A list
-    written here would be right today and wrong the morning after a fourth role.
+    Every role value is put to `Membership.is_privileged`, the deprecated shim
+    that answers what the role declarations say on the template (house rule 41
+    reads the declarations themselves, ADR core-25), and the ones that come back
+    true are the words a docstring spells. A list written here would be right
+    today and wrong the morning after a fourth role.
     """
     return {value for value in Membership.Role.values if Membership(role=value).is_privileged}
 
@@ -1103,6 +1157,9 @@ def test_the_overview_module_names_nothing_above_its_own_layer() -> None:
         if module.startswith(("apps.", "config."))
         and not module.startswith(("apps.core.exceptions", "apps.core.idempotency"))
         and not module.startswith("apps.core.middleware")
+        # The road marker: standard library only, beneath every layer — a module
+        # marking one of its own functions a road names nothing above it.
+        and module != "apps.core.roads"
     ]
     assert above == [], f"apps/core/api/docs.py imports upward at module scope: {above}"
 
@@ -1237,7 +1294,7 @@ def test_the_door_modules_import_in_any_order(module: str) -> None:
     cannot see this — the modules are in `sys.modules` by then — so each entry
     point is driven in an interpreter of its own.
     """
-    proc = subprocess.run(
+    proc = subprocess.run(  # noqa: S603 — argv list built here from constants and paths; `python`, no shell
         [sys.executable, "-c", f"import django; django.setup(); import {module}"],
         capture_output=True,
         text=True,

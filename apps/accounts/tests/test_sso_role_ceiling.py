@@ -109,7 +109,7 @@ def test_a_tenant_admin_may_not_configure_a_connection_that_mints_owners(
     with pytest.raises(Forbidden) as refused:
         _create(tenant=tenant, actor=admin_actor, role=Membership.Role.OWNER)
 
-    assert "nobody grants above themselves" in str(refused.value.detail)
+    assert "You may not grant what you do not hold yourself" in str(refused.value.detail)
     assert not SsoConnection.objects.for_tenant(tenant).exists()
 
 
@@ -373,3 +373,62 @@ def test_a_branch_admin_may_not_touch_a_tenant_wide_connection_on_the_wire(
         == 200
     )
     assert api.delete(url).status_code == 204
+
+
+# --- the wall behind a single-site plant on the update's ask, named -----------
+
+
+def test_the_wall_behind_the_single_site_plant_is_named_by_the_site_that_raised(
+    api: Client,
+    tenant: Tenant,
+    owner_actor: Actor,
+    branch_admin_actor: Actor,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The update's own ask moved to the row; each `require` that still refuses is named."""
+    import inspect
+    from pathlib import Path
+
+    from apps.accounts.tests.conftest import provider_landed
+    from apps.core import authz
+
+    victim = provider_landed(_create(tenant=tenant, actor=owner_actor, role=Membership.Role.MEMBER))
+    assert authz.allows(branch_admin_actor, "sso_connection.update", victim)
+
+    real_require = authz.require
+    raised: list[tuple[str, str]] = []
+
+    def recording_require(actor: Actor, action: str, obj: Any = None) -> None:
+        caller = inspect.stack()[1]
+        if caller.function == "update_sso_connection" and action == "sso_connection.update":
+            obj = caller.frame.f_locals["connection"]
+        try:
+            real_require(actor, action, obj)
+        except Forbidden:
+            site = Path(caller.filename).relative_to(Path.cwd())
+            raised.append((caller.function, f"{site}:{caller.lineno} {action}"))
+            raise
+
+    monkeypatch.setattr(authz, "require", recording_require)
+
+    url = f"/api/v1/auth/sso-connections/{victim.pk}/"
+    api.force_login(User.objects.get(pk=str(branch_admin_actor.user_id)))
+    record: dict[str, tuple[int, list[tuple[str, str]]]] = {}
+    for key, body in (
+        ("name", {"name": "Renamed"}),
+        ("email_domains", {"email_domains": ["captured.example"]}),
+        ("enforced", {"enforced": True}),
+    ):
+        raised.clear()
+        status = api.patch(url, body, content_type="application/json").status_code
+        record[key] = (status, list(raised))
+    with capsys.disabled():
+        for key, (status, sites) in record.items():
+            print(f"wall {key}: {status} raised_at={[where for _, where in sites]}")
+
+    assert {key: (status, [fn for fn, _ in sites]) for key, (status, sites) in record.items()} == {
+        "name": (200, []),
+        "email_domains": (200, []),
+        "enforced": (403, ["sync_identity_config"]),
+    }

@@ -17,9 +17,9 @@ import { cleanup, render } from "@testing-library/react";
 import type { ComponentType } from "react";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
-import { remedyDoor } from "@/screens/remedy-door";
-import { pathFor } from "@/screens/routes";
-import { VERB_TABLE, type Place, type Road, type Verb } from "@/screens/verbs";
+import { remedyDoor } from "@pilecap/ui/remedy-door";
+import { pathFor, STAFF_SURFACE } from "@pilecap/ui/routes";
+import { VERB_TABLE, type Place, type Road, type Verb } from "@pilecap/ui/verbs";
 
 afterEach(cleanup);
 
@@ -191,7 +191,7 @@ describe.each(roads)("the $noun face's road", ({ noun, road }) => {
                 const doors = Array.from(alert.querySelectorAll("[data-destination]"));
                 expect(doors.length, path).toBeGreaterThan(0);
                 for (const door of doors) {
-                    const answer = remedyDoor({ label: door.textContent ?? "", destination: door.getAttribute("data-destination") ?? "" });
+                    const answer = remedyDoor({ label: door.textContent ?? "", destination: door.getAttribute("data-destination") ?? "" }, undefined, STAFF_SURFACE);
                     expect(door.tagName, `${path}: ${door.getAttribute("data-destination")}`).toBe(answer.kind === "link" ? "A" : "SPAN");
                     if (answer.kind === "link") expect(door.getAttribute("href")).toBe(answer.href);
                 }
@@ -250,7 +250,7 @@ describe.each(roads)("the $noun face's road", ({ noun, road }) => {
     it("the merged state: the band naming the survivor — a live door where a page draws the noun's detail — zero primary, no head acts, no pill, no act at all", () => {
         if (!road.verbs.includes("merge")) return;
         // A live door only where the route table has a page drawing the detail; else the name alone, never a broken link.
-        const detailPage = pathFor(`${noun}-detail`, { id: "x" });
+        const detailPage = pathFor(`${noun}-detail`, { id: "x" }, undefined, STAFF_SURFACE);
         for (const [path, Story] of storiesOf(noun, STATE_STORY.merge ?? "Merged")) {
             const { container, unmount } = render(<Story />);
             const band = container.querySelector('[data-band="merged"]');

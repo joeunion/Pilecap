@@ -1,0 +1,42 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "before", "text": "def test_anonymous_cannot_list(api: Client) -> None:"}
+# `/stats/`: the fixed request cost plus the two COUNTs its basis is built from (ADR core-7).
+STATS_QUERY_BUDGET = REQUEST_FIXED_QUERIES + 2
+
+
+def test_stats_query_count_does_not_grow_with_rows(
+    api: Client,
+    tenant: Tenant,
+    owner: User,
+    django_assert_num_queries: Any,
+    owner_actor: Actor,
+) -> None:
+    """The measured number costs two COUNTs and no more, at any number of rows."""
+    for index in range(10):
+        create_widget(tenant=tenant, actor=owner_actor, name=f"Counted {index}")
+    api.force_login(owner)
+
+    with django_assert_num_queries(STATS_QUERY_BUDGET):
+        response = api.get(reverse("api:widget_stats-detail"))
+
+    assert response.status_code == 200, response.content
+    body = _body(response)
+    assert body["count"]["value"] == "10"
+    assert body["count"]["basis"]["inputs"] == {"live": "10", "archived": "0"}
+
+
+def test_the_stats_basis_moves_with_the_rows_it_measures(
+    api: Client, tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    """The inputs are read off the table, not remembered. Archive one and watch."""
+    first = create_widget(tenant=tenant, actor=owner_actor, name="First")
+    create_widget(tenant=tenant, actor=owner_actor, name="Second")
+    api.force_login(owner)
+    archived = api.post(reverse("api:widget-archive", kwargs={"widget_id": first.pk}))
+    assert archived.status_code == 200, archived.content
+
+    body = _body(api.get(reverse("api:widget_stats-detail")))
+
+    assert body["count"]["basis"]["inputs"] == {"live": "1", "archived": "1"}
+    assert body["count"]["value"] == "2"
+
+

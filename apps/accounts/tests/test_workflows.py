@@ -19,6 +19,7 @@ connections, and an `on_commit` hook only fires on a real commit.
 from __future__ import annotations
 
 import dataclasses
+import io
 import json
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -27,6 +28,7 @@ from typing import Any
 import httpx
 import pytest
 from django.core import mail as django_mail
+from django.core.management import call_command
 from temporalio.client import Client, WorkflowFailureError
 from temporalio.exceptions import ApplicationError
 from temporalio.testing import WorkflowEnvironment
@@ -37,10 +39,12 @@ from apps.accounts.services import (
     SYNC_IDENTITY_CONFIG_WORKFLOW,
     _identity_config_key,
     create_sso_connection,
+    create_user,
+    sync_workforce_identity_config,
 )
-from apps.accounts.tests.conftest import CLIENT_ID, CLIENT_SECRET, ISSUER, FakeZitadel
+from apps.accounts.tests.conftest import CLIENT_ID, CLIENT_SECRET, ISSUER, FakeZitadel, home_tenant
 from apps.accounts.types import IdentityConfigApplied, InvitedPersonProvisioned
-from apps.core.actor import Actor, system_actor
+from apps.core.actor import Actor, actor_for, system_actor
 from apps.core.asyncdb import run_db
 from apps.core.models import Tenant
 from apps.core.services import PROVISION_INVITED_PERSON_WORKFLOW, invite_member
@@ -71,6 +75,12 @@ def instance(monkeypatch: pytest.MonkeyPatch, settings: Any) -> FakeZitadel:
     return fake
 
 
+@pytest.fixture
+def homed(instance: FakeZitadel, tenant: Tenant) -> str:
+    """The tenant's realm on the fake, as its run leaves it: connections and people live there."""
+    return home_tenant(instance, tenant)
+
+
 async def _local_client(env: WorkflowEnvironment, monkeypatch: pytest.MonkeyPatch) -> Client:
     """Point everything at the test server, including the on-commit hook."""
     target = env.client.service_client.config.target_host
@@ -86,6 +96,7 @@ async def _local_client(env: WorkflowEnvironment, monkeypatch: pytest.MonkeyPatc
 @pytest.mark.asyncio
 async def test_configuring_a_connection_materialises_it_and_records_what_it_became(
     instance: FakeZitadel,
+    homed: str,
     tenant: Tenant,
     owner_actor: Actor,
     monkeypatch: pytest.MonkeyPatch,
@@ -130,7 +141,7 @@ async def test_configuring_a_connection_materialises_it_and_records_what_it_beca
             handle = client.get_workflow_handle(expected, result_type=IdentityConfigApplied)
             applied: IdentityConfigApplied = await handle.result()
 
-    assert applied.created is True
+    assert applied.resource_id in instance.idps
     assert applied.resource_id
 
     synced = await run_db(lambda: SsoConnection.objects.for_tenant(tenant).get(pk=connection.pk))
@@ -154,6 +165,7 @@ async def test_configuring_a_connection_materialises_it_and_records_what_it_beca
 @pytest.mark.asyncio
 async def test_inviting_somebody_provisions_them_and_mails_them_a_real_link(
     instance: FakeZitadel,
+    homed: str,
     tenant: Tenant,
     owner: User,
     monkeypatch: pytest.MonkeyPatch,
@@ -185,7 +197,6 @@ async def test_inviting_somebody_provisions_them_and_mails_them_a_real_link(
             handle = client.get_workflow_handle(expected, result_type=InvitedPersonProvisioned)
             provisioned: InvitedPersonProvisioned = await handle.result()
 
-    assert provisioned.created is True
     assert provisioned.delivered == 1
     # The result a person opens in the Temporal UI carries no credential.
     assert "code=" not in json.dumps(dataclasses.asdict(provisioned))
@@ -216,6 +227,7 @@ async def test_inviting_somebody_provisions_them_and_mails_them_a_real_link(
 @pytest.mark.asyncio
 async def test_a_provisioning_run_that_fails_still_closes_its_row(
     instance: FakeZitadel,
+    homed: str,
     tenant: Tenant,
     owner: User,
     monkeypatch: pytest.MonkeyPatch,
@@ -269,3 +281,54 @@ async def test_a_provisioning_run_that_fails_still_closes_its_row(
     )
     assert run.status == WorkflowRun.Status.FAILED
     assert run.error
+
+
+@pytest.mark.asyncio
+async def test_the_workforce_door_reaches_zitadel_and_the_audit_agrees(
+    instance: FakeZitadel,
+    tenant: Tenant,
+    settings: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The one workforce road, driven end to end: ask → run → provider → audit.
+
+    `sync_workforce_identity_config` records the ask and starts
+    `SyncIdentityConfigWorkflow` on commit; the real worker runs the real
+    activity, which reaches `zitadel.ensure_google_identity_provider`; and then
+    `manage.py zitadel_audit` reads Zitadel back and prints the line an operator
+    — or a product moving off the retired direct-Google road — takes as the
+    green shape before merging: `agrees      workforce — idp <id>, domains …`.
+    """
+    settings.GOOGLE_OAUTH_CLIENT_ID = "google-client-id"
+    settings.GOOGLE_OAUTH_CLIENT_SECRET = "google-client-secret"  # noqa: S105 — a fake IdP client secret the test world configures  # pragma: allowlist secret
+    settings.GOOGLE_WORKSPACE_DOMAINS = ["union.studio"]
+    operator = await run_db(
+        create_user, email="operator@example.com", password=None, is_superuser=True
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        client = await _local_client(env, monkeypatch)
+        async with build_worker(client):
+            asked = await run_db(
+                sync_workforce_identity_config,
+                actor=actor_for(user=operator, tenant=tenant, kind="human"),
+                tenant=None,
+            )
+            handle = client.get_workflow_handle(
+                f"platform:accounts:identity_config:{asked.key}",
+                result_type=IdentityConfigApplied,
+            )
+            applied: IdentityConfigApplied = await handle.result()
+
+    assert instance.idps[applied.resource_id]["config"]["google"]["clientId"] == (
+        "google-client-id"
+    )
+
+    out = io.StringIO()
+    try:
+        await run_db(call_command, "zitadel_audit", stdout=out)
+    except SystemExit:
+        pass  # other sections may drift against a bare fake; this one may not
+    report = out.getvalue()
+    assert f"agrees      workforce — idp {applied.resource_id}, domains union.studio" in report
+    assert "DRIFT       workforce" not in report

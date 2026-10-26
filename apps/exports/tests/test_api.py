@@ -17,11 +17,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from apps.core.actor import actor_for
+from apps.core.tests.wire import REQUEST_FIXED_QUERIES
 from apps.exports.models import Export
 from apps.exports.services import create_export
 
@@ -30,8 +32,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
     from apps.accounts.models import User
     from apps.core.models import Tenant
-
-    from .conftest import World
+    from apps.core.tests.permissions_world import World
 
 pytestmark = pytest.mark.django_db
 
@@ -40,30 +41,19 @@ DETAIL_URL = "/api/v1/exports/{}/"
 DOWNLOAD_URL = "/api/v1/exports/{}/download/"
 JSON = "application/json"
 
-#: Measured, not guessed, at seeded scale. The page itself plus the middleware
-#: and session work an authenticated request pays: the list issues no `COUNT`
-#: (ADR core-18 — `has_more` comes from fetching one row more than asked for),
-#: and `select_related` is what keeps the two relations `ExportOut` walks off
-#: the per-row path. Removing either would move this number, which is the point.
-#:
-#: **7 → 10 in Phase R, and the three are named.** `export.read` is asked at the
-#: hat inside `selectors.list_exports`, and resolving what one person holds at
-#: one node reads exactly three tables — their memberships in the tenant, the
-#: grants on those memberships, the role-delta rows for the role keys — once per
-#: actor. Once, not once per key: the actor carries the memo (PR0), which is why
-#: a door that also fetches through a `get_` pays 3 and never 6.
-LIST_QUERY_BUDGET = 10
+#: The request's fixed cost plus the page; `export.read` at the hat rides the request's memo.
+LIST_QUERY_BUDGET = REQUEST_FIXED_QUERIES + 1
 
 
 @pytest.fixture
 def exports(world: World, recorded_workflow_starts: None) -> list[Export]:
     """Three exports across the tree: one at the root, two under the region."""
     return [
-        create_export(tenant=world.tenant, actor=world.owner_actor),
-        create_export(tenant=world.tenant, actor=world.region_actor, idempotency_key="a"),
+        create_export(tenant=world.tenant, actor=world.owner),
+        create_export(tenant=world.tenant, actor=world.admin_at_a, idempotency_key="a"),
         create_export(
             tenant=world.tenant,
-            actor=actor_for(user=world.owner, tenant=world.tenant, org=world.branch),
+            actor=actor_for(user=world.user(world.owner), tenant=world.tenant, org=world.a1),
         ),
     ]
 
@@ -75,7 +65,7 @@ def test_the_list_answers_in_the_cursor_envelope(
     api: Client, world: World, exports: list[Export]
 ) -> None:
     """ADR core-18's envelope, and `count` null until somebody asks for it."""
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
 
     response = api.get(LIST_URL)
 
@@ -90,7 +80,7 @@ def test_the_list_answers_in_the_cursor_envelope(
 def test_include_count_is_what_puts_the_total_on_the_wire(
     api: Client, world: World, exports: list[Export]
 ) -> None:
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
 
     body = api.get(LIST_URL, {"include_count": "true"}).json()
 
@@ -107,7 +97,7 @@ def test_another_tenants_exports_are_absent(
         tenant=neighbour,
         actor=actor_for(user=stranger, tenant=neighbour, org=root_organization(tenant=neighbour)),
     )
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
 
     body = api.get(LIST_URL).json()
 
@@ -124,18 +114,18 @@ def test_a_branch_admin_sees_its_own_subtree_and_nothing_above_it(
     does not see the root's — even though all three are in one tenant and all
     three are that tenant's own exports.
     """
-    api.force_login(world.region_admin)
+    api.force_login(world.user(world.admin_at_a))
 
-    body = api.get(LIST_URL, headers={"X-Org": world.region.slug}).json()
+    body = api.get(LIST_URL, headers={"X-Org": world.a.slug}).json()
 
     slugs = {one["organization_slug"] for one in body["items"]}
-    assert slugs == {"region", "branch"}
-    assert "acme" not in slugs
+    assert slugs == {"a", "a1"}
+    assert world.root.slug not in slugs
 
 
 def test_the_status_filter_is_exact(api: Client, world: World, exports: list[Export]) -> None:
     """A word from a closed vocabulary, so a substring match would be a trap."""
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
 
     assert len(api.get(LIST_URL, {"status": "pending"}).json()["items"]) == 3
     assert api.get(LIST_URL, {"status": "pend"}).json()["items"] == []
@@ -146,7 +136,7 @@ def test_an_ordering_this_list_does_not_accept_is_refused(
     api: Client, world: World, exports: list[Export]
 ) -> None:
     """Refused with the registry's envelope rather than quietly ignored."""
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
 
     response = api.get(LIST_URL, {"ordering": "artifact_key"})
 
@@ -158,7 +148,7 @@ def test_the_list_query_budget(
     api: Client, world: World, exports: list[Export], django_assert_num_queries: Any
 ) -> None:
     """The pin that turns a lost `select_related` into a failure, not a slow page."""
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
 
     with django_assert_num_queries(LIST_QUERY_BUDGET):
         assert api.get(LIST_URL).status_code == 200
@@ -169,19 +159,19 @@ def test_the_list_query_budget(
 
 def test_a_member_may_export_their_own_organization(api: Client, world: World) -> None:
     """The free half: no role bar, because the walk reads what they already can."""
-    api.force_login(world.region_admin)
+    api.force_login(world.user(world.admin_at_a))
 
     response = api.post(
         LIST_URL,
         data=json.dumps({"scope": "organization"}),
         content_type=JSON,
-        headers={"X-Org": world.region.slug},
+        headers={"X-Org": world.a.slug},
     )
 
     assert response.status_code == 201, response.content
     body = response.json()
     assert body["scope"] == "organization"
-    assert body["organization_slug"] == "region"
+    assert body["organization_slug"] == "a"
     assert body["status"] == "pending"
     assert body["download_url"] is None and body["download_path"] is None
 
@@ -193,13 +183,13 @@ def test_a_branch_admin_may_not_export_the_whole_tenant(api: Client, world: Worl
     is the same predicate erasure stands behind, so if that ceiling ever moves
     it moves once.
     """
-    api.force_login(world.region_admin)
+    api.force_login(world.user(world.admin_at_a))
 
     response = api.post(
         LIST_URL,
         data=json.dumps({"scope": "tenant"}),
         content_type=JSON,
-        headers={"X-Org": world.region.slug},
+        headers={"X-Org": world.a.slug},
     )
 
     assert response.status_code == 403, response.content
@@ -209,7 +199,7 @@ def test_a_branch_admin_may_not_export_the_whole_tenant(api: Client, world: Worl
 
 def test_the_root_owner_may_export_the_whole_tenant(api: Client, world: World) -> None:
     """The other side of the same bar, so neither direction is assumed."""
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
 
     response = api.post(LIST_URL, data=json.dumps({"scope": "tenant"}), content_type=JSON)
 
@@ -218,7 +208,7 @@ def test_the_root_owner_may_export_the_whole_tenant(api: Client, world: World) -
 
 
 def test_a_scope_this_api_does_not_have_is_refused(api: Client, world: World) -> None:
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
 
     response = api.post(LIST_URL, data=json.dumps({"scope": "everything"}), content_type=JSON)
 
@@ -229,7 +219,7 @@ def test_a_scope_this_api_does_not_have_is_refused(api: Client, world: World) ->
 
 def test_an_unknown_field_in_the_body_is_a_refusal_naming_it(api: Client, world: World) -> None:
     """Strict bodies: silence cannot be told from success on the way in."""
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
 
     response = api.post(
         LIST_URL,
@@ -246,13 +236,13 @@ def test_an_unknown_field_in_the_body_is_a_refusal_naming_it(api: Client, world:
 
 def test_a_body_field_cannot_place_the_export_in_another_branch(api: Client, world: World) -> None:
     """There is no `organization` on `ExportIn`, and its absence is the enforcement."""
-    api.force_login(world.region_admin)
+    api.force_login(world.user(world.admin_at_a))
 
     response = api.post(
         LIST_URL,
         data=json.dumps({"scope": "organization", "organization": world.root.slug}),
         content_type=JSON,
-        headers={"X-Org": world.region.slug},
+        headers={"X-Org": world.a.slug},
     )
 
     assert response.status_code == 422, response.content
@@ -272,7 +262,7 @@ def test_an_export_in_another_tenant_is_not_found(
         tenant=neighbour,
         actor=actor_for(user=stranger, tenant=neighbour, org=root_organization(tenant=neighbour)),
     )
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
 
     response = api.get(DETAIL_URL.format(theirs.pk))
 
@@ -284,7 +274,7 @@ def test_downloading_an_export_that_has_not_finished_is_not_found(
     api: Client, world: World, exports: list[Export]
 ) -> None:
     """ "There is no file here" and "there is no such export" are one answer."""
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
 
     response = api.get(DOWNLOAD_URL.format(exports[0].pk))
 
@@ -316,16 +306,16 @@ def test_a_finished_export_is_handed_over_as_a_signed_link_that_really_fetches_i
     from apps.exports.activities import _write_the_archive
     from apps.exports.services import finish_export
 
-    export = create_export(tenant=world.tenant, actor=world.owner_actor, scope=Export.Scope.TENANT)
-    version, manifest = _write_the_archive(export=export, hat=world.root, actor=world.owner_actor)
+    export = create_export(tenant=world.tenant, actor=world.owner, scope=Export.Scope.TENANT)
+    version, manifest = _write_the_archive(export=export, hat=world.root, actor=world.owner)
     finish_export(
         tenant=world.tenant,
-        actor=world.owner_actor,
+        actor=world.owner,
         export=export,
         version=version,
         manifest=manifest,
     )
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
 
     response = api.get(DOWNLOAD_URL.format(export.pk))
 
@@ -336,7 +326,7 @@ def test_a_finished_export_is_handed_over_as_a_signed_link_that_really_fetches_i
 
     # Followed, because a redirect nobody can follow is a 404 with better
     # manners. This is the one place the whole door is measured end to end.
-    with urllib.request.urlopen(signed) as fetched:  # noqa: S310 - a URL we just minted
+    with urllib.request.urlopen(signed) as fetched:  # noqa: S310 - the scheme is the object store's http(s), signed by our own presigner; no caller supplies it, so no file: or custom scheme can arrive
         fetched_bytes = fetched.read()
     assert fetched_bytes[:2] == b"PK", "that is a zip"
     assert len(fetched_bytes) == version.size_bytes
@@ -373,11 +363,11 @@ def test_a_neighbour_cannot_fetch_this_tenants_archive(
     from apps.exports.activities import _write_the_archive
     from apps.exports.services import finish_export
 
-    export = create_export(tenant=world.tenant, actor=world.owner_actor, scope=Export.Scope.TENANT)
-    version, manifest = _write_the_archive(export=export, hat=world.root, actor=world.owner_actor)
+    export = create_export(tenant=world.tenant, actor=world.owner, scope=Export.Scope.TENANT)
+    version, manifest = _write_the_archive(export=export, hat=world.root, actor=world.owner)
     finish_export(
         tenant=world.tenant,
-        actor=world.owner_actor,
+        actor=world.owner,
         export=export,
         version=version,
         manifest=manifest,
@@ -393,3 +383,18 @@ def test_the_routes_require_a_credential(api: Client, world: World) -> None:
     """`auth=` is on the router; nothing here is reachable signed out."""
     assert api.get(LIST_URL).status_code == 401
     assert api.post(LIST_URL, data="{}", content_type=JSON).status_code == 401
+
+
+def test_a_person_with_no_membership_is_refused_no_acting_scope(api: Client) -> None:
+    """The door's one resolver answers a request that resolved no tenant, on every route."""
+    from apps.accounts.services import create_user
+
+    password = "a-long-enough-pass-1234"  # noqa: S105 — a throwaway password a test user is made with  # pragma: allowlist secret
+    api.force_login(create_user(email="nobody@example.com", password=password))
+    for response in (
+        api.get(LIST_URL),
+        api.get(DETAIL_URL.format(uuid.uuid4())),
+        api.post(LIST_URL, data=json.dumps({"scope": "organization"}), content_type=JSON),
+    ):
+        assert response.status_code == 403, response.content
+        assert response.json()["code"] == "no_acting_scope", response.content

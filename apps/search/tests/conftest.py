@@ -1,53 +1,27 @@
-"""The world every search test is measured against.
+"""Search's test world: core's `build_world` with a widget at three nodes, and two planted kinds.
 
-Two shapes have to exist before any assertion here means anything.
-
-**A tree, and a neighbour.** `visible_to` is downward-only, so the smallest
-world in which "the scope leaked" can *fail* is a hat with a child beneath it, a
-sibling beside it and a second tenant next door. A single flat tenant would let
-both leaks through while every assertion passed.
-
-**Two kinds, one org-scoped and one not.** The injected filter is per-kind — an
-org-scoped kind gets `tenant_id AND org_id IN [...]` and a tenant-scoped one
-gets `tenant_id` — and a world with only one shape cannot tell a correct
-injection from a one-shape-fits-all that goes org-blind on the scoped half. That
-is that class, and it is the reason `kinds` here is two and not one.
-
-`apps/example` declares one real kind (`widgets`, over `Widget`), and
-these tests still **plant** their two through the registry's one seam rather
-than reading the live population. That is deliberate rather than left over: the
-tenant-scoped half of the pair has no adopter in the tree, a suite that read the
-live registry would change shape the day any app declared a kind, and a planted
-declaration is also what lets a test hand the reconcile a digest it controls.
-The live adoption is asserted where it belongs — in the adopting app's own
-`apps/example/tests/test_search_adoption.py`.
+One kind org-scoped, one tenant-scoped: a single shape cannot tell a correct filter injection.
 """
 
 from __future__ import annotations
 
 import os
 from collections.abc import Iterator
-from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
 import pytest
 from django.core.cache import cache
 
-from apps.accounts.models import User
 from apps.conftest import organ
-from apps.core.actor import Actor, actor_for
-from apps.core.models import Membership, Organization, Tenant
-from apps.core.services import add_membership, create_organization
+from apps.core.actor import actor_for
+from apps.core.models import Organization
+from apps.core.tests.permissions_world import World as World
+from apps.core.tests.permissions_world import build_world
 from apps.example.models import Widget
 from apps.example.services import create_widget
 from apps.search import registry
 from apps.search.types import RecordingEngine, Searchable
-
-#: A literal handed to `create_user`, long enough to clear Django's validators
-#: and nothing else. Allow-listed because it is exactly what the scanner is
-#: right to look at, and exactly what a reader should see is fake.
-PASSWORD = "a-long-enough-password-for-validators"  # pragma: allowlist secret
 
 #: The org-scoped kind: `Widget` carries an `organization`, so its filter is the
 #: two-clause one.
@@ -70,37 +44,9 @@ ORGS = Searchable(
 )
 
 
-@dataclass(frozen=True)
-class World:
-    """One tenant shaped like a customer, plus a neighbour to leak into."""
-
-    tenant: Tenant
-    root: Organization
-    region: Organization
-    branch: Organization
-    sibling: Organization
-    owner: User
-    region_admin: User
-    owner_actor: Actor
-    region_actor: Actor
-
-
 @pytest.fixture(autouse=True)
 def _a_closed_circuit() -> Iterator[None]:
-    """Every search test starts and ends with the circuit closed.
-
-    The circuit's state lives in the cache, not in the database, so nothing in
-    the test harness rolls it back: one test that fails over would otherwise
-    leave the cooldown key set for whatever ran next in that process, and the
-    next test would silently prove its assertion against the FALLBACK while
-    believing it had asked the primary. That is the worst shape a leak can take
-    — a green test measuring the wrong engine — so it is cleaned in both
-    directions rather than only after.
-
-    Autouse and unconditional: a fixture the degradation tests had to remember
-    to request is a fixture the tests that are not about degradation would never
-    request, and those are precisely the ones a stale key would mislead.
-    """
+    """Every search test starts and ends with the circuit closed: its state lives in the cache."""
     from apps.search import selectors
 
     keys = [selectors.COOLDOWN_KEY, selectors.DEGRADED_KEY]
@@ -110,43 +56,14 @@ def _a_closed_circuit() -> Iterator[None]:
 
 
 @pytest.fixture
-def world(tenant: Tenant, owner: User, root_org: Organization) -> World:
-    """A tenant with a three-node tree and a person acting at each of two levels."""
-    acting = actor_for(user=owner, tenant=tenant, org=root_org)
-    region = create_organization(
-        tenant=tenant, parent=root_org, name="Region", slug="region", actor=acting
-    )
-    branch = create_organization(
-        tenant=tenant, parent=region, name="Branch", slug="branch", actor=acting
-    )
-    sibling = create_organization(
-        tenant=tenant, parent=root_org, name="Sibling", slug="sibling", actor=acting
-    )
-    from apps.accounts.services import create_user
-
-    region_admin = create_user(email="region-admin@acme.com", password=PASSWORD)
-    add_membership(
-        user=region_admin,
-        tenant=tenant,
-        organization=region,
-        is_default=True,
-        role=Membership.Role.ADMIN,
-        actor=acting,
-    )
-    region_acting = actor_for(user=region_admin, tenant=tenant, org=region)
-    for org, who in ((root_org, acting), (region, region_acting), (sibling, acting)):
-        create_widget(tenant=tenant, actor=who, name=f"Widget at {org.slug}")
-    return World(
-        tenant=tenant,
-        root=root_org,
-        region=region,
-        branch=branch,
-        sibling=sibling,
-        owner=owner,
-        region_admin=region_admin,
-        owner_actor=acting,
-        region_actor=region_acting,
-    )
+def world() -> World:
+    """Core's world (`root → A → A1 → A1X`, sibling `B`) with one widget at the root, A and B."""
+    built = build_world()
+    homes = (("root", built.owner, built.root), ("A", built.admin_at_a, built.a))
+    for label, who, org in (*homes, ("B", built.owner, built.b)):
+        acting = actor_for(user=who.user, tenant=built.tenant, org=org)
+        create_widget(tenant=built.tenant, actor=acting, name=f"Widget at {label}")
+    return built
 
 
 @pytest.fixture

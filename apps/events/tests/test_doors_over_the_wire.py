@@ -52,16 +52,20 @@ from typing import Any
 
 import httpx
 import pytest
+from asgiref.sync import sync_to_async
 
 from apps.accounts.models import User
 from apps.accounts.services import issue_token
 from apps.core.actor import actor_for
 from apps.core.models import Tenant
+from apps.core.tests.doors import assert_four_doors, canonical
 
 # The transport harness, from the module that owns it. Copying it here would be
 # a second thing to keep in step with the MCP protocol version.
 from apps.core.tests.test_mcp import MCP_HEADERS, PROTOCOL_VERSION, running
-from apps.events.models import WebhookEndpoint
+from apps.core.tests.wire import initialize, rpc, wire
+from apps.events.events import ENDPOINT_REGISTERED
+from apps.events.models import Event, WebhookEndpoint
 
 #: House rule 46. The door pair this module answers for `apps/events`, read by
 #: the gate off this module-level assignment. The population is DERIVED from the
@@ -73,7 +77,7 @@ DETAIL_URL = "/api/v1/webhook-endpoints/{}/"
 MCP_URL = "/mcp"
 JSON = "application/json"
 
-SECRET = "whsec-a-shared-secret-for-parity"  # pragma: allowlist secret
+SECRET = "whsec-a-shared-secret-for-parity"  # noqa: S105 — a signing secret the test both signs and verifies with  # pragma: allowlist secret
 
 #: `WebhookEndpointOut`'s wire contract, written out rather than derived from the
 #: schema. A pin derived from the thing it pins cannot fail; this one fails the
@@ -303,7 +307,7 @@ def withheld_endpoint_read(tenant: Tenant, member: User) -> str:
 async def test_both_doors_refuse_the_same_withheld_read_with_the_same_words(
     member_bearer: str, withheld_endpoint_read: str, endpoint: WebhookEndpoint
 ) -> None:
-    """House rule 46, applied to the read gate Phase R added.
+    """House rule 46, applied to the read gate.
 
     The parity case above proves the two doors agree when they ANSWER. This
     proves they agree when they REFUSE, which is the half a parity test over
@@ -372,3 +376,55 @@ async def test_both_doors_refuse_the_same_withheld_read_with_the_same_words(
     rendered = _json.dumps(called.json())
     assert "forbidden" in rendered, rendered
     assert sentence in rendered, rendered
+
+
+# --- one registration, told four ways -------------------------------------------
+
+
+def _recorded_payload(tenant: Tenant) -> dict[str, Any]:
+    payload: dict[str, Any] = Event.objects.for_tenant(tenant).get(name=ENDPOINT_REGISTERED).payload
+    return payload
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pressed_on", ["rest", "mcp"])
+async def test_one_registration_is_one_row_on_both_doors_and_in_its_event(
+    bearer: str, tenant: Tenant, recorded_workflow_starts: None, pressed_on: str
+) -> None:
+    """Registered on one door, read on both: the two reads and the recorded event agree."""
+    auth = {"authorization": f"Bearer {bearer}"}
+    body = {"url": "https://subscriber.example/four-doors", "description": "four doors"}
+    async with wire() as client:
+        await initialize(client, auth, who="events-four-doors")
+        if pressed_on == "rest":
+            pressed = await client.post(
+                "/api/v1/webhook-endpoints/", headers={**auth, "accept": JSON}, json=body
+            )
+            assert pressed.status_code == 201, pressed.text
+            created = pressed.json()["endpoint"]
+        else:
+            called = await client.post(
+                MCP_URL,
+                headers={**MCP_HEADERS, **auth},
+                json=rpc("tools/call", {"name": "create_endpoint", "arguments": body}, 2),
+            )
+            assert "error" not in called.json(), called.text
+            created = called.json()["result"]["structuredContent"]["endpoint"]
+        over_http = await client.get(
+            DETAIL_URL.format(created["id"]), headers={**auth, "accept": JSON}
+        )
+        assert over_http.status_code == 200, over_http.text
+        read = await client.post(
+            MCP_URL,
+            headers={**MCP_HEADERS, **auth},
+            json=rpc(
+                "tools/call",
+                {"name": "get_endpoint", "arguments": {"endpoint_id": created["id"]}},
+                3,
+            ),
+        )
+    over_mcp = read.json()["result"]["structuredContent"]
+    assert canonical(created) == canonical(over_http.json())
+    payload = await sync_to_async(_recorded_payload)(tenant)
+    assert_four_doors(rest=over_http.json(), mcp=over_mcp, event_payload=payload)

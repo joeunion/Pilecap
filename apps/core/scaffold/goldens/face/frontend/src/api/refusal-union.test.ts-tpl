@@ -1,0 +1,24 @@
+    // golden: archive begin
+    "widget-archive": ["conflict"],
+    // golden: archive end
+    // golden: bulk begin
+    "widget-bulk": ["conflict", "invalid"],
+    // golden: bulk end
+    // golden: duplicate begin
+    "widget-duplicate": ["archived", "conflict", "invalid", "merged"],
+    // golden: duplicate end
+    // golden: face begin
+    "widget-list": ["invalid"],
+    // golden: face end
+    // golden: merge begin
+    "widget-merge": ["archived", "conflict", "invalid", "merged", "stale_version"],
+    // golden: merge end
+    // golden: move begin
+    "widget-move": ["archived", "conflict", "invalid", "stale_version"],
+    // golden: move end
+    // golden: archive begin
+    "widget-restore": ["conflict"],
+    // golden: archive end
+    // golden: version begin
+    "widget-update": ["archived", "conflict", "invalid"],
+    // golden: version end

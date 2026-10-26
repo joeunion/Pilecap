@@ -1,3 +1,4 @@
+# census: cross-app population=apps/*/services.py walks every app's services for its emitters
 """The audited population records WHO — as a class, not one service at a time.
 
 ADR core-22 read AU-3's "identity of associated individuals" onto
@@ -102,11 +103,13 @@ MACHINE_WORK: frozenset[str] = frozenset(
         "events.dead_letter_delivery",
         # deployment housekeeping, run by a schedule
         "events.purge_deliveries",
+        "events.purge_dispatched_outbox",
+        "workflows.purge_finished_runs",
         "exports.purge_exports",
         "files.purge_pending_versions",
         "connections.purge_inbound_webhooks",
+        "djb_imports.purge_imports",
         # platform bookkeeping written by the workflow client
-        "workflows.record_run",
         "workflows.finish_run",
         # the login flow: an identity provider asserted an identity, and
         # `ensure_membership`'s own docstring argues the case at length
@@ -207,7 +210,7 @@ def test_a_human_above_their_ceiling_is_still_refused(
     acting = _admin(tenant, root_org, "wall-admin@example.com")
     newcomer = create_user(email="wall-newcomer@example.com", password="x" * 14)
 
-    with pytest.raises(Forbidden, match="nobody grants above themselves"):
+    with pytest.raises(Forbidden, match="You may not grant what you do not hold yourself"):
         add_membership(
             user=newcomer,
             tenant=tenant,

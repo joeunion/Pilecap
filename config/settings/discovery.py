@@ -28,7 +28,9 @@ Three optional class attributes on the `AppConfig` are read:
   is the one app that declares it: a product ships without the example and
   keeps it in the tree, rather than deleting a directory it may want to read.
   **It is a declaration on the app, not a list here** — the app is the only
-  thing that knows whether the product still works without it.
+  thing that knows whether the product still works without it. An app whose
+  `depends_on` names a switched-off app goes out with it (`switched_off`): it
+  imports what is gone, so it could not start.
 """
 
 from __future__ import annotations
@@ -38,7 +40,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from django.core.exceptions import ImproperlyConfigured
+from apps.core.roads import road
 
 # Where an app sits when its `AppConfig` says nothing.
 DEFAULT_ORDER = 50
@@ -127,6 +129,7 @@ def _read(apps_py: Path, label: str) -> DiscoveredApp | None:
     return None
 
 
+@road("installed_apps", example="config/settings/discovery.py::discover_local_apps")
 def discover_apps(apps_dir: Path, disabled: Iterable[str] = ()) -> list[DiscoveredApp]:
     """Every app under `apps_dir` this deployment installs, in `INSTALLED_APPS` order.
 
@@ -156,6 +159,9 @@ def discover_apps(apps_dir: Path, disabled: Iterable[str] = ()) -> list[Discover
     wanted_off = {str(label).strip() for label in disabled if str(label).strip()}
     by_label = {app.label: app for app in found}
     for label in sorted(wanted_off):
+        # Imported here, not at the top: the gate imports this module with no Django installed.
+        from django.core.exceptions import ImproperlyConfigured
+
         app = by_label.get(label)
         if app is None:
             raise ImproperlyConfigured(
@@ -171,10 +177,31 @@ def discover_apps(apps_dir: Path, disabled: Iterable[str] = ()) -> list[Discover
                 "the deployment would be built on a hole."
             )
 
+    off = switched_off(found, wanted_off)
     return sorted(
-        (app for app in found if app.label not in wanted_off),
+        (app for app in found if app.label not in off),
         key=lambda app: (app.order, app.label),
     )
+
+
+def switched_off(found: Iterable[DiscoveredApp], disabled: Iterable[str]) -> frozenset[str]:
+    """The labels left out: the ones named, and every app whose `depends_on` reaches one.
+
+    An app that imports a switched-off app cannot start without it, so it goes
+    out with it — derived from the arrows the apps already declare, never a list
+    of pairs. `apps/example_portal` depends on `apps/example`; switching the
+    example off switches its customer face off too, and nothing else moves.
+    """
+    apps = list(found)
+    off = set(disabled)
+    grew = True
+    while grew:
+        grew = False
+        for app in apps:
+            if app.label not in off and off.intersection(app.depends_on):
+                off.add(app.label)
+                grew = True
+    return frozenset(off)
 
 
 def discover_local_apps(apps_dir: Path, disabled: Iterable[str] = ()) -> list[str]:

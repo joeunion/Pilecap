@@ -1,36 +1,5 @@
 #!/usr/bin/env bash
-# THIS FILE IS EXECUTED, AND IT IS BASH — not POSIX sh, and not zsh. The
-# shebang above is honoured by `./this`; `sh this` and `zsh this` IGNORE it,
-# and neither of them fails where the mistake was made. Measured on this tree:
-#
-#   zsh scripts/queue_cited.sh   exit 2 blaming the TREE ("this is not a
-#                                checkout root") for zsh's word-splitting
-#   zsh scripts/kill_mine.sh     an ordinary-looking census of nothing
-#   sh  scripts/sweep.sh         "lifecycle.sh: line 152: syntax error"
-#
-# A wrong shell here does not crash. It ANSWERS, and the answer looks like the
-# tree's fault.
-#
-# TWO TESTS, because on macOS `/bin/sh` IS bash: BASH_VERSION is set under
-# `sh x.sh` and only POSIX MODE tells the two apart (SHELLOPTS carries
-# `posix`). On Linux `/bin/sh` is dash and the first test is the one that
-# fires. Neither test alone covers both machines.
-#
-# A SOURCED library must never carry this. There the interpreter is the
-# caller's ON PURPOSE and an `exit` would kill the caller's shell — the
-# argument is scripts/db.sh's, at scripts/db.sh:50-57, and it is why db.sh is
-# the one executable in this tree deliberately without a belt.
-[ -n "${BASH_VERSION:-}" ] || {
-    echo "${0##*/}: must run under bash — not sh, not zsh. Try \`bash ${0}\`." >&2
-    exit 2
-}
-case ":${SHELLOPTS:-}:" in
-*:posix:*)
-    echo "${0##*/}: bash is in POSIX mode — which is what \`sh ${0}\` does on a" >&2
-    echo "  machine whose /bin/sh is bash. Try \`bash ${0}\`." >&2
-    exit 2
-    ;;
-esac
+. "$(dirname -- "${BASH_SOURCE:-$0}")/bash_only.sh" || exit 2
 # THE QUEUE-CITATION CENSUS — which N-rows the TREE cites, and what the QUEUE
 # says about them.
 #
@@ -125,12 +94,10 @@ cd "$(dirname "$0")/.."
 
 SELF="queue_cited"
 
-cannot_look() {
-    echo "!! ${SELF}: $*" >&2
-    echo "   Nothing was censused. An instrument that could not look has not" >&2
-    echo "   reported a clean tree." >&2
-    exit 2
-}
+# Every exit 2 below is the seam's `gate_die`, with this trailer.
+. "$(dirname -- "${BASH_SOURCE[0]}")/gate_refuse.sh" || exit 2
+NOTHING_CENSUSED="Nothing was censused. An instrument that could not look has not
+reported a clean tree."
 
 usage() {
     cat <<'USAGE'
@@ -159,7 +126,7 @@ case "${1:-}" in
 esac
 
 QUEUE="docs/product/queue.md"
-[ -r "$QUEUE" ] || cannot_look "${QUEUE} is not readable from $PWD — there is nothing to check citations against"
+[ -r "$QUEUE" ] || gate_die "$NOTHING_CENSUSED" "${SELF}: ${QUEUE} is not readable from $PWD — there is nothing to check citations against"
 
 # The places a FIX lives. Blind spot 3 is why `docs/product/` is not here.
 SCOPE="apps quality scripts config docs/runbooks"
@@ -168,10 +135,10 @@ for dir in $SCOPE; do
     [ -d "$dir" ] && PRESENT="${PRESENT}${PRESENT:+ }${dir}"
 done
 [ -n "$PRESENT" ] ||
-    cannot_look "none of the scope directories (${SCOPE}) exist from $PWD — this is not a checkout root"
+    gate_die "$NOTHING_CENSUSED" "${SELF}: none of the scope directories (${SCOPE}) exist from $PWD — this is not a checkout root"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/djb-queue-cited.XXXXXX")" ||
-    cannot_look "could not make a scratch directory"
+    gate_die "$NOTHING_CENSUSED" "${SELF}: could not make a scratch directory"
 trap 'rm -rf "$WORK"' EXIT
 
 CITES="${WORK}/cites.txt"
@@ -196,7 +163,7 @@ grep -rnoE --binary-files=without-match \
     LC_ALL=C sort -u >"$CITES" || true
 
 [ -s "$CITES" ] ||
-    cannot_look "the scope (${PRESENT}) cites no row id at all. This tree has always cited
+    gate_die "$NOTHING_CENSUSED" "${SELF}: the scope (${PRESENT}) cites no row id at all. This tree has always cited
    hundreds; an empty census is a broken grep, never a clean tree."
 
 # LC_ALL=C, deliberately: the queue is full of em-dashes and interpuncts, and

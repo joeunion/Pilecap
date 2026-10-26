@@ -18,10 +18,11 @@ from django.urls import reverse
 from apps.accounts.models import User
 from apps.core.actor import Actor
 from apps.core.models import Tenant
+from apps.core.tests.wire import REQUEST_FIXED_QUERIES
 from apps.djb_tags.events import TAG_LINK_CREATED
 from apps.djb_tags.models import Tag, TagLink
 from apps.djb_tags.services import create_tag, create_tag_link
-from apps.djb_tags.tests.conftest import World
+from apps.djb_tags.tests.conftest import TagWorld
 from apps.events.models import Event
 
 pytestmark = pytest.mark.django_db
@@ -32,18 +33,11 @@ LINKS_URL = "/api/v1/djb_tag_links/"
 LINK_URL = "/api/v1/djb_tag_links/{}/"
 JSON = "application/json"
 
-# Measured at ten rows, and the same at one: session + user, the SAVEPOINT
-# pair (ATOMIC_REQUESTS), the two membership reads the tenant and hat
-# middleware make, the three tables resolution reads for `djb_tag.read`, and the
-# page — one statement, `archived_by` joined (`select_related`).
-TAGS_QUERY_BUDGET = 10
+#: The fixed request cost, then the page (`archived_by` joined).
+TAGS_QUERY_BUDGET = REQUEST_FIXED_QUERIES + 1
 
-# The same shape for a subject's links, plus the subject's own resolution —
-# the row read through `visible_to` the hat, and its organization for the
-# `may_be_named` question and the link's landing node — and the page, `tag`
-# joined, so `tag_name` / `tag_slug` cost nothing per row. Measured at one link
-# and at ten: the same.
-LINKS_QUERY_BUDGET = 12
+#: The fixed request cost, then the subject row, its organization, and the page (`tag` joined).
+LINKS_QUERY_BUDGET = REQUEST_FIXED_QUERIES + 3
 
 
 def _body(response: Any) -> Any:
@@ -104,19 +98,17 @@ def test_an_unknown_field_is_refused(api: Client, owner: User) -> None:
 
 
 @pytest.mark.usefixtures("widget_takes_tags")
-def test_tg1_link_twice_remove_and_archive_over_the_wire(
-    api: Client, world: World, owner: User, owner_actor: Actor
-) -> None:
-    tag = create_tag(tenant=world.tenant, actor=owner_actor, name="Urgent")
+def test_tg1_link_twice_remove_and_archive_over_the_wire(world: TagWorld) -> None:
+    tag = create_tag(tenant=world.tenant, actor=world.owner, name="Urgent")
     subject = f"widget:{world.widget_a.pk}"
-    api.force_login(world.clerk)
+    api = world.session(world.clerk)
 
     first = _post(api, LINKS_URL, {"tag_id": str(tag.pk), "subject": subject})
     assert first.status_code == 201, first.content
     second = _post(api, LINKS_URL, {"tag_id": str(tag.pk), "subject": subject})
     assert second.status_code == 200, second.content
     assert _body(second) == _body(first)
-    assert _body(first)["organization_id"] == str(world.branch_a.pk)
+    assert _body(first)["organization_id"] == str(world.a.pk)
     assert Event.objects.for_tenant(world.tenant).filter(name=TAG_LINK_CREATED).count() == 1
 
     listed = api.get(LINKS_URL, {"subject": subject})
@@ -124,12 +116,11 @@ def test_tg1_link_twice_remove_and_archive_over_the_wire(
     assert [item["id"] for item in _body(listed)["items"]] == [_body(first)["id"]]
 
     # Archive the word, as an administrator of the whole tenant.
-    admin = Client()
-    admin.force_login(owner)
+    admin = world.session(world.owner)
     archived = admin.post(f"{TAG_URL.format(tag.pk)}archive/")
     assert archived.status_code == 200, archived.content
     assert _body(archived)["archived_at"] is not None
-    assert _body(archived)["archived_by"]["id"] == str(owner.pk)
+    assert _body(archived)["archived_by"]["id"] == str(world.owner_membership.user_id)
     assert _body(admin.get(TAGS_URL))["items"] == []
     assert [item["id"] for item in _body(admin.get(TAGS_URL, {"show": "archived"}))["items"]] == [
         str(tag.pk)
@@ -144,12 +135,10 @@ def test_tg1_link_twice_remove_and_archive_over_the_wire(
 
 
 @pytest.mark.usefixtures("widget_takes_tags")
-def test_a_sibling_branchs_subject_is_404_both_ways(
-    api: Client, world: World, owner_actor: Actor
-) -> None:
-    tag = create_tag(tenant=world.tenant, actor=owner_actor, name="Urgent")
+def test_a_sibling_branchs_subject_is_404_both_ways(world: TagWorld) -> None:
+    tag = create_tag(tenant=world.tenant, actor=world.owner, name="Urgent")
     subject = f"widget:{world.widget_b.pk}"
-    api.force_login(world.clerk)
+    api = world.session(world.clerk)
     tagged = _post(api, LINKS_URL, {"tag_id": str(tag.pk), "subject": subject})
     assert tagged.status_code == 404, tagged.content
     assert api.get(LINKS_URL, {"subject": subject}).status_code == 404
@@ -157,11 +146,9 @@ def test_a_sibling_branchs_subject_is_404_both_ways(
 
 
 @pytest.mark.usefixtures("widget_takes_no_tags")
-def test_a_kind_that_does_not_take_tags_is_400_naming_subject(
-    api: Client, world: World, owner_actor: Actor
-) -> None:
-    tag = create_tag(tenant=world.tenant, actor=owner_actor, name="Urgent")
-    api.force_login(world.clerk)
+def test_a_kind_that_does_not_take_tags_is_400_naming_subject(world: TagWorld) -> None:
+    tag = create_tag(tenant=world.tenant, actor=world.owner, name="Urgent")
+    api = world.session(world.clerk)
     subject = f"widget:{world.widget_a.pk}"
     for response in (
         _post(api, LINKS_URL, {"tag_id": str(tag.pk), "subject": subject}),
@@ -175,14 +162,12 @@ def test_a_kind_that_does_not_take_tags_is_400_naming_subject(
 
 
 @pytest.mark.usefixtures("widget_takes_tags")
-def test_a_link_in_another_branch_cannot_be_removed(
-    api: Client, world: World, owner: User, owner_actor: Actor
-) -> None:
-    tag = create_tag(tenant=world.tenant, actor=owner_actor, name="Urgent")
+def test_a_link_in_another_branch_cannot_be_removed(world: TagWorld) -> None:
+    tag = create_tag(tenant=world.tenant, actor=world.owner, name="Urgent")
     link = create_tag_link(
-        tenant=world.tenant, actor=owner_actor, tag=tag, subject=f"widget:{world.widget_b.pk}"
+        tenant=world.tenant, actor=world.owner, tag=tag, subject=f"widget:{world.widget_b.pk}"
     ).link
-    api.force_login(world.clerk)
+    api = world.session(world.clerk)
     assert api.delete(LINK_URL.format(link.pk)).status_code == 404
     assert TagLink.objects.for_tenant(world.tenant).filter(pk=link.pk).exists()
 
@@ -223,15 +208,24 @@ def test_tags_list_query_count_does_not_grow_with_rows(
 @pytest.mark.parametrize("rows", [1, 10])
 @pytest.mark.usefixtures("widget_takes_tags")
 def test_tag_links_list_query_count_does_not_grow_with_rows(
-    api: Client, world: World, owner_actor: Actor, django_assert_num_queries: Any, rows: int
+    api: Client, world: TagWorld, django_assert_num_queries: Any, rows: int
 ) -> None:
     subject = f"widget:{world.widget_a.pk}"
     for index in range(rows):
-        tag = create_tag(tenant=world.tenant, actor=owner_actor, name=f"Word {index}")
-        create_tag_link(tenant=world.tenant, actor=world.clerk_actor, tag=tag, subject=subject)
-    api.force_login(world.clerk)
+        tag = create_tag(tenant=world.tenant, actor=world.owner, name=f"Word {index}")
+        create_tag_link(tenant=world.tenant, actor=world.clerk, tag=tag, subject=subject)
+    api = world.session(world.clerk)
     with django_assert_num_queries(LINKS_QUERY_BUDGET):
         response = api.get(LINKS_URL, {"subject": subject})
     assert response.status_code == 200
     assert len(_body(response)["items"]) == rows
     assert Tag.objects.for_tenant(world.tenant).count() == rows
+
+
+def test_an_unknown_show_is_refused_naming_show(api: Client, owner: User) -> None:
+    """`?show=bogus` is `400 invalid` naming `show`, never the live words under a wrong word."""
+    api.force_login(owner)
+    response = api.get(TAGS_URL, {"show": "bogus"})
+    assert response.status_code == 400, response.content
+    assert _body(response)["code"] == "invalid", response.content
+    assert "show" in str(_body(response)["errors"]), response.content

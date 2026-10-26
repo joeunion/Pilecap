@@ -97,7 +97,7 @@ COMPLAINT_SIMULATOR = "complained@resend.dev"
 #: detect-secrets' documented mitigation and matches `test_delivery_status.py`'s
 #: convention: a line-scoped comment rather than a `.secrets.baseline` entry,
 #: because the baseline is a shared file four lanes would conflict on.
-OTHER_SECRET = "a-secret-of-its-own"  # pragma: allowlist secret
+OTHER_SECRET = "a-secret-of-its-own"  # noqa: S105 — a signing secret the test both signs and verifies with  # pragma: allowlist secret
 
 
 def whsec() -> str:
@@ -177,6 +177,7 @@ def esp(tenant: Tenant, owner_actor: Actor, signing_secret: str) -> Connection:
         provider=STATUS_PROVIDER,
         name="Resend",
         credentials={"webhook_secret": signing_secret, "access_token": "an-esp-key"},
+        is_signature_v2_required=False,
     )
 
 
@@ -854,6 +855,7 @@ def test_the_verifier_has_no_opinion_when_the_connection_carries_no_secret(
         provider=STATUS_PROVIDER,
         name="Resend, no secret",
         credentials={"access_token": "an-esp-key"},
+        is_signature_v2_required=False,
     )
     assert verify_status_webhook(connection=bare, body=b"{}", headers={}) is None
 
@@ -869,6 +871,7 @@ def test_a_connection_with_no_secret_is_refused_at_the_door(
         provider=STATUS_PROVIDER,
         name="Resend, no secret",
         credentials={"access_token": "an-esp-key"},
+        is_signature_v2_required=False,
     )
     response = post_resend(
         api,
@@ -928,6 +931,7 @@ def test_a_connection_nobody_registered_a_verifier_for_is_unchanged(
         provider="example",
         name="Something else",
         credentials={"webhook_secret": OTHER_SECRET},
+        is_signature_v2_required=False,
     )
     assert other.webhook_secret == OTHER_SECRET
 
@@ -944,3 +948,15 @@ def test_the_email_backend_is_reachable_for_the_esp_this_cycle_proved() -> None:
         backend = get_connection()
     assert backend.__class__.__module__ == "anymail.backends.resend"
     assert SvixWebhook is not None
+
+
+def test_the_anymail_internal_we_hold_still_exists() -> None:
+    """The installed Anymail still names its signing secret where `SECRET_ATTR` reads it.
+
+    A rename upstream would silently demote ESP signature checking to the house HMAC.
+    """
+    from apps.comms.providers import SECRET_ATTR, _esp_tracking_view_class
+
+    view = _esp_tracking_view_class("resend")
+    assert view is not None, "anymail.webhooks.resend has no tracking view"
+    assert getattr(view, SECRET_ATTR, ""), f"{view.__name__} no longer declares {SECRET_ATTR}"

@@ -43,10 +43,10 @@ __all__ = [
 # its own. One encrypted place for every secret this app holds means there is
 # no second thing to remember to protect.
 # The reserved KEY name inside the blob, not the secret it points at.
-WEBHOOK_SECRET_KEY = "webhook_secret"  # pragma: allowlist secret
+WEBHOOK_SECRET_KEY = "webhook_secret"  # noqa: S105 — the dict key a connection's webhook secret is stored under  # pragma: allowlist secret
 
 # The credential key an OAuth exchange writes and `client.http_client` reads.
-ACCESS_TOKEN_KEY = "access_token"
+ACCESS_TOKEN_KEY = "access_token"  # noqa: S105 — the dict key a connection's access token is stored under
 
 
 class EncryptedJSONField(CoreEncryptedJSONField):
@@ -137,6 +137,7 @@ class Connection(TenantScopedModel):
 
     class Status(models.TextChoices):
         CONNECTED = "connected", "Connected"
+        # Reserved, unwritten (rule 22); trigger: an adapter telling a refused credential apart.
         ERROR = "error", "Error"
         REVOKED = "revoked", "Revoked"
 
@@ -146,12 +147,15 @@ class Connection(TenantScopedModel):
 
     credentials = EncryptedJSONField(default=dict, blank=True)
 
-    # Why the last call failed, for a human reading the admin. Never a response
-    # body and never a header: an upstream 401 often echoes the token back.
+    # The revocation reason; never a response body or header (an upstream 401 echoes the token).
     last_error = models.TextField(blank=True)
 
     connected_at = models.DateTimeField(null=True, blank=True)
     revoked_at = models.DateTimeField(null=True, blank=True)
+
+    #: Refuse a body-only `X-Signature` delivery; rows older than 2.5.0 are `False`.
+    #: Contraction trigger: no row is `False`, or 2027-02-24 — then the v1 branch goes.
+    is_signature_v2_required = models.BooleanField(default=True)
 
     objects: ClassVar[ConnectionManager] = ConnectionManager()
 
@@ -247,6 +251,8 @@ class InboundWebhook(TenantScopedModel):
     class Status(models.TextChoices):
         RECEIVED = "received", "Received"
         HANDED_OFF = "handed_off", "Handed off"
+        HANDLED = "handled", "Handled"
+        HANDLER_FAILED = "handler_failed", "Handler failed"
 
     connection = models.ForeignKey(
         Connection,

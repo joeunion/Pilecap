@@ -19,7 +19,7 @@ Three instruments, all machine-invariant (governed by `perf/measure.py`):
   nothing at the database.
 
 Nothing here asserts in seconds. `EXPLAIN (ANALYZE)` timings and
-`Rows Removed by Filter` counts appear in `quality/perf-ledgers-measurement.md`
+`Rows Removed by Filter` counts appear in the retired `perf-ledgers-measurement.md`
 as **observations** beside the finding they evidence, never as a criterion.
 
 The doubling contract
@@ -75,7 +75,7 @@ AUDIT_INSERTS_PER_SERVICE_CALL = 1
 #: answer "is there more" is a wider `LIMIT`, not a second statement.
 RELAY_CANDIDATE_STATEMENTS = 1
 
-#: `events.selectors.endpoints_for` — the fan-out's target load. One query, and
+#: `events.selectors.list_endpoints_for` — the fan-out's target load. One query, and
 #: the name filter is applied in Python (the selector says why).
 ENDPOINTS_FOR_STATEMENTS = 1
 
@@ -330,14 +330,14 @@ def test_fanout_target_load_is_one_query(db: None, tenant: Any, an_event: Any, s
     from apps.events import selectors
 
     with measure.count_queries() as counted:
-        targets = selectors.endpoints_for(tenant=tenant, name=an_event.name)
+        targets = selectors.list_endpoints_for(tenant=tenant, name=an_event.name)
 
     assert targets, "the seeded endpoints subscribe to every event name"
     flat(
         pinned=ENDPOINTS_FOR_STATEMENTS,
         measured=len(statements(counted)),
         axis="endpoints",
-        what="events.selectors.endpoints_for",
+        what="events.selectors.list_endpoints_for",
     )
 
 

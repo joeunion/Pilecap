@@ -35,8 +35,8 @@ generated client built from it. The wire contract is read, never guessed — the
 exact analogue of `manage.py introspect` on the Python side, and for the same
 reason.
 
-**The four laws**, each stated where it lives and each with its honest
-enforcement tier in §10:
+**The four laws**, each stated where it lives and each with what holds it
+today in §10:
 
 1. **`SurfaceState` is a total function** — `loading | empty | error(E) |
    ready(T)`, all four authored (§3).
@@ -56,21 +56,26 @@ instrument.
 defers to it — a reader's index of the manifest, never a second pin. Where the
 two disagree the manifest wins and the disagreement is a finding.
 
-| Thing | Version | Why it is pinned here |
+The versions are not copied here — a copy is the second pin this paragraph
+forbids, and one went stale the day a pin moved. Read them where they live:
+`node -p "require('./frontend/package.json')"` prints the manifest, and the
+table says which key each thing is and why it is pinned at all.
+
+| Thing | Pinned at | Why it is pinned here |
 |---|---|---|
-| Next.js | `16.3.3` | app router — routes are filesystem-discovered, which is this repo's discovery doctrine in JS |
-| React / React DOM | `19.2.8` | StrictMode double-invokes effects in development; §6 is mostly about that |
-| TypeScript | `5.9.3` | `tsc --noEmit` is a leg, not a suggestion |
-| pnpm | `10.12.1` | `packageManager` field; the lockfile is the frontend's one serial artifact |
-| Node | `26.4.0` (engines `^22.18 \|\| ^24 \|\| ^26`) | `frontend/.nvmrc` — the one interpreter the checkout is proven green on; a broken engines pin once shipped unnoticed for days |
-| `openapi-typescript` | `7.9.1` | the generated client; regeneration is a deliberate rung |
-| ESLint / `eslint-config-next` | `9.39.5` / `16.3.3` | `--max-warnings=0` |
-| Vitest / jsdom | `4.1.11` / `30.0.1` | the component tier — necessary, never sufficient (§8) |
-| `axe-core` | `4.13.0` | accessibility assertions inside component tests |
-| `@testing-library/react` | `16.3.0` | the component tier's renderer — the tests assert what a user can reach, not what the tree contains |
-| `@vitejs/plugin-react` | `6.1.1` | the JSX transform Vitest runs under; without it the component tier does not compile at all |
-| `@types/react` / `@types/react-dom` | `19.2.8` / `19.2.4` | `tsc --noEmit` is only as true as these. They track the runtime packages and **need not equal them** — `@types/react-dom` trails `react-dom` here, which is normal and is not a version to "fix" |
-| `@types/node` | `24.10.1` | the config files (`next.config.ts`, `vitest.config.ts`) and `frontend/scripts/` are typed against this, not against the interpreter in the row above |
+| Next.js | `frontend/package.json` `dependencies.next` | app router — routes are filesystem-discovered, which is this repo's discovery doctrine in JS |
+| React / React DOM | `dependencies.react` / `react-dom` | StrictMode double-invokes effects in development; §6 is mostly about that |
+| TypeScript | `devDependencies.typescript` | `tsc --noEmit` is a leg, not a suggestion |
+| pnpm | `packageManager` | the lockfile is the frontend's one serial artifact |
+| Node | `frontend/.nvmrc` (and `engines.node`, the floor) | the one interpreter the checkout is proven green on; a broken engines pin once shipped unnoticed for days |
+| `openapi-typescript` | `devDependencies` | the generated client; regeneration is a deliberate rung |
+| ESLint / `eslint-config-next` | `devDependencies` | `--max-warnings=0` |
+| Vitest / jsdom | `devDependencies` | the component tier — necessary, never sufficient (§8) |
+| `axe-core` | `devDependencies` | accessibility assertions inside component tests |
+| `@testing-library/react` | `devDependencies` | the component tier's renderer — the tests assert what a user can reach, not what the tree contains |
+| `@vitejs/plugin-react` | `devDependencies` | the JSX transform Vitest runs under; without it the component tier does not compile at all |
+| `@types/react` / `@types/react-dom` | `devDependencies` | `tsc --noEmit` is only as true as these. They track the runtime packages and **need not equal them** — `@types/react-dom` may trail `react-dom`, which is normal and is not a version to "fix" |
+| `@types/node` | `devDependencies` | the config files (`next.config.ts`, `vitest.config.ts`) and `frontend/scripts/` are typed against this, not against the interpreter in the row above |
 
 **The browser driver is deliberately NOT in that table.** The rendered check
 runs against a real browser and the runner is chosen per checkout — the
@@ -118,12 +123,13 @@ frontend/
 **`primitives/` and `components/` are siblings, not a parent and two children,
 and `screens/` is a layer of its own.** A screen is the unit a journey names and
 a rung is dispatched against — one whole surface, total over `loading`, `empty`,
-`error` and `ready` (§3) — and it is the layer the route hands state to. Both
-`primitives/` and `components/` ship as a README and nothing else on purpose:
-this template ships a *system*, not a look, and a component library shipped from
-here would be taste exported into every product built on it. The one screen in
-the tree (`src/screens/welcome/`) is a worked example, not a library — **a
-component becomes a component the day a second screen needs it.**
+`error` and `ready` (§3) — and it is the layer the route hands state to.
+`components/` ships its README alone and `primitives/` only token-only shapes
+that know no product noun (each README says which and why): this template ships a
+*system*, not a look, and a component library shipped from here would be taste
+exported into every product built on it. The screens in the tree
+(`src/screens/`) are worked examples, not a library — **a component becomes a
+component the day a second screen needs it.**
 
 **This is house rule 11 in JavaScript.** A `utils.ts`, `helpers.ts` or `lib.ts`
 doing a canonical job is a violation exactly as it is in `apps/`: if it fetches
@@ -149,6 +155,17 @@ import "./deals.css";                               // V2: a stylesheet that is 
 ```
 
 A missing component is not a licence to inline one; it **stops the rung** (§5).
+
+**V2 is about a ROUTE, and the token entrance is not the only stylesheet in
+the tree.** The root layout imports `src/tokens/tokens.css`, the one sheet a
+route imports; a face's own prefixed, token-only sheet sits beside its screens
+and is imported by them (the book's §26 is the ruling — `primitives/README.md`
+says the same). `git grep -n 'import "@/.*\.css"' -- frontend/src` is the list,
+and no sentence here keeps a second one. **V1 has the same shape:** an inline
+`style={` survives only where no sheet can hold the paint — a primitive
+(`src/primitives/`, token-only) and the one refusal renderer every face draws —
+and each one carries a `// paint:` comment with its one-line reason; anything
+else inline is a face's paint, and it moves to the face's sheet.
 
 **Imports flow one way, and it is house rule 7's shape. The chain is declared
 ONCE, in `frontend/src/primitives/README.md`** — beside the layer it starts
@@ -192,6 +209,56 @@ edit one file, which is precisely the collision that forces a whole frontend to
 be built serially. The boundary above is the same boundary, drawn by the import
 contract instead of by a shared file. Parallelism is why.
 
+### A second audience is a folder pair
+
+One build serves every host a product answers at (ADR surfaces-1); a host's
+SURFACE — staff at one address, customers at another — decides which pages it
+draws. The face asks the server which surface it is on (`GET
+/api/v1/surface/`, the boot question) and never infers it from the address
+bar, which would be a second resolver of the host.
+
+- **A non-staff surface's screens live in `frontend/src/screens/<key>/` and its
+  pages in a Next route group `frontend/src/app/(<key>)/`** — a route group
+  does not change the URL. The worked pair is `frontend/src/screens/customer/`
+  with `frontend/src/app/(customer)/`, the customer face `apps/example_portal`
+  declares. The staff face is what it was, and pays nothing.
+- **The route table is the face's one declaration of where a page is drawn**
+  (`frontend/src/kit/routes.ts`, its `surfaces` column). A surface's
+  `screens` field on the boot answer is the server's, for machines; the face
+  does not read it. The two are held to one set from the server's side — house
+  rule 85's screens clause (every declared screen is a table row) and
+  `apps/example_portal/tests/test_surface_screens.py` (the customer rows equal
+  the declaration's screens).
+- **A screen passes the surface it renders for.** `pathFor`, `routesOn`,
+  `offSurface`, `remedyDoor` and `RefusalPanel` answer the whole table when
+  handed no surface, where the first row drawing an operation wins — right for
+  the root layout's gate before the server has answered, and a row-order
+  accident everywhere else. `frontend/src/screens/route-callers.test.ts` is the
+  census: every call under `src/` spells its surface argument. Its blind spot:
+  it refuses the bare word `undefined`, never a variable that holds it.
+  `RefusalPanel` takes its surface as a PROP, not from the `useSurface()`
+  hook, because the hook lives in `src/app/surface-gate.tsx` and the
+  declared import chain (`frontend/src/primitives/README.md`) forbids
+  `screens/` importing `app/`.
+- **The two directions answer differently, and both are designed.** A staff
+  page on a customer host is a CLIENT seat: HTTP 200, `noindex`, the face's
+  own words ("Not offered at this address", `SURFACE_COPY.offSurface` in
+  `frontend/src/copy/refusals.ts`), drawn by `frontend/src/app/surface-gate.tsx`
+  after the boot answer — the staff pages keep their static prerender, and
+  the operation behind the page still answers the server's own 404. A customer
+  page on the staff host is a SERVER 404 before any byte of the page: the
+  group's nested server layout (`frontend/src/app/(customer)/layout.tsx`)
+  asks the boot question with the request's own Host and calls `notFound()`;
+  its pages render per request, which is the price, paid by that group alone.
+  A product that wants a server 404 for its staff pages too moves them under a
+  `(staff)` group and accepts dynamic rendering — its choice, not the
+  template's default.
+- **The server-side ask is made over `node:http`, never `fetch`**
+  (`frontend/src/api/surface-server.ts`): `Host` is a forbidden header in the
+  fetch standard and Node's `fetch` drops a caller-set one, so the boot
+  question would be asked as the origin's own host. It lives in its own
+  module because the browser bundle cannot carry `node:http`.
+
 ---
 
 ## 3 · SurfaceState — the total function
@@ -199,32 +266,15 @@ contract instead of by a shared file. Parallelism is why.
 **A screen is a total function from state to render.** Not a screen until all
 four states are authored:
 
-```ts
-// src/screens/state.ts
-import type { Refusal } from "@/api/refusals";
-
-/** What an empty state PROPOSES. The label is the act, in the imperative. */
-export type NextAct = { readonly label: string; readonly detail?: string };
-
-export type SurfaceState<TData> =
-  | { readonly kind: "loading" }
-  | { readonly kind: "empty"; readonly nextAct: NextAct }
-  | { readonly kind: "error"; readonly refusal: Refusal }
-  | { readonly kind: "ready"; readonly data: TData };
-
-/** The runtime census the instruments read. */
-export const SURFACE_STATES = ["loading", "empty", "error", "ready"] as const;
-export type SurfaceStateKind = (typeof SURFACE_STATES)[number];
-
-/** The four story exports every component story owes, declared BESIDE the states
- *  so a lint, a story and a component cannot disagree about what the four are. */
-export const REQUIRED_STORY_EXPORTS = ["Loading", "Empty", "Error", "Ready"] as const;
-
-/** Exhaustiveness, as a compile error rather than as a habit. */
-export function unhandledState(state: never): never {
-  throw new Error(`unhandled SurfaceState: ${JSON.stringify(state)}`);
-}
-```
+**The types are declared once, in `frontend/src/kit/state.ts`** —
+`SurfaceState`, `NextAct`, the runtime census `SURFACE_STATES`,
+`REQUIRED_STORY_EXPORTS` beside them, and the exhaustiveness helper
+`unhandledState`. Read them there; this file does not re-declare them (§2's
+rule: two authorities for one contract is two things to drift). Two facts the
+declaration carries that a reader relies on: `empty`'s `nextAct` is
+OPTIONAL — a sentence alone is a legal empty when there is nothing to propose
+(patterns.md §14) — and the word for the fourth state is `ready`, never
+`populated`, `loaded` or `success`.
 
 ```tsx
 // wrong — three booleans, four-plus reachable combinations, and no fourth branch
@@ -267,18 +317,15 @@ the wrong authority for it by construction.
 **`error` is not a state that holds only a registry refusal. It is a state that
 holds one of TWO things, and the union is closed:**
 
-```ts
-/** The two — and only two — things that can put a surface in `error`. */
-export type Refusal =
-  | { readonly kind: "registry"; readonly code: RegistryRefusalCode; /* fact, remedies */ }
-  | { readonly kind: "transport"; readonly code: TransportFailureCode };
-
-/** Read from the operation's x-refusal-codes union. Never hand-listed. */
-export type RegistryRefusalCode = /* generated */ string;
-
-/** The client's OWN closed vocabulary. Two members. It has no other home. */
-export type TransportFailureCode = "network_unreachable" | "request_timeout";
-```
+**The union is declared once, in `frontend/src/api/refusals.ts`** (`Refusal` =
+`RegistryRefusal | TransportFailure`), and reaches `screens/` through the
+re-export in `frontend/src/kit/state.ts`, never directly. The registry
+member carries the server's envelope verbatim (`WireRefusal`, the generated
+document's `Refusal`); the transport member carries a `TransportCode` from the
+client's own closed vocabulary — `FETCH_TRANSPORT_CODES` (a request that never
+got an answer) and `SOCKET_CLOSE_STATES` (a socket that ended without one),
+declared beside it and pinned by set-equality in its test. Read them there;
+this file does not re-declare them.
 
 - **The client seam catches the throw and returns a `transport` refusal.** Both
   members are rendered by the one default refusal renderer, exactly as a
@@ -292,6 +339,23 @@ export type TransportFailureCode = "network_unreachable" | "request_timeout";
   is not.
 - **Never let it reject unhandled.** That is §6's eighth pair, and it renders an
   eternal skeleton.
+- **A client never fabricates a wire refusal.** A seat the FACE decides — the
+  off-surface seat above is the instance — carries the face's own words and
+  no registry code: no server said that sentence about this page, and a code
+  there would be a server's sentence the server never spoke.
+
+**A failed boot question keeps the page** (`frontend/src/app/surface-gate.tsx`).
+An unreachable backend, or a refusal where the surface's answer should be,
+leaves the surface unknown and the page on screen; its own operation fails on
+its own terms and draws its own `error`, because "the backend is down" is the
+page's truth to tell. The one case that IS could-not-look is a 200 the gate
+cannot read as a surface: the server answered and said something that is not
+one, so the face draws the refusal renderer under "This address could not say
+what it offers" (`SURFACE_COPY.couldNotLook`) with no page. That panel is
+drawn before any surface is known; today it is handed `STAFF_SURFACE`, and
+whether an unknown surface should be a third value of its own is OPEN, for
+the design owner (`CHANGELOG.md`'s Known). It carries no remedies today, so
+the choice moves no door yet.
 
 > **Ruled 2026-08-31 by the engineering lead, and closed: there is NO fifth
 > `SurfaceState`.** The four-state law stands, and transport failure joins
@@ -506,7 +570,7 @@ record does not support a claim, the pair says so rather than rounding it off.
 
 ### 6.1 · The 308 that ate the request
 
-*Paid for at `frontend/next.config.ts:90-106`.*
+*Paid for at `frontend/next.config.ts:91-106`.*
 
 Next's default `trailingSlash: false` answers `/api/v1/deals/` with a **308
 before any rewrite runs**. Django's resource paths all end in a slash, so every
@@ -527,7 +591,7 @@ only `308` — nothing that looked like a failure anywhere.
 
 ### 6.2 · The rewrite that ate the slash
 
-*Paid for at `frontend/next.config.ts:131-148`.*
+*Paid for at `frontend/next.config.ts:109-126`.*
 
 The segment form `:path*` splits the path on `/` and rejoins it, which silently
 drops a trailing empty segment. `/api/v1/deals/` arrives at Django as
@@ -557,7 +621,7 @@ then, after that was fixed, as this.
 
 ### 6.3 · The StrictMode pair — the bootstrap that ran twice
 
-*Paid for at `frontend/porchlight.tsx:259-302`.*
+*Paid for at the product's `porchlight.tsx:259-302`.*
 
 React 19 StrictMode mounts effects **twice** in development, and this repo sets
 `reactStrictMode: true`. An unguarded bootstrap effect therefore does its
@@ -585,7 +649,7 @@ has reproduced the incident.*
 
 ### 6.4 · The StrictMode pair — the cleanup that discarded the answer
 
-*Paid for at `frontend/porchlight.tsx:259-302`. This is the fatal combination,
+*Paid for at the product's `porchlight.tsx:259-302`. This is the fatal combination,
 and both halves are individually idiomatic.*
 
 ```tsx
@@ -629,7 +693,7 @@ useEffect(() => {
 
 ### 6.5 · The cache hit read once, in the wrong place
 
-*Paid for at `frontend/use-read.ts:68-129`.*
+*Paid for at the product's `use-read.ts:68-129`.*
 
 The state was seeded from the cache with `useState(initial)` — which reads the
 cache **once**, at first render. The cache entry is written by the effect
@@ -694,8 +758,8 @@ looks right.
 
 ### 6.7 · The hand-typed interface that shadowed the generated type
 
-*Paid for at `frontend/metric-with-receipt.tsx` and `frontend/story-fixtures.ts`
-(commit `b47a787`); the surviving rule is at `frontend/operations.ts:295-311`.*
+*Paid for at the product's `metric-with-receipt.tsx` and `story-fixtures.ts`
+(commit `b47a787`); the surviving rule is at its `operations.ts:295-311`.*
 
 A component hand-wrote a nested wire shape from memory as `{ label, href }`.
 The document's actual shape has no `label` at all — the field is `input`. So
@@ -723,8 +787,8 @@ export type MeasuredSource = components["schemas"]["MeasuredSourceOut"];
 2. **The lint could not see it.** A rule that finds hand-written wire types
    keys on the schema suffix grammar (`…Out`, `…In`, `…Page`), and this type
    was called `BasisExtras`. That is the rule's *declared blind spot*, working
-   exactly as declared — which is why the enforcement register (§10) puts
-   hand-typed shadows at review-tier and does not claim a lint catches them.
+   exactly as declared — which is why §10 lists hand-typed shadows among what
+   nothing holds yet and does not claim a lint catches them.
 
 A useful shape-agnostic net, worth writing once: **assert that no rendered
 output contains the literal `undefined`.** It costs nothing and catches the
@@ -940,6 +1004,18 @@ dispatch needs to know:
    up front and takes that layer alone while the rest of the wave runs beside
    it.
 
+**The shared layer, by surface.** A change under one surface's folder pair
+touches that surface alone; a change to `src/api/**`,
+`src/kit/routes.ts` or `src/primitives/**` reaches every surface. The
+loop does not yet narrow the frontend leg by surface — any change under
+`frontend/` runs the whole leg (`scripts/fe_gate.sh`'s `fe_leg_run`: a
+touched `frontend/` is the `full` state, the package's whole `test` script) — so the folder rule is what makes that narrowing possible,
+not what makes it happen. **A product's own breakpoint is a drawer line, not
+an edit to the book:** a fenced `breakpoints` block in
+`docs/product/design/patterns.local.md`, one value per line as
+`<length> — <reason>`, read by house rule 78's census; every width query stays
+in range syntax (`(width <= X)`), whatever its value.
+
 **A stale environment is a false red, and it costs a triage every time.** Before
 you believe a red from the component suite on a merged tree: regenerate the
 client from the current document and run `pnpm install --frozen-lockfile`. Two
@@ -954,29 +1030,36 @@ back on for the speed.
 
 ---
 
-## 10 · What actually enforces each law today
+## 10 · What holds each law today
 
-**Stated honestly, because a law claiming an enforcement it does not have is
-worse than a law that admits it is on review.** Read this table before you cite
-a rule at somebody.
+**Each law names the instrument that holds it, by its id, and says plainly
+where nothing does.** `python -m quality.gate --explain <id>` prints a rule's
+statement, its canaries and its `does_not_cover`; the gate holds what the
+rule's statement says and nothing more, so read the statement before you cite
+the rule at somebody. The face's design rules (the sizes, the spacing scale,
+motion, focus, the dialog, the route table, the lexicon, the verb family) are
+the `js-` rules `python -m quality.gate --rules` lists, and are not repeated
+here; house rule 63 holds every entry of the pattern book
+(`docs/product/design/patterns.md`) to an instrument that exists, so a face
+law the book states is held by the instrument its entry names.
 
-| Law | Tier today | What raises it |
+| Law | What holds it | What nothing holds yet |
 |---|---|---|
-| SurfaceState is a total function (§3) | **compiler-tier for components** — a missing branch on the discriminated union is a `tsc` error; **review-tier** for whether all four are authored and reachable | the state/story completeness rule, when the JS scope kind and its rule library land |
-| HTTP vocabulary never above the seam (§4, Law 1) | **review-tier** | a static rule over `src/` outside `src/api/` — the direct analogue of rule 14's check, once a JS rule can be declared |
-| One door to the backend (§4, Law 2) | **review-tier** | the fourth member of the 27/33/48 fence family, same shape, same check, once a JS rule can be declared |
-| Generated types verbatim (§4, Law 3) | **partly mechanical** — a byte-pin comparing the generated client against the current document makes *drift* loud; **review-tier** for hand-typed shadows and `as` casts | a shadow rule in the JS rule library — and note it will key on the schema suffix grammar, so a shadow named anything else stays review-tier by declaration (§6.7) |
-| Components render, never fetch (§4, Law 4) | **review-tier** | the ingredient-boundary import rule |
-| No barrels (§2) | **review-tier** | the no-barrel rule |
-| Import contract (§2) | **review-tier** | the ingredient-boundary rule; rule 7's shape in JS |
-| A token has a consumer (§5) | **review-tier** | the token-consumer census (static half) plus the computed-style census (runtime half) |
-| Error-state completeness (§3, §4) | **review-tier** | the refusal-union census: every screen names a handling or an explicit delegation, for every code in the refusal union of the operations it calls, the union read from the document's refusal codes and never hand-listed. Its declared blind spot is the **transport** half of `error`'s vocabulary — those two codes are outside the registry by construction, so the census cannot reach them and a separate sentence owns them (§3) |
-| Hydration, clean console, resolved styles (§8) | **criterion-tier** — the rung's own criteria and its report | the rendered check as a gate leg, once the drive's cost and determinism are measured |
-| Dependency/regen/frozen-layer serialization (§9) | **review-tier**, plus a frozen-lockfile install that fails loudly | a lockfile leg in the gate |
-| No frontend workflows (§7) | **review-tier** | it is a categorical law; the cheap tooth is a rule against timers that retry |
+| SurfaceState is a total function (§3) | `tsc` (a missing branch on the union does not compile); `src/screens/state.test.ts` (the four names, the four story exports, the stories rule) | that every state is reachable from a seeded world — the rendered drive's (§8) |
+| HTTP vocabulary never above the seam (§4, Law 1) | rule 51 (`api` is reachable only from `app` and `journeys`; the refusal vocabulary reaches `screens/` through `state.ts` alone) | a route under `app/` switching on a status — no rule reads a route's body |
+| One door to the backend (§4, Law 2) | rule 51 (only `app` and `journeys` import `api`) | a `fetch` at an API path written outside `src/api/` — no rule reads for it |
+| Generated types verbatim (§4, Law 3) | the byte-pin (`frontend/scripts/pin_client.sh`; the fe leg discloses a client the contract surface may have staled) | a hand-typed shadow or an `as` past a generated type (§6.7) |
+| Components render, never fetch (§4, Law 4) | rule 51 | — |
+| No barrels (§2) | rule 52 | — |
+| Import contract (§2) | rule 51 (rule 7's shape in JS) | — |
+| A token has a consumer (§5) | rule 53 (the static half) | the runtime half — a declared, consumed token that still resolves to nothing (§8's computed-style check) |
+| Error-state completeness (§3, §4) | — | the refusal-union census: every screen names a handling or an explicit delegation for every code in the refusal union of the operations it calls, read from the document's refusal codes. Its blind spot by construction is the **transport** half of `error`'s vocabulary, which a separate sentence owns (§3) |
+| Hydration, clean console, resolved styles (§8) | the rung's own criteria and its report | a gate leg, until the drive's cost and determinism are measured |
+| Dependency/regen/frozen-layer serialization (§9) | the fe leg's frozen-lockfile install (`scripts/fe_gate.sh`) | the regeneration and frozen-layer populations |
+| No frontend workflows (§7) | — | a rule against timers that retry |
 
-**None of this is a reason to write the wrong form.** Review-tier means a
-person catches it, and the person is reading this file.
+**None of this is a reason to write the wrong form.** Where the table says
+nothing holds a law, a person catches it, and the person is reading this file.
 
 **When one of these does become a rule, it arrives with the same equipment
 every rule here carries: canaries that must fire through the real scope, silent
@@ -1055,7 +1138,7 @@ The worked face (`frontend/src/screens/widget/`, its copy module
 a product copies is fenced: `// golden: <verb> begin` … `// golden: <verb> end`
 (`/* … */` in a stylesheet, `{/* … */}` inside JSX). The face's base — the list
 and the record with no family verb on them — is fenced `face`.
-`scripts/tests/test_golden_face.sh` copies the base and one verb's blocks into a
+`quality/tests/test_golden_face.py` copies the base and one verb's blocks into a
 scratch world with the one rename (`Widget`→`Gadget`) and proves the copy holds
 rules 77–80, type-checks and passes the face census. A block that needed a hand
 edit beyond the rename is a finding against the example, not a step.
@@ -1089,6 +1172,12 @@ its verbs, or ALL of them?**
   the merge copy has no bar to sit in); the drive's joint case — every verb at
   once, in `--all` — takes it and proves it. A joint list names two or more
   distinct family verbs, or the drive exits 2 naming the fence.
+
+**A word can live outside every fence.** The worked second surface is fenced
+`portal`, and a product renaming its noun copies the customer folder pair and
+`apps/example_portal` whole, then finds the word everywhere else by grep —
+`django-conventions` § 16 carries the grep and the files it prints that a
+rename must edit.
 
 The wrong form for a joint block is the OR form: stacked `bulk` and `merge`
 fences hand the bar's *Merge* to the bulk copy, where it imports a confirm the

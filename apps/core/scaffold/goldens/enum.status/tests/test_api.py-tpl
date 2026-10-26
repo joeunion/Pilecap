@@ -1,0 +1,22 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "before", "text": "def test_anonymous_cannot_list(api: Client) -> None:"}
+def test_status_moves_by_its_own_press_and_never_by_a_patch(
+    api: Client, tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Staged")
+    api.force_login(owner)
+    patched = api.patch(
+        f"{LIST_URL}{widget.pk}/",
+        data=json.dumps({"status": "active", "version": widget.version}),
+        content_type=JSON,
+    )
+    assert patched.status_code == 422, patched.content
+    assert "status" in _body(patched)["errors"]
+    url = reverse("api:widget-transition", kwargs={"widget_id": widget.pk})
+    moved = api.post(url, data=json.dumps({"status": "active"}), content_type=JSON)
+    assert moved.status_code == 200, moved.content
+    assert _body(moved)["status"] == "active"
+    again = api.post(url, data=json.dumps({"status": "active"}), content_type=JSON)
+    assert again.status_code == 409, again.content
+    assert _body(again)["code"] == "conflict"
+
+

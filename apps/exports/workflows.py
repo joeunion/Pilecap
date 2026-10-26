@@ -23,8 +23,8 @@ from __future__ import annotations
 from datetime import timedelta
 
 from temporalio import workflow
-from temporalio.common import RetryPolicy
 
+from apps.core.determinism import reason_of, retry_policy
 from apps.exports.types import (
     PURGE_WORKFLOW,
     BuildExport,
@@ -34,33 +34,6 @@ from apps.exports.types import (
     PurgeOutcome,
     RunFinished,
 )
-
-# --- The one setting a workflow module reads, and the seam it is read through -
-#
-# `workflow.unsafe.imports_passed_through()` is Temporal's own escape. The
-# replay sandbox RE-IMPORTS every module a workflow touches, and an unguarded
-# `from django.conf import settings` dies inside it on
-# `gettext.GNUTranslations.__mro_entries__` (measured). Passed through,
-# the module object the worker process already imported is reused and nothing
-# Django owns is re-executed in the sandbox.
-#
-# What is read is ONE number, ONCE, at import: the interval the first retry of
-# a failed activity waits. It is a constant exactly as the timeouts below are
-# constants — no clock, no ORM, no I/O, and the same value for every run this
-# worker serves — and it lives in settings so that `test` can turn a
-# fifteen-second production backoff curve into a tenth of a second without
-# touching one assertion. The argument in full, including why one knob and not
-# one per policy: `config/settings/base.py` § "The retry backoff every activity
-# policy starts at".
-with workflow.unsafe.imports_passed_through():
-    # rule-9: one deployment constant, read once at import through Temporal's
-    # own passthrough seam; the paragraph above is the whole argument.
-    from django.conf import settings
-
-#: How long the first retry of every policy below waits, doubling from there.
-#: The SDK's own default in a deployment; milliseconds under `test`, where the
-#: time-skipping server skips workflow timers and does NOT skip this.
-RETRY_INITIAL_INTERVAL = timedelta(seconds=settings.TEMPORAL_RETRY_INITIAL_INTERVAL_SECONDS)
 
 #: How long one attempt at building an archive may take. Generous, because the
 #: first export of a large tenant is the big one and a timeout there costs the
@@ -73,7 +46,7 @@ BUILD_TIMEOUT = timedelta(hours=2)
 #: for a reason a retry will not fix, and a customer waiting on an archive is
 #: better served by a `failed` row they can see than by a run that is still
 #: technically trying.
-BUILD_RETRY = RetryPolicy(initial_interval=RETRY_INITIAL_INTERVAL, maximum_attempts=5)
+BUILD_ATTEMPTS = 5
 
 #: Marking the row failed, and deleting expired archives. Both are short local
 #: writes; the purge's is longer because it deletes objects from a bucket one at
@@ -85,7 +58,7 @@ PURGE_TIMEOUT = timedelta(minutes=30)
 #: bounded: a bookkeeping activity that retried forever would outlive the thing
 #: it is bookkeeping for.
 FINISH_TIMEOUT = timedelta(seconds=30)
-FINISH_RETRY = RetryPolicy(initial_interval=RETRY_INITIAL_INTERVAL, maximum_attempts=5)
+FINISH_ATTEMPTS = 5
 FINISH_ACTIVITY = "mark_run_finished"
 
 #: The two terminal values of `apps.workflows.models.WorkflowRun.Status`. Named
@@ -94,34 +67,6 @@ FINISH_ACTIVITY = "mark_run_finished"
 #: now (house rule 9).
 RUN_COMPLETED = "completed"
 RUN_FAILED = "failed"
-
-#: How far to walk a cause chain looking for what actually broke. Three:
-#: wrapper -> activity error -> the activity's own complaint. Bounded because a
-#: cause chain is somebody else's data structure.
-CAUSE_LINKS = 3
-
-
-def _reason(failure: BaseException) -> str:
-    """What actually went wrong, joined out of the cause chain.
-
-    Temporal wraps an activity's own exception in an `ActivityError` whose
-    `str()` is "Activity task failed" — true, and useless to whoever reads the
-    row six weeks later. `apps.workflows.workflows::_reason` is the worked form
-    and this is the same shape; it is restated rather than imported because a
-    workflow module may import only its own `types.py`.
-
-    Deterministic: it reads nothing but the exception it was handed.
-    """
-    parts: list[str] = []
-    seen: BaseException | None = failure
-    for _ in range(CAUSE_LINKS):
-        if seen is None:
-            break
-        text = str(seen).strip()
-        if text and text not in parts:
-            parts.append(text)
-        seen = seen.__cause__
-    return ": ".join(parts) or type(failure).__name__
 
 
 @workflow.defn(name="ExportTenantDataWorkflow")
@@ -134,14 +79,19 @@ class ExportTenantDataWorkflow:
     at all, because it is a row that lies.
     """
 
+    _floor: float | None = None
+
     @workflow.run
     async def run(self, request: BuildExport) -> ExportBuilt:
+        self._floor = request.retry_floor
         try:
             built: ExportBuilt = await workflow.execute_activity(
                 "build_export_archive",
                 request,
                 start_to_close_timeout=BUILD_TIMEOUT,
-                retry_policy=BUILD_RETRY,
+                retry_policy=retry_policy(
+                    initial_seconds=self._floor, maximum_attempts=BUILD_ATTEMPTS
+                ),
                 result_type=ExportBuilt,
             )
         except Exception as failure:
@@ -149,12 +99,14 @@ class ExportTenantDataWorkflow:
             # failure with a reason on it; then the run row; then the run really
             # fails, because a run that swallowed the error would be a green
             # execution beside an archive that does not exist.
-            reason = _reason(failure)
+            reason = reason_of(failure)
             await workflow.execute_activity(
                 "record_export_failure",
                 ExportFailed(export_id=request.export_id, reason=reason),
                 start_to_close_timeout=FAILURE_TIMEOUT,
-                retry_policy=FINISH_RETRY,
+                retry_policy=retry_policy(
+                    initial_seconds=self._floor, maximum_attempts=FINISH_ATTEMPTS
+                ),
                 result_type=str,
             )
             await self._finish(status=RUN_FAILED, error=reason)
@@ -177,7 +129,9 @@ class ExportTenantDataWorkflow:
                 error=error,
             ),
             start_to_close_timeout=FINISH_TIMEOUT,
-            retry_policy=FINISH_RETRY,
+            retry_policy=retry_policy(
+                initial_seconds=self._floor, maximum_attempts=FINISH_ATTEMPTS
+            ),
             result_type=str,
         )
 

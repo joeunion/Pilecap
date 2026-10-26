@@ -1,10 +1,10 @@
-"""This app's one workflow. Deterministic code only (house rule 9).
+"""This app's two workflows. Deterministic code only (house rule 9).
 
 No ORM, no `httpx`, no clock and no randomness is imported or called here — all
 of it is in `activities.py`, invoked **by name**, because importing the
 activities module would drag the ORM into code that has to replay identically
-years from now. The only module of ours this file imports is its own
-`types.py`, which is standard library all the way down.
+years from now. Of ours it imports its own `types.py`, standard library all
+the way down, and `apps.core.determinism`, the run ledger's finish seam.
 
 **`PurgeInboundWebhooksWorkflow`** is the deployment's housekeeping for this
 app: the processed deliveries past their retention, deleted on a schedule
@@ -21,7 +21,14 @@ from datetime import timedelta
 
 from temporalio import workflow
 
-from apps.connections.types import PURGE_WORKFLOW, PurgeInboundWebhooks, PurgeOutcome
+from apps.connections.types import (
+    HANDLE_WORKFLOW,
+    PURGE_WORKFLOW,
+    HandleInboundWebhook,
+    PurgeInboundWebhooks,
+    PurgeOutcome,
+)
+from apps.core.determinism import retry_policy, run_to_finish
 
 # One delete over an indexed status, on one table. The same number the activity
 # is sized for, declared here at the call site rather than inside the activity:
@@ -61,4 +68,32 @@ class PurgeInboundWebhooksWorkflow:
         return purged
 
 
-WORKFLOWS: list[type] = [PurgeInboundWebhooksWorkflow]
+#: One handler call inside one transaction: a handler owes the promise a service does.
+HANDLE_TIMEOUT = timedelta(minutes=1)
+#: Bounded: a handler that raised three times is a failed run in the run ledger.
+HANDLE_ATTEMPTS = 3
+
+
+@workflow.defn(name=HANDLE_WORKFLOW)
+class InboundWebhookWorkflow:
+    """Hand one stored receipt to the handler its provider registered, then close the run."""
+
+    @workflow.run
+    async def run(self, receipt: HandleInboundWebhook) -> str:
+        async def handle() -> str:
+            status: str = await workflow.execute_activity(
+                "apply_inbound_webhook",
+                receipt,
+                start_to_close_timeout=HANDLE_TIMEOUT,
+                retry_policy=retry_policy(
+                    initial_seconds=receipt.retry_floor, maximum_attempts=HANDLE_ATTEMPTS
+                ),
+                result_type=str,
+            )
+            return status
+
+        status, _tenant = await run_to_finish(handle)
+        return status
+
+
+WORKFLOWS: list[type] = [PurgeInboundWebhooksWorkflow, InboundWebhookWorkflow]

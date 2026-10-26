@@ -40,15 +40,15 @@ from uuid import UUID
 from django.contrib.auth import get_user_model
 from django.db.models import Case, QuerySet, Value, When
 from ninja import Query, Router, Status
-from ninja.errors import HttpError
 from ninja.pagination import paginate
 
-from apps.core.actor import Actor, actor_from_request
+from apps.core.actor import actor_from_request
+from apps.core.api.acting import acting, require_hat
 from apps.core.api.docs import Tag
 from apps.core.api.pagination import CursorPagination
 from apps.core.api.query import ordered_by, searched
 from apps.core.authz import refusal_sentence, renamed_permissions, vocabulary
-from apps.core.exceptions import NotFound
+from apps.core.exceptions import Forbidden, Invalid, NotFound
 from apps.core.flags import enabled_for
 from apps.core.models import Grant, Invitation, Membership, Organization, Role, Tenant
 from apps.core.requests import TenantRequest
@@ -171,7 +171,7 @@ INVITATION_SEARCH_FIELDS = ("email",)
 # questions. Nothing moved.
 #
 # AND A KEY FREEZES the day a token could name it — see
-# `apps/core/api/scopes.py::FROZEN_FAMILIES`. This split is recorded there as
+# `apps/core/api/frozen_families.py::FROZEN_FAMILIES`. This split is recorded there as
 # the sanctioned migration and is the LAST cheap rename this vocabulary gets.
 TAGS = {
     "org-structure": Tag(
@@ -257,36 +257,6 @@ invitations_router = Router(tags=["invitations"])
 settings_router = Router(tags=["tenant-settings"])
 
 
-def _acting(request: TenantRequest) -> tuple[Actor, Tenant]:
-    """The actor and tenant a write happens as.
-
-    The same shape every app's door uses. Authentication has guaranteed the
-    user; nothing has guaranteed the tenant, because a signed-in person with no
-    membership resolves to `None` — and a write with no tenant is refused rather
-    than guessed at.
-
-    Whether the actor *may* do the thing is not decided here: `services.py`
-    calls `authz.require`. A permission check in this function would be a second
-    copy of the rule, one per door.
-    """
-    if request.tenant is None:
-        raise HttpError(403, "No tenant for this request.")
-    return actor_from_request(request), request.tenant
-
-
-def _hat(actor: Actor) -> Organization:
-    """The acting organization, refused rather than defaulted when there is none.
-
-    Every read below is a subtree read and every subtree needs a root to start
-    from. `visible_to(None)` and its siblings already fail closed by returning
-    nothing, but an empty list is a confusing way to say "you sent no hat" — so
-    the doors say it.
-    """
-    if actor.org is None:
-        raise HttpError(403, "This request resolved no acting organization.")
-    return actor.org
-
-
 # --- Organizations ------------------------------------------------------------
 
 
@@ -348,9 +318,9 @@ def list_organizations_route(
     columns (house rule 24) and a client that could sort by one must still not
     be able to set it.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     organizations: QuerySet[Organization] = list_organizations(
-        tenant=tenant, org=_hat(actor), actor=actor
+        tenant=tenant, org=require_hat(actor), actor=actor
     )
     organizations = filters.filter(organizations)
     organizations = searched(organizations, q, fields=ORGANIZATION_SEARCH_FIELDS)
@@ -390,9 +360,9 @@ def get_organization_route(request: TenantRequest, organization_id: UUID) -> Org
       the permission, or act under an organization where you hold it.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     return get_organization(
-        tenant=tenant, org=_hat(actor), organization_id=organization_id, actor=actor
+        tenant=tenant, org=require_hat(actor), organization_id=organization_id, actor=actor
     )
 
 
@@ -438,9 +408,9 @@ def create_organization_route(
     reachability question is answered on the way in rather than inside the
     write.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     parent = get_organization(
-        tenant=tenant, org=_hat(actor), organization_id=payload.parent_id, actor=actor
+        tenant=tenant, org=require_hat(actor), organization_id=payload.parent_id, actor=actor
     )
     return Status(
         201,
@@ -489,9 +459,9 @@ def rename_organization_route(
       it has not finished. Resend the identical request, or use a new key.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     organization = get_organization(
-        tenant=tenant, org=_hat(actor), organization_id=organization_id, actor=actor
+        tenant=tenant, org=require_hat(actor), organization_id=organization_id, actor=actor
     )
     return rename_organization(
         tenant=tenant, organization=organization, name=payload.name, actor=actor
@@ -553,8 +523,8 @@ def move_organization_route(
     sees them, which is what makes a sibling branch `not_found` rather than
     `forbidden` on the way in.
     """
-    actor, tenant = _acting(request)
-    hat = _hat(actor)
+    actor, tenant = acting(request)
+    hat = require_hat(actor)
     organization = get_organization(
         tenant=tenant, org=hat, organization_id=organization_id, actor=actor
     )
@@ -615,9 +585,9 @@ def list_memberships_route(
     on the user row rather than this one, and a search that reached across that
     join is a join nobody sized.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     memberships: QuerySet[Membership] = list_memberships(
-        tenant=tenant, org=_hat(actor), actor=actor
+        tenant=tenant, org=require_hat(actor), actor=actor
     )
     memberships = filters.filter(memberships)
     return ordered_by(memberships, ordering, allowed=MEMBERSHIP_ORDERING, default="role")
@@ -636,13 +606,13 @@ def add_membership_route(request: TenantRequest, payload: MembershipIn) -> Statu
     you sent it from. Set `is_default` if this should be the membership used
     when the person names no organization.
 
-    Roles are `owner`, `admin` and `member`, in that order of seniority.
+    A role is a set of capability keys; `GET /roles/` lists each role's.
 
-    **You cannot grant a role above your own.** An `admin` may make somebody an
-    `admin` or a `member`, never an `owner`, and nobody can grant a role in a
-    part of the tree they hold no role over. Both answer `forbidden`, and the
-    message says which of the two it was so you can tell "wrong place" from
-    "too senior".
+    **You cannot hand out what you do not hold.** Every key the role carries
+    must already be yours at the organization the membership lands on, and
+    nobody can grant a role in a part of the tree they hold no role over. Both
+    answer `forbidden`, and the message says which: that you hold no role
+    there, or the sentences of the keys you are short of.
 
     A `user_id` that matches nobody answers `not_found`, and so does an
     `organization_id` outside the part of the tree you can see.
@@ -668,8 +638,8 @@ def add_membership_route(request: TenantRequest, payload: MembershipIn) -> Statu
     guards, so the MCP twin gets the same two refusals for the same two reasons
     without a second copy of the rule.
     """
-    actor, tenant = _acting(request)
-    hat = _hat(actor)
+    actor, tenant = acting(request)
+    hat = require_hat(actor)
     organization = (
         get_organization(
             tenant=tenant, org=hat, organization_id=payload.organization_id, actor=actor
@@ -705,10 +675,10 @@ def set_role_route(
 
     Change the role someone holds.
 
-    Send `role` — one of `owner`, `admin` or `member`.
+    Send `role` — the key of a role this product knows (`GET /roles/`).
 
     The same ceiling applies as when granting a role in the first place: you
-    cannot set a role above the one you hold yourself over that organization,
+    cannot set a role carrying a key you do not hold yourself at that organization,
     and you cannot change a membership in a part of the tree you hold no role
     over. Both answer `forbidden`.
 
@@ -722,8 +692,8 @@ def set_role_route(
 
     * `400 invalid` — `role` is not one this product knows.
     * `403 forbidden` — you do not administer that organization, or the new
-      role is above your own there, or the membership you are changing is
-      already above your own.
+      role carries a key you do not hold there, or the person already holds a
+      key there that you do not.
     * `404 not_found` — that membership is outside the part of the tree you
       can see, or nothing has that id.
     * `409 conflict` — it is the last `owner` membership in the tenant.
@@ -733,9 +703,9 @@ def set_role_route(
       it has not finished. Resend the identical request, or use a new key.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     membership = get_membership(
-        tenant=tenant, org=_hat(actor), membership_id=membership_id, actor=actor
+        tenant=tenant, org=require_hat(actor), membership_id=membership_id, actor=actor
     )
     return set_role(tenant=tenant, membership=membership, role=payload.role, actor=actor)
 
@@ -756,7 +726,7 @@ def revoke_membership_route(request: TenantRequest, membership_id: UUID) -> tupl
     so access ends immediately rather than when they next reload.
 
     You must hold `admin` or `owner` over the organization the membership sits
-    on, and you cannot remove somebody more senior than you are — both answer
+    on, and you cannot remove somebody holding a key there that you do not — both answer
     refused. Removing the tenant's last `owner` is refused too: a tenant
     with no owner is a tenant nobody can administer.
 
@@ -765,17 +735,16 @@ def revoke_membership_route(request: TenantRequest, membership_id: UUID) -> tupl
     Refusals you can get here:
 
     * `403 forbidden` — you do not administer that organization, or the
-      membership is above your own role there. Nobody removes above
-      themselves.
+      person holds a key there that you do not.
     * `404 not_found` — that membership is outside the part of the tree you
       can see, or nothing has that id.
     * `409 conflict` — it is the last `owner` membership in the tenant. Make
       somebody else an owner first.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     membership = get_membership(
-        tenant=tenant, org=_hat(actor), membership_id=membership_id, actor=actor
+        tenant=tenant, org=require_hat(actor), membership_id=membership_id, actor=actor
     )
     revoke_membership(tenant=tenant, membership=membership, actor=actor)
     return 204, None
@@ -830,11 +799,9 @@ def _sorted_roles(views: list[Any], ordering: str) -> list[RoleOut]:
     """Apply `?ordering=` to the assembled list, refusing anything not allowed."""
     field = ordering.lstrip("-")
     if field not in ROLE_ORDERING:
-        raise HttpError(
-            400,
-            f"{ordering!r} is not a field this list can be sorted by. "
-            f"Use one of {', '.join(sorted(ROLE_ORDERING))}, optionally prefixed with '-'.",
-        )
+        # The list's own refusal, in the words every other list says it in
+        # (`apps.core.api.query.ordered_by`): `invalid`, naming the field.
+        raise Invalid({"ordering": [f"Order by one of: {', '.join(sorted(ROLE_ORDERING))}."]})
     rows = sorted(
         views,
         key=lambda view: (getattr(view, field) is None, getattr(view, field) or ""),
@@ -887,7 +854,7 @@ def list_roles_route(
     Paged over `key` rather than `name`: a display name is renamable and not
     unique, and a cursor over a non-total field skips rows at the boundary.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     views = [
         view for view in list_roles(tenant=tenant, actor=actor) if _role_matches(view, filters)
     ]
@@ -927,7 +894,7 @@ def create_role_route(request: TenantRequest, payload: RoleIn) -> Status[RoleOut
       has not finished.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     create_role(
         tenant=tenant,
         actor=actor,
@@ -957,7 +924,7 @@ def get_role_route(request: TenantRequest, key: str) -> RoleOut:
     * `404 not_found` — nothing in this tenant has that key.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     return RoleOut.of(get_role(tenant=tenant, key=key, actor=actor))
 
 
@@ -983,7 +950,7 @@ def update_role_route(request: TenantRequest, key: str, payload: RolePatch) -> R
     * `404 not_found` — nothing in this tenant has that key.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     row = Role.objects.for_tenant(tenant).filter(key=key).first()
     if row is None:
         raise NotFound()
@@ -1033,7 +1000,7 @@ def set_role_permissions_route(
     * `409 conflict` — the change would leave the tenant with no owner.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     set_role_collection(tenant=tenant, actor=actor, role_key=key, permissions=payload.permissions)
     return RoleOut.of(get_role(tenant=tenant, key=key, actor=actor))
 
@@ -1055,15 +1022,14 @@ def delete_role_route(request: TenantRequest, key: str) -> tuple[int, None]:
 
     Refusals you can get here:
 
-    * `400 invalid` — that key belongs to the product rather than to this
-      tenant.
     * `403 forbidden` — you may not delete roles here.
-    * `404 not_found` — nothing in this tenant has that key.
+    * `404 not_found` — this tenant made no role with that key; `owner` and
+      the product's own roles answer this too.
     * `409 conflict` — somebody still holds the role, or an invitation still
       offers it.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     row = Role.objects.for_tenant(tenant).filter(key=key).first()
     if row is None:
         raise NotFound()
@@ -1136,8 +1102,10 @@ def list_grants_route(request: TenantRequest, membership_id: UUID) -> QuerySet[G
       see, or nothing has that id.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
-    rows = list_grants(tenant=tenant, org=_hat(actor), membership_id=membership_id, actor=actor)
+    actor, tenant = acting(request)
+    rows = list_grants(
+        tenant=tenant, org=require_hat(actor), membership_id=membership_id, actor=actor
+    )
     return rows.annotate(sentence=_permission_sentences())
 
 
@@ -1178,9 +1146,9 @@ def set_grant_route(
       has not finished.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     membership = get_membership(
-        tenant=tenant, org=_hat(actor), membership_id=membership_id, actor=actor
+        tenant=tenant, org=require_hat(actor), membership_id=membership_id, actor=actor
     )
     grant = create_grant(
         tenant=tenant,
@@ -1219,9 +1187,9 @@ def delete_grant_route(
       see, or there is no such grant on it.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     membership = get_membership(
-        tenant=tenant, org=_hat(actor), membership_id=membership_id, actor=actor
+        tenant=tenant, org=require_hat(actor), membership_id=membership_id, actor=actor
     )
     row = (
         Grant.objects.for_tenant(tenant)
@@ -1268,10 +1236,10 @@ def membership_permissions_route(
       see, or nothing has that id.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     return MembershipPermissionsOut.of(
         get_membership_permissions(
-            tenant=tenant, org=_hat(actor), membership_id=membership_id, actor=actor
+            tenant=tenant, org=require_hat(actor), membership_id=membership_id, actor=actor
         )
     )
 
@@ -1318,7 +1286,7 @@ def list_permissions_route(
     No `ordering`: the vocabulary is totally ordered by key and there is nothing
     else to order it by.
     """
-    actor, _tenant = _acting(request)
+    actor, _tenant = acting(request)
     return [
         PermissionOut.of(word)
         for word in list_permissions(actor=actor)
@@ -1382,9 +1350,9 @@ def list_invitations_route(
     landing node. It was tenant-wide while the row carried none — a read that
     can only ever have got narrower, which is the placement law's own direction.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     invitations: QuerySet[Invitation] = list_invitations(
-        tenant=tenant, org=_hat(actor), actor=actor
+        tenant=tenant, org=require_hat(actor), actor=actor
     )
     invitations = filters.filter(invitations)
     invitations = searched(invitations, q, fields=INVITATION_SEARCH_FIELDS)
@@ -1426,15 +1394,15 @@ def invite_member_route(request: TenantRequest, payload: InvitationIn) -> Status
     Two separate permissions apply and both answer `forbidden`, and **both are
     asked about the organization the invitation is placed in**: you must hold
     `admin` or `owner` there to invite anybody at all, and you cannot invite
-    somebody at a role above your own there.
+    somebody at a role carrying a key you do not hold there.
 
     Refusals you can get here:
 
     * `400 invalid` — the `email` is missing or malformed, or `role` is not
       one this product knows. `errors` names the fields.
     * `403 forbidden` — you are not an owner or an administrator of the
-      organization this invitation is placed in, or the `role` you asked for is
-      above your own there.
+      organization this invitation is placed in, or the `role` you asked for
+      carries a key you do not hold there.
     * `404 not_found` — the `organization_id` is outside the part of the tree
       you can see, or nothing has that id.
     * `409 conflict` — that address already has an invitation waiting in that
@@ -1454,8 +1422,8 @@ def invite_member_route(request: TenantRequest, payload: InvitationIn) -> Status
     two doors that resolved a node two different ways would disagree about who
     can be placed where the first time one of them was edited.
     """
-    actor, tenant = _acting(request)
-    hat = _hat(actor)
+    actor, tenant = acting(request)
+    hat = require_hat(actor)
     organization = (
         get_organization(
             tenant=tenant, org=hat, organization_id=payload.organization_id, actor=actor
@@ -1542,7 +1510,7 @@ def accept_invitation_route(request: TenantRequest, payload: InvitationAcceptIn)
     """
     user = request.user
     if not user.is_authenticated:
-        raise HttpError(403, "Accepting an invitation needs a signed-in person.")
+        raise Forbidden("Accepting an invitation needs a signed-in person.")
     token_hash = hash_invitation_token(payload.token)
     invitation = (
         Invitation.objects.filter(token_hash=token_hash, status=Invitation.Status.PENDING)
@@ -1591,9 +1559,9 @@ def revoke_invitation_route(request: TenantRequest, invitation_id: UUID) -> Invi
       to withdraw.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     invitation = get_invitation(
-        tenant=tenant, org=_hat(actor), invitation_id=invitation_id, actor=actor
+        tenant=tenant, org=require_hat(actor), invitation_id=invitation_id, actor=actor
     )
     return revoke_invitation(tenant=tenant, invitation=invitation, actor=actor)
 
@@ -1626,7 +1594,7 @@ def get_settings_route(request: TenantRequest) -> Tenant:
     product renders with them: a typo in a JSON key would be a silently wrong
     timestamp, where a typo'd column is a refusal.
     """
-    _actor, tenant = _acting(request)
+    _actor, tenant = acting(request)
     return tenant
 
 
@@ -1663,7 +1631,7 @@ def update_settings_route(request: TenantRequest, payload: TenantSettingsIn) -> 
       it has not finished. Resend the identical request, or use a new key.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     return update_tenant_settings(
         tenant=tenant,
         values=payload.values,
@@ -1698,7 +1666,7 @@ def get_flags_route(request: TenantRequest) -> FlagsOut:
     that using a flag as a permission is how a rollout becomes a security
     boundary nobody tested.
     """
-    _actor, tenant = _acting(request)
+    _actor, tenant = acting(request)
     return FlagsOut(flags=enabled_for(tenant))
 
 
@@ -1723,8 +1691,8 @@ def set_flag_route(request: TenantRequest, name: str, payload: FlagIn) -> FlagsO
 
     Refusals you can get here:
 
-    * `400 invalid` — the body was not `{"value": true}`, `{"value": false}`
-      or `{"value": null}`.
+    * `400 invalid` — the body was not `{"enabled": true}`, `{"enabled": false}`
+      or `{"enabled": null}`.
     * `403 forbidden` — you are not an owner or an administrator of the
       tenant, or the request resolved no tenant.
     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
@@ -1732,7 +1700,7 @@ def set_flag_route(request: TenantRequest, name: str, payload: FlagIn) -> FlagsO
       it has not finished. Resend the identical request, or use a new key.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     return FlagsOut(
         flags=enabled_for(set_flag(tenant=tenant, name=name, enabled=payload.enabled, actor=actor))
     )

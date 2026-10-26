@@ -26,8 +26,8 @@ from django.utils.text import slugify
 
 from apps.core.exceptions import DomainError
 from apps.core.management import BaseCommand
-from apps.core.models import Membership, Organization
-from apps.core.services import create_first_tenant
+from apps.core.models import Membership
+from apps.core.services import create_first_tenant, root_organization
 
 
 class Command(BaseCommand):
@@ -80,8 +80,8 @@ class Command(BaseCommand):
             # would be a second copy of the sentence, and the two would drift.
             raise CommandError(str(refusal.detail)) from refusal
 
-        root = Organization.objects.for_tenant(tenant).get(parent__isnull=True)
-        membership = Membership.objects.get(user=user, tenant=tenant)
+        root = root_organization(tenant=tenant)
+        membership = Membership.objects.for_tenant(tenant).of(user).get()
 
         self.stdout.write("Created the first tenant of this installation.")
         self.stdout.write("")

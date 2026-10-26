@@ -1,0 +1,191 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "imports", "text": ""}
+from apps.example.models import WidgetPolicy
+from apps.example.schemas import WidgetPolicyIn, WidgetPolicyOut
+from apps.example.selectors import (
+    get_governing_widget_policy,
+    get_widget_policy,
+    list_widget_policies,
+)
+from apps.example.services import (
+    archive_widget_policy,
+    create_widget_policy,
+    restore_widget_policy,
+)
+from pilecap.api import refuses
+
+# golden-anchor: {"nth": 0, "scope": [], "side": "after", "text": "return widgets.annotate(undated=undated).order_by(\"undated\", *widgets.query.order_by)"}
+def resolve_named_policy(
+    *, tenant: Tenant, actor: Actor, policy_id: UUID | None
+) -> WidgetPolicy | None:
+    """The policy an id names on the hat's ancestor chain, or `None`; the caller asks reach."""
+    if policy_id is None:
+        return None
+    return get_governing_widget_policy(
+        tenant=tenant, org=actor.org, policy_id=policy_id, actor=actor
+    )
+
+
+# golden-anchor: {"nth": 0, "scope": ["widget_create"], "side": "before", "text": "due_at: datetime | None = None,"}
+    policy_id: UUID | None = None,
+# golden-anchor: {"nth": 0, "scope": ["widget_create"], "side": "before", "text": "widget = create_widget("}
+    policy = resolve_named_policy(tenant=tenant, actor=actor, policy_id=policy_id)
+    if policy is not None and not may_be_named(actor, policy):
+        raise NotFound()
+# golden-anchor: {"nth": 0, "scope": ["widget_create"], "side": "before", "text": "due_at=due_at,"}
+        policy=policy,
+# golden-anchor: {"nth": 0, "scope": ["create_widget_route"], "side": "before", "text": "due_at=payload.due_at,"}
+        policy_id=payload.policy_id,
+# golden-anchor: {"nth": 0, "scope": [], "side": "after", "text": "return Status(201, created)"}
+@road(
+    "widget_policies_list",
+    example="apps/example/tests/test_network.py::test_a_seller_lists_its_own_and_its_sub_sellers_policies",
+)
+def widget_policies_list(
+    *, tenant: Tenant, actor: Actor, show: Show = "live"
+) -> QuerySet[WidgetPolicy]:
+    """The policies the acting hat owns — downward only, never the one governing it (ADR core-3)."""
+    # authz: `list_widget_policies` asks `widget_policy.read` at the hat.
+    policies: QuerySet[WidgetPolicy] = list_widget_policies(
+        tenant=tenant, org=actor.org, actor=actor, show=show
+    )
+    return policies
+
+
+@router.get("/policies/", response=list[WidgetPolicyOut], url_name="widget_policies-list")
+@paginate(CursorPagination)
+def list_widget_policies_route(
+    request: TenantRequest, show: Show = "live"
+) -> QuerySet[WidgetPolicy]:
+    """List widget policies
+
+    List widget policies; without the read, `403 forbidden`: ask an administrator.
+    """
+    actor, tenant = acting(request)
+    return widget_policies_list(tenant=tenant, actor=actor, show=show)
+
+
+@road(
+    "widget_policy_create",
+    example="apps/example/tests/test_network.py::test_setting_a_policy_needs_a_role_and_lands_on_the_acting_hat",
+)
+def widget_policy_create(
+    *, tenant: Tenant, actor: Actor, name: str, body: str = ""
+) -> WidgetPolicyOut:
+    """Set a widget policy on the acting hat."""
+    return WidgetPolicyOut.from_orm(
+        create_widget_policy(tenant=tenant, actor=actor, name=name, body=body)
+    )
+
+
+@router.post("/policies/", response={201: WidgetPolicyOut}, url_name="widget_policy-create")
+def create_widget_policy_route(
+    request: TenantRequest, payload: WidgetPolicyIn
+) -> Status[WidgetPolicyOut]:
+    """Create a widget policy
+
+    Create a widget policy on your acting organization.
+    """
+    actor, tenant = acting(request)
+    return Status(
+        201, widget_policy_create(tenant=tenant, actor=actor, name=payload.name, body=payload.body)
+    )
+
+
+@road(
+    "governing_widget_policy_detail",
+    example="apps/example/tests/test_network.py::test_the_nearest_policy_on_the_chain_is_the_one_that_governs",
+)
+def governing_widget_policy_detail(*, tenant: Tenant, actor: Actor) -> WidgetPolicyOut:
+    """The nearest policy on the hat's ancestor chain: upward resolution, never visibility."""
+    # authz: `get_governing_widget_policy` asks `widget_policy.read` at the hat.
+    return WidgetPolicyOut.from_orm(
+        get_governing_widget_policy(tenant=tenant, org=actor.org, actor=actor)
+    )
+
+
+@router.get(
+    "/policies/governing/",
+    response=WidgetPolicyOut,
+    url_name="governing_widget_policy-detail",
+)
+# A collection path that addresses one row without naming it: the derivation cannot see its 404.
+@refuses("forbidden", "no_acting_scope", "not_found", "rate_limited")
+def get_governing_widget_policy_route(request: TenantRequest) -> WidgetPolicyOut:
+    """Retrieve the governing widget policy
+
+    The governing policy; without the read, `403 forbidden`: ask an administrator.
+    """
+    actor, tenant = acting(request)
+    return governing_widget_policy_detail(tenant=tenant, actor=actor)
+
+
+@road(
+    "widget_policy_archive",
+    example="apps/example/tests/test_archive.py::test_a_policy_a_live_widget_names_is_blocked_and_names_the_widgets",
+)
+def widget_policy_archive(*, tenant: Tenant, actor: Actor, policy_id: UUID) -> WidgetPolicyOut:
+    """Take one policy the hat owns out of the book."""
+    # authz: `archive_widget_policy` asks `widget_policy.archive` at the policy's node.
+    policy = get_widget_policy(tenant=tenant, policy_id=policy_id, org=actor.org, actor=actor)
+    if not may_be_named(actor, policy):
+        raise NotFound()
+    return WidgetPolicyOut.from_orm(
+        archive_widget_policy(tenant=tenant, actor=actor, policy=policy)
+    )
+
+
+@router.post(
+    "/policies/{policy_id}/archive/",
+    response=WidgetPolicyOut,
+    url_name="widget_policy-archive",
+)
+@also_refuses("archive_blocked")
+def archive_widget_policy_route(request: TenantRequest, policy_id: UUID) -> WidgetPolicyOut:
+    """Archive a widget policy
+
+    Archive one widget policy; `403 forbidden` unless you administer its node.
+    """
+    actor, tenant = acting(request)
+    return widget_policy_archive(tenant=tenant, actor=actor, policy_id=policy_id)
+
+
+@road(
+    "widget_policy_restore",
+    example="apps/example/tests/test_archive.py::test_an_archived_policy_governs_nobody_and_cannot_be_named",
+)
+def widget_policy_restore(*, tenant: Tenant, actor: Actor, policy_id: UUID) -> WidgetPolicyOut:
+    """Put one archived policy the hat owns back in the book."""
+    # authz: `restore_widget_policy` asks `widget_policy.restore` at the policy's node.
+    policy = get_widget_policy(tenant=tenant, policy_id=policy_id, org=actor.org, actor=actor)
+    if not may_be_named(actor, policy):
+        raise NotFound()
+    return WidgetPolicyOut.from_orm(
+        restore_widget_policy(tenant=tenant, actor=actor, policy=policy)
+    )
+
+
+@router.post(
+    "/policies/{policy_id}/restore/",
+    response=WidgetPolicyOut,
+    url_name="widget_policy-restore",
+)
+@also_refuses("restore_blocked")
+def restore_widget_policy_route(request: TenantRequest, policy_id: UUID) -> WidgetPolicyOut:
+    """Restore a widget policy
+
+    Put one archived widget policy back; `403 forbidden` unless you administer its node.
+    """
+    actor, tenant = acting(request)
+    return widget_policy_restore(tenant=tenant, actor=actor, policy_id=policy_id)
+
+
+# golden-anchor: {"nth": 0, "scope": ["widget_update"], "side": "before", "text": "due_at: datetime | None = None,"}
+    policy_id: UUID | None = None,
+# golden-anchor: {"nth": 0, "scope": ["widget_update"], "side": "before", "text": "if due_at is not None:"}
+    policy = resolve_named_policy(tenant=tenant, actor=actor, policy_id=policy_id)
+    if policy is not None and not may_be_named(actor, policy):
+        raise NotFound()
+    if policy is not None:
+        changes["policy"] = policy
+# golden-anchor: {"nth": 0, "scope": ["update_widget_route"], "side": "before", "text": "due_at=payload.due_at,"}
+        policy_id=payload.policy_id,

@@ -1,0 +1,13 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "before", "text": "def test_a_tool_and_its_route_answer_with_the_same_row("}
+def test_the_touch_tool_answers_the_widget_seen_now(
+    tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Seen")
+    touch = tool("touch_widget", register=register)
+    touched = touch(
+        ctx=context_for(owner, tenant, root_organization(tenant=tenant)), widget_id=widget.pk
+    )
+    assert touched.id == widget.pk
+    assert touched.updated_at > widget.updated_at
+
+

@@ -1,11 +1,9 @@
 """PR4.g — **search is kinds ∩ readable, and the engine is never asked otherwise.**
 
-`search()` is outside rule 54 (d)'s population by NAME — the rule reads public
-`get_`/`list_` selectors and this one is called `search` — and the rule's
-`does_not_cover` says so in as many words. **This module is the belt for that
-declared blind spot.** It is the only thing in the tree that proves the one read
-door with no `get_`/`list_` in its name asks the question every other read door
-now asks.
+`get_search_page()` answers a `SearchPage`, outside rule 54 (d)'s population by
+ANNOTATION — the rule's `does_not_cover` says so. **This module is the belt for that
+declared blind spot**: it proves the one read door no census reads asks the question
+every other read door asks.
 
 Three answers, and they are deliberately three rather than one:
 
@@ -28,19 +26,16 @@ import json
 from typing import TYPE_CHECKING, Any
 
 import pytest
-from django.test import Client
 
 from apps.core.actor import Actor, actor_for
 from apps.core.authz import refusal_sentence
 from apps.core.exceptions import Forbidden, Invalid
 from apps.core.models import Grant, Membership
 from apps.search import registry
-from apps.search.selectors import search
+from apps.search.selectors import get_search_page
 from apps.search.types import RecordingEngine, Searchable
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from apps.accounts.models import User
-
     from .conftest import World
 
 pytestmark = pytest.mark.django_db
@@ -52,7 +47,7 @@ KINDS_URL = "/api/v1/search/kinds/"
 def _acting(world: World) -> Actor:
     """A FRESH actor for the region admin, built after whatever the test changed.
 
-    **Not `world.region_actor`, and the reason is the memo.** The `world`
+    **Not `world.admin_at_a`, and the reason is the memo.** The `world`
     fixture creates a widget as that actor, which warms its permission memo —
     the actor holds the three tables' rows from before the test wrote anything,
     exactly as it is supposed to (one actor, one fetch, PR0). A `Grant` written
@@ -60,10 +55,10 @@ def _acting(world: World) -> Actor:
     already resolved and wrong for a test pretending to be the next request.
     Every real door builds its actor per request; so does every test here.
     """
-    return actor_for(user=world.region_admin, tenant=world.tenant, org=world.region)
+    return actor_for(user=world.admin_at_a.user, tenant=world.tenant, org=world.a)
 
 
-def _withhold(*, world: World, user: User, permission: str) -> Grant:
+def _withhold(*, world: World, who: Actor, permission: str) -> Grant:
     """Take one key away from one person, the way a deployment would.
 
     A `withhold` beats everything — "forbid overrides permit" — so this is the
@@ -71,7 +66,8 @@ def _withhold(*, world: World, user: User, permission: str) -> Grant:
     about the role or the tree changes, and the only difference between the two
     halves of every test below is this one row.
     """
-    membership = Membership.objects.filter(tenant=world.tenant).get(user=user)
+    assert who.user is not None
+    membership = Membership.objects.filter(tenant=world.tenant).get(user__pk=who.user.pk)
     return Grant.objects.create(
         tenant=world.tenant,
         membership=membership,
@@ -94,9 +90,9 @@ def test_a_search_across_everything_omits_the_kinds_you_may_not_read(
     *Absent (baseline `11b1a765`):* the engine is asked about both kinds — the
     read was free, so nothing narrowed it.
     """
-    _withhold(world=world, user=world.region_admin, permission="widget.read")
+    _withhold(world=world, who=world.admin_at_a, permission="widget.read")
 
-    search(tenant=world.tenant, actor=_acting(world), q="x", kinds=None)
+    get_search_page(tenant=world.tenant, actor=_acting(world), q="x", kinds=None)
 
     assert recording.kinds_seen == [("orgs",)], recording.kinds_seen
 
@@ -109,7 +105,7 @@ def test_without_the_withhold_the_same_person_searches_both(
     Without it, every assertion above would pass on a search that had stopped
     asking any engine anything.
     """
-    search(tenant=world.tenant, actor=_acting(world), q="x", kinds=None)
+    get_search_page(tenant=world.tenant, actor=_acting(world), q="x", kinds=None)
 
     assert recording.kinds_seen == [("widgets",), ("orgs",)], recording.kinds_seen
 
@@ -125,10 +121,12 @@ def test_an_actor_who_may_read_nothing_gets_the_empty_page_not_a_refusal(
     page still names the engine that would have answered, which is the one
     deliberate inaccuracy the route's contract already states.
     """
-    _withhold(world=world, user=world.region_admin, permission="widget.read")
-    _withhold(world=world, user=world.region_admin, permission="organization.read")
+    _withhold(world=world, who=world.admin_at_a, permission="widget.read")
+    _withhold(world=world, who=world.admin_at_a, permission="organization.read")
 
-    page = search(tenant=world.tenant, actor=_acting(world), q="x", kinds=None, include_count=True)
+    page = get_search_page(
+        tenant=world.tenant, actor=_acting(world), q="x", kinds=None, include_count=True
+    )
 
     assert page.items == []
     assert page.count == 0
@@ -151,10 +149,10 @@ def test_naming_an_unreadable_kind_is_forbidden_with_the_lists_own_words(
 
     *Absent (baseline):* a 200 page of widget hits.
     """
-    _withhold(world=world, user=world.region_admin, permission="widget.read")
+    _withhold(world=world, who=world.admin_at_a, permission="widget.read")
 
     with pytest.raises(Forbidden) as refused:
-        search(tenant=world.tenant, actor=_acting(world), q="x", kinds=["widgets"])
+        get_search_page(tenant=world.tenant, actor=_acting(world), q="x", kinds=["widgets"])
 
     assert str(refused.value.detail) == refusal_sentence("widget.read")
     assert recording.queries == [], "the engine was asked before the refusal"
@@ -169,10 +167,10 @@ def test_an_unknown_kind_is_still_invalid(
     what exists — even for somebody who may read nothing. "No such kind" and
     "not yours" are different mistakes and they get different answers.
     """
-    _withhold(world=world, user=world.region_admin, permission="widget.read")
+    _withhold(world=world, who=world.admin_at_a, permission="widget.read")
 
     with pytest.raises(Invalid) as refused:
-        search(tenant=world.tenant, actor=_acting(world), q="x", kinds=["invoices"])
+        get_search_page(tenant=world.tenant, actor=_acting(world), q="x", kinds=["invoices"])
 
     assert "invoices" in refused.value.errors["kinds"][0]
     assert recording.queries == []
@@ -187,10 +185,10 @@ def test_a_readable_kind_named_beside_an_unreadable_one_refuses_the_whole_list(
     reason: a `200` with fewer results than were asked for, and nothing in it
     saying which half was dropped, is the defect a field test found.
     """
-    _withhold(world=world, user=world.region_admin, permission="widget.read")
+    _withhold(world=world, who=world.admin_at_a, permission="widget.read")
 
     with pytest.raises(Forbidden):
-        search(tenant=world.tenant, actor=_acting(world), q="x", kinds=["orgs", "widgets"])
+        get_search_page(tenant=world.tenant, actor=_acting(world), q="x", kinds=["orgs", "widgets"])
 
     assert recording.queries == []
 
@@ -198,9 +196,7 @@ def test_a_readable_kind_named_beside_an_unreadable_one_refuses_the_whole_list(
 # --- 3 · the catalogue does not shrink ---------------------------------------
 
 
-def test_the_kind_catalogue_does_not_shrink(
-    api: Client, world: World, declared: tuple[Searchable, ...]
-) -> None:
+def test_the_kind_catalogue_does_not_shrink(world: World, declared: tuple[Searchable, ...]) -> None:
     """**PR4.g.** `GET /search/kinds/` is the PRODUCT's vocabulary, not yours.
 
     A kind you may not read is still a kind this product has. The catalogue is
@@ -211,10 +207,10 @@ def test_the_kind_catalogue_does_not_shrink(
     *Absent:* `widgets` missing from the list for the withheld person, which is
     what a catalogue filtered by entitlement would produce.
     """
-    _withhold(world=world, user=world.region_admin, permission="widget.read")
-    api.force_login(world.region_admin)
+    _withhold(world=world, who=world.admin_at_a, permission="widget.read")
+    api = world.session(world.admin_at_a)
 
-    listed = api.get(KINDS_URL, headers={"X-Org": world.region.slug})
+    listed = api.get(KINDS_URL)
 
     assert listed.status_code == 200, listed.content
     assert {one["kind"] for one in listed.json()["items"]} == {"widgets", "orgs"}
@@ -224,7 +220,7 @@ def test_the_kind_catalogue_does_not_shrink(
 
 
 def test_the_wire_refuses_a_named_unreadable_kind_with_the_same_words(
-    api: Client, world: World, declared: tuple[Searchable, ...], recording: RecordingEngine
+    world: World, declared: tuple[Searchable, ...], recording: RecordingEngine
 ) -> None:
     """**PR4.g.2.** 403 `forbidden` over HTTP, and the body is the key's sentence.
 
@@ -233,12 +229,10 @@ def test_the_wire_refuses_a_named_unreadable_kind_with_the_same_words(
 
     *Absent (baseline):* 200 with a page of widget hits.
     """
-    _withhold(world=world, user=world.region_admin, permission="widget.read")
-    api.force_login(world.region_admin)
+    _withhold(world=world, who=world.admin_at_a, permission="widget.read")
+    api = world.session(world.admin_at_a)
 
-    refused = api.get(
-        SEARCH_URL, {"q": "x", "kinds": "widgets"}, headers={"X-Org": world.region.slug}
-    )
+    refused = api.get(SEARCH_URL, {"q": "x", "kinds": "widgets"})
 
     assert refused.status_code == 403, refused.content
     body = json.loads(refused.content)
@@ -247,7 +241,7 @@ def test_the_wire_refuses_a_named_unreadable_kind_with_the_same_words(
 
 
 def test_a_search_across_everything_is_still_two_hundred_for_a_plain_member(
-    api: Client, world: World, declared: tuple[Searchable, ...], recording: RecordingEngine
+    world: World, declared: tuple[Searchable, ...], recording: RecordingEngine
 ) -> None:
     """The flat-product half: a product that customised nothing observes nothing.
 
@@ -255,9 +249,9 @@ def test_a_search_across_everything_is_still_two_hundred_for_a_plain_member(
     200 it always was. This is the line that would go red if the gate above were
     accidentally closed on everybody.
     """
-    api.force_login(world.region_admin)
+    api = world.session(world.admin_at_a)
 
-    page = api.get(SEARCH_URL, {"q": "x"}, headers={"X-Org": world.region.slug})
+    page = api.get(SEARCH_URL, {"q": "x"})
 
     assert page.status_code == 200, page.content
     assert recording.kinds_seen == [("widgets",), ("orgs",)]

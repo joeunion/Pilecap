@@ -22,12 +22,19 @@
 // golden: face begin
 import { useEffect, useState } from "react";
 
-import type { Refusal, SurfaceState, WireRefusal } from "@/screens/state";
-import type { Verb } from "@/screens/verbs";
+import type { Refusal, SurfaceState, WireRefusal } from "@pilecap/ui/state";
+import type { Verb } from "@pilecap/ui/verbs";
 import type { Widget, WidgetDetail } from "@/screens/widget/parts";
 import { ADMIN_ACTS, BENCH, LATENCY_MS, MEMBER_ACTS, ROWING } from "@/screens/widget/widget-list.stories";
 import { type RecordPress, type Sheet, WidgetRecord } from "@/screens/widget/widget-record";
 // golden: face end
+// golden: version begin
+// golden: move begin
+// golden: merge begin
+import { REMEDY_DESTINATIONS } from "@pilecap/ui/state";
+// golden: merge end
+// golden: move end
+// golden: version end
 // golden: archive begin
 import { archivedOf, restoredOf, RESTORE_BLOCKED } from "@/screens/widget/widget-list.stories";
 // golden: archive end
@@ -95,7 +102,7 @@ export const ARCHIVE_BLOCKED: WireRefusal = {
 export const STALE: WireRefusal = {
     code: "stale_version",
     detail: "Somebody else changed this since you read it, so your change was not saved. Nothing was written; `current_version` is the version it has now.",
-    remedies: [{ label: "Read it again, then make your change to what is there now", destination: "self:reread" }],
+    remedies: [{ label: "Read it again, then make your change to what is there now", destination: REMEDY_DESTINATIONS.reread }],
 };
 
 /** `forbidden` on a save: the hat may read the row and may not change it. */
@@ -117,7 +124,7 @@ const RACED: Widget = { ...ADMIN_ROWING, notes: "Belt replaced in August; the se
 export const MOVE_BLOCKED: WireRefusal = {
     code: "move_blocked",
     detail: "This cannot move while something recorded under it has to stay where it was written. Nothing was moved.",
-    remedies: [{ label: "See what holds it where it is", destination: "self:reread" }],
+    remedies: [{ label: "See what holds it where it is", destination: REMEDY_DESTINATIONS.reread }],
 };
 // golden: move end
 
@@ -259,7 +266,14 @@ const PREVIEW: WidgetMergePreview = {
 export const MERGE_BLOCKED: WireRefusal = {
     code: "merge_blocked",
     detail: "These two cannot be merged while something still holds them apart. Nothing was written, and neither record changed.",
-    remedies: [{ label: "See what holds them apart", destination: "self:reread" }],
+    remedies: [{ label: "See what holds them apart", destination: REMEDY_DESTINATIONS.reread }],
+};
+
+/** The preview's `invalid`: the pair named one record twice; the dry run moved nothing. */
+const MERGE_INTO_ITSELF: WireRefusal = {
+    code: "invalid",
+    detail: "A record cannot be merged into itself.",
+    errors: { into: ["A record cannot be merged into itself."] },
 };
 
 /** A widget as the merge leaves it: a tombstone, archived, naming the survivor, offering nothing. */
@@ -331,6 +345,8 @@ type WalkProps = {
     readonly candidates?: SurfaceState<readonly Widget[]>;
     readonly mergeAnswer?: "merged" | WireRefusal;
     readonly into?: Widget;
+    /** What the preview read answers for the pair; the dry run's rows by default. */
+    readonly preview?: SurfaceState<WidgetMergePreview>;
     /** The survivor this (merged) row became. */
     readonly mergedInto?: Widget;
     // golden: merge end
@@ -345,14 +361,12 @@ function RecordWalk(props: WalkProps) {
     const [refused, setRefused] = useState(initialRefused);
     const [frames, setFrames] = useState(0);
     const reread = frame?.reread;
-    /** The row as the detail read answers it: the row, and what attaches to it. */
-    let shown: WidgetDetail = row;
-    /** What the walk does beside the row's answer when an act lands (a duplicate names its source). */
-    let pressed: (verb: Verb, from: Widget) => void = () => undefined;
+    /** The row as shown, and what the walk does beside an answer (a duplicate names its source). */
+    const walk: { shown: WidgetDetail; pressed: (verb: Verb, from: Widget) => void } = { shown: row, pressed: () => undefined };
     // golden: face end
     // golden: duplicate begin
     const [source, setSource] = useState(props.duplicatedFrom ?? null);
-    pressed = (verb, from) => {
+    walk.pressed = (verb, from) => {
         if (verb === "duplicate") setSource({ id: from.id, name: from.name });
     };
     // golden: duplicate end
@@ -382,7 +396,7 @@ function RecordWalk(props: WalkProps) {
                     return;
                 }
                 setRefused(null);
-                pressed(verb, row);
+                walk.pressed(verb, row);
                 setRow(out.data);
             }, LATENCY_MS);
         },
@@ -531,14 +545,14 @@ function RecordWalk(props: WalkProps) {
                   },
               }),
     };
-    shown = tags === undefined ? row : { ...row, tags: [...tags] };
+    walk.shown = tags === undefined ? row : { ...row, tags: [...tags] };
     // golden: attach end
     // golden: merge begin
     const mergeAnswer = props.mergeAnswer ?? "merged";
     const merge: MergePress = {
         candidates: props.candidates ?? { kind: "ready", data: CANDIDATES },
         onPick: () => undefined,
-        preview: { kind: "ready", data: PREVIEW },
+        preview: props.preview ?? { kind: "ready", data: PREVIEW },
         ...(props.into === undefined ? {} : { chosen: props.into }),
         onMerge: (into) => {
             setBusy("merge");
@@ -560,7 +574,7 @@ function RecordWalk(props: WalkProps) {
 
     const face = (
         <WidgetRecord
-            state={{ kind: "ready", data: shown }}
+            state={{ kind: "ready", data: walk.shown }}
             press={press}
             opened={props.opened ?? null}
             // golden: face end
@@ -628,6 +642,7 @@ export function RefusedArchive() {
         />
     );
 }
+RefusedArchive.door = "widget-archive";
 
 /** §20: `restore_blocked` under the band, its blocker's door unlinked (no page draws it), *Restore* still alive. */
 export function RefusedRestore() {
@@ -639,6 +654,7 @@ export function RefusedRestore() {
         />
     );
 }
+RefusedRestore.door = "widget-restore";
 
 /**
  * §6: the acts row is the REST read's answer and nothing else's. Another hat
@@ -668,6 +684,9 @@ export function Stale() {
         />
     );
 }
+Stale.door = "widget-update";
+// Walked alone: it opens Edit's sheet as it renders, and two modals on one page make all but the last inert.
+Stale.alone = true;
 
 /** §1: a save the hat may not make — *Couldn't save* above the foot, the remedies as labels, *Save* alive, no *Reload*. */
 export function RefusedUpdate() {
@@ -680,6 +699,9 @@ export function RefusedUpdate() {
         />
     );
 }
+RefusedUpdate.door = "widget-update";
+// Walked alone: it opens Edit's sheet as it renders, and two modals on one page make all but the last inert.
+RefusedUpdate.alone = true;
 // golden: version end
 
 // golden: move begin
@@ -695,11 +717,16 @@ export function RefusedMove() {
         />
     );
 }
+RefusedMove.door = "widget-move";
+// Walked alone: it opens Move's sheet as it renders, and two modals on one page make all but the last inert.
+RefusedMove.alone = true;
 
 /** §1 · §14: no node this hat may move the row to — the sheet's one sentence, *Move* in the foot. */
 export function NowhereToMove() {
     return <RecordWalk initial={ADMIN_ROWING} opened="move" destinations={{ kind: "empty" }} />;
 }
+// Walked alone: it opens Move's sheet as it renders, and two modals on one page make all but the last inert.
+NowhereToMove.alone = true;
 
 /** §17: moved out of this hat's sight — the band *Moved to ⟨node⟩.*, no acts, no pill, no primary. */
 export function Moved() {
@@ -727,6 +754,7 @@ export function HistoryEmpty() {
 export function RefusedHistory() {
     return <RecordWalk initial={ADMIN_ROWING} history={{ kind: "error", refusal: { kind: "registry", refusal: HISTORY_FORBIDDEN } }} />;
 }
+RefusedHistory.door = "widget_history-list";
 // golden: history end
 
 // golden: duplicate begin
@@ -747,6 +775,7 @@ export function RefusedDuplicate() {
         />
     );
 }
+RefusedDuplicate.door = "widget-duplicate";
 // golden: duplicate end
 
 // golden: merge begin
@@ -758,6 +787,8 @@ export function RefusedDuplicate() {
 export function MergeChoosing() {
     return <RecordWalk initial={ADMIN_ROWING} opened="merge" />;
 }
+// Walked alone: it opens the merge chooser as it renders, and two modals on one page make all but the last inert.
+MergeChoosing.alone = true;
 
 /** §1: `merge_blocked` inside the confirm, one line above its foot, *Merge* alive. */
 export function RefusedMerge() {
@@ -771,6 +802,17 @@ export function RefusedMerge() {
         />
     );
 }
+RefusedMerge.door = "widget-merge";
+// Walked alone: it opens the merge confirm as it renders, and two modals on one page make all but the last inert.
+RefusedMerge.alone = true;
+
+/** §1: the confirm's preview read refused — the panel where the moves sentence stands, no *Merge* in the foot. */
+export function RefusedMergePreview() {
+    return <RecordWalk initial={ADMIN_ROWING} opened="merge" into={ADMIN_ROWING} preview={{ kind: "error", refusal: { kind: "registry", refusal: MERGE_INTO_ITSELF } }} />;
+}
+RefusedMergePreview.door = "widget_merge-detail";
+// Walked alone: it opens the merge confirm as it renders, and two modals on one page make all but the last inert.
+RefusedMergePreview.alone = true;
 
 /** §17: the merged row's address — *Merged into ⟨survivor⟩ on ⟨day⟩.*, the survivor a live link; no act, no pill, no primary. */
 export function Merged() {
@@ -821,6 +863,7 @@ export function NothingAttached() {
 export function RefusedAttach() {
     return <RecordWalk initial={ADMIN_ROWING} notes={{ kind: "ready", data: NOTES }} addAnswer={ADD_FORBIDDEN} addRefused />;
 }
+RefusedAttach.door = "djb_note-create";
 // golden: attach end
 
 // golden: merge begin
@@ -828,4 +871,6 @@ export function RefusedAttach() {
 export function ArrivedAfterMerge() {
     return <WidgetRecord state={{ kind: "ready", data: ADMIN_ROWING }} landOnName />;
 }
+// Walked alone: it lands focus on its name as it renders, which a second story on the page would take.
+ArrivedAfterMerge.alone = true;
 // golden: merge end

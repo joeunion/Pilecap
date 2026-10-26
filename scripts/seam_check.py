@@ -1,8 +1,8 @@
-"""The seam pre-flight's worker: verify a brief's `module:callable(fragment)` claims.
+"""The seam pre-flight: verify a brief's `module:callable(fragment)` claims against a checkout.
 
-Run by `scripts/seam_check.sh`, which owns the flags, the pipe refusal, the root
-and the interpreter. This file owns one question only: for each claim, does the
-baseline tree actually have that callable, with those parameters?
+`scripts/seam_check.sh` refuses a pipe and execs this; this file owns the flags, the root and
+its interpreter (it re-execs under the root's `.venv`) and the one question: does the tree have
+that callable, with those parameters?
 
 NOT EXECUTABLE, AND THAT IS THE DECLARATION, not an oversight — the same one
 `scripts/secrets_scan.sh` makes. This module reports its verdict to whoever ran
@@ -76,9 +76,42 @@ import importlib.util
 import inspect
 import os
 import re
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
+
+
+def _could_not_look() -> type[Exception]:
+    """The shared could-not-look class, imported without leaving this checkout's `apps` behind.
+
+    `quality/could_not_look.py` marks its class with `apps.core.roads.road`, so
+    importing it imports `apps` — from THIS file's checkout. This program then
+    imports claims from `--root`, which may be another checkout (a baseline), and
+    a cached `apps` package would answer those imports from the wrong tree. So
+    the root goes on `sys.path` for this one import and comes off again, and
+    every `apps` / `quality` module the import cached is evicted except the one
+    this program keeps. A claim that names `quality.could_not_look` itself is
+    read from this checkout — the one declared cost.
+    """
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    before = set(sys.modules)
+    added = root not in sys.path
+    if added:
+        sys.path.insert(0, root)
+    try:
+        from quality.could_not_look import CouldNotLook
+    finally:
+        if added:
+            sys.path.remove(root)
+        for name in set(sys.modules) - before:
+            if name.split(".", 1)[0] in ("apps", "quality") and name != "quality.could_not_look":
+                del sys.modules[name]
+    return CouldNotLook
+
+
+CannotCheck = _could_not_look()
 
 # The two package roots whose modules need Django's app registry populated
 # before they can be imported at all. `apps.*` is the obvious half; `config.*`
@@ -107,10 +140,6 @@ class Verdict(Enum):
     PROVEN = "PROVEN"
     DISPROVEN = "DISPROVEN"
     CANNOT_CHECK = "CANNOT CHECK"
-
-
-class CannotCheck(Exception):
-    """This claim could not be looked at. Never a judgement on the claim."""
 
 
 class Disproven(Exception):
@@ -493,46 +522,107 @@ def report(claims: list[Claim], root: str, importer: Importer, verbose: bool) ->
 # --- entry --------------------------------------------------------------------
 
 
+USAGE = """usage: seam_check.sh [--root DIR] [--settings MODULE] [--claims FILE] [--verbose] \\
+                     [CLAIM ...]
+  CLAIM         module.path:callable(fragment)   — the fragment may be empty
+                module.path:Class.method(fragment)
+  --claims FILE one claim per line; `#` starts a comment; `-` reads stdin
+  --root DIR    the checkout to import FROM (default: this script's checkout)
+  --settings M  DJANGO_SETTINGS_MODULE for claims under apps/ or config/
+  --verbose     also print each PROVEN claim with the signature it resolved to
+exit: 0 all proven · 1 a claim is false · 2 could not look (2 outranks a pass)"""
+
+NOTHING_JUDGED = "Nothing was checked; no claim was judged."
+
+
+def _refuse(sentence: str) -> int:
+    print(f"!! seam_check: {sentence}\n   {NOTHING_JUDGED}", file=sys.stderr)
+    return 2
+
+
+def _claims_file(src: str) -> list[str] | None:
+    """The claims a `--claims` file holds, comments and blanks dropped; None when unreadable."""
+    try:
+        text = sys.stdin.read() if src == "-" else Path(src).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    kept = (line.split("#", 1)[0].strip() for line in text.splitlines())
+    return [claim for claim in kept if claim]
+
+
+def _root_environment(root: str) -> None:
+    """The tree line, and the checkout's derived DATABASE_NAME (scripts/db.sh) for its settings."""
+    git = ["git", "-C", root, "rev-parse", "--short", "HEAD"]
+    tree = subprocess.run(git, capture_output=True, text=True)
+    os.environ["SEAM_CHECK_TREE"] = (
+        tree.stdout.strip() if tree.returncode == 0 else "(not a git checkout)"
+    )
+    if not os.environ.get("DATABASE_NAME") and Path(root, "scripts/db.sh").is_file():
+        name = subprocess.run(
+            ["bash", "-c", '. scripts/db.sh >/dev/null 2>&1; printf %s "${DATABASE_NAME:-}"'],
+            cwd=root,
+            capture_output=True,
+            text=True,
+        )
+        if name.stdout:
+            os.environ["DATABASE_NAME"] = name.stdout
+
+
 def main(argv: list[str]) -> int:
-    root = ""
+    root = str(Path(__file__).resolve().parent.parent)
     settings = DEFAULT_SETTINGS
     verbose = False
     raws: list[str] = []
     it = iter(argv)
     for arg in it:
-        if arg == "--root":
-            root = next(it, "")
-        elif arg == "--settings":
-            settings = next(it, "")
-        elif arg == "--verbose":
+        if arg in ("-h", "--help"):
+            print(USAGE)
+            return 0
+        if arg in ("--root", "--settings", "--claims"):
+            value = next(it, "")
+            if not value:
+                return _refuse(f"{arg} needs a value.")
+            if arg == "--root":
+                root = value
+            elif arg == "--settings":
+                settings = value
+            else:
+                read = _claims_file(value)
+                if read is None:
+                    return _refuse(f"--claims {value}: no such readable file.")
+                raws.extend(read)
+        elif arg in ("--verbose", "-v"):
             verbose = True
         elif arg == "--":
-            # Everything after is a claim, however it is spelled. A claim
-            # beginning with a dash is not a flag this reader guessed wrong
-            # about.
             raws.extend(it)
             break
+        elif arg.startswith("-"):
+            return _refuse(f"unknown option '{arg}' — `--help` names the flags.")
         else:
             raws.append(arg)
 
-    if not root or not settings:
-        # The wrapper always supplies both; reaching here means this file was
-        # run by hand under an interpreter nobody vouched for.
-        print(
-            "!! seam_check.py is seam_check.sh's body, not a command: it needs --root and "
-            "--settings and the right venv. Run scripts/seam_check.sh.",
-            file=sys.stderr,
+    if not Path(root).is_dir():
+        return _refuse(f"--root {root} is not a directory.")
+    root = str(Path(root).resolve())
+    py = Path(root, ".venv/bin/python")
+    if not py.is_file():
+        return _refuse(
+            f"{root} has no .venv/bin/python — the claims are imported through the BASELINE "
+            "CHECKOUT'S OWN venv and no other. Run `uv sync` (or ./scripts/setup.sh) there first."
         )
+    # The claims are imported through the root's own interpreter: re-exec under it, once.
+    under_root = Path(sys.prefix).resolve() == Path(root, ".venv").resolve()
+    if not under_root and not os.environ.get("SEAM_CHECK_REEXEC"):
+        os.environ["SEAM_CHECK_REEXEC"] = "1"
+        os.execv(str(py), [str(py), str(Path(__file__).resolve()), *argv])  # noqa: S606 — re-execs this script under the venv's interpreter, fixed paths
+    if not raws:
+        print(f"!! no claims were given — checking nothing is no pass.\n{USAGE}", file=sys.stderr)
         return 2
 
+    os.chdir(root)
+    _root_environment(root)
     if root not in sys.path:
         sys.path.insert(0, root)
-
-    if not raws:
-        # Cannot happen through the wrapper, which refuses an empty claim set
-        # itself. Held here too: a run that checked nothing must never exit 0.
-        print("!! no claims were given — a check of nothing is not a pass.", file=sys.stderr)
-        return 2
 
     importer = Importer(root=root, settings=settings)
     claims: list[Claim] = []

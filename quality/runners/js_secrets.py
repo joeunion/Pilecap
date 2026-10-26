@@ -35,7 +35,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from quality.runners._kindscope import skip_dirs as _kind_skip_dirs  # noqa: E402
+from quality.runners import _kindscope  # noqa: E402
 
 #: The suffixes a browser tree's own source carries. Data files and stylesheets
 #: are out of this instrument's population and stay in its blind spots below.
@@ -48,7 +48,6 @@ SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
 #: could disagree. `Path.cwd()` is the checkout root: `quality/check_v1.py`'s
 #: `invoke()` always runs a runner with `cwd=<the real tree root>`, self-test
 #: plants included — never a copy.
-SKIP_DIRS = _kind_skip_dirs(Path.cwd(), "js")
 
 #: The credential-shaped name. `*_hash` and `*Hash` are excluded for the reason
 #: the field-policy rule excludes them: a hash is the artefact that exists so
@@ -100,18 +99,6 @@ def _is_fetch_credentials_mode(name: str, value: str) -> bool:
     return name.lower() == "credentials" and value in FETCH_CREDENTIALS_MODES
 
 
-def files_under(root: Path) -> list[Path]:
-    out: list[Path] = []
-    if not root.is_dir():
-        return out
-    for path in sorted(root.rglob("*")):
-        if SKIP_DIRS & set(path.parts):
-            continue
-        if path.is_file() and path.suffix in SUFFIXES:
-            out.append(path)
-    return out
-
-
 def findings_in(path: Path, rel: str) -> list[dict]:
     found: list[dict] = []
     try:
@@ -152,7 +139,7 @@ def main(argv: list[str]) -> int:
     findings: list[dict] = []
     scanned = 0
     for root in roots:
-        for path in files_under(root):
+        for path in _kindscope.files_under(root, SUFFIXES):
             scanned += 1
             findings.extend(findings_in(path, str(path)))
     print(

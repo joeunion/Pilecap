@@ -1,0 +1,25 @@
+# The object store a throwaway envelope box gives the drive's file legs; scripts/envelope.sh is its one caller.
+#
+# Overlaid on deploy/compose.yaml (--profile laptop) on a verifier box only. A real environment's
+# media is S3 behind an instance role; this box has neither, so the files mix would refuse at
+# `prepare`. The credentials are generated per box by scripts/envelope.sh into deploy/.env.
+services:
+  minio:
+    # pin-exception: the root compose.yaml's own MinIO pin, read off it by scripts/envelope.sh; the box is arm64.
+    image: ${DJB_ENVELOPE_MINIO_IMAGE:?scripts/envelope.sh reads the minio image off compose.yaml}
+    platform: linux/arm64
+    command: ["server", "/data"]
+    environment:
+      MINIO_ROOT_USER: ${AWS_ACCESS_KEY_ID:?scripts/envelope.sh writes the box's object-store key}
+      MINIO_ROOT_PASSWORD: ${AWS_SECRET_ACCESS_KEY:?scripts/envelope.sh writes the box's object-store secret}
+      MINIO_UPDATE: "off"
+    volumes:
+      - envelope_minio:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+volumes:
+  envelope_minio:

@@ -21,17 +21,19 @@ the criteria say a raw create is legal until they land.
 
 from __future__ import annotations
 
+import asyncio
+import importlib
+import inspect
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any
 from uuid import UUID
 
 import pytest
 from django.contrib.auth.models import Permission as DjangoPermission
 from django.contrib.contenttypes.models import ContentType
 from django.test import Client
-from mcp.server import MCPServer
-from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 
 from apps.accounts.models import User
@@ -40,7 +42,7 @@ from apps.core import bridge
 from apps.core.actor import Actor, actor_for, system_actor
 from apps.core.authz import refusal_sentence
 from apps.core.exceptions import Conflict, Forbidden, NotFound, refusal_message
-from apps.core.mcp import SCOPE_KEY, Principal, register
+from apps.core.mcp import register
 from apps.core.models import Grant, Invitation, Membership, Organization, Tenant
 from apps.core.selectors import (
     get_invitation,
@@ -58,11 +60,13 @@ from apps.core.services import (
     root_organization,
     set_role,
 )
+from apps.core.tests.mcp_context import context_for
+from apps.core.tests.mcp_context import tool as core_tool
 
 pytestmark = pytest.mark.django_db
 
 JSON = "application/json"
-PASSWORD = "reads-ask-pass-1234"  # pragma: allowlist secret
+PASSWORD = "reads-ask-pass-1234"  # noqa: S105 — a throwaway password a test user is made with  # pragma: allowlist secret
 
 
 # --- the world ----------------------------------------------------------------
@@ -246,29 +250,9 @@ def test_the_system_actor_reads_everything_the_scope_shows(reads: Reads) -> None
 # --- PR1.3 · both doors, the same words ---------------------------------------
 
 
-@dataclass
-class _FakeRequest:
-    scope: dict[str, Any]
-
-
-@dataclass
-class _FakeRequestContext:
-    request: _FakeRequest
-
-
-def context_for(user: User, tenant: Tenant, org: Organization) -> Context[Any]:
-    """The context a tool sees, with the principal the middleware would have left."""
-    scope = {SCOPE_KEY: Principal(user=user, tenant=tenant, org=org)}
-    return Context(
-        request_context=cast(Any, _FakeRequestContext(request=_FakeRequest(scope=scope)))
-    )
-
-
 def tool(name: str) -> Callable[..., Any]:
-    server: MCPServer[Any] = MCPServer(name="test", version="1")
-    register(server)
-    found: Callable[..., Any] = cast(Any, server._tool_manager._tools[name]).fn  # noqa: SLF001
-    return found
+    """`core`'s own tool `name` — `apps.core.tests.mcp_context.tool` over core's register."""
+    return core_tool(name, register=register)
 
 
 def test_a_withheld_read_is_forbidden_on_the_wire_and_the_twin_says_the_same(
@@ -483,3 +467,251 @@ def test_a_write_door_pays_the_read_once(reads: Reads, django_assert_num_queries
             membership_id=reads.inside_membership.pk,
             actor=actor,
         )
+
+
+# --- every kind, both doors: a withheld read is refused in the same words ------
+#
+# The generic form of the withheld-read parity case each app carries in its
+# own door-parity module. The
+# population is DERIVED — every kind in `authz.kind_registry()` — and a kind
+# answers when the REST door mounts its list (`<plural>-list`, a GET with no path
+# parameter) and the MCP door registers that list's twin (the tool whose
+# published description is the route's contract, the pairing the scope
+# derivation uses). A kind with no such pair is SKIPPED with the reason, so the
+# run says how many kinds it judged and why the rest were not.
+
+
+def _list_operation(kind: str) -> tuple[str, Any] | None:
+    """The kind's mounted list — `(url_name, operation)` — or `None`."""
+    from apps.core.api.mount import bound_operations
+    from apps.core.verbs import _list_forms
+
+    mounted = {name: (path, op) for path, name, op in bound_operations() if name}
+    for name in _list_forms(kind):
+        found = mounted.get(name)
+        if found is not None and "{" not in found[0] and "GET" in found[1].methods:
+            return name, found[1]
+    return None
+
+
+def _required_query(operation: Any) -> list[str]:
+    """The `?name=` parameters this list REQUIRES — a list that cannot be asked bare."""
+    required: list[str] = []
+    for model in getattr(operation, "models", None) or []:
+        if getattr(model, "__ninja_param_source__", None) != "query":
+            continue
+        for name, field in getattr(model, "model_fields", {}).items():
+            nested = getattr(field.annotation, "model_fields", None)
+            if isinstance(nested, dict):
+                required.extend(n for n, f in nested.items() if f.is_required())
+            elif field.is_required():
+                required.append(name)
+    return sorted(required)
+
+
+def _twin_tool(operation: Any) -> Any | None:
+    """The MCP tool whose published description is this route's contract, or `None`."""
+    from apps.core.api.docs import contract_of
+    from config.mcp import server
+
+    contract = contract_of(operation.view_func)
+    return next(
+        (t for t in server._tool_manager.list_tools() if contract and t.description == contract),  # noqa: SLF001
+        None,
+    )
+
+
+def _registered_kinds() -> list[str]:
+    from apps.core.authz import kind_registry
+
+    return sorted(kind_registry())
+
+
+@pytest.mark.parametrize("kind", _registered_kinds())
+def test_both_doors_refuse_a_withheld_read_of_every_kind_in_the_same_words(
+    kind: str, api: Client, tenant: Tenant, owner: User
+) -> None:
+    """A member whose `<kind>.read` is withheld is refused by the list on both doors, alike."""
+    import asyncio
+    import inspect
+
+    from django.urls import reverse
+
+    listed = _list_operation(kind)
+    if listed is None:
+        pytest.skip(f"{kind}: the REST door mounts no list for this kind")
+    url_name, operation = listed
+    required = _required_query(operation)
+    if required:
+        pytest.skip(f"{kind}: {url_name} takes a required query ({', '.join(required)})")
+    twin = _twin_tool(operation)
+    if twin is None:
+        pytest.skip(f"{kind}: {url_name} has no MCP twin")
+
+    root = root_organization(tenant=tenant)
+    reader = create_user(email=f"withheld-{kind}@example.com", password=PASSWORD)
+    membership = add_membership(
+        user=reader,
+        tenant=tenant,
+        organization=root,
+        role=Membership.Role.MEMBER,
+        actor=system_actor(tenant=tenant),
+    )
+    key = f"{kind}.read"
+    withhold(membership, key)
+    api.force_login(reader)
+
+    response = api.get(reverse(f"api:{url_name}"), headers={"x-tenant": tenant.slug})
+    assert response.status_code == 403, (url_name, response.content)
+    body = response.json()
+    assert body["code"] == "forbidden", body
+    assert body["detail"] == refusal_sentence(key), body
+
+    try:
+        answered = twin.fn(context_for(reader, tenant, root))
+    except TypeError as needs_arguments:
+        pytest.skip(f"{kind}: {twin.name} takes required arguments ({needs_arguments})")
+    except ToolError as refused:
+        assert str(refused) == refusal_message(body), twin.name
+    else:
+        if inspect.iscoroutine(answered):
+            with pytest.raises(ToolError) as refused_async:
+                asyncio.run(answered)
+            assert str(refused_async.value) == refusal_message(body), twin.name
+        else:
+            pytest.fail(f"{twin.name} answered a withheld read: {answered!r}")
+
+
+# --- every row-addressed GET of a kind: the same refusal, both doors ----------
+
+
+def _owner_of(noun: str, kinds: list[str]) -> str | None:
+    """The registered kind a url noun names — the kind itself, or its plural."""
+    from apps.core.verbs import plural
+
+    return next((k for k in kinds if noun in (k, plural(k))), None)
+
+
+def _row_operations() -> list[tuple[str, str, str, str]]:
+    """`(kind, url_name, path, param)` for every GET addressing ONE row of a kind by one path id.
+
+    The kind is the url noun's, else `<kind>_<sub>`'s, else the path id's (a file's versions).
+    """
+    from apps.core.api.mount import bound_operations
+
+    kinds = _registered_kinds()
+    found: list[tuple[str, str, str, str]] = []
+    for path, name, operation in bound_operations():
+        params = re.findall(r"\{([^}]+)\}", path)
+        if not name or "GET" not in operation.methods or len(params) != 1:
+            continue
+        noun, param = name.rsplit("-", 1)[0], params[0]
+        stem = param.removesuffix("_id")
+        kind = (
+            _owner_of(noun, kinds)
+            or max((k for k in kinds if noun.startswith(f"{k}_")), key=len, default=None)
+            or (stem if stem in kinds else None)
+        )
+        if kind is None:
+            continue
+        if param.endswith("_id") and not (kind == stem or kind.endswith(f"_{stem}")):
+            continue
+        found.append((kind, name, path, param))
+    return sorted(found)
+
+
+def _seed_rows(*, tenant: Tenant, owner: User) -> None:
+    """One row of each kind the census can make through a real service, at the root."""
+    from django.apps import apps as django_apps
+
+    actor = actor_for(user=owner, tenant=tenant, org=root_organization(tenant=tenant))
+    if not django_apps.is_installed("apps.example"):
+        return
+    widget = importlib.import_module("apps.example.services").create_widget(
+        tenant=tenant, actor=actor, name="census-widget"
+    )
+    for label in ("djb_notes", "djb_tags", "files"):
+        if django_apps.is_installed(f"apps.{label}"):
+            specimen = importlib.import_module(f"apps.{label}.tests.attach_specimen")
+            specimen.attach(tenant=tenant, actor=actor, subject=widget)
+    if django_apps.is_installed("apps.exports"):
+        importlib.import_module("apps.exports.services").create_export(tenant=tenant, actor=actor)
+
+
+def _row_of(kind: str, tenant: Tenant) -> Any | None:
+    from apps.core.authz import kind_registry
+
+    model = kind_registry()[kind]
+    if not any(f.name == "tenant" for f in model._meta.get_fields()):
+        return None
+    return model._default_manager.filter(tenant=tenant).order_by("pk").first()
+
+
+@pytest.mark.parametrize(
+    ("kind", "url_name", "path", "param"),
+    _row_operations(),
+    ids=[f"{kind}:{name}" for kind, name, _, _ in _row_operations()],
+)
+def test_both_doors_refuse_a_withheld_read_of_every_row_form_in_the_same_words(
+    kind: str, url_name: str, path: str, param: str, api: Client, tenant: Tenant, owner: User
+) -> None:
+    """A member whose `<kind>.read` is withheld is refused a row's detail-shaped GETs, alike."""
+    from django.urls import reverse
+
+    from apps.core.api.mount import bound_operations
+
+    _seed_rows(tenant=tenant, owner=owner)
+    row = _row_of(kind, tenant)
+    if row is None:
+        pytest.skip(f"{kind}: no row of this kind in the seeded world")
+    value = str(row.pk) if param == "id" or param.endswith("_id") else str(getattr(row, param))
+    operation = next(op for _, name, op in bound_operations() if name == url_name)
+    required = _required_query(operation)
+    if required:
+        pytest.skip(f"{kind}: {url_name} takes a required query ({', '.join(required)})")
+
+    root = root_organization(tenant=tenant)
+    reader = create_user(email=f"withheld-row-{url_name}@example.com", password=PASSWORD)
+    membership = add_membership(
+        user=reader,
+        tenant=tenant,
+        organization=root,
+        role=Membership.Role.MEMBER,
+        actor=system_actor(tenant=tenant),
+    )
+    key = f"{kind}.read"
+    withhold(membership, key)
+    api.force_login(reader)
+
+    response = api.get(
+        reverse(f"api:{url_name}", kwargs={param: value}), headers={"x-tenant": tenant.slug}
+    )
+    assert response.status_code == 403, (url_name, response.content)
+    body = response.json()
+    assert body["code"] == "forbidden", body
+    assert body["detail"] == refusal_sentence(key), body
+
+    twin = _twin_tool(operation)
+    if twin is None:
+        return
+    arguments = {param: value} if param in twin.parameters.get("properties", {}) else None
+    if arguments is None:
+        pytest.fail(f"{twin.name} does not take `{param}` — the twin's argument is named apart")
+    try:
+        answered = twin.fn(context_for(reader, tenant, root), **arguments)
+    except ToolError as refused:
+        assert str(refused) == refusal_message(body), twin.name
+    else:
+        if inspect.iscoroutine(answered):
+            with pytest.raises(ToolError) as refused_async:
+                asyncio.run(answered)
+            assert str(refused_async.value) == refusal_message(body), twin.name
+        else:
+            pytest.fail(f"{twin.name} answered a withheld read: {answered!r}")
+
+
+def test_the_row_form_census_judges_more_than_the_lists() -> None:
+    """The population is derived and non-trivial: detail, history and download forms are in it."""
+    names = {name for _, name, _, _ in _row_operations()}
+    assert {"widget-detail", "version-list", "export-download", "organization-detail"} <= names
+    assert "grant-list" not in names, "a list under another row's id is that row's, not this kind's"

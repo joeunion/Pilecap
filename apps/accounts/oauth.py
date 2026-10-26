@@ -24,9 +24,9 @@ token from the same issuer opens. All five of these are load-bearing:
   is the check people leave out, and `ZITADEL_MCP_AUDIENCE` empty means the
   OAuth door is **off** rather than open;
 * **expiry**, and `nbf` if present — pyjwt enforces both once asked;
-* **the subject resolves to somebody here** — `sub` → `User.zitadel_sub`, the
-  one join W2-R3 wrote. A valid token for a person this deployment has never
-  seen authenticates nobody.
+* **the subject resolves to somebody here** — `sub` → the identity join
+  (`SsoIdentity`, one row per realm a person holds a subject in). A valid
+  token for a person this deployment has never seen authenticates nobody.
 
 ## What is deliberately NOT in the token
 
@@ -58,10 +58,11 @@ import jwt
 from django.conf import settings
 from django.http import HttpRequest, JsonResponse
 
-from apps.accounts.models import User
+from apps.accounts.models import SsoIdentity, User
 from apps.core.log import get_logger
 from apps.core.middleware import resolve_tenant
 from apps.core.models import Tenant
+from apps.core.surfaces import Surface, surface_base_urls
 
 log = get_logger(__name__)
 
@@ -74,7 +75,7 @@ ALGORITHMS = ["RS256"]
 # RFC 6750's error code for "the token is bad in some way". Deliberately the
 # only one used: telling a caller *which* of signature, audience, issuer or
 # expiry failed is telling an attacker which half of a forgery worked.
-ERROR_INVALID_TOKEN = "invalid_token"
+ERROR_INVALID_TOKEN = "invalid_token"  # noqa: S105 — the RFC 6750 error code a refused bearer token answers
 
 # RFC 9728. The path a 401 points at, so a client can discover the
 # authorization server without being told out of band.
@@ -238,7 +239,9 @@ def claims(token: str) -> dict[str, Any]:
     return decoded
 
 
-def authenticate_bearer(*, token: str, requested_slug: str | None = None) -> OAuthPrincipal:
+def authenticate_bearer(
+    *, token: str, requested_slug: str | None = None, surface: Surface | None = None
+) -> OAuthPrincipal:
     """A validated access token, resolved to a person and a tenant here.
 
     Raises `OAuthRefused` for everything: a bad token and a good token for
@@ -246,23 +249,28 @@ def authenticate_bearer(*, token: str, requested_slug: str | None = None) -> OAu
     a caller cannot use the door to find out which accounts exist.
 
     The tenant is resolved **exactly** as it is for a session and for an
-    `ApiToken` with no pin — from memberships, honouring `X-Tenant` — because a
-    door that resolved it differently would be a door that could see something
-    the others cannot. A person with no membership resolves to `None`, and
-    tenancy failing closed is what turns that into "the tools refuse", not a
-    500.
+    `ApiToken` with no pin — from memberships, honouring `X-Tenant`, under the
+    SURFACE the door resolved (its tenant rule and the roles it admits) —
+    because a door that resolved it differently would be a door that could see
+    something the others cannot.
+
+    The subject resolves through the identity join: a platform subject is one
+    account, so the row it names is the person, whichever realm asserted it.
+    A person with no membership resolves to `None`, and tenancy failing closed
+    is what turns that into "the tools refuse", not a 500.
     """
     decoded = claims(token)
     subject = str(decoded.get("sub") or "")
     if not subject:
         raise OAuthRefused("That access token names no subject.")
 
-    user = User.objects.filter(zitadel_sub=subject, is_active=True).first()
+    joined = SsoIdentity.objects.of_subject(subject)
+    user = joined.user if joined is not None and joined.user.is_active else None
     if user is None:
         log.info("accounts.oauth.unknown_subject")
         raise OAuthRefused("That access token is not valid for this resource.")
 
-    tenant = resolve_tenant(user=user, requested_slug=requested_slug)
+    tenant = resolve_tenant(user=user, requested_slug=requested_slug, surface=surface)
     return OAuthPrincipal(user=user, tenant=tenant, subject=subject)
 
 
@@ -277,13 +285,13 @@ def authenticate_bearer(*, token: str, requested_slug: str | None = None) -> OAu
 
 def metadata_url() -> str:
     """Absolute, because it goes in a header a client will fetch from elsewhere."""
-    base = str(getattr(settings, "PUBLIC_BASE_URL", "")).rstrip("/")
+    base = surface_base_urls()[0]
     return f"{base}{METADATA_PATH}"
 
 
 def resource_url() -> str:
     """The resource this metadata is about: the MCP endpoint itself."""
-    base = str(getattr(settings, "PUBLIC_BASE_URL", "")).rstrip("/")
+    base = surface_base_urls()[0]
     return f"{base}/mcp"
 
 

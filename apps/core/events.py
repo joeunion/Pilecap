@@ -22,20 +22,13 @@ They share a prefix because they are about the same rows; nothing reads both,
 and no name appears in both lists. ADR core-26 names this collision as its own
 trigger, so the note lives here rather than in a commit message.
 
-**The payload shape, v1, for every name below.** A flat JSON object carrying
-`tenant_id` always; `organization_id` (the membership's node) on the membership
-and grant names, which is rule 38's shape — an event about a row one PART of a
-tenant owns says which part; and then the fact itself: `role_key` for the role
-names, `membership_id` + `permission` + `effect` for the grant names, `role` for
-the membership name. The schemas that will carry these over the wire are P5's
-(`RoleOut`, `GrantOut`); until they exist the payload is assembled in
-`services.py` beside the write, and the fields above are the contract.
+Each payload is the row's `Out` through `event_payload`, at v1 (ADR core-26, rule 87).
 """
 
 from __future__ import annotations
 
-#: A tenant made a role of its own. `role_key` is the immutable half (§D10), so
-#: a subscriber joins on it and a later rename moves nothing.
+#: A tenant made a role of its own. `key` is the immutable half (§D10), so a
+#: subscriber joins on it and a later rename moves nothing.
 ROLE_CREATED = "core.role.created"
 
 #: Either half of a role changed: its display name and description

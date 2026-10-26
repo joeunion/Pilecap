@@ -1,12 +1,4 @@
-"""The archive adoption's own test — copied with the adoption, and green on the copy.
-
-Every line of this module is fenced `golden: archive`, so a product that copies
-the worked example's archive blocks onto its own noun gets this file too, with
-the one rename applied, and it passes there as it passes here. It builds its
-rows by hand rather than through the example's create service, because the
-create service is the example's own business and is not part of what a product
-copies to adopt archive.
-"""
+"""The archive adoption's own test — copied with the adoption, and green on the copy."""
 
 # golden: archive begin
 import json
@@ -15,12 +7,12 @@ from typing import Any
 import pytest
 from django.test import Client
 
-from apps.accounts.models import User
-from apps.core.actor import Actor, system_actor
-from apps.core.exceptions import Forbidden
-from apps.core.models import Organization, Tenant
 from apps.example.models import Widget
 from apps.example.services import archive_widget, restore_widget
+from pilecap import Actor, Forbidden
+from pilecap.accounts import User
+from pilecap.tenancy import Organization, Tenant
+from pilecap.testing import system_actor
 
 pytestmark = pytest.mark.django_db
 

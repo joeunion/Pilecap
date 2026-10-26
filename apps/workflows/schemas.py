@@ -20,7 +20,7 @@ from uuid import UUID
 from ninja import FilterLookup, FilterSchema, Schema
 from pydantic import ConfigDict, Field
 
-from apps.core.schemas import ListPage, example
+from apps.core.schemas import ListPage, example, personal
 
 
 class WorkflowRunFilter(FilterSchema):
@@ -82,7 +82,7 @@ class WorkflowRunOut(Schema):
     #: than a person. A run with no recorded starter is nobody's own run and is
     #: never replayable.
     started_by_id: UUID | None
-    started_by_email: str = Field(json_schema_extra=example("dana@example.com"))
+    started_by_email: str = Field(json_schema_extra=personal(example("dana@example.com")))
     created_at: datetime
 
 

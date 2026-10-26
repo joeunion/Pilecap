@@ -32,7 +32,7 @@ pytestmark = pytest.mark.django_db
 NOTES_URL = "/api/v1/djb_notes/"
 NOTE_URL = "/api/v1/djb_notes/{}/"
 JSON = "application/json"
-PASSWORD = "a-long-enough-password"  # pragma: allowlist secret
+PASSWORD = "a-long-enough-password"  # noqa: S105 — a throwaway password a test user is made with  # pragma: allowlist secret
 
 
 @dataclass

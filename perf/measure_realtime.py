@@ -1,6 +1,6 @@
 """The socket door at scale: what a connect costs, and who hears a push.
 
-Rung M4 (cycle P3). Owns this module and `quality/perf-realtime-measurement.md`;
+Rung M4 (cycle P3). Owns this module and the retired `perf-realtime-measurement.md`;
 writes nothing in `apps/`. Every instrument is `perf/measure.py`'s — query
 counts, EXPLAIN plan shapes, doubling comparators — plus one more of the same
 family that this door needs and no other does: **channel-layer counts** (group
@@ -192,7 +192,7 @@ def narrows_by_a_path_index(plan: str) -> bool:
 # **F1e moved the flip and this number deliberately did not follow it.** Before
 # F1e the narrowing was lost at 16% of a tenant (the wide hat at S); with the
 # tenant-local composite in place the same hat narrows, and the flip now sits
-# somewhere between 16% and 27.6% (`quality/perf-realtime-measurement.md` §5).
+# somewhere between 16% and 27.6% (the retired `perf-realtime-measurement.md` §5).
 # Raising the ceiling to the new measured flip would make the assertion a fact
 # about one seeded world again — the mistake M4 declined to make in the other
 # direction. It stays below every measured flip in every world, so it asserts

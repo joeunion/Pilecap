@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from quality.runners._kindscope import skip_dirs as _kind_skip_dirs  # noqa: E402
+from quality.runners import _kindscope  # noqa: E402
 
 SRC_ROOT = ("frontend", "src")
 TOKENS_LAYER = ("frontend", "src", "tokens")
@@ -214,26 +214,12 @@ def inline_decls(text: str, wanted: frozenset[str]) -> list[Decl]:
     return out
 
 
-def files_under(root: Path) -> list[Path]:
-    skip = _kind_skip_dirs(Path.cwd(), "js")
-    out: list[Path] = []
-    if not root.is_dir():
-        return out
-    for path in sorted(root.rglob("*")):
-        if skip & set(path.parts):
-            continue
-        if path.is_file() and path.suffix in SUFFIXES:
-            if path.parts[: len(SRC_ROOT)] == SRC_ROOT:
-                out.append(path)
-    return out
-
-
 def population(roots: list[str], inline_props: frozenset[str]) -> list[Sheet]:
     """Every stylesheet and script under `frontend/src/`, read."""
     sheets: list[Sheet] = []
     seen: set[Path] = set()
     for root in roots:
-        for path in files_under(Path(root)):
+        for path in _kindscope.files_under(Path(root), SUFFIXES, under=SRC_ROOT):
             if path in seen:
                 continue
             seen.add(path)

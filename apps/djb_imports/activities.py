@@ -1,26 +1,6 @@
-"""Where this app touches the world: the file's bytes, the rows, the sweep.
+"""Where this app touches the world: the file's bytes, the rows, the sweep (rules 9, 10).
 
-Everything non-deterministic is here rather than in `workflows.py` (house rule
-9), and every write goes through a service (house rule 10). **Plain `def`**, like
-every activity in this repository, closing stale connections at both ends.
-
-**The bytes come through the files seam's server-side stream**,
-`files.storage.iter_object` — the one module that reaches the object store (house
-rule 48) streams them to this activity's parser, and no door ever sees them.
-The parser is stdlib `csv` over an incremental UTF-8 decoder, so a file is read
-once, in chunks, and never whole into one string.
-
-Four activities:
-
-* `check_import` — the dry run: read, parse, judge, write the preview (no noun
-  write), or refuse the whole file (`import_invalid`) and say so on the run;
-* `apply_import_rows` — the apply, in chunks, **heartbeating per row**: a worker
-  killed mid-apply stops heartbeating, Temporal hands the activity to another
-  worker within the heartbeat timeout, and the retry starts at the first row
-  with no outcome — each row was settled in one transaction with its outcome,
-  so nothing is applied twice;
-* `record_import_failure` — what the workflow calls once retries are spent;
-* `purge_expired_imports` — the retention sweep the schedule starts.
+The bytes stream through `files.storage.iter_object` (rule 48) into `csv`, never whole into memory.
 """
 
 from __future__ import annotations
@@ -34,19 +14,12 @@ from uuid import UUID
 
 from django.db import close_old_connections
 from temporalio import activity
-from temporalio.client import (
-    Schedule,
-    ScheduleActionStartWorkflow,
-    ScheduleIntervalSpec,
-    ScheduleOverlapPolicy,
-    SchedulePolicy,
-    ScheduleSpec,
-)
+from temporalio.exceptions import CancelledError
 
-from apps.core.actor import Actor, actor_for, system_actor
-from apps.core.exceptions import DomainError, wire_refusal
+from apps.core.context import current_actor
+from apps.core.exceptions import DomainError, RunFailed, remedies_for_noun, wire_refusal
 from apps.core.log import get_logger
-from apps.core.schedules import ScheduleDeclaration
+from apps.core.schedules import ScheduleDeclaration, daily_purge
 from apps.core.time import now
 from apps.djb_imports import services
 from apps.djb_imports.models import IMPORT_RETENTION_DAYS, MAX_IMPORT_ROWS, Import
@@ -62,7 +35,6 @@ from apps.djb_imports.types import (
     PurgeOutcome,
 )
 from apps.files import storage as files_storage
-from apps.workflows.context import workflow_context
 
 log = get_logger("apps.djb_imports.activities")
 
@@ -180,43 +152,13 @@ def _read_rows(run: Import) -> list[dict[str, Any]]:
     return rows
 
 
-# --- the actors --------------------------------------------------------------------
-
-
-def _actor_for(run: Import) -> Actor:
-    """The system, wearing the run's hat. **For this app's own writes.**"""
-    return system_actor(run.tenant, run.organization)
-
-
-def _person_for(run: Import) -> Actor:
-    """The person who pressed apply, restored off the workflow headers.
-
-    **The noun writes are theirs**, authorized as them: `kind="agent"` because
-    nobody clicked each row, and not `"system"`, because a system actor passes
-    every permission and the per-row `<kind>.create` would ask nobody.
-    """
-    _tenant, user_id, _org = workflow_context()
-    if user_id is None:
-        raise RuntimeError(
-            f"Import {run.pk} is being applied by a run that carries no acting user; an "
-            "apply writes rows as the person who pressed it, so it is refused rather "
-            "than written as nobody."
-        )
-    from django.contrib.auth import get_user_model
-
-    user = get_user_model().objects.get(pk=user_id)
-    return actor_for(user=user, tenant=run.tenant, kind="agent", org=run.organization)
-
-
 def _settled(run: Import) -> ImportSettled:
     return ImportSettled(import_id=str(run.pk), status=str(run.status), counts=run.counts)
 
 
 def _run_of(import_id: str) -> Import:
-    tenant, _user_id, org = workflow_context()
-    return get_import(
-        tenant=tenant, import_id=UUID(import_id), org=org, actor=system_actor(tenant, org)
-    )
+    actor = current_actor()
+    return get_import(tenant=actor.tenant, import_id=UUID(import_id), org=actor.org, actor=actor)
 
 
 # --- the activities --------------------------------------------------------------------
@@ -224,19 +166,16 @@ def _run_of(import_id: str) -> Import:
 
 @activity.defn(name="check_import", no_thread_cancel_exception=True)
 def check_import(payload: CheckImport) -> ImportSettled:
-    """The dry run. Read the file, judge every row, write the preview — or refuse it.
+    """The dry run: judge every row and write the preview, or fail the run with the refusal.
 
-    A file refused whole is a domain answer, not a crash: the run is marked
-    `failed` with the `import_invalid` body and the activity RETURNS, so Temporal
-    does not retry a file that will be just as wrong the next time. Idempotent:
-    a run no longer `checking` is reported as it is.
+    A file refused whole RETURNS rather than raising, so Temporal does not retry it.
     """
     close_old_connections()
     try:
         run = _run_of(payload.import_id)
         if run.status != Import.Status.CHECKING:
             return _settled(run)
-        actor = _actor_for(run)
+        actor = current_actor()
         try:
             rows = _read_rows(run)
             run = services.record_import_preview(
@@ -254,20 +193,18 @@ def check_import(payload: CheckImport) -> ImportSettled:
 
 @activity.defn(name="apply_import_rows", no_thread_cancel_exception=True)
 def apply_import_rows(payload: ApplyImport) -> ImportSettled:
-    """Apply every unsettled row, chunk by chunk, heartbeating per row; then close the run.
+    """Apply every unsettled row, heartbeating per row, then close the run; resumable, cancellable.
 
-    **Resumable**: it reads the rows with no outcome, so a retry — after a
-    worker was killed, after a deploy — starts where the last attempt stopped.
-    Each row settles in its own transaction with its outcome
-    (`services.apply_import_row`), so a row is never applied twice.
+    A retry starts at the first row with no outcome; each row settles in one transaction with it.
+    A cancel is read after each row's heartbeat and acknowledged by raising `CancelledError`.
     """
     close_old_connections()
     try:
         run = _run_of(payload.import_id)
         if run.status != Import.Status.IMPORTING:
             return _settled(run)
-        system = _actor_for(run)
-        person = _person_for(run)
+        system = current_actor()
+        person = current_actor(kind="agent")
         applied = 0
         while batch := list_unsettled_rows(
             tenant=run.tenant, import_=run, actor=system, limit=APPLY_CHUNK
@@ -276,6 +213,14 @@ def apply_import_rows(payload: ApplyImport) -> ImportSettled:
                 services.apply_import_row(tenant=run.tenant, actor=person, row=row)
                 applied += 1
                 activity.heartbeat(row.row_no)
+                if activity.is_cancelled():
+                    log.info(
+                        "djb_imports.import.apply_cancelled",
+                        import_id=str(run.pk),
+                        rows=applied,
+                        last_row=row.row_no,
+                    )
+                    raise CancelledError(f"cancelled after row {row.row_no}")
         run = services.finish_import(tenant=run.tenant, actor=system, import_=run)
         log.info("djb_imports.import.applied", import_id=str(run.pk), rows=applied)
         return _settled(run)
@@ -283,17 +228,23 @@ def apply_import_rows(payload: ApplyImport) -> ImportSettled:
         close_old_connections()
 
 
+def _run_failed(reason: str) -> RunFailed:
+    """`run_failed` for this run, its remedies' `<noun>` slot filled with the import's kind."""
+    return RunFailed(reason[:2000], remedies=remedies_for_noun(RunFailed.code, Import.authz_kind))
+
+
 @activity.defn(name="record_import_failure", no_thread_cancel_exception=True)
 def record_import_failure(payload: ImportFailed) -> str:
-    """Mark a run failed with the reason the workflow walked out of the cause chain."""
+    """Close a run `failed`: `run_failed` naming what broke, or no refusal when a cancel did."""
     close_old_connections()
     try:
         run = _run_of(payload.import_id)
         failed = services.record_import_failure(
             tenant=run.tenant,
-            actor=_actor_for(run),
+            actor=current_actor(),
             import_=run,
-            failure={"detail": payload.reason[:2000]},
+            failure={} if payload.cancelled else wire_refusal(_run_failed(payload.reason)),
+            cancelled=payload.cancelled,
         )
         return str(failed.pk)
     finally:
@@ -305,63 +256,23 @@ def purge_expired_imports(window: PurgeImports) -> PurgeOutcome:
     """Take the settled runs past their retention, through the service."""
     close_old_connections()
     try:
-        return services.purge_imports(
-            before=now() - timedelta(days=window.retention_days),
-            tenant=None,
-            actor=system_actor(),
+        swept = services.purge_imports(
+            before=now() - timedelta(days=window.retention_days), tenant=None
         )
+        return PurgeOutcome(imports=swept.count)
     finally:
         close_old_connections()
 
 
 # --- the schedule ----------------------------------------------------------------------
 
-#: Daily; the window is thirty days wide.
-PURGE_EVERY = timedelta(hours=24)
-
-#: Namespaced by task queue (ADR events-2): a schedule id is global to the
-#: Temporal namespace.
-#:
-#: NOT re-spelled with the `djb_` label, on purpose. A schedule id is state a
-#: running deployment already holds: the reconcile finds the schedule by this
-#: id and updates it in place, so a new id would leave the old schedule
-#: running beside the new one, starting the sweep twice a day for good.
-#: `legacy_ids` cannot retire it either — they are constants, and this id
-#: carries the task queue. The id is a Temporal name, not an app label.
-PURGE_SCHEDULE_PREFIX = "imports-purge-expired"
-PURGE_WORKFLOW_PREFIX = "platform:djb_imports:purge"
-
-
-def purge_schedule_id(task_queue: str) -> str:
-    """The schedule id for one deployment's import sweep."""
-    return f"{PURGE_SCHEDULE_PREFIX}:{task_queue}"
-
-
-def purge_workflow_id(task_queue: str) -> str:
-    """The id prefix of the runs the schedule starts (the server appends the time)."""
-    return f"{PURGE_WORKFLOW_PREFIX}:{task_queue}"
-
-
-def purge_imports_schedule(task_queue: str) -> Schedule:
-    """The daily sweep, as a value a test can read; the window rides the action."""
-    return Schedule(
-        action=ScheduleActionStartWorkflow(
-            PURGE_WORKFLOW,
-            PurgeImports(retention_days=IMPORT_RETENTION_DAYS),
-            id=purge_workflow_id(task_queue=task_queue),
-            task_queue=task_queue,
-        ),
-        spec=ScheduleSpec(intervals=[ScheduleIntervalSpec(every=PURGE_EVERY)]),
-        policy=SchedulePolicy(overlap=ScheduleOverlapPolicy.SKIP),
-    )
-
-
-#: The far end of `Import.lifecycle` (house rule 31): `purged_by` → the service
-#: → `purge_expired_imports` → `PurgeImportsWorkflow` → this declaration.
-PURGE_IMPORTS = ScheduleDeclaration(
+#: The far end of `Import.lifecycle` (rule 31); `platform:djb_imports:purge:<queue>`.
+PURGE_IMPORTS = daily_purge(
+    app="djb_imports",
+    noun="purge",
+    workflow=PURGE_WORKFLOW,
+    arg=PurgeImports(retention_days=IMPORT_RETENTION_DAYS),
     name="djb_imports.purge-expired",
-    schedule_id=purge_schedule_id,
-    schedule=purge_imports_schedule,
     log_prefix="djb_imports",
 )
 

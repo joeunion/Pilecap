@@ -1,36 +1,5 @@
 #!/usr/bin/env bash
-# THIS FILE IS EXECUTED, AND IT IS BASH — not POSIX sh, and not zsh. The
-# shebang above is honoured by `./this`; `sh this` and `zsh this` IGNORE it,
-# and neither of them fails where the mistake was made. Measured on this tree:
-#
-#   zsh scripts/queue_cited.sh   exit 2 blaming the TREE ("this is not a
-#                                checkout root") for zsh's word-splitting
-#   zsh scripts/kill_mine.sh     an ordinary-looking census of nothing
-#   sh  scripts/sweep.sh         "lifecycle.sh: line 152: syntax error"
-#
-# A wrong shell here does not crash. It ANSWERS, and the answer looks like the
-# tree's fault.
-#
-# TWO TESTS, because on macOS `/bin/sh` IS bash: BASH_VERSION is set under
-# `sh x.sh` and only POSIX MODE tells the two apart (SHELLOPTS carries
-# `posix`). On Linux `/bin/sh` is dash and the first test is the one that
-# fires. Neither test alone covers both machines.
-#
-# A SOURCED library must never carry this. There the interpreter is the
-# caller's ON PURPOSE and an `exit` would kill the caller's shell — the
-# argument is scripts/db.sh's, at scripts/db.sh:50-57, and it is why db.sh is
-# the one executable in this tree deliberately without a belt.
-[ -n "${BASH_VERSION:-}" ] || {
-    echo "${0##*/}: must run under bash — not sh, not zsh. Try \`bash ${0}\`." >&2
-    exit 2
-}
-case ":${SHELLOPTS:-}:" in
-*:posix:*)
-    echo "${0##*/}: bash is in POSIX mode — which is what \`sh ${0}\` does on a" >&2
-    echo "  machine whose /bin/sh is bash. Try \`bash ${0}\`." >&2
-    exit 2
-    ;;
-esac
+. "$(dirname -- "${BASH_SOURCE:-$0}")/bash_only.sh" || exit 2
 # A backup of a database, and a copy of it somewhere the database is not.
 #
 #   ./scripts/backup.sh                    # -> backups/<db>-<timestamp>.dump
@@ -99,10 +68,8 @@ usage() {
 # Exit 2 is "I could not look" — an absent tool, an unreadable file, a flag
 # nobody defined. Exit 1 is "I looked and it is wrong". The two are different
 # causes and a caller may not treat them alike (docs/product/instruments.md).
-cannot_look() {
-    echo "$*" >&2
-    exit 2
-}
+# Every exit 2 below is the seam's `gate_die`.
+. "$(dirname -- "${BASH_SOURCE[0]}")/gate_refuse.sh" || exit 2
 
 OUTPUT=""
 TO_DIR=""
@@ -111,7 +78,7 @@ STACK=""
 ENV_FILE="deploy/.env"
 
 need_value() {
-    [ -n "${2:-}" ] || cannot_look "$1 needs a value"
+    [ -n "${2:-}" ] || gate_die "" "$1 needs a value"
 }
 
 while [ $# -gt 0 ]; do
@@ -144,10 +111,10 @@ while [ $# -gt 0 ]; do
         # Never a silent default: an unknown flag is enforcement broken, exactly
         # as it is for the gate (CLAUDE.md, "a mistyped flag is never a silent
         # full run").
-        cannot_look "unknown flag ${1}. Run $0 --help."
+        gate_die "" "unknown flag ${1}. Run $0 --help."
         ;;
     *)
-        [ -z "$OUTPUT" ] || cannot_look "two output paths given: ${OUTPUT} and ${1}"
+        [ -z "$OUTPUT" ] || gate_die "" "two output paths given: ${OUTPUT} and ${1}"
         OUTPUT="$1"
         shift
         ;;
@@ -211,7 +178,7 @@ if [ -z "$PG_CLIENT_IMAGE" ]; then
     # sees and nothing can take SIGPIPE. A `| head -1` here is green on every
     # compose file anyone has driven it with and 141 on the first one big enough
     # to fill a 64 KiB pipe buffer.
-    PG_CLIENT_IMAGE="$(sed -n 's/^[[:space:]]*image:[[:space:]]*\(postgres:[^[:space:]]*\).*/\1/p' compose.yaml)"
+    PG_CLIENT_IMAGE="$(sed -n 's/^[[:space:]]*image:[[:space:]]*\(\${DJB_STACK_REGISTRY:-docker\.io}\/library\/\)\{0,1\}\(postgres:[^[:space:]]*\).*/\2/p' compose.yaml)"
     PG_CLIENT_IMAGE="${PG_CLIENT_IMAGE%%$'\n'*}"
 fi
 
@@ -219,11 +186,11 @@ BOX_HOST=""
 BOX_PORT=""
 BOX_PASSWORD=""
 if [ -n "$STACK" ]; then
-    [ -f "$ENV_FILE" ] || cannot_look "no environment file at ${ENV_FILE}: --stack needs the deployment's own env (--env-file <path>)"
+    [ -f "$ENV_FILE" ] || gate_die "" "no environment file at ${ENV_FILE}: --stack needs the deployment's own env (--env-file <path>)"
     DATABASE_NAME="$(env_value DATABASE_NAME "$ENV_FILE")" ||
-        cannot_look "no DATABASE_NAME in ${ENV_FILE}"
+        gate_die "" "no DATABASE_NAME in ${ENV_FILE}"
     POSTGRES_USER="$(env_value POSTGRES_USER "$ENV_FILE")" ||
-        cannot_look "no POSTGRES_USER in ${ENV_FILE}"
+        gate_die "" "no POSTGRES_USER in ${ENV_FILE}"
     export DATABASE_NAME POSTGRES_USER
     BOX_HOST="$(env_value DATABASE_HOST "$ENV_FILE" || true)"
     if [ -n "$BOX_HOST" ]; then
@@ -233,12 +200,12 @@ if [ -n "$STACK" ]; then
         BOX_PORT="${BOX_PORT:-5432}"
         BOX_PASSWORD="$(env_value POSTGRES_PASSWORD "$ENV_FILE" || true)"
         [ -n "$BOX_PASSWORD" ] ||
-            cannot_look "no POSTGRES_PASSWORD in ${ENV_FILE}: box mode dumps as ${POSTGRES_USER} over the network and libpq needs its password"
+            gate_die "" "no POSTGRES_PASSWORD in ${ENV_FILE}: box mode dumps as ${POSTGRES_USER} over the network and libpq needs its password"
         [ -n "$PG_CLIENT_IMAGE" ] ||
-            cannot_look "no postgres image pinned in compose.yaml and no DJB_PG_CLIENT_IMAGE set: box mode needs a version-pinned client, and guessing one is how a dump becomes unrestorable"
+            gate_die "" "no postgres image pinned in compose.yaml and no DJB_PG_CLIENT_IMAGE set: box mode needs a version-pinned client, and guessing one is how a dump becomes unrestorable"
         case "$BOX_HOST" in
         localhost | 127.0.0.1 | ::1 | 0.0.0.0)
-            cannot_look "$(
+            gate_die "" "$(
                 printf 'DATABASE_HOST=%s in %s, and box mode dumps from a container.\n' "$BOX_HOST" "$ENV_FILE"
                 printf '   Inside that container %s is the CONTAINER'"'"'s loopback, not this\n' "$BOX_HOST"
                 printf '   machine'"'"'s — so it would reach nothing, or something else entirely.\n'
@@ -322,7 +289,7 @@ if ! db_present; then
     # produced a bad dump, and only one of those is a backup problem. The
     # too-small-dump refusal below stays exit 1, because there the script DID
     # look: it made an object and the object is not a backup.
-    cannot_look "database ${DATABASE_NAME} does not exist, so there is nothing to back up and no backup to judge"
+    gate_die "" "database ${DATABASE_NAME} does not exist, so there is nothing to back up and no backup to judge"
 fi
 
 echo "Dumping ${DATABASE_NAME}..."
@@ -359,7 +326,7 @@ if [ -n "$STACK" ]; then
         printf 'database=%s\n' "$DATABASE_NAME"
         printf 'env_file=%s\n' "$ENV_FILE"
         printf 'taken_at=%s\n' "$STAMP"
-        printf 'tree=%s\n' "$(git rev-parse 'HEAD^{tree}' 2>/dev/null || echo unknown)"
+        printf 'tree=%s\n' "$(git rev-parse 'HEAD^{tree}' 2>/dev/null || echo unknown)" # raw tree: the sidecar's provenance — which committed bytes took the dump — never a verdict key
     } > "$ORIGIN"
     echo "  -> ${ORIGIN} (origin: project ${STACK}, database ${DATABASE_NAME})"
 fi
@@ -375,7 +342,7 @@ fi
 
 if [ -n "$TO_S3" ]; then
     command -v aws > /dev/null 2>&1 ||
-        cannot_look "no aws client on PATH: --to-s3 cannot look. On a laptop use --to-dir, which is the same code path to a different target."
+        gate_die "" "no aws client on PATH: --to-s3 could not look. On a laptop use --to-dir, which is the same code path to a different target."
     # `s3://` is added here rather than demanded, so the flag's argument is the
     # `bucket/prefix` the criteria and the runbook name and not a URL scheme
     # somebody has to remember to type.

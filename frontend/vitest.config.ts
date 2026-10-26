@@ -8,6 +8,8 @@ export default defineConfig({
     resolve: {
         alias: {
             "@": fileURLToPath(new URL("./src", import.meta.url)),
+            "@pilecap/ui": fileURLToPath(new URL("./src/kit", import.meta.url)),
+            "@pilecap/copy": fileURLToPath(new URL("./src/copy", import.meta.url)),
         },
     },
     test: {

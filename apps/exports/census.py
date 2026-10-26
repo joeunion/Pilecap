@@ -105,8 +105,9 @@ TENANT_FIELD = "tenant"
 
 #: Long enough to force a clause, short enough that a real reason clears it. The
 #: same number and the same reasoning as `core.lifecycle.MIN_REASON` and
-#: `quality/gate.py::MIN_REASON`: an escape hatch nobody has to justify is an
+#: `quality/reason_floor.py::MIN_REASON`: an escape hatch nobody has to justify is an
 #: off switch.
+# rule-84: apps/ never imports quality/ (the layer contract), so the floor is restated here.
 MIN_REASON = 12
 
 #: The field types rule 15 requires a secret-shaped column to be. Derived from

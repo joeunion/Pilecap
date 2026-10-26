@@ -1,0 +1,62 @@
+from typing import ClassVar
+
+from django.conf import settings
+from django.db import models
+
+from pilecap import Archivable, Lifecycle, LifecycleKind, OrgScopedModel
+
+# golden: archive version move bulk history duplicate attach merge import end
+# isort: split
+# golden: version move bulk history duplicate attach merge import begin
+from pilecap import Versioned
+
+
+class Widget(
+    OrgScopedModel,
+    Archivable,
+    # golden: archive end
+    Versioned,
+):
+    lifecycle: ClassVar[Lifecycle] = Lifecycle(kind=LifecycleKind.BOUNDED)
+
+    name = models.CharField(max_length=200)
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="widgets",
+    )
+    notes = models.TextField(blank=True)
+
+    # golden: field due_at begin
+    due_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When this widget is due, if it carries a due date.",
+    )
+    # golden: field due_at end
+
+    class Meta(OrgScopedModel.Meta):
+        # golden: duplicate attach merge import end
+        verbose_name = "widget"
+        verbose_name_plural = "widgets"
+        # golden: duplicate attach merge import begin
+        constraints = [
+            # golden: duplicate attach merge import end
+            models.UniqueConstraint(
+                fields=["tenant", "owner", "name"],
+                name="widget_unique_name_per_owner_per_tenant",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return self.name
+
+    @property
+    def owner_email(self) -> str:
+        """Who owns this, without the caller having to fetch the owner."""
+        return str(self.owner.email)
+
+    @property
+    def organization_slug(self) -> str:
+        """Which part of the tenant owns it — the slug an `X-Org` header names."""
+        return str(self.organization.slug)

@@ -90,9 +90,13 @@ most ONE act as a link. A left rule in the accent marks it; no fill, no icon.
 The registry member and the transport member share the panel and differ only
 in what they carry: the transport member has no remedies, because no response
 existed for the server to put them in. One renderer draws every refusal in the
-product: `frontend/src/screens/refusal-panel.tsx`.
-**Words.** The label is the surface's own (*The server refused* · *Your access
-here ended*), from its copy module. The fact, the code and every remedy are the
+product: `frontend/src/kit/refusal-panel.tsx`, in the one box
+(`frontend/src/primitives/alert-panel.tsx`).
+**Words.** The label is declared once, per member of the union, in
+`frontend/src/copy/refusals.ts` (*The server refused* · *The server did not
+answer*), with the remedies' heading; an act's refusal opens with that act's
+own refused word from the verb table (*Couldn't archive*), and a surface whose
+word truly differs passes its own (*Your access here ended*). The fact, the code and every remedy are the
 server's, verbatim — never rewritten, never summarised. A transport failure
 carries this client's own two sentences (`frontend/src/copy/refusals.ts`) and
 never a code the server did not say. No *please*, no *sorry*, no *try again*
@@ -107,9 +111,10 @@ link at least the act floor tall.
 **Ruling.** `design-agreements.md` § 1 · 1 (the template styles only surfaces
 whose words it owns) · § 1b · 4 (the standing remedy prints on every refusal and
 on nothing else). Supersedes: nothing — the first entry of its class.
-**Instrument.** `frontend/src/screens/welcome/welcome-screen.test.tsx` (the
-`error` state renders the server's own fact, code and remedies, and nothing
-renders the literal `undefined`) · `frontend/src/app/states/page.test.tsx` (the
+**Instrument.** `frontend/src/kit/refusal-panel.test.tsx` (the panel
+renders the server's own fact, code and remedies, its words default from the
+one declaration, and nothing renders the literal `undefined`) ·
+`frontend/src/app/states/page.test.tsx` (the
 close-frame members render the words their design gave them, and no registry
 code is synthesised for a transport failure).
 
@@ -128,7 +133,7 @@ drawer says.
 
 ### §0 · The route table
 
-**Shape.** One table, `frontend/src/screens/routes.ts`, one row per route the
+**Shape.** One table, `frontend/src/kit/routes.ts`, one row per route the
 app router draws: `path` · `job` (one sentence) · `primarySeat` (where the one
 primary act sits, or `null`) · `operation` (the url name of the list or detail
 operation the route draws, or `null`). `null` is an answer; an absent column is
@@ -253,14 +258,14 @@ saying why). Supersedes: nothing — the first entry of its class.
 `disabled` attribute, key, assignment or `setAttribute`, no `aria-disabled`, no
 `:disabled` selector, and no `pointer-events: none` or `cursor: not-allowed` on a
 pressable under `frontend/src/`) · `quality/runners/js_verb_table.py`
-(house rule 80: `frontend/src/screens/verbs.ts` equals the verb table below,
+(house rule 80: `frontend/src/kit/verbs.ts` equals the verb table below,
 row for row — order, press, weight and the five forms' presence) ·
-`frontend/src/screens/verbs.test.ts` (the table's acts are constructed, never
+`frontend/src/kit/verbs.test.ts` (the table's acts are constructed, never
 remembered: `actsFor` intersects the road with the row's answer in table
 order, a busy form for every verb with an act).
 
 **The verb table** — the noun-verb family's one grammar, the table every noun
-face's acts are constructed from (`frontend/src/screens/verbs.ts` transcribes
+face's acts are constructed from (`frontend/src/kit/verbs.ts` transcribes
 it row for row, and rule 80 holds the two equal). One row per verb, in the
 order a face draws them: the pressed word(s), the busy form(s) on the same
 button, the state word a band or pill shows, the refusal notice's first line,
@@ -297,8 +302,9 @@ this entry. Phone: the same shapes in one column.
 nothing — the first entry of its class.
 **Instrument.** `quality/runners/js_no_toast_spinner.py` (house rule 69: no
 identifier, import, class or `@keyframes` from the spinner and shimmer
-families) · `frontend/src/screens/welcome/welcome-screen.test.tsx` (the
-`loading` state is a designed render under `aria-busy`, not an absence).
+families) · `frontend/src/screens/widget/widget-list.test.tsx` (the worked
+face's `loading` state is still rows under `aria-busy` with one line naming
+what is read, not an absence).
 
 ### §17 · Bands — there are no toasts
 
@@ -471,9 +477,9 @@ route has a row and a `primarySeat`) · `quality/runners/js_nothing_disabled.py`
 (house rule 68: no act in the head is disabled) ·
 `quality/runners/js_focus_ring.py` (house rule 67: every act in the row wears
 the ring and consumes the act floor) ·
-`frontend/src/screens/welcome/welcome-screen.test.tsx` (the refusal seat's
-panel renders the server's fact, code and remedies, never a sentence of its
-own) · `frontend/src/screens/verb-face-census.test.tsx` (the family's acts in
+`frontend/src/screens/widget/widget-record.test.tsx` (the refusal seat's
+panel opens with the act's refused word and renders the server's fact and its
+blocker's remedy, never a sentence of its own) · `frontend/src/screens/verb-face-census.test.tsx` (the family's acts in
 the seat in table order, *Duplicate* third and *Merge* fourth, ghost; attach's
 acts only in a card's foot or the tag row) ·
 `frontend/src/screens/verb-focus.test.tsx` (*Duplicate* to the copy's name).
@@ -533,7 +539,7 @@ re-read shows still rows, never a spinner) · `quality/runners/js_verb_road.py`
 (house rule 77: the bar's verbs are the bulk door's, both ways) ·
 `frontend/src/screens/verb-face-census.test.tsx` (the bar in the control row's
 seat, its verbs the intersection in table order, ghost) ·
-`frontend/src/screens/verbs.test.ts` (the bulk intersection). Declared gap:
+`frontend/src/kit/verbs.test.ts` (the bulk intersection). Declared gap:
 "exactly one row" and the seat order are rendered questions no runner asks;
 the verb family's face census (the archived cut's story) is where they land.
 
@@ -711,7 +717,11 @@ same door in one column, the door at least `--act-min` tall.
 on the screen) · § 1 · 6 (finished, not loud — it states the fact and names
 the next act). Supersedes: nothing — the first entry of its class.
 **Instrument.** `frontend/src/screens/welcome/welcome-screen.test.tsx` (the
-`empty` state proposes the next act rather than reporting emptiness) ·
+`empty` state proposes the next act rather than reporting emptiness — the
+template's placeholder landing is still the one empty in the tree that
+proposes an act, so it stays this clause's instrument until a worked face's
+empty does) · `frontend/src/screens/widget/widget-list.test.tsx` (the worked
+face's empty is the sentence alone, no door) ·
 `quality/runners/js_no_toast_spinner.py` (house rule 69: no spinner where the
 answer is) · `quality/runners/js_lexicon.py` (house rule 72: the door's label
 is a lexicon row) · `quality/runners/js_nothing_disabled.py` (house rule 68: a
@@ -793,8 +803,8 @@ the first entry of its class.
 `quality/runners/js_no_toast_spinner.py` (house rule 69: the outcome is a
 band, never a toast) · `quality/runners/js_route_table.py` (house rule 71: the
 list route's `operation` column is what a blocker's `route:` remedy resolves
-through) · `frontend/src/screens/welcome/welcome-screen.test.tsx` (the notice
-renders every blocker's remedy verbatim) · `quality/runners/js_verb_road.py`
+through) · `frontend/src/screens/widget/widget-record.test.tsx` (the refused
+archive's notice renders the blocker's remedy verbatim, a live door) · `quality/runners/js_verb_road.py`
 (house rule 77: every noun face's road equals the verb doors its wire serves,
 both ways — *Archive* and *Restore* drawn where the wire serves them, and
 nowhere else) · `quality/runners/js_verb_acts.py` (house rule 78: a family act
@@ -807,7 +817,7 @@ story: zero primary, no head acts, no pill, the way back drawn; *Archive* last,
 ghost, in the admin story; zero family acts in the member story) ·
 `frontend/src/screens/verb-focus.test.tsx` (*Archive* to the band's *Restore*;
 *Restore* to the record's name; a cut row's *Restore* to the nearest remaining
-act) · `frontend/src/screens/remedy-door.test.ts` (a `route:` remedy is a live
+act) · `frontend/src/kit/remedy-door.test.ts` (a `route:` remedy is a live
 link or an unlinked label, never a broken one).
 
 ---
@@ -857,10 +867,14 @@ inline style under `frontend/src/` to it. **They red a product until it adopts
 the floor**: a floor a product can ignore is the class a consumer already paid
 for.
 
-**Stylesheets.** A face's own stylesheet is the pattern: one per face
-directory, beside its screens, imported only by the screens in that directory
-(a route imports `tokens.css` and nothing else; a sheet two directories want is
-a component asking to exist, and moves to `components/` with it). Tokens only —
+**Stylesheets.** A face's own stylesheet is the pattern: one per face — its
+directory and the directories under it — beside its screens, imported only by
+those screens (a route imports `tokens.css` and nothing else; a sheet two faces
+want is a component asking to exist, and moves to `components/` with it). A
+primitive has no sheet: its shape is token-only and inline, and so are the
+lines of the one refusal renderer every face draws — each such `style={`
+carries a `// paint:` comment with its one-line reason, and every other inline
+style is a face's paint that belongs in its sheet. Tokens only —
 every colour, size, gap, ring and radius is a `var(--…)` or a scale keyword; it
 DECLARES no token (`frontend/src/tokens/` is the one declaring layer); every
 selector is rooted in the face's own class prefix, derived from the directory's
@@ -874,7 +888,7 @@ that place. Rejected: one shared `styles.css` (the collision file every
 parallel face rung edits); CSS-in-JS everywhere. Owed instruments: a token
 declared outside `frontend/src/tokens/`; a face-sheet selector whose first
 compound is not the face's prefix; a face sheet imported from outside its
-directory.
+directory; an inline `style={` with no `// paint:` reason.
 
 **The phone.** One breakpoint: `40rem`. Every width media query under
 `frontend/src/` is `(width <= 40rem)` or its complement, in `rem`, and no
@@ -935,7 +949,7 @@ row per instrument file; rule 63 holds every file named here to existing.
 | pattern | instrument file | what it measures (the closed question) | its plant (what proves it fires) |
 |---|---|---|---|
 | every entry, every row here | `quality/pattern_book.py` | house rule 63: every entry is six parts and names an instrument file that exists; every row here names a file that exists | an entry naming a file this tree does not have — red |
-| §15 | `frontend/src/screens/welcome/welcome-screen.test.tsx` | the `error` state renders the server's fact, code and remedies verbatim; nothing renders `undefined` | a panel rendering a sentence of its own — red |
+| §15 | `frontend/src/kit/refusal-panel.test.tsx` | the one renderer draws the server's fact, code and remedies verbatim; its words default from one declaration; nothing renders `undefined` | a panel rendering a sentence of its own — red |
 | §15 | `frontend/src/app/states/page.test.tsx` | every close-frame state renders its design words; no registry code is synthesised for a transport failure | a synthesised registry code — red |
 | every token | `quality/runners/js_token_consumer.py` | house rule 53: every token declared is read, and every token read is declared | a declared-unread token; a consumed-undeclared one — red |
 | §26 type | `quality/runners/js_type_scale.py` | house rule 64: every `font-size`, `letter-spacing` and `font` names a `--type-*` role; no half pixel | a planted `font-size: 13.5px` — red |
@@ -957,8 +971,8 @@ row per instrument file; rule 63 holds every file named here to existing.
 | §1, §5, §6, §8, §10, §20 | `frontend/src/screens/verb-focus.test.tsx` | the focus road, as `document.activeElement` after each press | a landing cut from a face — red |
 | §5 | `frontend/src/screens/widget/widget-import.test.tsx` | the worked import page: every state drawn from the run row, its words, one primary, the apply's busy word on the same button | a preview drawing a second primary — red |
 | §1, §6, §10 | `frontend/src/screens/widget/widget-record.test.tsx` | the worked record: the move sheet's current node marked and never a choice; the merge chooser and confirm; the copy's band; the attach cards and the tag row | the current node offered as a radio — red |
-| §4, §7 | `frontend/src/screens/verbs.test.ts` | `actsFor` and the bulk intersection in table order; a busy form for every verb; the foot's one press | a verb with no busy form — red |
-| §15, §20 | `frontend/src/screens/remedy-door.test.ts` | a `route:` remedy is a live link where a page draws the operation, else its label unlinked | an unknown url name drawn as a link — red |
+| §4, §7 | `frontend/src/kit/verbs.test.ts` | `actsFor` and the bulk intersection in table order; a busy form for every verb; the foot's one press | a verb with no busy form — red |
+| §15, §20 | `frontend/src/kit/remedy-door.test.ts` | a `route:` remedy is a live link where a page draws the operation, else its label unlinked | an unknown url name drawn as a link — red |
 
 ---
 

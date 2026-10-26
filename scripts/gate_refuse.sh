@@ -32,7 +32,7 @@
 # a FILE (`2>"$err"`, never into the substitution, which would fold the refusal
 # into the value being computed) and hand that file to `gate_refuse_from_file`, which
 # replays it where it would have appeared and takes the first `!!` line as the
-# cause. `loop_scope__closure` (scripts/loop_tier.sh) is the worked example: its
+# cause. `loop_scope__closure` (quality/djb/scope.py) is the worked example: its
 # unknown-label refusal is written by an embedded Python reader that cannot call
 # a shell function at all, so the file IS the only channel.
 #
@@ -81,6 +81,96 @@ GATE_CAUSE_NONE='(the callee set none — a refusal that could not say why is br
 gate_refuse() {
     GATE_LAST_REFUSAL="$*"
     echo "!! $*" >&2
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# THE THREE WORDS, AND THE EXIT IS THE WORD.
+#
+#   ok              exit 0 — looked, and it is as claimed     (`gate_ok`)
+#   RED             exit 1 — looked, and it is wrong          (`gate_finding`)
+#   COULD NOT LOOK  exit 2 — never got as far as judging      (`gate_die`)
+#
+# A `!!` banner is the third word's and only the third's: every `!!` this tree
+# prints is followed by exit 2, and a script that LOOKED and found something
+# wrong says RED and exits 1. That is CLAUDE.md's "2 outranks a pass" made a
+# shape — a leg that wanted exit 2 to mean "finding" gets no valve; it exits 1.
+# `quality/tests/test_refusal_seam.py` reads every `!!` under `scripts/` and
+# `deploy/` and names the one that is not.
+#
+# THE TRAILER is the per-script sentence that says what was NOT done ("Nothing
+# was merged and the working tree was not touched.") — an argument, because the
+# drives assert each script's own, and a script names it once in a variable
+# rather than typing it at every call. Empty is legal: a refusal whose headline
+# already says it.
+
+#: Set by `gate_die` immediately before it exits, so an EXIT trap can tell a
+#: refusal the script authored from a shell that died under it (pm_fold's guard
+#: reads it). Never set by anything else.
+: "${GATE_DIED:=}"
+
+# gate_die <trailer> <headline> [<line>...] — refuse: could not look, exit 2.
+#
+# Prints the headline through `gate_refuse` (so it is this run's recorded cause),
+# then each further line and then each line of the trailer indented three
+# spaces, all on stderr, and exits 2. Never returns.
+# road: could_not_look — `!!` is exit 2 and nothing else means it · example: quality/tests/test_refusal_seam.py::test_gate_die_is_exit_2_with_its_trailer
+gate_die() {
+    local trailer=${1-}
+    [ "$#" -gt 0 ] && shift
+    [ "$#" -gt 0 ] || set -- "(gate_die was handed no headline — a refusal that could not say why is broken enforcement)"
+    gate_refuse "$1"
+    shift
+    gate__indented "$@"
+    [ -z "$trailer" ] || gate__indented "$trailer"
+    GATE_DIED=1
+    exit 2
+}
+
+# gate_finding <headline> [<line>...] — the one exit-1 word: looked, and it is wrong.
+#
+# Prints `RED: <headline>` and each further line indented, on stderr, and exits
+# 1. Never `!!`: that leader belongs to exit 2 alone.
+gate_finding() {
+    [ "$#" -gt 0 ] || set -- "(gate_finding was handed no headline)"
+    echo "RED: $1" >&2
+    shift
+    gate__indented "$@"
+    exit 1
+}
+
+# gate__indented <text>... — every line of every argument, three spaces in, on
+# stderr: the body of a refusal or a finding. Private to the two above.
+gate__indented() {
+    local text line
+    for text in "$@"; do
+        while IFS= read -r line; do
+            printf '   %s\n' "$line" >&2
+        done <<<"$text"
+    done
+    return 0
+}
+
+# gate_ok <text...> — the exit-0 word, printed; returns 0 and exits nothing.
+gate_ok() {
+    echo "ok: $*"
+    return 0
+}
+
+# refuse_if_piped <name> [<why>...] — exit 2 when stdout is a pipe.
+#
+# A pipe replaces the caller's exit status with the filter's, and in every
+# script that calls this the exit status IS the verdict. A TTY or a file
+# redirect keeps it. CI is exempt, in this one place, because GitHub Actions
+# captures every step's stdout through a pipe. Called at the top level of the
+# script, so `/dev/fd/1` is the script's own stdout.
+# road: pipe_guard — a script whose exit status is the verdict refuses a piped stdout, exit 2 · example: quality/tests/test_refusal_seam.py::test_a_piped_stdout_is_refused_with_the_one_sentence
+refuse_if_piped() {
+    local name=${1:-this script}
+    [ "$#" -gt 0 ] && shift
+    if [ -z "${CI:-}" ] && { [ -p /dev/fd/1 ] || [ -p /dev/stdout ]; }; then
+        gate_die "" "${name} refuses pipes — run it bare or redirect to a file." "The exit status is the verdict, and a filter replaces it." "$@"
+    fi
     return 0
 }
 
@@ -147,6 +237,18 @@ gate_capture() {
     return "$__rc"
 }
 
+# gate_tool_said <file> — the tool's own last lines, on stderr, under a refusal.
+#
+# The shell twin of `quality/could_not_look.py::tool_said`, pinned alike by
+# `quality/tests/test_refusal_seam.py::test_the_tool_said_twins_say_it_alike`:
+# the last five non-blank lines of what the tool printed, each
+# `   the tool said: <line>` and cut at 300 characters; nothing for a file that
+# is empty or absent.
+gate_tool_said() {
+    [ -s "${1:-}" ] || return 0
+    grep -v '^[[:space:]]*$' "$1" | tail -n 5 | cut -c1-300 | sed 's/^/   the tool said: /' >&2
+}
+
 # gate_cause — make sure there IS a cause to print, and say when there was not.
 #
 # Called immediately before a banner prints `cause: ${GATE_LAST_REFUSAL}`. If
@@ -175,7 +277,7 @@ gate_cause() {
 # NOT on a minimal Linux, which spells the same digest `sha256sum`. Every site
 # in this family spelled `shasum -a 256` because every site was written on a
 # Mac. The first off-box gate run measured the cost: on Amazon Linux 2023
-# `scripts/loop_tier.sh` printed `shasum: command not found`, the loop ledger's
+# `quality/djb/scope.py` printed `shasum: command not found`, the loop ledger's
 # distribution census derived nothing, and the run's verdict cell read
 # `miss(no-ledger)` — a gate that could not key its own verdict, on a machine
 # where nothing was wrong except the name of a program.
@@ -193,12 +295,8 @@ gate_cause() {
 # than fall back. So the answer is validated as 64 hex digits before it is
 # returned, and an unvalidatable one is exit 1.
 #
-# WHAT IS DELIBERATELY NOT ROUTED THROUGH HERE, so a reader does not read the
-# grep as an omission: `scripts/db.sh` and `deploy/provision.sh` each resolve
-# both tools inline already, and both are reachable where this seam is not —
-# db.sh is the one sourced library in this tree deliberately without a belt
-# (its own header, db.sh:50-57) and provision.sh runs on a deployment host with
-# no gate beside it. Their inline shape is asserted by their own drives.
+# Not routed through here: `scripts/db.sh` keeps its one ladder (`db_digest_tool`), sourced where this seam is not
+# (db.sh's header); `deploy/provision.sh` reaches it through db.sh.
 sha256_of() {
     local digest=""
     case "$#" in
@@ -249,7 +347,7 @@ sha256_of__stdin() {
 # queue_index.py generates`, which is the wrong finding about the wrong file.
 #
 # `uv run python` IS NOT THE FALLBACK, and that is the settled answer here
-# rather than a new one: `loop_scope__python` (scripts/loop_tier.sh) and
+# rather than a new one: `loop_scope__python` (quality/djb/scope.py) and
 # `loop_env_reads` (scripts/gate_ledger.sh) both name the venv and refuse
 # without it, because `uv run` re-resolves on paths that must stay cheap and in
 # a checkout with no venv it would SYNC one — minutes of surprise side effect
@@ -269,4 +367,65 @@ checkout_python() {
     [ -x "$py" ] || return 1
     printf '%s\n' "$py"
     return 0
+}
+
+# ---------------------------------------------------------------------------
+# THE ONE CLOCK. clock_ms — milliseconds since the epoch on the best clock this host has; clock_fmt <ms> — `<n.nn>s`.
+# GATE_CLOCK names the rung of the ladder, chosen once at source (bash 5 · GNU date · perl · python3 · whole seconds);
+# `seconds` is whole-second resolution, which every caller's footer declares.
+if [ -z "${GATE_CLOCK:-}" ]; then
+    if [ -n "${EPOCHREALTIME:-}" ]; then
+        GATE_CLOCK=bash5
+    elif case "$(date +%s%3N 2>/dev/null || echo x)" in '' | *[!0-9]*) false ;; *) true ;; esac; then
+        GATE_CLOCK=gnudate
+    elif command -v perl >/dev/null 2>&1; then
+        GATE_CLOCK=perl
+    elif command -v python3 >/dev/null 2>&1; then
+        GATE_CLOCK=python3
+    else
+        GATE_CLOCK=seconds
+    fi
+fi
+clock_ms() {
+    case "$GATE_CLOCK" in
+    bash5)
+        local us=${EPOCHREALTIME/./}
+        printf '%s' "${us%???}"
+        ;;
+    gnudate) date +%s%3N ;;
+    perl) perl -MTime::HiRes=time -e 'printf "%.0f", time()*1000' ;;
+    python3) python3 -c 'import time; print(int(time.time()*1000))' ;;
+    *) printf '%s000' "$(date +%s)" ;;
+    esac
+}
+# clock_s — whole seconds since the epoch, for arithmetic on ages and deadlines.
+clock_s() {
+    date +%s
+}
+clock_fmt() {
+    awk -v ms="$1" 'BEGIN { printf "%.2fs", ms / 1000 }'
+}
+
+# ---------------------------------------------------------------------------
+# THE ONE READING OF "WHAT CHANGED". tree_dirt [<dir>] [<git status arg>…] — `git status --porcelain` of the checkout
+# at <dir> (default `.`), one entry per line, empty when clean; `-uall` and a pathspec are the callers' own questions.
+tree_dirt() {
+    local dir="${1:-.}"
+    [ "$#" -eq 0 ] || shift
+    git -C "$dir" status --porcelain "$@"
+}
+# tree_is_dirty [<dir>] — exit 0 when the checkout carries a change git sees, 1 when it is clean.
+tree_is_dirty() {
+    [ -n "$(tree_dirt "${1:-.}")" ]
+}
+# changed_between <a> <b> [<pathspec>…] — the paths that differ in the cwd's repository, a rename as both its paths;
+# <b> `-` is the working tree. `--diff-filter=U` and `secrets_scan_changed_files`' `-z --diff-filter=d` are other questions.
+changed_between() {
+    local a=$1 b=$2
+    shift 2
+    if [ "$b" = "-" ]; then
+        git diff --name-only --no-renames "$a" -- "$@"
+    else
+        git diff --name-only --no-renames "$a" "$b" -- "$@"
+    fi
 }

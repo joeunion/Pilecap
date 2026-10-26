@@ -1,42 +1,9 @@
 # census: cross-app population=apps/**/*.py to prove the tolerant read it gives
 """The scan-vs-plant race, driven deterministically, and the census that keeps it closed.
 
-**The defect.** `test_observability.py`'s house-rule-19 census walks every source
-file under `apps/`; on another xdist worker, `test_settings.py`'s `probe_app`
-fixture removed `apps/zzz_probe/` between that walk's directory listing and its
-`open()`, and the census raised `FileNotFoundError` — read by the full gate as
-"pass one left state behind" and used to refuse a push. Pass 1 green, pass 2
-red, on schedule reshuffling alone — and it recurred more than once.
-
-**The class, not the instance.** Two tests plant a real file inside `apps/` and
-neither can move (`tree_census.py` says why), so *every* census that walks the
-tree is exposed and always will be. The fix is one tolerant read — the seam in
-`apps.core.tests.tree_census` — and the belt is the census at the bottom of this
-module, which fails when a new test module walks a directory of sources and
-reads what it found without going through the seam.
-
-**The drive is real, not mocked, and it lives BESIDE each census.**
-`tree_census.vanishing_source_file()` plants an inert module at
-`apps/zzz_vanisher_<hex>.py` and removes it *at the instant a scanner opens it* —
-the race with its timing pinned instead of hoped for. Each tree-wide census
-carries a one-line falsifier using it, in its own module, because one central
-drive importing every app's tests would be `apps.core` reaching upward and the
-layer contract refuses that. Today they are in `test_observability.py`,
-`test_scope_readers.py`, `test_addressing_headers.py`, `test_scopes.py`,
-`test_storage_fence.py` and `test_services.py`; that makes
-`vanishing_source_file` the tree's THIRD planter, named per call for the reason
-its own docstring records. The plant is inert on
-purpose — no `print`, no logger, no scope literal, no SDK import — so a scanner
-that survives it survives because it tolerated the vanish, never because the
-file was uninteresting to it.
-
-**DOES NOT COVER — declared.** The censuses whose glob names one file per app
-(`apps/*/api.py`, `apps/*/services.py`, `apps/comms/*.py`) carry no drive: a
-top-level plant is outside their glob, and planting over a real door module
-would clobber the tree. They read through the seam for uniformity and are held
-there by the belt below, not by a falsifier. Also uncovered: a plant that a
-census *counts* rather than reads — that is `without_transient_apps`, whose
-drive is `test_settings.py`'s own suite and `test_optional_apps.py`'s.
+A census walking `apps/` reads through `tree_census`; the belt below fails one that does not.
+`vanishing_source_file()` plants `apps/zzz_vanisher_<hex>.py` and unlinks it as a scanner opens it.
+# does-not-cover: a per-app glob (`apps/*/api.py`) carries no drive; the belt holds it.
 """
 
 from __future__ import annotations
@@ -47,13 +14,7 @@ from pathlib import Path
 import pytest
 from django.conf import settings
 
-from apps.core.tests.tree_census import (
-    TRANSIENT_APP_MODULES,
-    source_lines,
-    source_text,
-    source_tree,
-    without_transient_apps,
-)
+from apps.core.tests.tree_census import source_lines, source_text, source_tree
 
 ROOT = Path(settings.BASE_DIR)
 APPS_DIR = ROOT / "apps"
@@ -124,15 +85,6 @@ def test_only_a_vanished_file_is_tolerated(tmp_path: Path) -> None:
         source_tree(unparseable)
 
 
-def test_a_discovery_count_drops_the_probe_and_nothing_else() -> None:
-    """The other half: a census that COUNTS apps takes the transient one out by name."""
-    assert without_transient_apps(["apps.core", "apps.zzz_probe", "apps.example"]) == [
-        "apps.core",
-        "apps.example",
-    ]
-    assert "apps.zzz_probe" in TRANSIENT_APP_MODULES
-
-
 # --- the belt: nobody walks and reads without the seam ------------------------
 
 #: Attributes whose call means "enumerate a directory".
@@ -163,12 +115,8 @@ NOT_A_SOURCE_CENSUS: dict[str, str] = {
     ),
 }
 
-# NOT exemptions, because they never enter the population: `test_settings.py` and
-# `test_optional_apps.py` walk `apps/` only THROUGH `discover_local_apps`, whose
-# read is production code that already catches `OSError`
-# (`config/settings/discovery.py::_read`). What bit them is the other half of the
-# race — a COUNT that included the transient probe — and both now go through
-# `without_transient_apps`.
+# NOT exemptions: `test_settings.py` and `test_optional_apps.py` walk `apps/` only through
+# `discover_local_apps`, whose read catches `OSError` (`config/settings/discovery.py::_read`).
 
 #: `read_text` / `open` on a path a walk produced is the call the seam replaces.
 #: A module in the population that still makes one has not been converted.
@@ -194,15 +142,19 @@ def _reads_directly(path: Path) -> bool:
 
 
 SEAM = "apps.core.tests.tree_census"
+#: The facade re-export a product-shaped app reads the seam through (rule 96).
+FACADE = ("pilecap.testing", {"source_text", "source_lines", "source_tree"})
 
 
 def _imports_the_seam(path: Path) -> bool:
-    """All three spellings, because a check that saw only one would be a check
-    a converted module could fail: `from X.tree_census import ...`,
+    """All four spellings, because a check that saw only one would be a check
+    a converted module could fail: `from X.tree_census import ...`, the facade's,
     `from apps.core.tests import tree_census`, and `import X.tree_census`."""
     for node in ast.walk(source_tree(path)):
         if isinstance(node, ast.ImportFrom):
             if node.module == SEAM:
+                return True
+            if node.module == FACADE[0] and any(alias.name in FACADE[1] for alias in node.names):
                 return True
             if node.module == SEAM.rsplit(".", 1)[0] and any(
                 alias.name == "tree_census" for alias in node.names

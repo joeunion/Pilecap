@@ -6,10 +6,11 @@ Two properties, and both of them are about a file that was *not* edited:
 * dropping this app under `apps/` installed it, mounted its router, published
   its event names and registered its policies — `config/` and `pyproject.toml`
   stay untouched;
-* `apps/events` sits *beside* this app in the layer contract, so the hand-off is
-  a runtime lookup and never an import — in this app's own tests as much as in
-  its source. The spine has landed, so the hand-off is now asserted at the far
-  end: an `Event` row, in the right tenant, with the right name.
+* `apps/events` sits *beside* this app in the layer contract, so the hand-off
+  and the inbound verifier are `core.bridge` names and never an import — in
+  this app's own tests as much as in its source. The spine has landed, so the
+  hand-off is asserted at the far end: an `Event` row, in the right tenant, with
+  the right name.
 """
 
 from __future__ import annotations
@@ -24,7 +25,8 @@ from django.urls import reverse
 
 from apps.connections.events import WEBHOOK_RECEIVED
 from apps.connections.models import Connection, InboundWebhook
-from apps.connections.services import _accepts, _events_callable, record_inbound_webhook
+from apps.connections.services import _accepts, record_inbound_webhook
+from apps.core import bridge
 from apps.core.actor import system_actor
 from apps.core.models import Tenant
 from apps.core.tests.tree_census import source_tree
@@ -69,6 +71,7 @@ def test_the_event_names_are_declared_in_one_file() -> None:
         "connections.connection.created",
         "connections.connection.credentials_updated",
         "connections.connection.revoked",
+        "connections.connection.signature_scheme_updated",
         "connections.webhook.received",
     }
     for name in declared:
@@ -132,14 +135,43 @@ def test_nothing_in_this_app_imports_apps_events() -> None:
     assert offenders == []
 
 
-def test_the_hand_off_is_absent_rather_than_broken_without_the_events_app() -> None:
-    """Whichever tree this runs in, the lookup answers instead of raising."""
-    found = _events_callable("services", "emit")
-    if django_apps.is_installed("apps.events"):
-        assert callable(found)
-    else:
-        assert found is None
-    assert _events_callable("services", "no_such_function_anywhere") is None
+REACHED = (
+    bridge.EMIT,
+    bridge.VERIFY_AND_STORE,
+    bridge.SIGNATURE_MATCHES,
+    bridge.SIGNATURE_V2_MATCHES,
+    bridge.SIGNATURE_V2_TOLERANCE,
+)
+
+
+def test_every_name_this_app_reaches_is_one_the_events_app_filled() -> None:
+    """The five bridge names are registered, and each is the events app's own function.
+
+    Named by `__module__` rather than by importing the functions — this app does
+    not import `apps.events`, in its tests either.
+    """
+    registered = bridge.registered()
+    for name in REACHED:
+        assert name in registered, f"{name} is not registered"
+        assert registered[name].__module__.startswith("apps.events."), name
+    assert bridge.get(bridge.VERIFY_AND_STORE).__module__ == "apps.events.receivers"
+
+
+def test_an_unregistered_name_is_a_refusal_in_production_never_a_fall_through(
+    settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`get`, not `find`: strict mode raises where the reach used to answer `None`.
+
+    The runtime lookup this replaced answered `None` for an events app that was
+    not installed, and the door fell through to a verifier of its own — the fail
+    open shape that made two verifiers. Through the bridge, a production process
+    with nothing registered refuses at the first call and says which name.
+    """
+    settings.BRIDGE_STRICT = True
+    monkeypatch.setattr(bridge, "_registry", {})
+    for name in REACHED:
+        with pytest.raises(bridge.BridgeNotRegistered, match=name):
+            bridge.get(name)
 
 
 def test_a_verified_delivery_reaches_the_event_spine(
@@ -175,31 +207,23 @@ def test_a_verified_delivery_reaches_the_event_spine(
 
 
 def test_the_spines_own_receiver_is_preferred_when_its_signature_fits() -> None:
-    """Which of the two interfaces takes the delivery is *checked*, not attempted.
+    """Which of the two interfaces takes the delivery is checked, not attempted.
 
-    `_hand_off` tries `apps.events.receivers.verify_and_store` first and falls
-    to `emit`. Against the spine as it landed the first one does not bind — that
-    receiver is a *door-side* helper that verifies a signature and stores the
-    body, and by the time this app calls, both have already happened here. So
-    the fall-through is the live path, and it is a decision rather than a
-    `TypeError` swallowed at the call site.
-
-    This is the guard that makes that safe: it says yes to a signature that
-    fits and no to the one that does not.
-
-    **Re-pointed at the narrowed receiver** (ADR connections-1, rung W6). It
-    takes `source=` — one row carrying both the tenant and the secret — where it
-    used to take `secret` and `tenant` as a loose pair a caller had to keep
-    matched. What the assertions say is unchanged in substance: this app's
-    probe still does not bind, and the receiver's real signature still does.
+    `_hand_off` falls from `bridge.VERIFY_AND_STORE` to `bridge.EMIT`: the receiver takes
+    `source=` (ADR connections-1), so this app's probe does not bind and its own shape does.
     """
-    receiver = _events_callable("receivers", "verify_and_store")
-    assert receiver is not None, "the spine still exposes a receiver"
+    receiver = bridge.get(bridge.VERIFY_AND_STORE)
+    assert receiver.__module__ == "apps.events.receivers", "the spine still exposes a receiver"
     # What `_hand_off` actually offers. Still not a fit, still on purpose.
     assert not _accepts(receiver, source=None, event_type="", body="", headers={}, verified=True)
     # The receiver's own shape: raw bytes, an unchecked signature, and the row.
     assert _accepts(receiver, request_body=b"body", signature="sig", source=None, name="x")
     # And the loose pair is gone rather than merely unused.
     assert not _accepts(
-        receiver, request_body=b"body", signature="sig", secret="s", tenant=None, name="x"
+        receiver,
+        request_body=b"body",
+        signature="sig",
+        secret="s",  # noqa: S106 — a signing secret the test both signs and verifies with
+        tenant=None,
+        name="x",
     )

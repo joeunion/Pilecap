@@ -1,15 +1,4 @@
-"""Reads for tags. Every one narrows to the tenant, and every link read to a subject.
-
-**Tags are read at the acting hat** — a tag is tenant-wide vocabulary and names
-no node below the tenant, so the hat is the only node the question has. Each
-such line carries the dated `hat-scoped` valve house rule 55 counts.
-
-**Links are read only THROUGH their subject.** `list_tag_links` resolves the
-subject first (`core.verbs.resolve_subject`: the kind registry, the acting
-hat's `visible_to`, `may_be_named`) and only then reads the links that point
-at it — so a subject in a sibling branch is `not_found`, exactly as if it did
-not exist, and a pointer whose subject is gone is unreachable rather than wrong.
-"""
+"""Reads for tags: the words at the acting hat; a link only through its subject, resolved first."""
 
 from __future__ import annotations
 
@@ -17,80 +6,25 @@ from typing import Any
 from uuid import UUID
 
 from apps.core.actor import Actor
-from apps.core.authz import kind_of, kind_registry, require
-from apps.core.exceptions import Invalid, NotFound
-from apps.core.models import Organization, ScopedQuerySet, Tenant, is_org_scoped
-from apps.core.verbs import resolve_subject
+from apps.core.authz import kind_of, require
+from apps.core.exceptions import NotFound
+from apps.core.models import ScopedQuerySet, Tenant
+from apps.core.verbs import shown, subject_for
 from apps.djb_tags.models import ATTACHMENT, Tag, TagLink
-
-#: The field every subject refusal names, on every door.
-SUBJECT_FIELD = "subject"
-
-
-def _split_subject(subject: str) -> tuple[str, str]:
-    """`"widget:<id>"` → `("widget", "<id>")`, or `invalid` naming `subject`."""
-    kind, sep, subject_id = subject.partition(":")
-    if not sep or not kind or not subject_id:
-        raise Invalid(
-            {SUBJECT_FIELD: ["Name the subject as <kind>:<id>, for example widget:<id>."]}
-        )
-    return kind, subject_id
-
-
-def _takes_tags(model: Any) -> bool:
-    """Whether a noun declares `tags` in its `attachments` — the one reading of it here."""
-    return ATTACHMENT in tuple(getattr(model, "attachments", ()) or ())
-
-
-def _subject_model(kind: str) -> Any:
-    """The model a kind names, if it declares tags — or `invalid` naming `subject`.
-
-    A kind is published vocabulary, so saying "that kind does not take tags" leaks
-    nothing: no row was looked up to say it.
-    """
-    model = kind_registry().get(kind)
-    if model is None or not _takes_tags(model):
-        raise Invalid({SUBJECT_FIELD: [f"A {kind!s} does not take tags."]})
-    return model
 
 
 def get_subject(*, actor: Actor, subject: str) -> Any:
     """The row a `<kind>:<id>` pointer names, if it takes tags and this actor can reach it."""
-    kind, subject_id = _split_subject(subject)
-    _subject_model(kind)
-    return resolve_subject(actor, kind, subject_id)
-
-
-def _landing(*, subject: Any, actor: Actor) -> Organization:
-    """Where a link on this subject lives — the landing law (ADR core-20).
-
-    The subject's own branch; a TENANT-WIDE subject has none, so the link lands
-    at the ACTING HAT, the placement every created org-scoped row takes. Never
-    the root: visibility is down-only, so a root-landed link is one its own
-    branch author could not read back. (House rule 55's root-only writes govern
-    the tenant-wide `Tag` row, never the org-scoped link.)
-    """
-    if is_org_scoped(type(subject)):
-        organization: Organization = subject.organization
-        return organization
-    if actor.org is None:
-        raise Invalid(
-            {"organization": ["This request resolved no acting organization to write in."]}
-        )
-    return actor.org
+    return subject_for(actor, subject, attachment=ATTACHMENT)
 
 
 def _tags_in(*, tenant: Tenant | None, show: str) -> ScopedQuerySet[Tag]:
-    tags = Tag.objects.for_tenant(tenant)
-    if show == "archived":
-        tags = tags.archived_only()
-    elif show == "all":
-        tags = tags.including_archived()
+    tags: ScopedQuerySet[Tag] = shown(Tag.objects.for_tenant(tenant), show)
     return tags.select_related("archived_by")
 
 
 def list_tags(*, tenant: Tenant | None, actor: Actor, show: str = "live") -> ScopedQuerySet[Tag]:
-    """The tenant's vocabulary — the live words, unless `show` asks for another cut."""
+    """The tenant's vocabulary in the cut `show` names; an unknown word is `invalid`."""
     # hat-scoped: sight is the acting hat's — a tag is TENANT-WIDE vocabulary and
     # every branch's people may SEE the words they are meant to use; they cannot
     # coin, respell or retire one, because those writes are asked at the root.

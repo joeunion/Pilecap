@@ -1,0 +1,28 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "before", "text": "class Widget("}
+from django.contrib.postgres.indexes import GinIndex
+from django.contrib.postgres.search import SearchVector, SearchVectorField
+
+
+
+#: The text-search configuration; pinned equal to the search app's by a test.
+SEARCH_CONFIG = "english"
+# golden-anchor: {"nth": 0, "scope": ["Widget"], "side": "before", "text": "class Meta(OrgScopedModel.Meta):"}
+    #: THE ADOPTING APP OWNS ITS OWN COLUMN (R-e, ADR search-2).
+    search_vector = models.GeneratedField(
+        expression=(
+            SearchVector("name", weight="A", config=SEARCH_CONFIG)
+            + SearchVector("notes", weight="B", config=SEARCH_CONFIG)
+        ),
+        output_field=SearchVectorField(),
+        db_persist=True,
+        null=True,
+    )
+# golden-anchor: {"nth": 0, "scope": ["Widget", "Meta"], "side": "after", "text": "]"}
+        # DECLARING `indexes` HERE SHADOWS THE ABSTRACT BASE'S (house rule 37).
+        indexes = [
+            models.Index(fields=["tenant", "-created_at"], name="widget_recency"),
+            # The full-text index the degradation engine's real-column path reads.
+            GinIndex(fields=["search_vector"], name="widget_search_vector_gin"),
+
+
+        ]

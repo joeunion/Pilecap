@@ -1,0 +1,18 @@
+from typing import Any
+
+from apps.example_portal.selectors import list_portal_requests_about
+from apps.example_portal.services import move_portal_requests
+from pilecap import Repointer
+from pilecap.tenancy import Tenant
+
+
+def count_requests_about(*, tenant: Tenant, loser: Any) -> int:
+    """How many requests a merge of `loser` would carry to the survivor — the dry run's answer."""
+    return int(list_portal_requests_about(tenant=tenant, widget=loser).count())
+
+
+REPOINTERS: dict[str, Repointer] = {
+    "widget": Repointer(
+        title="Portal requests", count=count_requests_about, repoint=move_portal_requests
+    ),
+}

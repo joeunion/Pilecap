@@ -13,7 +13,7 @@ command's docstring is the whole of it: one entry per identity fact, saying who 
 authoritative, why a copy exists, which way a disagreement is settled, and what
 kind of ask closes it. A fact with no `kind` is a fact this command prints and
 never touches — the instance's SMTP sender, the org's other login-policy fields,
-the organisation count, a person's `zitadel_sub`. The test below is what keeps
+the organisation count, a person's identity join. The test below is what keeps
 the table and the code from drifting apart.
 
 **The ask is a service call, never a management call.** House rules 10 and 27
@@ -54,8 +54,13 @@ from django.core.management.base import CommandError
 from apps.accounts import services
 from apps.accounts import zitadel as zitadel_module
 from apps.accounts.management.commands import zitadel_reconcile
-from apps.accounts.management.commands.zitadel_audit import APPLICATIONS_KIND, LOGIN_CLIENT_KIND
+from apps.accounts.management.commands.zitadel_audit import (
+    APPLICATIONS_KIND,
+    IDENTITY_HOME_KIND,
+    LOGIN_CLIENT_KIND,
+)
 from apps.accounts.models import IdentityBranding, SsoConnection, User
+from apps.accounts.services import IDENTITY_HOME_WORKFLOW
 from apps.accounts.tests.conftest import FakeZitadel
 from apps.accounts.tests.test_identity_branding import LabelPolicy
 from apps.accounts.types import (
@@ -138,7 +143,7 @@ def operator(db: None, tenant: Tenant, owner: User) -> Actor:
 def workforce(settings: Any) -> None:
     """A deployment whose workforce door is configured — both halves."""
     settings.GOOGLE_OAUTH_CLIENT_ID = "google-client-id"
-    settings.GOOGLE_OAUTH_CLIENT_SECRET = "google-client-secret"  # pragma: allowlist secret
+    settings.GOOGLE_OAUTH_CLIENT_SECRET = "google-client-secret"  # noqa: S105 — a fake IdP client secret the test world configures  # pragma: allowlist secret
     settings.GOOGLE_WORKSPACE_DOMAINS = [WORKFORCE_DOMAIN]
 
 
@@ -202,7 +207,12 @@ def _audit(capsys: Any, *, expect_exit: int = 0) -> str:
 
 
 def _platform_runs() -> list[WorkflowRun]:
-    return list(WorkflowRun.objects.for_platform().order_by("created_at"))
+    """The platform runs this module's asks start — never a tenant's realm, asked at its birth."""
+    return list(
+        WorkflowRun.objects.for_platform()
+        .exclude(type=IDENTITY_HOME_WORKFLOW)
+        .order_by("created_at")
+    )
 
 
 # --- I3.1 · the ownership table is in the tree -------------------------------
@@ -232,7 +242,7 @@ def test_the_ownership_table_names_every_kind_the_command_repairs(
     # And the two the table declares OUT of this command's reach are in it as
     # rows rather than as absences: a fact with no row is indistinguishable
     # from a fact nobody thought about.
-    assert "zitadel_sub" in table
+    assert "identity join" in table
     assert "applications" in table
 
 
@@ -249,10 +259,15 @@ def test_every_repaired_kind_is_either_a_run_or_the_declared_seed_road(
     design, the seed's writers are the one door onto both, so they are on the
     seed road and deliberately NOT in that vocabulary.
 
+    A tenant's realm is a third road: its run is `EnsureTenantIdentityHomeWorkflow`
+    rather than the configuration sync, so its kind is the audit's own spelling
+    and not `types.py`'s, and its ask is `services.start_identity_home`.
+
     Asserted as a partition rather than as a list, because the failure this
     catches is a kind added to `REPAIRED_KINDS` with no road behind it at all.
     """
     assert set(zitadel_reconcile.REPAIRED_KINDS) == {
+        IDENTITY_HOME_KIND,
         KIND_SSO_CONNECTION,
         KIND_WORKFORCE_PROVIDER,
         KIND_IDENTITY_BRANDING,
@@ -260,7 +275,12 @@ def test_every_repaired_kind_is_either_a_run_or_the_declared_seed_road(
         LOGIN_CLIENT_KIND,
     }
     runs = set(zitadel_reconcile.REPAIRED_KINDS) - set(zitadel_reconcile.SEED_ROAD_KINDS)
-    assert runs == {KIND_SSO_CONNECTION, KIND_WORKFORCE_PROVIDER, KIND_IDENTITY_BRANDING}
+    assert runs == {
+        IDENTITY_HOME_KIND,
+        KIND_SSO_CONNECTION,
+        KIND_WORKFORCE_PROVIDER,
+        KIND_IDENTITY_BRANDING,
+    }
     assert set(zitadel_reconcile.SEED_ROAD_KINDS) == {APPLICATIONS_KIND, LOGIN_CLIENT_KIND}
     assert not {APPLICATIONS_KIND, LOGIN_CLIENT_KIND} & {
         KIND_SSO_CONNECTION,
@@ -411,7 +431,7 @@ def test_a_changed_branding_row_is_a_new_run_without_any_observation(
     `set_identity_branding` supersedes rather than overwrites, so a second call
     with different colours is a second intent — and it gets its own run because
     the key carries a digest of the stated fields, the same shape
-    `_identity_config_key` has carried since W2-R5.
+    `_identity_config_key` has always carried.
     """
     first = services.set_identity_branding(actor=operator, tenant=None, accent="#111111")
     second = services.set_identity_branding(actor=operator, tenant=None, accent="#222222")
@@ -555,15 +575,20 @@ def test_a_workforce_door_switched_off_is_asked_to_come_down(
     assert runs[-1].workflow_id.startswith("platform:accounts:identity_config:workforce-")
 
 
-def test_the_activity_takes_the_workforce_door_down_when_the_env_says_off(
+def test_the_workforce_door_off_fails_loudly_over_a_live_provider(
     instance: FakeZitadel, settings: Any
 ) -> None:
-    """And the ask lands: the provider ends deactivated, not deleted.
+    """The door off meets a provider this build cannot deactivate — and says so.
 
-    Deactivated rather than removed for the reason `_apply_sso_connection` gives
-    about a disabled connection — the object and its links stay, so a deployment
-    that turns the door back on tomorrow does not find everybody unlinked.
+    MEASURED on the pinned build (2026-09-30): the legacy `/idps/{id}/_deactivate`
+    answers a provider TEMPLATE `400 Errors.Org.IDPConfig.NotActive (Org-BBmd0)`
+    while it is ACTIVE, and the templates have no deactivation of their own. The
+    client used to read "NotActive" as already done and report a release over a
+    live provider; it now reads the provider back and fails the run naming it.
+    The workforce door's real release is a road not built yet (recorded for the
+    defects lane); what is pinned here is that nothing claims it happened.
     """
+    from apps.accounts import zitadel
     from apps.accounts.activities import apply_identity_config
     from apps.accounts.types import IdentityConfigSync
 
@@ -575,15 +600,12 @@ def test_the_activity_takes_the_workforce_door_down_when_the_env_says_off(
         "state": "IDP_STATE_ACTIVE",
     }
 
-    applied = apply_identity_config(
-        IdentityConfigSync(kind=KIND_WORKFORCE_PROVIDER, key="workforce-abc123")
-    )
+    with pytest.raises(zitadel.ZitadelError, match="still IDP_STATE_ACTIVE"):
+        apply_identity_config(
+            IdentityConfigSync(kind=KIND_WORKFORCE_PROVIDER, key="workforce-abc123")
+        )
 
-    assert applied.resource_id == "9"
-    # The fake records deactivation in its own set rather than mutating the
-    # object, because Zitadel does too: the state lives on the IdP's own
-    # `state` field and the deactivate endpoint answers `{}`.
-    assert "9" in instance.deactivated_idps
+    assert "9" not in instance.deactivated_idps
 
 
 def test_a_connection_drift_is_asked_for_against_its_own_tenant(
@@ -772,7 +794,7 @@ def test_a_failed_run_is_reopened_rather_than_refused(
     intent, which is the opposite of what the operator wants.
     """
     row = _branded(operator)
-    run = WorkflowRun.objects.for_platform().get()
+    run = WorkflowRun.objects.for_platform().exclude(type=IDENTITY_HOME_WORKFLOW).get()
     run.status = WorkflowRun.Status.FAILED
     run.error = "zitadel said no"
     run.save(update_fields=["status", "error"])
@@ -1305,3 +1327,36 @@ def test_an_unreadable_login_client_surface_refuses_the_whole_run(
         for one in seeded.bodies[before:]
         if one[0] == "PUT" or (one[0] == "POST" and not one[1].endswith("_search"))
     ]
+
+
+def test_a_stale_staff_join_is_retired_and_its_realm_row_kept(
+    label: LabelPolicy,
+    operator: Actor,
+    seeded: FakeZitadel,
+    tenant: Tenant,
+    owner: User,
+    capsys: Any,
+) -> None:
+    """A `staff` row whose subject also holds a tenant-realm row is a rollback's leftover."""
+    from apps.accounts.models import STAFF_REALM, SsoIdentity
+
+    _branded(operator)
+    SsoIdentity.objects.filter(user=owner, connection__isnull=True).delete()
+    for realm, row_tenant in ((STAFF_REALM, None), ("realm-777", tenant)):
+        SsoIdentity.objects.create(
+            user=owner,
+            realm=realm,
+            subject="sub-twice",
+            tenant=row_tenant,
+            connection=None,
+            email=owner.email,
+        )
+
+    dry = _run(capsys, "--dry-run", expect_exit=0)
+    assert "would retire" in dry
+    assert SsoIdentity.objects.filter(realm=STAFF_REALM, subject="sub-twice").exists()
+
+    out = _run(capsys, expect_exit=0)
+    assert "retired" in out
+    rows = SsoIdentity.objects.filter(subject="sub-twice", connection__isnull=True)
+    assert list(rows.values_list("realm", flat=True)) == ["realm-777"]

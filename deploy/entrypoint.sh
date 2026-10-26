@@ -98,7 +98,11 @@ DJB_DEFERRED_ALLOWED='CLICKSTACK_API_KEY'
 #   DATABASE_PASSWORD    because the application's role cannot create a table
 #                        (deploy/grants.sql.py). Every other container runs as
 #                        the app role, from the file.
-#   DJANGO_SETTINGS_MODULE   the image's own, and never an environment's opinion.
+#   DJANGO_SETTINGS_MODULE   compose's (`config.settings.production`, set per
+#                        service in deploy/compose.yaml) — or, on a bare
+#                        `docker run` with none set, the `setdefault` in
+#                        config/asgi.py and apps/workflows/worker.py, which is
+#                        production too. Never an environment file's opinion.
 #
 # So: snapshot these before the file speaks, restore them after. Extend the list
 # with DJB_CONTAINER_OWNED rather than editing this file — a deployment that
@@ -242,6 +246,16 @@ if [ -n "$DEFERRED_ACCEPTED" ]; then
     # infer from dropped spans an hour later.
     log "deferred slot accepted:${DEFERRED_ACCEPTED} — still the sentinel, so the sink is not authenticated yet (runbook Part 9, step 54)"
 fi
+
+# --- Step 1c: BEHIND_PROXY=1 travels with the one peer range uvicorn believes --
+case "$(printf '%s' "${BEHIND_PROXY:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|on|ok|y|yes)
+        case "${FORWARDED_ALLOW_IPS:-}" in
+            "") die "BEHIND_PROXY=1 and FORWARDED_ALLOW_IPS is unset, so uvicorn believes no proxy and every client address is the proxy's. Regenerate the env file (deploy/provision.sh env-file) or set FORWARDED_ALLOW_IPS to this stack's network subnet (deploy/compose.yaml declares it)." ;;
+            *"*"*) die "FORWARDED_ALLOW_IPS='${FORWARDED_ALLOW_IPS}' believes X-Forwarded-For from any peer. Name this stack's network subnet (deploy/compose.yaml declares it), never '*'." ;;
+        esac
+        ;;
+esac
 
 # --- Step 2: the belt --------------------------------------------------------
 # Over THIS PROCESS'S environment — everything step 1 just materialized, plus

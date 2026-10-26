@@ -35,8 +35,8 @@ from django.conf import settings
 from django.contrib.auth import BACKEND_SESSION_KEY, HASH_SESSION_KEY, SESSION_KEY
 
 from apps.accounts import oauth
-from apps.accounts.models import User
-from apps.accounts.services import issue_token, record_zitadel_identity
+from apps.accounts.models import STAFF_REALM, User
+from apps.accounts.services import issue_token, record_identity
 from apps.accounts.tests.stub_issuer import StubIssuer, sign_jwt, wrongly_signed
 from apps.core.actor import Actor, actor_for, system_actor
 from apps.core.asyncdb import run_db
@@ -44,7 +44,7 @@ from apps.core.audit import AuditEntry
 from apps.core.middleware import AUTHORIZATION_HEADER, ORG_HEADER
 from apps.core.models import Organization, Tenant
 from apps.core.services import create_organization
-from apps.core.tests.test_mcp import MCP_HEADERS, PROTOCOL_VERSION, running
+from apps.core.tests.wire import BASE_URL, MCP_HEADERS, MCP_URL, initialize, rpc, running
 
 # `transaction=True` because the tool's service commits: `create_widget`
 # registers work on `transaction.on_commit`, and a test that never committed
@@ -52,16 +52,13 @@ from apps.core.tests.test_mcp import MCP_HEADERS, PROTOCOL_VERSION, running
 # (apps/conftest.py) is what keeps that commit from dialling Temporal.
 pytestmark = [pytest.mark.django_db(transaction=True), pytest.mark.asyncio]
 
-BASE_URL = "http://testserver"
-MCP_URL = "/mcp"
-
 # The audience this deployment's tokens must name. An arbitrary string here
 # standing in for the id Zitadel gives the MCP API application: what is under
 # test is that the value is *checked*, not what it is.
 AUDIENCE = "mcp-resource-id"
 
 # The Zitadel subject the `owner` is joined to. `User.zitadel_sub` is the one
-# column that turns "a valid token" into "somebody here" (W2-R3's join).
+# column that turns "a valid token" into "somebody here" (the identity join).
 SUBJECT = "zitadel-subject-owner"
 
 # A widget is created by name over the tool door. `apps.example` is deliberately
@@ -97,33 +94,11 @@ BEARER_NOT_VALID = "That bearer token is not valid."
 # --- the wire -----------------------------------------------------------------
 
 
-def rpc(method: str, params: dict[str, Any] | None = None, request_id: int = 1) -> dict[str, Any]:
-    body: dict[str, Any] = {"jsonrpc": "2.0", "id": request_id, "method": method}
-    if params is not None:
-        body["params"] = params
-    return body
-
-
 def result(response: httpx.Response) -> dict[str, Any]:
     payload = response.json()
     assert "error" not in payload, payload
     got: dict[str, Any] = payload["result"]
     return got
-
-
-async def initialize(client: httpx.AsyncClient, headers: dict[str, str]) -> httpx.Response:
-    return await client.post(
-        MCP_URL,
-        headers=headers,
-        json=rpc(
-            "initialize",
-            {
-                "protocolVersion": PROTOCOL_VERSION,
-                "capabilities": {},
-                "clientInfo": {"name": "oauth-test", "version": "1"},
-            },
-        ),
-    )
 
 
 async def write_a_widget(
@@ -192,13 +167,13 @@ def access_token(
 def oauth_user(owner: User) -> User:
     """The `owner`, joined to a Zitadel subject through the one writer.
 
-    `record_zitadel_identity` rather than `owner.zitadel_sub = ...`: the service
-    is the only thing that writes this column (house rule 10 and W2-R3's ADR),
+    `record_identity` rather than a row written by hand: the service
+    is the only thing that writes the identity join (house rules 10 and 57),
     and a test that wrote it directly would be proving the door against a join
     the product cannot actually make.
     """
-    return record_zitadel_identity(
-        user=owner, subject=SUBJECT, tenant=None, actor=system_actor(tenant=None)
+    return record_identity(
+        realm=STAFF_REALM, user=owner, subject=SUBJECT, tenant=None, actor=system_actor(tenant=None)
     )
 
 
@@ -223,8 +198,12 @@ def nomad_oauth_user(nomad: User) -> User:
     exact state a first sign-in through Zitadel leaves somebody in, before an
     invitation is accepted.
     """
-    return record_zitadel_identity(
-        user=nomad, subject=NOMAD_SUBJECT, tenant=None, actor=system_actor(tenant=None)
+    return record_identity(
+        realm=STAFF_REALM,
+        user=nomad,
+        subject=NOMAD_SUBJECT,
+        tenant=None,
+        actor=system_actor(tenant=None),
     )
 
 

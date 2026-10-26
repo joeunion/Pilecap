@@ -1,0 +1,30 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "end", "text": ""}
+"""What holds a widget policy in the book: the live widgets that name it."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+
+from apps.example.models import Widget, WidgetPolicy
+from pilecap import Blocker
+from pilecap.tenancy import Tenant
+
+
+def policy_named_by_live_widgets(*, tenant: Tenant, obj: WidgetPolicy) -> tuple[Blocker, ...]:
+    """One blocker when any LIVE widget names this policy, else nothing."""
+    # rule-24: a blocker counts every live child in the tenant, hat or no hat.
+    held = Widget.objects.for_tenant(tenant).filter(policy=obj).exists()
+    if not held:
+        return ()
+    return (
+        Blocker(
+            noun="widget",
+            door=f"route:widget-list?policy={obj.pk}",
+            label="Archive the widgets that name this policy, or give them another, first",
+        ),
+    )
+
+
+BLOCKERS: dict[str, Callable[..., tuple[Blocker, ...]]] = {
+    "widget_policy": policy_named_by_live_widgets,
+}

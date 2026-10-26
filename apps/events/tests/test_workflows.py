@@ -38,6 +38,7 @@ from temporalio.worker import Worker
 from apps.core import bridge
 from apps.core.actor import system_actor
 from apps.core.asyncdb import run_async, run_db
+from apps.core.determinism import reason_of as _reason
 from apps.core.idempotency import IdempotencyRecord
 from apps.core.models import Tenant
 from apps.core.time import in_days, now
@@ -52,7 +53,7 @@ from apps.events.types import (
     ReconcileOutbox,
     ReconcileOutcome,
 )
-from apps.events.workflows import RECONCILE_MAX_BATCHES, ReconcileOutboxWorkflow, _reason
+from apps.events.workflows import RECONCILE_MAX_BATCHES, ReconcileOutboxWorkflow
 from apps.example.events import WIDGET_CREATED
 from apps.workflows import client as client_module
 from apps.workflows.client import attach_interceptors, build_worker
@@ -64,7 +65,7 @@ from apps.workflows.services import start_workflow, workflow_id
 pytestmark = pytest.mark.django_db(transaction=True)
 
 TASK_QUEUE = "djb-events-tests"
-SECRET = "a-shared-secret"  # pragma: allowlist secret
+SECRET = "a-shared-secret"  # noqa: S105 — a signing secret the test both signs and verifies with  # pragma: allowlist secret
 
 
 def seed(*, tenant: Tenant, url: str = "https://subscriber.example/hook") -> tuple[Event, Any]:

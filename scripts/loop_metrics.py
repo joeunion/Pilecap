@@ -3,6 +3,7 @@
     .venv/bin/python scripts/loop_metrics.py [--in-flight F] [--readouts F]
                                              [--bank-logs DIR] [--loop-logs DIR]
                                              [--git REPO] [--cycle NAME] [--json]
+                                             [--speed]
 
 It reads four things and writes nothing:
 
@@ -37,7 +38,15 @@ dispatch row's last cell carries
 
 where <t> is `YYYY-MM-DD HH:MM`, or a bare `HH:MM` inheriting the date of the
 nearest dated field before it in the same cell, or an em dash for a stage that
-was not reached. ONE CLOCK, PDT — an unlabelled time is PDT and a time labelled
+was not reached. A rung row may add, after them, the coding cells `--speed` reads:
+
+    commits=<t>..<t> fold=<t> loop=<s> held=<class>:<min>[,<class>:<min>] train=<n>
+
+the branch's first and last non-merge commit (`git log --format=%cI`), the hand
+fold's merge commit, the bank's `took`, the classifier and owner holds; each is
+optional and a row without them reads exactly as before.
+
+ONE CLOCK, PDT — an unlabelled time is PDT and a time labelled
 with any other zone is exit 2, because two clocks in one ledger (CEST rows
 beside unlabelled ones) is a measured defect of the rows this grammar replaces
 and normalising them after the fact is guesswork wearing arithmetic.
@@ -84,7 +93,12 @@ WHAT IT DOES NOT COVER, declared rather than discovered:
     rung to the first wave pushed after it merged; a rung deliberately held out
     of that push is attributed to it anyway, and the only tell is a merge→push
     figure that disagrees with the wave's other rungs.
+ 7. WHETHER `commits=` IS STILL THE BRANCH'S. The PM copies it from `git log`;
+    a builder that amends or squashes afterwards moves the truth and not the cell.
 """
+
+# The road marker above `speed_rows` is one line by its grammar (quality/roads.py, TEXT_MARKER_RE).
+# ruff: noqa: E501
 
 from __future__ import annotations
 
@@ -92,6 +106,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import pathlib
 import re
 import statistics
 import subprocess
@@ -99,11 +114,15 @@ import sys
 from collections.abc import Sequence
 from typing import Any
 
+# THE CHECKOUT ROOT ON `sys.path`, so `quality/` imports from any cwd — this file
+# is run as `python3 scripts/<name>.py`, which puts `scripts/` there and nothing else.
+_ROOT = str(pathlib.Path(__file__).resolve().parent.parent)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from quality.could_not_look import CouldNotLook as CannotLook  # noqa: E402
+
 # --- the refusal -------------------------------------------------------------
-
-
-class CannotLook(Exception):
-    """Something could not be read. Exit 2, nothing printed as a number."""
 
 
 def refuse(what: str, *more: str) -> CannotLook:
@@ -113,6 +132,7 @@ def refuse(what: str, *more: str) -> CannotLook:
 # --- the ledger --------------------------------------------------------------
 
 STAMP_FIELDS = ("sent", "done", "met", "merged", "pushed", "staged")
+CODING_FIELDS = ("commits", "fold", "loop", "held", "train")
 RUNG_STAGES = ("sent", "done", "met", "merged")
 
 # The one clock. An unlabelled time IS this one; any other label is two clocks.
@@ -121,11 +141,14 @@ _OTHER_CLOCKS = re.compile(r"\b(CES?T|UTC|GMT|BST|E[SD]T|P[SD]T|Z)\b")
 
 _NOT_REACHED = {"—", "-", "–", ""}
 _STAMPS_CELL = re.compile(r"\bstamps:\s*(.*)$")
-_FIELD = re.compile(r"\b(" + "|".join(STAMP_FIELDS) + r")=")
+_FIELD = re.compile(r"\b(" + "|".join(STAMP_FIELDS + CODING_FIELDS) + r")=")
 _DATED = re.compile(r"^(\d{4}-\d{2}-\d{2})[ T](\d{1,2}):(\d{2})$")
 _BARE = re.compile(r"^(\d{1,2}):(\d{2})$")
 _SHA8 = re.compile(r"^([0-9a-f]{7,40})\s+(.*)$")
 _WAVE_ID = re.compile(r"^WAVE-[A-Za-z0-9]+$")
+_SPAN = re.compile(r"^(.+?)\.\.(.+)$")
+_SECONDS = re.compile(r"^(\d+)s?$")
+_HELD = re.compile(r"^([a-z][a-z0-9-]*):(\d+)$")
 
 
 class Row:
@@ -139,7 +162,13 @@ class Row:
         self.role = cells[2]
         self.state = cells[3]
         self.notes = cells[6]
+        self.text = " | ".join(cells)
         self.stamps: dict[str, dt.datetime | None] = {}
+        self.commits: tuple[dt.datetime, dt.datetime] | None = None
+        self.fold: dt.datetime | None = None
+        self.loop_s: int | None = None
+        self.held: list[tuple[str, int]] = []
+        self.train: int | None = None
         self.merged_sha: str | None = None
         self.stamped = False
 
@@ -207,7 +236,7 @@ def parse_stamps(row: Row) -> None:
         return
     row.stamped = True
     fields = dict(split_stamps(found.group(1)))
-    unknown = set(fields) - set(STAMP_FIELDS)
+    unknown = set(fields) - set(STAMP_FIELDS) - set(CODING_FIELDS)
     if unknown:
         raise refuse(
             f"{row.where()}: the stamps cell carries a field this grammar has no clock for: "
@@ -222,6 +251,57 @@ def parse_stamps(row: Row) -> None:
         row.stamps[field] = value
         if value is not None:
             previous = value
+    parse_coding(row, fields)
+
+
+def parse_coding(row: Row, fields: dict[str, str]) -> None:
+    """Fill the coding cells, or refuse naming the row and the cell."""
+    raw = fields.get("commits", "").strip()
+    if raw not in _NOT_REACHED:
+        span = _SPAN.match(raw)
+        sent = row.stamps.get("sent")
+        if not span or sent is None:
+            raise refuse(
+                f"{row.where()}: the `commits` cell reads `{raw}` and must be `<t>..<t>` on a row "
+                "with a `sent` stamp, whose date a bare time inherits.",
+            )
+        first, _ = _one_stamp(row, "commits", span.group(1).strip(), sent)
+        last, _ = _one_stamp(row, "commits", span.group(2).strip(), first)
+        assert first is not None and last is not None  # noqa: S101 — narrows Optional for mypy; a None is a bug, not input
+        row.commits = (first, last)
+    raw = fields.get("fold", "").strip()
+    if raw not in _NOT_REACHED:
+        if row.commits is None:
+            raise refuse(f"{row.where()}: a `fold` cell needs the `commits` cell it extends.")
+        row.fold, _ = _one_stamp(row, "fold", raw, row.commits[0])
+    merged = row.stamps.get("merged")
+    for name, when in (("commits", row.commits[1] if row.commits else None), ("fold", row.fold)):
+        if merged is not None and when is not None and when > merged:
+            raise refuse(
+                f"{row.where()}: the `{name}` cell ({when:%Y-%m-%d %H:%M}) is after the `merged` "
+                "stamp; a branch's commits sit inside the row's window.",
+            )
+    raw = fields.get("loop", "").strip()
+    if raw not in _NOT_REACHED:
+        seconds = _SECONDS.match(raw)
+        if not seconds:
+            raise refuse(f"{row.where()}: the `loop` cell reads `{raw}`, not a count of seconds.")
+        row.loop_s = int(seconds.group(1))
+    raw = fields.get("held", "").strip()
+    if raw not in _NOT_REACHED:
+        for part in raw.split(","):
+            held = _HELD.match(part.strip())
+            if not held:
+                raise refuse(
+                    f"{row.where()}: the `held` cell reads `{raw}`, and each hold is "
+                    "`<class>:<min>`.",
+                )
+            row.held.append((held.group(1), int(held.group(2))))
+    raw = fields.get("train", "").strip()
+    if raw not in _NOT_REACHED:
+        if not raw.isdigit() or int(raw) < 1:
+            raise refuse(f"{row.where()}: the `train` cell reads `{raw}`, not a count of branches.")
+        row.train = int(raw)
 
 
 def _one_stamp(
@@ -625,7 +705,7 @@ def build_report(args: argparse.Namespace) -> tuple[list[str], dict[str, Any]]:
     out: list[str] = []
     say = out.append
 
-    say("== loop_metrics · the cost-baseline row, derived")
+    say(f"== loop_metrics · the {'SPEED readouts' if args.speed else 'cost-baseline row'}, derived")
     say(f"   ledger    {args.in_flight}")
     for extra in args.archive or []:
         say(f"   archive   {extra}")
@@ -893,6 +973,9 @@ def build_report(args: argparse.Namespace) -> tuple[list[str], dict[str, Any]]:
         "git": git,
         "row": [{"measure": m, "value": v} for m, v, _ in measures],
     }
+    if args.speed:
+        speed_lines, payload["speed"] = speed_rows(rows, waves, members)
+        out = out[: out.index("") + 1] + speed_lines
     return out, payload
 
 
@@ -906,6 +989,204 @@ def _bank_walls(banks: dict[str, Any], legs: dict[str, list[int]]) -> str:
     return " = ".join([parts[0], " + ".join(parts[1:])]) if len(parts) > 1 else parts[0]
 
 
+# --- the speed readouts ----------------------------------------------------------
+
+_LOOP_CELL = re.compile(
+    r"\bloop: (hit\b|miss\(code: [^)]*\)|miss\([^)]*\)|docs-only reuse\b)", re.IGNORECASE
+)
+_FOLD_LINE = re.compile(r"\bfold ([0-9a-f]{7,40}): (equals|differs|regenerated)\b")
+_TAX = re.compile(r"\btax: (\?|\d+(?:\.\d+)?)(\+\?)? min\b")
+LOOP_KINDS = ("hit", "miss(code: …)", "miss(no-ledger)", "docs-only reuse")
+TRIPWIRE = (2, 20)
+
+
+def _loop_kind(cell: str) -> str:
+    lowered = cell.lower()
+    if lowered == "hit":
+        return "hit"
+    if lowered.startswith("miss(code:"):
+        return "miss(code: …)"
+    if lowered == "miss(no-ledger)":
+        return "miss(no-ledger)"
+    if lowered == "docs-only reuse":
+        return "docs-only reuse"
+    return cell
+
+
+def _share(part: float | None, whole: float | None) -> str:
+    if part is None or not whole:
+        return "—"
+    return f"{round(100 * part / whole)} %"
+
+
+def _coding_span(row: Row) -> tuple[dt.datetime, dt.datetime] | None:
+    if row.commits is None:
+        return None
+    first, last = row.commits
+    return first, max(last, row.fold) if row.fold is not None else last
+
+
+# road: speed_rows — The three SPEED readouts, derived from the ledger. · example: quality/tests/test_loop_metrics.py::test_a_row_with_coding_cells_yields_a_ratio
+def speed_rows(
+    rows: list[Row], waves: list[Row], members: dict[str, list[Row]]
+) -> tuple[list[str], dict[str, Any]]:
+    """The three SPEED readouts, derived from the ledger."""
+    out: list[str] = []
+    say = out.append
+    rungs = [r for r in rows if r.stamped and not r.is_wave and not r.is_verification]
+    per_rung: dict[str, Any] = {}
+    unmeasured: list[str] = []
+
+    say("-- SPEED, per rung · coding = commits span + fold span · else = wall − coding")
+    for row in rungs:
+        if row.commits is None:
+            unmeasured.append(row.ident)
+            say(f"   {row.ident:<14} unmeasured — no commits= cell")
+            continue
+        first, last = row.commits
+        fold_min = minutes(last, row.fold) if row.fold is not None and row.fold > last else 0.0
+        coding = (minutes(first, last) or 0.0) + (fold_min or 0.0)
+        wall = minutes(row.stamps.get("sent"), row.stamps.get("merged"))
+        bank_met = minutes(row.stamps.get("done"), row.stamps.get("met"))
+        held = ",".join(f"{c}:{m}" for c, m in row.held) or "—"
+        say(
+            f"   {row.ident:<14} dispatch → merge "
+            f"{number(wall) + ' min' if wall is not None else 'not merged'} · "
+            f"coding {number(coding)} min ({_share(coding, wall)}) · "
+            f"bank → MET {number(bank_met) + ' min' if bank_met is not None else '—'} · "
+            f"loop {str(row.loop_s) + ' s' if row.loop_s is not None else '—'} · held {held}"
+        )
+        else_min = wall - coding if wall is not None else None
+        say(
+            f"   {'':<14} else {number(else_min)} min"
+            + ("" if row.fold is not None else " · fold span 0 (no fold= cell)")
+        )
+        per_rung[row.ident] = {
+            "wall_min": wall,
+            "coding_min": coding,
+            "else_min": else_min,
+            "bank_to_met_min": bank_met,
+            "loop_s": row.loop_s,
+            "held": row.held,
+        }
+    say(
+        f"   {len(per_rung)} of {len(rungs)} rung(s) measured"
+        + (f"; unmeasured, counted and named: {', '.join(unmeasured)}" if unmeasured else "")
+    )
+    say("")
+
+    say("-- SPEED, per wave · coding = the union of its rungs' coding spans")
+    per_wave: dict[str, Any] = {}
+    for wave in waves:
+        mine = members[wave.ident]
+        sents = [r.stamps["sent"] for r in mine if r.stamps.get("sent") is not None]
+        start = min(t for t in sents if t is not None) if sents else None
+        wall = minutes(start, wave.stamps.get("pushed"))
+        spans = sorted(span for span in (_coding_span(r) for r in mine) if span is not None)
+        union = 0.0
+        open_span: list[dt.datetime] | None = None
+        for first, last in spans:
+            if open_span is None or first > open_span[1]:
+                if open_span is not None:
+                    union += minutes(open_span[0], open_span[1]) or 0.0
+                open_span = [first, last]
+            else:
+                open_span[1] = max(open_span[1], last)
+        if open_span is not None:
+            union += minutes(open_span[0], open_span[1]) or 0.0
+        staged = minutes(wave.stamps.get("pushed"), wave.stamps.get("staged"))
+        coding_text = (
+            f"coding {number(union)} min ({_share(union, wall)})"
+            if spans
+            else "coding — (no member carries commits=)"
+        )
+        say(
+            f"   {wave.ident:<14} first dispatch → pushed "
+            f"{number(wall) + ' min' if wall is not None else '—'} · {coding_text}"
+            + (f" · pushed → staged {number(staged)} min" if staged is not None else "")
+        )
+        per_wave[wave.ident] = {
+            "wall_min": wall,
+            "coding_min": union if spans else None,
+            "pushed_to_staged_min": staged,
+        }
+    if not waves:
+        say("   no wave row in this ledger — nothing to measure per wave")
+    say("")
+
+    say("-- SPEED, the `loop:` cells and the pasted fold lines")
+    kinds: dict[str, int] = {kind: 0 for kind in LOOP_KINDS}
+    others: list[str] = []
+    folds: dict[str, str] = {}
+    for row in rows:
+        for hit in _LOOP_CELL.finditer(row.text):
+            kind = _loop_kind(hit.group(1))
+            if kind in kinds:
+                kinds[kind] += 1
+            else:
+                others.append(kind)
+        for hit in _FOLD_LINE.finditer(row.text):
+            sha, verdict = hit.group(1)[:8], hit.group(2)
+            if folds.setdefault(sha, verdict) != verdict:
+                raise refuse(
+                    f"{row.where()}: fold {sha} is pasted as `{verdict}` here and as "
+                    f"`{folds[sha]}` in an earlier row; one merge has one equality.",
+                )
+    say(
+        "   loop: "
+        + " · ".join(f"{kind} {kinds[kind]}" for kind in LOOP_KINDS)
+        + f" · other {len(others)}"
+        + (f" ({', '.join(others)})" if others else "")
+    )
+    equals = sum(1 for v in folds.values() if v == "equals")
+    regenerated = sum(1 for v in folds.values() if v == "regenerated")
+    differs = len(folds) - equals - regenerated
+    limit, window = TRIPWIRE
+    if len(folds) < window:
+        verdict = f"{len(folds)} < {window} merges — reported, carried to the next CLOSE"
+    elif differs * window > limit * len(folds):
+        verdict = "TRIPPED — hand-resolved folds are read again"
+    else:
+        verdict = "holds"
+    say(
+        f"   fold: equals {equals} · differs {differs} · regenerated {regenerated} "
+        f"over {len(folds)} merge(s)"
+    )
+    say(f"   tripwire (differs > {limit} in {window}): {verdict}")
+    trains = [row for row in rows if row.train is not None]
+    for row in trains:
+        say(f"   train: {row.ident} carried {row.train} branch(es) in one merge")
+    carried = sum(row.train or 0 for row in trains)
+    say(f"   trains: {len(trains)} merge(s) carried {carried} branch(es)")
+
+    taxed: dict[str, str] = {}
+    for row in rungs:
+        hit = _TAX.search(row.text)
+        if hit:
+            taxed[row.ident] = hit.group(1) + (hit.group(2) or "")
+    total = sum(float(v.rstrip("+?")) for v in taxed.values() if v != "?")
+    unpriced = [ident for ident, v in taxed.items() if "?" in v]
+    say(
+        f"   tax: {number(total)} min over {len(taxed)} rung(s)"
+        + (f" (+? on {', '.join(unpriced)})" if unpriced else "")
+        + " — reported, never asserted"
+    )
+    untaxed = [row.ident for row in rungs if row.ident not in taxed]
+    if untaxed:
+        say(f"   tax: no `tax:` line on {', '.join(untaxed)}")
+
+    data = {
+        "tax": {"rows": taxed, "total_min": total, "untaxed": untaxed},
+        "per_rung": per_rung,
+        "unmeasured": unmeasured,
+        "per_wave": per_wave,
+        "loop": {**kinds, "other": others},
+        "fold": {"equals": equals, "differs": differs, "regenerated": regenerated},
+        "trains": {row.ident: row.train for row in trains},
+    }
+    return out, data
+
+
 # --- the door -------------------------------------------------------------------
 
 
@@ -916,6 +1197,7 @@ def main(argv: list[str]) -> int:
         description="Derive the cost-baseline row from the dispatch ledger, git and the logs.",
         allow_abbrev=False,
     )
+    # names, never reads: docs/product/in-flight.md — the --in-flight default; its drive hands a fixture
     parser.add_argument("--in-flight", default=os.path.join(here, "docs/product/in-flight.md"))
     parser.add_argument("--archive", action="append", default=[])
     parser.add_argument("--readouts", default=os.path.join(here, "docs/product/readouts.md"))
@@ -924,6 +1206,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--git", default=None)
     parser.add_argument("--cycle", default=None)
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--speed", action="store_true")
     args = parser.parse_args(argv)
 
     try:

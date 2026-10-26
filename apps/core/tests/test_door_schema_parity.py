@@ -62,6 +62,7 @@ import json
 from typing import Any
 
 import pytest
+from django.core.exceptions import ImproperlyConfigured
 
 from apps.accounts.models import User
 from apps.core.models import Tenant
@@ -88,8 +89,8 @@ EMPTY_WIDGET_STATS: dict[str, Any] = {
     "count": {
         "value": "0",
         "basis": {
-            "formula": "onboarded + pending",
-            "inputs": {"onboarded": "0", "pending": "0"},
+            "formula": "live + archived",
+            "inputs": {"live": "0", "archived": "0"},
         },
     }
 }
@@ -271,3 +272,90 @@ async def test_the_result_on_the_wire_is_what_it_always_was(tenant: Tenant, owne
 
     assert result.get("isError") is not True, result
     assert result["structuredContent"] == EMPTY_WIDGET_STATS, result
+
+
+# --- 4 · a tool the library built no output schema for refuses the build ----------
+
+
+class _NoSchema:
+    """A return type pydantic cannot render — what a patched module global hands a tool."""
+
+
+async def test_a_tool_returning_a_type_with_no_schema_refuses_the_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apps.example import mcp as example_mcp
+    from config.mcp import build_server
+
+    monkeypatch.setattr(example_mcp, "WidgetOut", _NoSchema)
+    with pytest.raises(ImproperlyConfigured) as refused:
+        build_server()
+    said = str(refused.value)
+    assert "MCP tool `archive_widget` returns `WidgetOut`" in said, said
+    assert "_NoSchema" in said and "no structuredContent" in said, said
+
+
+async def test_the_real_server_has_an_output_schema_on_every_tool() -> None:
+    from apps.core.mcp import refuse_unstructured_results
+    from config.mcp import server
+
+    refuse_unstructured_results(server)
+
+
+def _server_with_a_tool_returning(annotation: object) -> Any:
+    from mcp.server import MCPServer
+
+    def plant() -> None:
+        """A planted tool; only its declared return type is under test."""
+
+    plant.__annotations__ = {"return": annotation}
+    server: MCPServer[Any] = MCPServer(name="test", version="1")
+    server.add_tool(plant, name="plant")
+    return server
+
+
+def _content_and_stdlib_returns() -> list[object]:
+    from datetime import datetime
+
+    from mcp.server.mcpserver.utilities.types import Image
+    from mcp_types import CallToolResult, TextContent
+
+    return [
+        dict,
+        list,
+        str,
+        int,
+        None,
+        datetime,
+        dict[str, Any],
+        list[int],
+        int | None,
+        Image,
+        TextContent,
+        list[TextContent],
+        CallToolResult,
+    ]
+
+
+@pytest.mark.parametrize("annotation", _content_and_stdlib_returns(), ids=repr)
+def test_a_tool_returning_a_container_a_primitive_or_content_builds(annotation: object) -> None:
+    from apps.core.mcp import refuse_unstructured_results
+
+    refuse_unstructured_results(_server_with_a_tool_returning(annotation))
+
+
+def test_a_tool_whose_return_no_longer_resolves_builds() -> None:
+    from apps.core.mcp import refuse_unstructured_results
+
+    server = _server_with_a_tool_returning(_NoSchema)
+    (tool,) = server._tool_manager.list_tools()
+    tool.fn.__annotations__ = {"return": "NowhereOut"}
+    refuse_unstructured_results(server)
+
+
+def test_a_tool_returning_a_class_of_ours_with_no_schema_refuses() -> None:
+    from apps.core.mcp import refuse_unstructured_results
+
+    with pytest.raises(ImproperlyConfigured) as refused:
+        refuse_unstructured_results(_server_with_a_tool_returning(_NoSchema))
+    assert "MCP tool `plant` returns" in str(refused.value), refused.value

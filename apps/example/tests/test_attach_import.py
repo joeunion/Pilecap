@@ -1,17 +1,4 @@
-"""The widget takes notes, tags and files, and a file of widgets imports.
-
-**Attachments** are declared on the model (`Widget.attachments`) and live in
-their own apps; the widget's detail answers the words on it (`tags`), and the
-notes app answers `?subject=widget:<id>` for it. Nothing here monkeypatches the
-declaration: the tree declares it.
-
-**Import** is driven end to end on a real worker — a time-skipping Temporal
-server, the real worker assembly, the imports app's two runs — through the
-imports app's own services, with THIS app's `importers.py` found by discovery.
-The object store is the one double (the imports app's `memory_store`). A
-three-row file keyed on `external_ref` makes three widgets; the same rows again
-change nothing: three `unchanged`.
-"""
+"""The widget takes notes, tags and files, and a file of widgets imports."""
 
 from __future__ import annotations
 
@@ -23,21 +10,27 @@ from django.test import Client
 from temporalio.client import Client as TemporalClient
 from temporalio.testing import WorkflowEnvironment
 
-from apps.accounts.models import User
-from apps.core.actor import Actor, actor_for, system_actor
-from apps.core.asyncdb import run_db
-from apps.core.models import Organization, Tenant
-from apps.djb_imports.models import Import, ImportRow
-from apps.djb_imports.services import apply_import, create_import
-from apps.djb_imports.tests.conftest import memory_store, stored_csv
-from apps.djb_imports.types import ImportSettled
-from apps.djb_notes.tests.attach_specimen import attach as note_one
-from apps.djb_tags.tests.attach_specimen import attach as tag_one
 from apps.example.models import Widget
 from apps.example.services import create_widget
-from apps.workflows import client as client_module
-from apps.workflows.client import attach_interceptors, build_worker
-from apps.workflows.services import workflow_id
+from pilecap import Actor
+from pilecap.accounts import User
+from pilecap.imports import ImportSettled, apply_import, create_import
+from pilecap.tenancy import Organization, Tenant
+from pilecap.testing import (
+    Import,
+    ImportRow,
+    actor_for,
+    attach_interceptors,
+    build_worker,
+    memory_store,
+    replace_workflow_client,
+    run_db,
+    stored_csv,
+    system_actor,
+)
+from pilecap.testing import attach_note as note_one
+from pilecap.testing import attach_tag as tag_one
+from pilecap.workflows import workflow_id
 
 __all__ = ["memory_store"]  # the imports app's object-store double, used as a fixture below
 
@@ -77,15 +70,14 @@ def test_the_detail_answers_the_tags_and_the_notes_app_answers_for_the_widget(
 
 
 def test_the_tree_declares_the_three_attachments() -> None:
-    """The declaration the owners' positive tests used to plant — now the tree's own."""
+    """The tree declares the three attachments the owners' tests read."""
     assert Widget.attachments == ("notes", "tags", "files")
 
 
 # --- import, on a real worker -----------------------------------------------------
 
 THREE_ROWS = "external_ref,name,notes\r\nCRM-1,Alpha,a\r\nCRM-2,Bravo,b\r\nCRM-3,Charlie,c\r\n"
-# The same three rows with other line endings: other bytes, so a new run (the
-# same bytes would answer the first run, by design), and the same widgets.
+# The same three rows with other line endings: other bytes, so a new run.
 THE_SAME_ROWS_AGAIN = THREE_ROWS.replace("\r\n", "\n")
 
 
@@ -103,7 +95,7 @@ async def _local_client(
     async def connect() -> TemporalClient:
         return attach_interceptors(await TemporalClient.connect(target, namespace=namespace))
 
-    monkeypatch.setattr(client_module, "get_client", connect)
+    replace_workflow_client(monkeypatch, connect)
     return attach_interceptors(env.client)
 
 
@@ -131,9 +123,8 @@ async def test_a_three_row_file_applied_twice_is_three_widgets_then_three_unchan
     memory_store: dict[str, bytes], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def world() -> tuple[Tenant, Actor]:
-        from apps.accounts.services import create_user
-        from apps.core.models import Membership
-        from apps.core.services import add_membership, create_tenant, root_organization
+        from pilecap.accounts import create_user
+        from pilecap.tenancy import Membership, add_membership, create_tenant, root_organization
 
         tenant = create_tenant(name="Acme", slug="acme", actor=system_actor())
         owner = create_user(email="importer@acme.com", password="a" * 24)

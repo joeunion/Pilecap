@@ -57,13 +57,14 @@ from django.template.exceptions import TemplateDoesNotExist
 from django.template.loader import render_to_string
 from django.test import Client
 
+from apps.core.tests.template_shape import IDENTITY_SHAPE
 from apps.core.tests.tree_census import source_text
 
 pytestmark = pytest.mark.django_db
 
 #: The marker the entrance shell's token block declares, read from the
 #: declaration a product diverges through and never re-typed here.
-MARKER: str = django_settings.IDENTITY_SHAPE["entrance_marker"]
+MARKER: str = IDENTITY_SHAPE["entrance_marker"]
 
 TEMPLATES = Path(django_settings.BASE_DIR) / "templates"
 FRAMES_DIR = TEMPLATES / "account" / "frames"

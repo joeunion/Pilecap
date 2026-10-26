@@ -16,7 +16,7 @@ regardless. So:
   to end, because that is where they actually run;
 * **signature** is proved by calling the verifier the way a **resource server**
   must — `verify_signature=True`, with no TLS provenance to lean on — which is
-  precisely the call W2-R4's bearer validation will make, against this JWKS.
+  precisely the call the MCP door's bearer validation makes, against this JWKS.
 
 Writing it the other way round would have been easier and dishonest: a signature
 test through the callback passes with a token signed by nobody, because nothing

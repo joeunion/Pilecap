@@ -1,3 +1,5 @@
+from typing import ClassVar
+
 from django.apps import AppConfig
 
 
@@ -70,3 +72,9 @@ class FilesConfig(AppConfig):
     name = "apps.files"
     verbose_name = "Files"
     depends_on: tuple[str, ...] = ("core", "accounts", "events", "usage", "workflows")
+    ratchet_floors: ClassVar[dict[str, int]] = {
+        "91.block-tail": 622,
+        "91.docstring-tail": 2263,
+        "91.module-tail": 788,
+        "91.narrative": 3,
+    }

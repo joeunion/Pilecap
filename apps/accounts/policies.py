@@ -47,19 +47,16 @@ used to read a rank at the tenant's root. They now ask whether the actor HOLDS
 the template, and a question a tenant's own role rows can answer differently
 where a rank table never could.
 
-**`DEFAULT_ROLES` is DEFERRED, and deliberately.** The member half of these
-predicates is the compat residue's (`core.authz._attach_default_roles` clause
-5): a key with a predicate and no declaration is offered to every declared role
-and the predicate narrows it. Writing that out as data here would move what
-`defaults_for("member")` answers, which two pins of the flat product assert, and
-the conversion is one later rung over every app at once with those pins moved in
-the same diff.
+**The member half is declared as data in `DEFAULT_ROLES`** (`user.erase`,
+`user.deactivate`, `user.unlink`); the predicate narrows what the declaration offers.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from apps.accounts.models import domain_of
+from apps.accounts.selectors import get_workforce_domains
 from apps.core.actor import Actor
 from apps.core.authz import Policy, holds
 from apps.core.exceptions import Conflict
@@ -77,6 +74,14 @@ from apps.core.services import root_organization
 #: admitted — and to whoever else a tenant's own role rows name, which the rank
 #: comparison could never express.
 ADMINISTERS_THE_TENANTS_PEOPLE = "user.update"
+
+
+def is_workforce_email(email: str) -> bool:
+    """Whether the workforce door may admit this address at all."""
+    domains = get_workforce_domains()
+    if not domains:
+        return False
+    return domain_of(email) in domains
 
 
 def is_platform_operator(actor: Actor, obj: Any = None) -> bool:
@@ -165,7 +170,7 @@ def themselves_or_administers_the_whole_tenant(actor: Actor, obj: Any = None) ->
     none, and neither takes a role, a tenant or an organization as a parameter.
     The one thing self-service could destroy is a tenant left with no owner, and
     that is refused before either service writes anything
-    (`services.tenants_this_user_alone_owns`) — including, and especially, when
+    (`selectors.list_tenants_this_user_alone_owns`) — including, and especially, when
     the person acting is the sole owner themselves.
 
     **`actor.user` and not `obj.pk == actor.user_id` alone.** An anonymous or
@@ -255,4 +260,12 @@ ACTION_PROSE: dict[str, str] = {
     "sso_domain.verify": "You may not verify an email domain for this tenant.",
     "sso_identity.create": "You may not create accounts from an identity provider here.",
     "deployment.configure": "You may not change how this deployment signs people in.",
+}
+
+# The member half of the three user-wall keys, as data; the predicates above narrow it.
+
+DEFAULT_ROLES: dict[str, frozenset[str]] = {
+    "user.erase": frozenset({"member"}),
+    "user.deactivate": frozenset({"member"}),
+    "user.unlink": frozenset({"member"}),
 }

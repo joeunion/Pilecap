@@ -1,6 +1,7 @@
 /*
- * EXAMPLE — the worked Widget face's rules that an inline style cannot hold:
- * the desk row grid that stacks on a phone (patterns.md §8), and every
+ * EXAMPLE — the worked Widget face's paint, all of it (patterns.md §26: one
+ * sheet per face; nothing of the face is inline): the page, its heads and its
+ * cards' lines; the desk row grid that stacks on a phone (§8), and every
  * pressable class the face draws (the crumb §6, the family acts §6 · §20, the
  * cut chip §7, Show more §8, a sheet's primary §1, the selection bar's clear
  * §7), each of which carries the act floor and the one ring. Tokens only; no token declared here. Every selector is rooted in the
@@ -11,13 +12,14 @@
 /* golden: face begin */
 
 /* §8 at the desk: the list is the page's width; the name block first, then one
-   column per fact, aligned across rows (each row is a subgrid of the list). */
+   column per fact — the noun's own (the copy's `columns`), then the two dates —
+   aligned across rows (each row is a subgrid of the list). */
 .widget-rows {
     list-style: none;
     margin: 0;
     padding: 0;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-columns: minmax(0, 1fr) repeat(4, auto);
     column-gap: var(--space-4);
 }
 
@@ -112,6 +114,117 @@
     .widget-more {
         inline-size: 100%;
     }
+}
+
+/* The page: the list is the page's width, not the measure — the measure caps
+   prose, and rows are not prose (§8); the record caps at its grid (§9). */
+.widget-page {
+    padding: var(--space-4) var(--space-3);
+}
+
+.widget-page-record {
+    max-width: calc(var(--measure) * 1.5 + var(--space-4));
+    margin-inline: auto;
+}
+
+/* §5, §6: the page's one title, and the crumb's line above it. */
+.widget-title {
+    margin: 0 0 var(--space-3);
+    font-size: var(--type-title);
+}
+
+.widget-crumb-line {
+    margin: 0 0 var(--space-2);
+    font-size: var(--type-facts);
+}
+
+/* §13: the one line naming what is being read, over the still shapes. */
+.widget-reading {
+    margin: 0 0 var(--space-2);
+    color: var(--muted);
+}
+
+.widget-reading-one {
+    margin-block-end: var(--space-3);
+}
+
+/* §14: the sentence alone. */
+.widget-sentence {
+    margin: 0;
+}
+
+.widget-sentence-gone {
+    margin-block-end: var(--space-2);
+}
+
+/* §6: the record head — the name and its pill on one wrapping line, then the lede. */
+.widget-head-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: var(--space-2);
+}
+
+.widget-record-name {
+    margin: 0;
+    font-size: var(--type-title);
+    overflow-wrap: anywhere;
+}
+
+.widget-lede {
+    margin: var(--space-1) 0 0;
+    font-size: var(--type-facts);
+    color: var(--muted);
+}
+
+/* §10: the About card's notes; an empty description is said quietly. */
+.widget-notes {
+    margin: 0;
+}
+
+.widget-notes-empty {
+    color: var(--muted);
+}
+
+/* §9: main (the work, at most the measure wide) and the rail beside it; the
+   flex wrap is the phone's one column. */
+.widget-grid {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: var(--space-4);
+    margin-block-start: var(--space-4);
+}
+
+.widget-grid-main {
+    flex: 2 1 calc(var(--measure) / 2);
+    max-width: var(--measure);
+    display: grid;
+    gap: var(--space-3);
+}
+
+.widget-grid-rail {
+    flex: 1 1 calc(var(--measure) / 3);
+    display: grid;
+    gap: var(--space-3);
+}
+
+/* §10: the Details card's facts, a label over its value. */
+.widget-facts {
+    margin: 0;
+}
+
+.widget-fact-pair {
+    margin: 0 0 var(--space-1);
+}
+
+.widget-fact-label {
+    font-size: var(--type-facts);
+    color: var(--muted);
+}
+
+.widget-fact-value {
+    margin: 0;
 }
 
 /* golden: face end */
@@ -579,6 +692,12 @@
 /* golden: attach end */
 
 /* golden: import begin */
+
+/* §5: the import page is prose-wide, centred under its crumb. */
+.widget-page-prose {
+    max-width: var(--measure);
+    margin-inline: auto;
+}
 
 /* §5 · the import page's one primary, a step below what it will write. */
 .widget-import-foot {

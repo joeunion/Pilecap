@@ -1,0 +1,303 @@
+# golden: noun begin
+from typing import cast
+
+from apps.example.events import WIDGET_ARCHIVED, WIDGET_RESTORED
+from apps.example.models import Widget
+from apps.example.schemas import WidgetOut
+from pilecap import (
+    Actor,
+    NotFound,
+    archive_row,
+    event_payload,
+    get_logger,
+    may_be_named,
+    require,
+    restore_row,
+    service,
+)
+from pilecap.events import EMIT, listener
+from pilecap.tenancy import Tenant
+
+
+from apps.example.events import WIDGET_UPDATED
+from pilecap import as_invalid, require_live, require_version
+
+# golden: noun end
+
+
+from uuid import UUID
+
+from apps.example.events import WIDGET_MOVED
+from apps.example.schemas import WidgetMovedOut
+from pilecap import ancestor_paths, is_descendant_path, rehome
+from pilecap.accounts import User
+from pilecap.tenancy import Membership
+
+
+# golden: noun begin
+from pilecap import NON_FIELD_KEY, Invalid
+
+# golden: noun end
+# isort: split
+from apps.example.events import WIDGET_DUPLICATED
+from pilecap import duplicate_row
+
+
+from apps.example.events import WIDGET_MERGED
+from apps.example.schemas import WidgetMergedOut
+from pilecap import RepointOut, merge_rows
+
+
+from pilecap.attach import create_tag_link, list_tag_links
+
+
+from pilecap.tenancy import Organization
+
+
+# golden: noun begin
+log = get_logger("apps.example.services")
+# golden: noun end
+
+
+def _publish_widget(
+    name: str, *, tenant: Tenant, widget: Widget, actor: Actor, out: WidgetOut | None = None
+) -> bool:
+    """Say what happened inside the write's transaction: the `Out` as every viewer sees it."""
+    emit = listener(EMIT)
+    if emit is None:
+        log.info("example.event.unpublished", event_name=name, widget_id=str(widget.pk))
+        return False
+    payload = event_payload(out or WidgetOut.from_orm(widget))
+    emit(name=name, tenant=tenant, payload=payload, actor=actor)
+    return True
+
+
+@service
+def archive_widget(*, tenant: Tenant, actor: Actor, widget: Widget) -> Widget:
+    """Take a widget out of the book. **A repeat press changes nothing.**"""
+    if not may_be_named(actor, widget):
+        raise NotFound()
+    require(actor, "widget.archive", widget)
+    widget, changed = archive_row(tenant=tenant, actor=actor, row=widget, noun="widget")
+    if changed:
+        _publish_widget(WIDGET_ARCHIVED, tenant=tenant, widget=widget, actor=actor)
+    return widget
+
+
+@service
+def restore_widget(*, tenant: Tenant, actor: Actor, widget: Widget) -> Widget:
+    """Put an archived widget back in the book. **A repeat press changes nothing.**"""
+    if not may_be_named(actor, widget):
+        raise NotFound()
+    require(actor, "widget.restore", widget)
+    widget, changed = restore_row(tenant=tenant, actor=actor, row=widget, noun="widget")
+    if changed:
+        _publish_widget(WIDGET_RESTORED, tenant=tenant, widget=widget, actor=actor)
+    return widget
+
+
+# golden: noun begin
+def _locked_widget(*, tenant: Tenant, widget: Widget) -> Widget:
+    """The widget re-read under a row lock, archived or not — what every edit writes."""
+    return (
+        Widget.objects.for_tenant(tenant)
+        .including_archived()
+        .visible_to(widget.organization)
+        .select_related("owner", "organization", "archived_by")
+        .select_for_update(of=("self",))
+        .get(pk=widget.pk)
+    )
+
+
+@service
+def update_widget(
+    *,
+    tenant: Tenant,
+    actor: Actor,
+    widget: Widget,
+    version: int | None = None,
+    name: str | None = None,
+    notes: str | None = None,
+    # golden: noun end
+) -> Widget:
+    # golden: noun end
+
+    # golden: noun begin
+    if not may_be_named(actor, widget):
+        raise NotFound()
+    locked = _locked_widget(tenant=tenant, widget=widget)
+    # Every other write on the noun refuses `archived` first.
+    require_live(locked, noun="widget")
+    require(actor, "widget.update", locked)
+    if version is not None:
+        require_version(locked, version)
+    # golden: noun end
+
+    updated: list[str] = []
+    if name is not None:
+        locked.name = name.strip()
+        updated.append("name")
+    if notes is not None:
+        locked.notes = notes
+        updated.append("notes")
+    # golden: noun end
+
+    if not updated:
+        return locked
+    with as_invalid():
+        locked.full_clean()
+    # `updated_at` is named, always: it IS the version (house rule 76).
+    locked.save(update_fields=[*updated, "updated_at"])
+    _publish_widget(WIDGET_UPDATED, tenant=tenant, widget=locked, actor=actor)
+    # golden: noun end
+
+    # golden: noun begin
+    return locked
+    # golden: noun end
+
+
+# golden: version end
+def _new_widget_owner(*, tenant: Tenant, owner_id: UUID, organization: Organization) -> User:
+    """The person a move hands the widget to — one who belongs where it is going."""
+    held = (
+        Membership.objects.for_tenant(tenant)
+        .filter(
+            user_id=owner_id,
+            organization__path__in=ancestor_paths(organization.path),
+        )
+        .select_related("user")
+        .first()
+    )
+    if held is None:
+        raise NotFound()
+    return held.user
+
+
+@service
+def move_widget(
+    *,
+    tenant: Tenant,
+    actor: Actor,
+    widget: Widget,
+    # reach: a destination is a NODE, asked below as the hat's subtree.
+    organization: Organization,
+    owner_id: UUID | None = None,
+    version: int | None = None,
+) -> Widget:
+    """Re-home a widget at another node, and hand it to another owner if one is named."""
+    if not may_be_named(actor, widget):
+        raise NotFound()
+    hat = actor.org
+    if hat is None or organization.tenant_id != tenant.pk:
+        raise NotFound()
+    if not is_descendant_path(organization.path, hat.path):
+        raise NotFound()
+    locked = _locked_widget(tenant=tenant, widget=widget)
+    # Every other write on the noun refuses `archived` first.
+    require_live(locked, noun="widget")
+    require(actor, "widget.move", locked)
+    require(actor, "widget.move", organization)
+    if version is not None:
+        require_version(locked, version)
+    owner = (
+        None
+        if owner_id is None
+        else _new_widget_owner(tenant=tenant, owner_id=owner_id, organization=organization)
+    )
+    left = locked.organization_id
+    moved, changed = rehome(locked, organization, owner=owner, noun="widget")
+    if changed:
+        _publish_widget(
+            WIDGET_MOVED,
+            tenant=tenant,
+            widget=moved,
+            actor=actor,
+            out=WidgetMovedOut(**WidgetOut.from_orm(moved).model_dump(), from_organization_id=left),
+        )
+    return cast(Widget, moved)
+
+
+# golden: move bulk history end
+@service
+def duplicate_widget(
+    *, tenant: Tenant, actor: Actor, widget: Widget, idempotency_key: str = ""
+) -> Widget:
+    """Make a new widget from this one, at the hat, owned by the person who pressed."""
+    if not may_be_named(actor, widget):
+        raise NotFound()
+    # Every other write on the noun refuses `archived` first.
+    require_live(widget, noun="widget")
+    require(actor, "widget.create")
+    if actor.user is None:
+        raise Invalid({"owner": ["A widget needs somebody to own it."]})
+    name = f"Copy of {widget.name}"
+    try:
+        copy, created = duplicate_row(
+            tenant=tenant,
+            row=widget,
+            organization=actor.org,
+            idempotency_key=idempotency_key,
+            fill={"owner": actor.user, "name": name},
+        )
+    except Invalid as refused:
+        # The one constraint over several fields a copy can meet is the name per owner.
+        if NON_FIELD_KEY not in refused.errors:
+            raise
+        raise Invalid(
+            {"name": [f"Another widget is called {name!r}. Rename it, then copy again."]}
+        ) from refused
+    if created:
+        # golden: duplicate end
+        # The words on the source come with it; notes and files stay with the source.
+        subject = f"widget:{copy.pk}"
+        for link in list_tag_links(tenant=tenant, actor=actor, subject=f"widget:{widget.pk}"):
+            if link.tag.archived_at is None:
+                create_tag_link(tenant=tenant, actor=actor, tag=link.tag, subject=subject)
+        # golden: duplicate begin
+        _publish_widget(WIDGET_DUPLICATED, tenant=tenant, widget=copy, actor=actor)
+
+    return cast(Widget, copy)
+
+
+# golden: duplicate attach end
+@service
+# rule-82: `merge_rows` refuses an archived or merged row itself, after a repeat.
+def merge_widget(
+    *,
+    tenant: Tenant,
+    actor: Actor,
+    widget: Widget,
+    into: Widget,
+    version: int | None = None,
+    into_version: int | None = None,
+) -> Widget:
+    """Fold this widget into `into`, which survives. **Not undone.**"""
+    if not may_be_named(actor, widget) or not may_be_named(actor, into):
+        raise NotFound()
+    require(actor, "widget.merge", widget)
+    require(actor, "widget.merge", into)
+    first, second = sorted((widget, into), key=lambda row: str(row.pk))
+    locked = {row.pk: _locked_widget(tenant=tenant, widget=row) for row in (first, second)}
+    loser, survivor = locked[widget.pk], locked[into.pk]
+    if loser.merged_into_id != survivor.pk:
+        if version is not None:
+            require_version(loser, version)
+        if into_version is not None:
+            require_version(survivor, into_version)
+    outcome = merge_rows(tenant=tenant, actor=actor, loser=loser, into=survivor, noun="widget")
+    if outcome.changed:
+        _publish_widget(
+            WIDGET_MERGED,
+            tenant=tenant,
+            widget=outcome.survivor,
+            actor=actor,
+            out=WidgetMergedOut(
+                **WidgetOut.from_orm(outcome.survivor).model_dump(),
+                loser_id=loser.pk,
+                repoints=[
+                    RepointOut(title=repointed.title, left=repointed.left)
+                    for repointed in outcome.repoints
+                ],
+            ),
+        )
+    return cast(Widget, outcome.survivor)

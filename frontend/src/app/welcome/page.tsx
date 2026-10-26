@@ -16,7 +16,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { listOrganizations } from "@/api/client";
 import type { OrganizationPage } from "@/api/client";
-import type { SurfaceState } from "@/screens/state";
+import type { SurfaceState } from "@pilecap/ui/state";
 import { WELCOME_COPY } from "@/copy/welcome";
 import { WelcomeScreen } from "@/screens/welcome/welcome-screen";
 

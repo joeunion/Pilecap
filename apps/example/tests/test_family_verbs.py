@@ -1,83 +1,34 @@
-"""The widget's family verbs over the REST door: version, move, bulk, history.
-
-Each test drives the door a client drives — `PATCH`, `POST …/move/`, `POST
-…/bulk/`, `GET …/history/` — through the mounted API, so `TenantMiddleware`,
-the strict body and the one error envelope all run. The machine door's answers
-are compared against these on the wire in `test_doors_over_the_wire.py`; the
-copy a product takes is `test_golden_<verb>.py`.
-
-**"Nothing written" reads: no row change and no event.** A refused `@service`
-always files its own refusal audit row, so the audit trail is not the measure;
-the row's columns and the outbox are.
-
-The world is one tenant's tree — root, A beneath it, A1 beneath A, B beside A —
-with the owner at the root, an ADMIN at A (the branch administrator a move and a
-bulk are pressed by) and the tenant's plain MEMBER at the root.
-"""
+"""The widget's family verbs over the REST door: version, move, bulk, history."""
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from typing import Any
 
 import pytest
-from django.test import Client
 
-from apps.accounts.models import User
-from apps.accounts.services import create_user
-from apps.core.actor import actor_for, system_actor
-from apps.core.models import Membership, Organization, Tenant
-from apps.core.services import add_membership, create_organization, root_organization
 from apps.example.models import Widget, WidgetEntry
 from apps.example.services import create_widget, record_widget_entry
+from pilecap.tenancy import Organization, Tenant
+from pilecap.testing import World, actor_for, build_world
 
 pytestmark = pytest.mark.django_db
 
 WIDGETS = "/api/v1/widgets/"
 ORGANIZATIONS = "/api/v1/organizations/"
 JSON = "application/json"
-PASSWORD = "a-long-enough-password"  # pragma: allowlist secret
-
-
-@dataclass
-class World:
-    tenant: Tenant
-    root: Organization
-    a: Organization
-    a1: Organization
-    b: Organization
-    owner: User
-    manager: User  # ADMIN at A
-    member: User  # MEMBER at the root
 
 
 @pytest.fixture
-def world(tenant: Tenant, owner: User, member: User) -> World:
-    root = root_organization(tenant=tenant)
-    acting = actor_for(user=owner, tenant=tenant, org=root)
-    a = create_organization(tenant=tenant, parent=root, name="A", slug="a", actor=acting)
-    b = create_organization(tenant=tenant, parent=root, name="B", slug="b", actor=acting)
-    a1 = create_organization(tenant=tenant, parent=a, name="A1", slug="a1", actor=acting)
-    manager = create_user(email="manager@example.com", password=PASSWORD)
-    add_membership(
-        user=manager,
-        tenant=tenant,
-        organization=a,
-        is_default=True,
-        role=Membership.Role.ADMIN,
-        actor=system_actor(tenant=tenant),
-    )
-    return World(
-        tenant=tenant, root=root, a=a, a1=a1, b=b, owner=owner, manager=manager, member=member
-    )
+def world() -> World:
+    return build_world()
 
 
 def at(world: World, node: Organization, name: str) -> Widget:
     """A widget the owner created at `node`."""
     return create_widget(
         tenant=world.tenant,
-        actor=actor_for(user=world.owner, tenant=world.tenant, org=node),
+        actor=actor_for(user=world.owner.user, tenant=world.tenant, org=node),
         name=name,
     )
 
@@ -105,9 +56,9 @@ def events(tenant: Tenant, name: str) -> list[dict[str, Any]]:
 # --- version -------------------------------------------------------------
 
 
-def test_a_patch_without_a_version_is_refused_naming_it(api: Client, world: World) -> None:
+def test_a_patch_without_a_version_is_refused_naming_it(world: World) -> None:
     widget = at(world, world.root, "Unversioned")
-    api.force_login(world.owner)
+    api = world.session(world.owner)
 
     response = api.patch(f"{WIDGETS}{widget.pk}/", {"name": "Renamed"}, content_type=JSON)
 
@@ -116,11 +67,9 @@ def test_a_patch_without_a_version_is_refused_naming_it(api: Client, world: Worl
     assert fresh(widget).name == "Unversioned"
 
 
-def test_a_stale_version_is_refused_with_the_current_one_and_nothing_written(
-    api: Client, world: World
-) -> None:
+def test_a_stale_version_is_refused_with_the_current_one_and_nothing_written(world: World) -> None:
     widget = at(world, world.root, "Raced")
-    api.force_login(world.owner)
+    api = world.session(world.owner)
     read = body(api.get(f"{WIDGETS}{widget.pk}/"))
     first = api.patch(
         f"{WIDGETS}{widget.pk}/",
@@ -146,9 +95,9 @@ def test_a_stale_version_is_refused_with_the_current_one_and_nothing_written(
     assert len(events(world.tenant, "example.widget.updated")) == updated_events
 
 
-def test_the_current_version_saves_and_answers_a_new_one(api: Client, world: World) -> None:
+def test_the_current_version_saves_and_answers_a_new_one(world: World) -> None:
     widget = at(world, world.root, "Current")
-    api.force_login(world.owner)
+    api = world.session(world.owner)
     read = body(api.get(f"{WIDGETS}{widget.pk}/"))
 
     saved = api.patch(
@@ -163,11 +112,9 @@ def test_the_current_version_saves_and_answers_a_new_one(api: Client, world: Wor
 # --- move -----------------------------------------------------------
 
 
-def test_a_move_into_the_subtree_rehomes_the_widget_and_says_both_nodes(
-    api: Client, world: World
-) -> None:
+def test_a_move_into_the_subtree_rehomes_the_widget_and_says_both_nodes(world: World) -> None:
     widget = at(world, world.a, "Mover")
-    api.force_login(world.manager)
+    api = world.session(world.admin_at_a)
     read = body(api.get(f"{WIDGETS}{widget.pk}/", headers={"x-org": "a"}))
 
     moved = api.post(
@@ -188,17 +135,15 @@ def test_a_move_into_the_subtree_rehomes_the_widget_and_says_both_nodes(
     assert said["from_organization_id"] == str(world.a.pk)
 
 
-def test_a_widget_with_a_ledger_line_is_move_blocked_and_nothing_moves(
-    api: Client, world: World
-) -> None:
+def test_a_widget_with_a_ledger_line_is_move_blocked_and_nothing_moves(world: World) -> None:
     widget = at(world, world.a, "Held by its ledger")
     record_widget_entry(
         tenant=world.tenant,
-        actor=actor_for(user=world.owner, tenant=world.tenant, org=world.a),
+        actor=actor_for(user=world.owner.user, tenant=world.tenant, org=world.a),
         widget=widget,
         note="recorded here",
     )
-    api.force_login(world.manager)
+    api = world.session(world.admin_at_a)
     before = fresh(widget)
 
     refused = api.post(
@@ -220,9 +165,9 @@ def test_a_widget_with_a_ledger_line_is_move_blocked_and_nothing_moves(
     assert events(world.tenant, "example.widget.moved") == []
 
 
-def test_a_destination_outside_the_admins_subtree_is_not_found(api: Client, world: World) -> None:
+def test_a_destination_outside_the_admins_subtree_is_not_found(world: World) -> None:
     widget = at(world, world.a, "Stays in A")
-    api.force_login(world.manager)
+    api = world.session(world.admin_at_a)
 
     refused = api.post(
         f"{WIDGETS}{widget.pk}/move/",
@@ -235,9 +180,9 @@ def test_a_destination_outside_the_admins_subtree_is_not_found(api: Client, worl
     assert fresh(widget).organization_id == world.a.pk
 
 
-def test_a_member_may_not_move(api: Client, world: World) -> None:
+def test_a_member_may_not_move(world: World) -> None:
     widget = at(world, world.a, "Not theirs to move")
-    api.force_login(world.member)
+    api = world.session(world.member)
 
     refused = api.post(
         f"{WIDGETS}{widget.pk}/move/",
@@ -250,15 +195,15 @@ def test_a_member_may_not_move(api: Client, world: World) -> None:
 
 
 def test_the_move_sheet_destinations_are_where_the_branch_admin_may_move_a_widget(
-    api: Client, world: World
+    world: World,
 ) -> None:
-    """C2.4 with the real key: `?can=widget.move` lists A and A1 for an admin at A."""
-    api.force_login(world.manager)
+    """`?can=widget.move` lists A and everything beneath it for an admin at A."""
+    api = world.session(world.admin_at_a)
 
     listed = api.get(ORGANIZATIONS, {"can": "widget.move"}, headers={"x-org": "a"})
 
     assert listed.status_code == 200, listed.content
-    assert {row["slug"] for row in body(listed)["items"]} == {"a", "a1"}
+    assert {row["slug"] for row in body(listed)["items"]} == {"a", "a1", "a1x"}
     nope = api.get(ORGANIZATIONS, {"can": "widget.nope"}, headers={"x-org": "a"})
     assert nope.status_code == 400, nope.content
     assert "can" in body(nope)["errors"]
@@ -268,12 +213,12 @@ def test_the_move_sheet_destinations_are_where_the_branch_admin_may_move_a_widge
 
 
 def test_a_bulk_archive_answers_each_id_in_order_and_a_replay_answers_the_same(
-    api: Client, world: World
+    world: World,
 ) -> None:
     here = at(world, world.a, "First")
     sibling = at(world, world.b, "In B")
     below = at(world, world.a1, "Third")
-    api.force_login(world.manager)
+    api = world.session(world.admin_at_a)
     ids = [str(here.pk), str(sibling.pk), str(below.pk)]
 
     first = api.post(
@@ -302,10 +247,10 @@ def test_a_bulk_archive_answers_each_id_in_order_and_a_replay_answers_the_same(
     assert replay.content == first.content
 
 
-def test_a_bulk_move_to_where_the_widget_already_is_is_unchanged(api: Client, world: World) -> None:
+def test_a_bulk_move_to_where_the_widget_already_is_is_unchanged(world: World) -> None:
     there = at(world, world.a1, "Already there")
     goes = at(world, world.a, "Goes")
-    api.force_login(world.manager)
+    api = world.session(world.admin_at_a)
 
     answered = api.post(
         f"{WIDGETS}bulk/",
@@ -322,10 +267,8 @@ def test_a_bulk_move_to_where_the_widget_already_is_is_unchanged(api: Client, wo
 # --- history -----------------------------------------------------------------
 
 
-def test_the_history_reads_create_update_archive_restore_newest_first(
-    api: Client, world: World
-) -> None:
-    api.force_login(world.owner)
+def test_the_history_reads_create_update_archive_restore_newest_first(world: World) -> None:
+    api = world.session(world.owner)
     created = api.post(WIDGETS, {"name": "Storied"}, content_type=JSON)
     assert created.status_code == 201, created.content
     widget_id = body(created)["id"]
@@ -346,8 +289,8 @@ def test_the_history_reads_create_update_archive_restore_newest_first(
     assert rows[2]["changed_fields"] == ["name"]
 
 
-def test_a_sibling_branch_widgets_history_is_not_found(api: Client, world: World) -> None:
+def test_a_sibling_branch_widgets_history_is_not_found(world: World) -> None:
     widget = at(world, world.b, "In B")
-    api.force_login(world.manager)
+    api = world.session(world.admin_at_a)
 
     assert api.get(f"{WIDGETS}{widget.pk}/history/", headers={"x-org": "a"}).status_code == 404

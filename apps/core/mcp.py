@@ -11,18 +11,19 @@ Tools call services. This one calls nothing, because its whole job is to answer
 
 from __future__ import annotations
 
-import importlib
-import importlib.util
-from collections.abc import Callable, Iterator, Mapping, Sequence
+import inspect
+import sys
+import typing
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
 from asgiref.sync import sync_to_async
-from django.apps import apps as django_apps
 from django.contrib.auth import get_user_model
 from django.contrib.auth.base_user import AbstractBaseUser
+from django.core.exceptions import ImproperlyConfigured
 from django.db import (
     IntegrityError,
     OperationalError,
@@ -33,10 +34,16 @@ from django.db import (
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
-from mcp.server.mcpserver.utilities.func_metadata import StrictJsonSchema
-from ninja import Router
-from pydantic import BaseModel, ConfigDict, ValidationError
+from mcp.server.mcpserver.utilities.func_metadata import (
+    StrictJsonSchema,
+    _is_input_required_type,
+    _returns_content,
+)
+from mcp_types import CallToolResult
+from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 
+from apps.core import context as bound_context
+from apps.core import surfaces
 from apps.core.actor import Actor
 from apps.core.api import ordered_by, searched
 from apps.core.api.docs import contract_of
@@ -88,12 +95,14 @@ from apps.core.api.scopes import (
     within_ceiling,
 )
 from apps.core.api.scopes import InsufficientScope as InsufficientScope
-from apps.core.authz import refusal_sentence
+from apps.core.authz import READ_ALIAS_VERBS, refusal_sentence
+from apps.core.discovery import declared_services
 from apps.core.exceptions import (
     NON_FIELD_KEY,
     Conflict,
     DomainError,
     Invalid,
+    NoActingScope,
     NotFound,
     RateLimited,
     Remedy,
@@ -104,6 +113,7 @@ from apps.core.exceptions import (
     wire_refusal,
 )
 from apps.core.flags import enabled_for
+from apps.core.lexicon import verb_of
 from apps.core.models import Grant, Invitation, Membership, Organization, Role, Tenant
 from apps.core.schemas import (
     FlagsOut,
@@ -161,6 +171,7 @@ from apps.core.services import (
     update_role,
     update_tenant_settings,
 )
+from apps.core.surfaces import STAFF, SurfaceDoesNotExpose, SurfaceUnknownHost
 from apps.core.throttling import ScopeSubject, refusal
 
 # Where the auth middleware leaves the resolved principal on the ASGI scope.
@@ -183,11 +194,17 @@ class Principal:
     user: AbstractBaseUser
     tenant: Tenant | None
     token: models.Model | None = None
-    #: The acting hat, resolved by the same `core.middleware.resolve_org` the
+    #: The hat, resolved by the same `core.middleware.resolve_org` the
     #: HTTP door uses, from the same `X-Org` header. A tool never names it: a
     #: caller that could pass an organization as an argument would be a caller
     #: that could read a branch it holds no membership over.
     org: Organization | None = None
+    #: The key of the surface the call came in at — resolved once, from the
+    #: host, by the mount's middleware (`apps.core.surfaces.resolve_surface`),
+    #: exactly as the HTTP door resolves `request.surface`. It narrows which
+    #: tools this call may reach and which acts a row offers; it is never an
+    #: argument, so no caller chooses its own audience.
+    surface: str = STAFF
 
     def actor(self) -> Actor:
         """The actor a tool hands to a service.
@@ -202,6 +219,7 @@ class Principal:
             kind="agent",
             tenant=self.tenant,
             org=self.org,
+            surface=self.surface,
         )
 
 
@@ -271,10 +289,16 @@ def tool_call(ctx: Context[Any]) -> Iterator[Principal]:
        because there is one of this and sixty-nine of those, and a check a tool
        could forget is a check a tool will forget. A session and a token minted
        with no ceiling are untouched.
+
+       **And the surface before it**, as the HTTP door asks it before the
+       credential: a tool whose family the call's host does not expose is
+       `surface_does_not_expose` (`refuse_off_surface`), whatever the token
+       carries.
     """
     release_connections()
     try:
         acting = principal(ctx)
+        refuse_off_surface(ctx, acting)
         refuse_out_of_ceiling(ctx, acting)
         yield acting
     except IntegrityError as exc:
@@ -307,12 +331,16 @@ def acting_org(acting: Principal) -> Organization:
     The machine door's twin of `acting_tenant`: a token whose user holds no
     membership in the acting tenant resolves to no hat, and the answer to
     "which part of the network did you mean" is a refusal rather than a guess
-    — the same refusal the HTTP door gives by reading nothing.
+    — `no_acting_scope`, the same refusal the HTTP door gives (`require_hat`).
     """
     if acting.org is None:
-        raise ToolError(
-            "no_org: This token resolves to no organization, so there is nothing to act as."
-        )
+        # Raised as the registered refusal and composed by `tool_call`'s one
+        # translation — the same body `apps.core.api.acting.require_hat` gives
+        # the HTTP door, never a hand-typed `no_org:` line of this door's own.
+        # The tenant is judged first, as the addressing law judges it: a hat is
+        # a place inside a tenant, so a caller with neither is told about the
+        # first absence, in the same words `acting_tenant` uses.
+        raise NoActingScope(None if acting.tenant is None else NoActingScope.no_hat_detail)
     return acting.org
 
 
@@ -324,9 +352,9 @@ def acting_tenant(acting: Principal) -> Tenant:
     tenant did you mean" is a refusal rather than a guess.
     """
     if acting.tenant is None:
-        raise ToolError(
-            "no_tenant: This token resolves to no tenant, so there is nothing to act in."
-        )
+        # The registered refusal, said through `tool_call` exactly as
+        # `apps.core.api.acting.acting` says it at the HTTP door.
+        raise NoActingScope()
     return acting.tenant
 
 
@@ -451,55 +479,53 @@ def reset_scope_derivation() -> None:
     _service_verbs = None
 
 
-def _routers_below(router: Router) -> Iterator[Router]:
-    """A router and every router mounted under it, depth first."""
-    yield router
-    for _prefix, child, _tags in router._routers:
-        yield from _routers_below(child)
-
-
 def _operations_by_contract() -> dict[str, str]:
     """Every REST operation's required scope, keyed on the prose it publishes.
 
-    Read off each app's own `router` rather than off the mounted API, because an
-    app never imports `config` (house rule 7's one-way street) and the routers
-    are the apps' own objects — the mount only decides where they hang, which is
-    a fact about URLs and not about capability. A router that carries operations
-    declares its tags on itself, which is what every router in this repository
-    does; an operation whose tag is missing or doubled derives nothing here, and
-    rule 41 refuses the doubled case one surface earlier.
+    Read off the mounted API through `apps.core.api.mount.bound_operations`,
+    the one mount reader (imported inside the call: it imports `config.api`
+    lazily, which an app never does at module level — house rule 7's one-way
+    street). A bound operation carries its router's tags; an operation whose
+    tag is missing or doubled derives nothing here, and rule 41 refuses the
+    doubled case one surface earlier.
     """
+    from apps.core.api.mount import bound_operations
+
     found: dict[str, str] = {}
     ambiguous: set[str] = set()
-    for config in django_apps.get_app_configs():
-        if not config.name.startswith("apps."):
+    for _path, _name, operation in bound_operations():
+        contract = contract_of(operation.view_func)
+        if not contract:
             continue
-        module_name = f"{config.name}.api"
-        if importlib.util.find_spec(module_name) is None:
+        try:
+            scope = required_scope(tags=operation.tags or [], methods=operation.methods)
+        except UnderivableScope:
             continue
-        router = getattr(importlib.import_module(module_name), "router", None)
-        if not isinstance(router, Router):
-            continue
-        for holder in _routers_below(router):
-            for path_view in holder.path_operations.values():
-                for operation in path_view.operations:
-                    contract = contract_of(operation.view_func)
-                    if not contract:
-                        continue
-                    tags = operation.tags if operation.tags is not None else holder.tags
-                    try:
-                        scope = required_scope(tags=tags or [], methods=operation.methods)
-                    except UnderivableScope:
-                        continue
-                    if contract in found and found[contract] != scope:
-                        ambiguous.add(contract)
-                    found[contract] = scope
+        if contract in found and found[contract] != scope:
+            ambiguous.add(contract)
+        found[contract] = scope
     for contract in ambiguous:
         # Two operations describing themselves identically and needing different
         # scopes: the prose can no longer say which twin a tool has. Dropped
         # rather than guessed, so the tool falls to the name grammar or raises.
         found.pop(contract, None)
     return found
+
+
+def twin_of(operation: Any, tools: Iterable[Any]) -> Any | None:
+    """The MCP tool that is `operation`'s twin — the one publishing its contract word for word.
+
+    The PROSE identity house rule 41 pins (`description=contract_of(view)`), asked
+    once here: rule 17 falls back to it for a twin whose name is not the
+    url_name's derivation, and `apps/core/tests/test_tool_names.py` reads it to
+    name every such pair. `None` when no tool carries the contract, or when two
+    do — two twins is no twin, and picking one would be a guess.
+    """
+    contract = contract_of(operation.view_func)
+    if not contract:
+        return None
+    matches = [tool for tool in tools if str(tool.description or "") == contract]
+    return matches[0] if len(matches) == 1 else None
 
 
 def service_verbs() -> frozenset[str]:
@@ -513,25 +539,9 @@ def service_verbs() -> frozenset[str]:
     global _service_verbs
     if _service_verbs is not None:
         return _service_verbs
-    verbs: set[str] = set()
-    for config in django_apps.get_app_configs():
-        if not config.name.startswith("apps."):
-            continue
-        module_name = f"{config.name}.services"
-        if importlib.util.find_spec(module_name) is None:
-            continue
-        module = importlib.import_module(module_name)
-        for name, value in vars(module).items():
-            if name.startswith("_") or not callable(value):
-                continue
-            # `@service` wraps with `functools.wraps`, which is what leaves
-            # `__wrapped__` behind — the marker that this is a decorated write
-            # and not a helper that happens to live in the same file.
-            if getattr(value, "__wrapped__", None) is None:
-                continue
-            if getattr(value, "__module__", "") != module_name:
-                continue
-            verbs.add(name.split("_", 1)[0])
+    # The one matcher (`apps.core.lexicon.verb_of`) — the gate's rule 16 and the
+    # history card ask the same function, so a verb is one word to all three.
+    verbs = {verb_of(name) for _, name, _ in declared_services() if not name.startswith("_")}
     _service_verbs = frozenset(verbs)
     return _service_verbs
 
@@ -551,23 +561,19 @@ def _scope_from_the_name(name: str, *, app_label: str) -> str:
             f"({', '.join(owned) or 'none'}), so there is no one answer. Give it a "
             "twin, or register it in an app that owns one section"
         )
-    verb = name.rpartition(".")[2].split("_", 1)[0]
-    if verb in READING_VERBS:
+    verb = verb_of(name)
+    # The read half of the tool grammar is `authz`'s one alias set: a tool that
+    # reads is named the way a key that reads may be spelled.
+    if verb in READ_ALIAS_VERBS:
         return f"{owned[0]}{SCOPE_SEPARATOR}{READ}"
     if verb in service_verbs():
         return f"{owned[0]}{SCOPE_SEPARATOR}{WRITE}"
     raise UnderivableScope(
         f"the tool {name!r} begins with {verb!r}, which is neither a way of reading "
-        f"({', '.join(sorted(READING_VERBS))}) nor a verb any service in this product "
+        f"({', '.join(sorted(READ_ALIAS_VERBS))}) nor a verb any service in this product "
         "uses — so nothing here can say whether it reads or writes. Name it after what "
         "it does, or give it a twin at the HTTP door"
     )
-
-
-#: The read half of the tool grammar: the two prefixes every selector in this
-#: repository starts with (house rule 16's selector clause). Stated here because
-#: a tool reading is the same act as a selector reading, under a different door.
-READING_VERBS = frozenset({"get", "list"})
 
 
 def scope_for_tool(tool: Any) -> str | None:
@@ -753,18 +759,125 @@ def refuse_out_of_ceiling(ctx: Context[Any], acting: Principal) -> None:
     """
     if ceiling_of(acting) is None:
         return
-    tool = ctx.mcp_server._tool_manager.get_tool(_tool_name_of(ctx))
-    if tool is None:
-        # A body is running for a tool the registry does not hold, which cannot
-        # happen through the transport (the manager refuses an unknown name
-        # before dispatch) and must not be answered "allowed" if it ever does.
-        raise NotAuthenticated(
-            "this tool call names a tool this server does not hold, so its ceiling "
-            "cannot be checked; nothing is answered rather than answered unguarded"
-        )
-    refusal = ceiling_refusal(tool, acting)
+    refusal = ceiling_refusal(_called_tool(ctx), acting)
     if refusal is not None:
         raise refusal
+
+
+def _called_tool(ctx: Context[Any]) -> Any:
+    """The registered tool this call is for; refuses rather than guessing when there is none.
+
+    A body is running for a tool the registry does not hold, which cannot happen
+    through the transport (the manager refuses an unknown name before dispatch)
+    and must not be answered "allowed" if it ever does — so the two walls asked
+    inside the frame, the surface and the ceiling, both fail closed here.
+    """
+    tool = ctx.mcp_server._tool_manager.get_tool(_tool_name_of(ctx))
+    if tool is None:
+        raise NotAuthenticated(
+            "this tool call names a tool this server does not hold, so its walls "
+            "cannot be checked; nothing is answered rather than answered unguarded"
+        )
+    return tool
+
+
+# --- The surface: which host the call came in at narrows what it may reach ----
+#
+# A surface (`apps.core.surfaces`) is a host and the scope families it exposes.
+# The HTTP door asks `config/api.py::_refused_for_surface` of every operation,
+# before the credential; these are the machine door's twin, asking the SAME
+# predicate (`surfaces.exposes`) of a tool's family — the family its scope is
+# derived from, the one derivation the ceiling uses — so a REST route and its
+# MCP twin are on the same surfaces by construction. Refused, the call answers
+# `surface_does_not_expose`, the code REST answers; and the listing at a host
+# leaves out what that host does not expose, as the OpenAPI document does —
+# the reach-refusal posture (rule 26): a customer host is not an oracle for the
+# staff door map. A product that declares no surface has one total surface, and
+# none of this moves a byte.
+
+
+def _tool_family(tool: Any) -> tuple[bool, str | None]:
+    """Whether a surface narrows this tool at all, and the scope family it belongs to.
+
+    A tool that declared it reaches no capability (`reaches_no_capability`) is
+    not narrowed — there is nothing behind it for a surface to withhold, which
+    is the ceiling's answer to the same tool. A tool whose scope derives nothing
+    has no family, and a surface that names its families does not expose it:
+    fail closed, as the HTTP door does for an operation with no one tag.
+    """
+    try:
+        required = scope_for_tool(tool)
+    except UnderivableScope:
+        return True, None
+    if required is None:
+        return False, None
+    return True, required.rpartition(SCOPE_SEPARATOR)[0] or None
+
+
+def surface_refusal(
+    tool: Any, surface: surfaces.Surface | None
+) -> SurfaceDoesNotExpose | SurfaceUnknownHost | None:
+    """The refusal this surface owes a call to this tool, or `None` when the surface exposes it.
+
+    A predicate over the tool and the surface, like `ceiling_refusal`, so the
+    wall in front of the arguments and the belt inside the frame reach one
+    answer. `None` for a surface is one nothing resolved, and nothing is exposed
+    on it.
+    """
+    narrowed, family = _tool_family(tool)
+    if not narrowed or surfaces.exposes(surface, family):
+        return None
+    if surface is None:
+        return SurfaceUnknownHost()
+    return surfaces.does_not_expose(surface)
+
+
+def surface_named(key: str | None) -> surfaces.Surface | None:
+    """The declared surface a door recorded by its key; `None` for no key or an undeclared one."""
+    return surfaces.declared().get(key) if key else None
+
+
+def refuse_off_surface(ctx: Context[Any], acting: Principal) -> None:
+    """Refuse this call when the surface it came in at does not expose this tool's family.
+
+    `refuse_out_of_ceiling`'s twin, and asked BEFORE it, in the order the HTTP
+    door asks the two: whether this host offers the capability at all is a fact
+    about the address, and a credential question answered first would tell a
+    caller on a customer host that a staff tool exists behind it.
+
+    A total surface is answered before the context is touched — a surface that
+    exposes even a call of no family exposes every one — so a tool called as a
+    plain function with a hand-built context works exactly as it did.
+    """
+    surface = surface_named(acting.surface)
+    if surfaces.exposes(surface, None):
+        return
+    refusal = surface_refusal(_called_tool(ctx), surface)
+    if refusal is not None:
+        raise refusal
+
+
+def listed_here(server: MCPServer[Any], listed: Sequence[Any]) -> list[Any]:
+    """The listed tools the surface this request came in at exposes — every one, outside a request.
+
+    The surface is the one the mount's middleware bound for this request
+    (`context`, beside `door`), the same read the OpenAPI document narrows by,
+    so a host's tool list and its document cannot disagree about what it offers.
+    Outside a request nothing is bound and the list is whole; on a total surface
+    it is whole too, byte for byte.
+    """
+    bound = bound_context.value("surface")
+    if not bound:
+        return list(listed)
+    surface = surface_named(str(bound))
+    if surfaces.exposes(surface, None):
+        return list(listed)
+    return [
+        tool
+        for tool in listed
+        if (registered := server._tool_manager.get_tool(str(tool.name))) is not None
+        and surface_refusal(registered, surface) is None
+    ]
 
 
 def _listed_scope(server: MCPServer[Any], name: str) -> str | None:
@@ -817,6 +930,27 @@ def install_scope_lines(server: MCPServer[Any]) -> None:
 #: Marks a server whose listing already carries scope lines, so mounting twice in
 #: one process cannot stack two wrappers and print the line twice.
 LISTING_WRAPPED_ATTR = "djb_scope_lines_installed"
+
+#: Marks a server whose listing is already narrowed to the request's surface.
+SURFACE_LISTING_ATTR = "djb_surface_listing_installed"
+
+
+def install_surface_listing(server: MCPServer[Any]) -> None:
+    """Narrow the tool listing to what the request's surface exposes, once, at the mount.
+
+    Wraps the server's own listing, as `install_scope_lines` does, so a tool an
+    app contributes tomorrow is narrowed without this module knowing it exists.
+    Idempotent.
+    """
+    if getattr(server, SURFACE_LISTING_ATTR, False):
+        return
+    listing = server.list_tools
+
+    async def list_tools_on_this_surface() -> list[Any]:
+        return listed_here(server, await listing())
+
+    server.list_tools = list_tools_on_this_surface  # type: ignore[method-assign]
+    setattr(server, SURFACE_LISTING_ATTR, True)
 
 
 # --- The ceiling answers BEFORE the arguments are validated -----------------
@@ -1090,10 +1224,10 @@ SERIALIZED_OUTPUT_ATTR = "djb_serialized_output_schemas_installed"
 #:
 #: No `reset_` seam beside it, unlike `reset_scope_derivation`: that one caches a
 #: whole-registry answer a planted route falsifies, and this one is keyed on the
-#: model class itself, so a planted tool with a new model gets a new entry and a
-#: planted tool with an existing one gets the right answer. The day something can
-#: falsify an entry, the seam arrives with it.
-_serialized_output_schemas: dict[type[BaseModel], dict[str, Any]] = {}
+#: output type itself (a model class or the SDK's `Annotated` dict), so a planted
+#: tool with a new type gets a new entry and one with an existing type gets the
+#: right answer. The day something can falsify an entry, the seam arrives with it.
+_serialized_output_schemas: dict[Any, dict[str, Any]] = {}
 
 
 def _publish_serialized_output_schema(tool: Any) -> None:
@@ -1104,9 +1238,9 @@ def _publish_serialized_output_schema(tool: Any) -> None:
     describing what comes OUT — and for a `Decimal` field they disagree: the
     first accepts a JSON number or a numeric string, the second is the string
     alone. django-ninja renders `openapi.json` in serialization mode, because a
-    response schema describes a response; the MCP SDK renders `outputSchema` in
-    validation mode (`func_metadata.py`, `model_json_schema(...)` with no
-    `mode=`), because that call is the one it also uses for arguments. So the
+    response schema describes a response; the MCP SDK renders `outputSchema` in validation mode
+    (`self._output_adapter(...).json_schema(schema_generator=StrictJsonSchema)` with no
+    `mode=`, `func_metadata.py`), because that call is the one it also uses for arguments. So the
     same `MeasuredOut.value` published as `{"type": "string", "pattern": ...}` at
     one door and `anyOf: [number, string]` at the other, while the shared
     contract prose promised every number as a JSON string — ADR core-7's whole
@@ -1120,9 +1254,9 @@ def _publish_serialized_output_schema(tool: Any) -> None:
     is its rendering — the `outputSchema` a client reads. Re-rendering the same
     model with the SDK's own generator and `mode="serialization"` changes the
     published document and nothing else: at call time the SDK reads
-    `output_schema` only to ask whether it is `None`, and builds the body from
-    `output_model.model_dump(mode="json")` — so a result that went out before
-    this ran goes out byte for byte the same after it.
+    `output_schema` only to ask whether it is `None`, and builds the body through a `TypeAdapter`
+    over `output_model` dumped with `mode="json", by_alias=True` — so a result that went out
+    before this ran goes out byte for byte the same after it.
 
     `Tool.output_schema` is a `cached_property` over the same attribute, so the
     cached copy is dropped in the same breath the attribute is rebound; a listing
@@ -1141,7 +1275,9 @@ def _publish_serialized_output_schema(tool: Any) -> None:
         return
     published = _serialized_output_schemas.get(model)
     if published is None:
-        published = model.model_json_schema(schema_generator=StrictJsonSchema, mode="serialization")
+        published = TypeAdapter(model).json_schema(
+            schema_generator=StrictJsonSchema, mode="serialization"
+        )
         _serialized_output_schemas[model] = published
     if metadata.output_schema is published:
         return
@@ -1182,6 +1318,43 @@ def install_serialized_output_schemas(server: MCPServer[Any]) -> None:
 
     server.list_tools = list_tools_with_serialized_output  # type: ignore[method-assign]
     setattr(server, SERIALIZED_OUTPUT_ATTR, True)
+
+
+def _owes_a_schema(declared: object, fn: Callable[..., Any]) -> tuple[bool, object]:
+    """Whether a return annotation names a class the library should schema, and its resolution."""
+    # Invariant: the library answers a bare `dict` or `datetime` with no schema by design.
+    if declared is inspect.Signature.empty:
+        return False, declared
+    try:
+        resolved: object = typing.get_type_hints(fn).get("return", declared)
+    except (NameError, TypeError, AttributeError):
+        return False, declared
+    if (
+        not isinstance(resolved, type)
+        or _returns_content(resolved)
+        or _is_input_required_type(resolved)
+        or issubclass(resolved, CallToolResult)
+    ):
+        return False, resolved
+    return resolved.__module__.partition(".")[0] not in sys.stdlib_module_names, resolved
+
+
+def refuse_unstructured_results(server: MCPServer[Any]) -> None:
+    """Raise naming every tool whose return class the library built no output schema for."""
+    # Invariant: the SDK answers such a tool with text alone (`func_metadata.py`'s fallback).
+    silent = []
+    for tool in server._tool_manager.list_tools():
+        if tool.fn_metadata.output_schema is not None:
+            continue
+        declared = inspect.signature(tool.fn).return_annotation
+        owed, resolved = _owes_a_schema(declared, tool.fn)
+        if owed:
+            silent.append(f"MCP tool `{tool.name}` returns `{declared}` ({resolved!r})")
+    if silent:
+        raise ImproperlyConfigured(
+            "; ".join(silent) + " — the MCP library built no output schema for that type, so "
+            "every answer would carry no structuredContent"
+        )
 
 
 def _accepted_arguments(tool: Any) -> tuple[str, ...]:
@@ -1288,8 +1461,12 @@ def _malformed_call(
 
 def _refused_before_arguments(
     server: MCPServer[Any], context: Any, name: str
-) -> InsufficientScope | None:
-    """The ceiling's answer for this dispatch, reading no arguments.
+) -> DomainError | None:
+    """The surface's answer, then the ceiling's, for this dispatch, reading no arguments.
+
+    The surface first, in the HTTP door's order: whether this host offers the
+    tool at all is a fact about the address and is answered before anything
+    about the credential.
 
     `None` means "not mine to refuse", and it covers three honest cases: a call
     with no context (an in-process caller, which the body's own frame still
@@ -1305,16 +1482,19 @@ def _refused_before_arguments(
         acting = principal(context)
     except NotAuthenticated:
         return None
-    if ceiling_of(acting) is None:
-        return None
     tool = server._tool_manager.get_tool(name)
     if tool is None:
+        return None
+    off_surface = surface_refusal(tool, surface_named(acting.surface))
+    if off_surface is not None:
+        return off_surface
+    if ceiling_of(acting) is None:
         return None
     return ceiling_refusal(tool, acting)
 
 
 def install_ceiling_gate(server: MCPServer[Any]) -> None:
-    """Put the token's ceiling, then the argument grammar, in front of dispatch.
+    """Put the surface, the token's ceiling, then the argument grammar, in front of dispatch.
 
     See the note above for why the wall moved and what was rejected.
     Installed from `register()` beside `install_scope_lines`, for the same
@@ -1390,6 +1570,10 @@ def register(server: MCPServer[Any]) -> None:
     # than editing any tool — so it covers whatever the apps discovered after
     # this one contribute, without this module knowing they exist.
     install_scope_lines(server)
+
+    # And the listing narrowed to the host's surface, as the OpenAPI document
+    # is: a customer host lists what it offers and nothing of the staff doors.
+    install_surface_listing(server)
 
     # And the ceiling in front of the transport's argument validation, for the
     # same reason and by the same means: one wrap of the server's own dispatch,
@@ -1727,7 +1911,9 @@ def register_tenancy_tools(server: MCPServer[Any]) -> None:
             update_role(tenant=tenant, actor=actor, role=row, name=name, description=description)
             return RoleOut.of(get_role(tenant=tenant, key=key, actor=actor))
 
-    @server.tool(name="set_role_permissions", description=contract_of(set_role_permissions_route))
+    @server.tool(
+        name="update_role_permissions", description=contract_of(set_role_permissions_route)
+    )
     def set_role_permissions_tool(
         ctx: Context[Any], key: str, permissions: list[str] | None = None
     ) -> RoleOut:
@@ -1784,7 +1970,7 @@ def register_tenancy_tools(server: MCPServer[Any]) -> None:
                 count=page.count,
             )
 
-    @server.tool(name="set_grant", description=contract_of(set_grant_route))
+    @server.tool(name="update_grant", description=contract_of(set_grant_route))
     def set_grant_tool(
         ctx: Context[Any], membership_id: UUID, permission: str, effect: str
     ) -> GrantOut:
@@ -1995,7 +2181,7 @@ def register_tenancy_tools(server: MCPServer[Any]) -> None:
         with tool_call(ctx) as acting:
             return FlagsOut(flags=enabled_for(acting_tenant(acting)))
 
-    @server.tool(name="set_flags", description=contract_of(set_flag_route))
+    @server.tool(name="update_flags", description=contract_of(set_flag_route))
     def set_flags_tool(ctx: Context[Any], name: str, enabled: bool | None) -> FlagsOut:
         with tool_call(ctx) as acting:
             return FlagsOut(

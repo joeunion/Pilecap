@@ -7,7 +7,7 @@
 # those by hand in cycle P21 — each one a turn, a re-run of the hook and a
 # keep-both resolution nobody had any judgment to make about — and a hand
 # resolution in the same class went wrong on a CODE file the same week (a
-# whole-file `--theirs` on `scripts/tests/test_verifier_box.sh` dropped 902
+# whole-file `--theirs` on the verifier box's shell drive dropped 902
 # lines and cost a 30-minute bank, BOXBANK-18).
 #
 # `merge=union` IS GIT'S OWN BUILT-IN DRIVER and needs no definition here: for
@@ -22,7 +22,7 @@
 # `scripts/docs_legs.sh` refuses a section with an ODD number of backticks at
 # exit 2, and `scripts/publish.sh` runs it on the way to a tag. Both
 # directions — the clean two-append merge AND the leg still refusing the
-# interleave — are driven by `scripts/tests/test_pm_merge.sh`.
+# interleave — are driven by `quality/tests/test_merge.py`.
 #
 # ONE LINE, AND THE POPULATION IS DELIBERATELY ONE FILE. Union over a code
 # file is two halves of a function silently concatenated, which is strictly

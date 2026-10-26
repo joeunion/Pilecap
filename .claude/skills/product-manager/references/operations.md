@@ -135,25 +135,24 @@ work to the machinery.
 
 ## The merge ritual reaps
 
-When a rung's CHAIN is verified (its verification has passed), the PM removes
-its worktree (`git worktree remove`, branch kept) and drops its databases —
-the derived name, plus its `_hp` and `_perf` worlds — in the same action as
-closing the ledger row. A standing agent whose chain is still open keeps its
-worktree; nothing else does. Verifier clones are the verifier's to reap (a
-brief clause); a clone found after its report is a finding against the brief.
-**The watchdog checks disk at every firing** and treats a low free-space
-reading as a stall-class event: reap, then report — a machine that cannot
-write is a loop that cannot run, and it fails silently and misleadingly, since
-the PM's own tool outputs die of a full disk before anything else visibly
-does.
+**A merged pull request lands with ONE command: `./scripts/pm_land.sh <pr>`, from the primary on
+main** (`quality/djb/rituals/land.py`, driven by `quality/tests/test_land.py`). Its contract is the
+no-orphan order: `origin/main` merged `--no-ff` and `main_is_read`'s line printed; inside the head's
+worktree `./scripts/db_sweep.sh --sweep --hot-path`, then `db_drop "$(db_name)"` in its own shell;
+from the primary `git worktree remove`, `git branch -d` only once the tip is in main (never `-D`),
+`git worktree prune`; the report's `## Rows` struck and booked through `queue_index.py
+--strike/--book`; ONE pathspec commit. `--report <path>` files a verifier's memo beside the PR's
+own; `--ledger-pr` runs the day's `pm/ledger-<date>` PR. A standing agent whose chain is still open
+keeps its worktree, so its PR is not landed until the chain closes; verifier clones are the
+verifier's to reap. **The watchdog checks disk at every firing**: a low reading is a stall-class
+event — reap, then report.
 
-**The broom drops nothing it cannot positively prove.** A derivation-shaped
-database with no visible checkout is `FOREIGN`, and `--sweep` alone leaves it;
-reaping means `db_sweep.sh --all-checkouts --orphans --roots <dir-holding-the-clones>`
-(positive proof) and, deliberately, `--sweep --force-foreign` ON TOP of it —
-`--force-foreign` without `--roots` is REFUSED by `db_sweep.sh`, exit 2: foreign
-is an absence of evidence, never a licence. A reap run without `--roots` reaps
-nothing and says so.
+**What it does not do: the old orphans (owner, 2026-10-03 17:50).** A derivation-shaped database
+with no visible checkout is `FOREIGN` and nothing drops it by default; from the primary, only when
+no verifier is out, `scripts/db_sweep.sh --all-checkouts --orphans --roots <projects dir> --roots
+<the session scratchpad>` is read, then re-run with `--sweep --force-foreign --hot-path` (`--roots`
+is mandatory: without it `--force-foreign` is exit 2). A classifier refusal goes to the owner's
+desk with the command, never around it.
 
 **The bank is per tree, not per rung (S2, owner 2026-09-18).** A banked
 verdict vouches for one tree; six verified rungs merged and banked once are
@@ -167,6 +166,22 @@ alone); a box push that must carry a specific tree (the field-test rule: no comm
 the bank and the push). Verification follows the same shape: one verifier
 takes the wave's rungs in one clone when they share a territory, the
 cost-baseline's lever 2, applied.
+
+**The merge is refused while main is unread (owner, 2026-10-02).** After every merge the PM launches `./scripts/pm_main_loop.sh` under `nohup` (`nohup ./scripts/pm_main_loop.sh > <scratchpad>/pm/main-loop-<sha8>.log 2>&1 &`) and reads its last line when it exits; `pm_merge.sh` refuses the next merge unless main's tree holds a green loop row, or its delta from the last one is docs-only, or the PM types `--main-unmeasured <who>:<why>` into the row. A red main-loop is the next merge's refusal, read by the PM, and its fix is the next dispatch. **A fold is never re-read:** `pm_merge.sh` prints `fold <sha8>: equals merge-tree` and the row copies the line; a fold that differs is refused until the builder's `--resolution` file names each path, and that text is the row's. **The wave opens with `verifier_box.sh pool --want 2 --idle 90` and closes with `pool --want 0`.**
+
+~~**Merge in trains, not one main loop per merge (P26 plan § 8, 2026-10-02 23:03 (4)).** Every code merge leaves main unread and costs one serial main loop with nothing merging meanwhile; with ten verified branches queued that is the wall. So the PM merges verified branches whose folds equal `merge-tree`, in file-touch order, into ONE integration branch (`pm/<wave>-train-<n>` from main's tip), banks that branch on a box ONCE, and lands it with `pm_merge.sh` — main's tree then equals the banked tree (plus docs-only), so main is READ with no main loop. Each branch keeps its own reader's verdict (the individual proof); the train's bank proves the union; a train that reds names its branch by bisecting the fold order; a conflict is a STOP and that branch leaves the train. The merges are the PM's; `loop_metrics.py --speed` records `train=<n branches>` on the merge row. Not to be confused with the PUSH road (`pm_push.sh --pr` → `--ci-verdict`, `CLAUDE.md` § "The gate"), which is how main reaches origin.~~ **STRUCK 2026-10-10 (MQ-2): the trains road is retired; the per-PR road below replaces it.**
+
+**One pull request per rung, merged by GitHub (MQ-2, 2026-10-10; the frame `cycles/2026-10-09-cycle-p26-mq-road.md`).** The PM's ONE act per rung is `./scripts/pm_push.sh --pr` from the rung's `pm/*` branch: it folds, writes the intent row, pushes, opens the pull request and sets auto-merge (a merge commit). No typed `DJB_GATE_SANCTION` — the PR number (`pr=#<n>`) is the audit. The PR's CI run is the measurement; ruleset 24824361 (required `verdict`, `gate-verdict`, the `pilecap` app's `review` check, strict up-to-date) is what lets GitHub merge, and a PR behind a moved main is updated (`gh pr update-branch <n>`) and re-measured, never merged stale. Nothing pushes to main: the pre-push hook refuses an unmeasured push to `main` with exit 2 and starts no gate, and the ruleset refuses the rest. To hold main's row locally, `./scripts/pm_push.sh --ci-verdict` on main after the merge (no run id: it finds the run that measured HEAD's tree). Docs-only work rides the same road on the `docs` lane.
+
+**Verification overlaps the PR's CI (owner, 2026-10-09).** The verifier is dispatched in the SAME message as `--pr` and reads the PR's tree while its CI runs; neither waits for the other.
+
+**A partition is capped at two sittings (owner, 2026-10-09).** A rung that will not fit two builder sittings is split before dispatch, never carried over a third.
+
+**A train's bank reads main through the merge's SECOND parent (§ 8, 2026-10-03 08:31).** A train's banked commit is the landing merge's second parent, not on main's first-parent line, so `pm_merge.sh::main_is_read` (and `pm_main_loop.sh`'s base) consider the nearest row-named tree on the first-parent line OR a merge's second parent — through the same docs-only delta test; a code delta is never admitted by ancestry. The refusal names both (`… nor a merge's second parent among them …`), and the merge row copies the line `main: read — docs-only delta from <tree> (<n> paths)`. The pin is `quality/tests/test_merge.py::test_merge_reads_main_through_a_trains_second_parent`. A train run from a worktree is refused by the script's checkout guard; land it from the primary.
+
+**The ledger row is a verdict and a pointer; the evidence is a report FILE (owner-approved 2026-10-03).** Every agent writes its whole report as its last act to `docs/product/reports/<cycle>/<rung or reader id, lower-case>.md` (R8 trims the template's reports; in a product the first report makes the directory) — a builder commits it on its branch (docs-only, through the hook); a verifier writes it in its clone and prints the path, and the PM copies it into main. The agent RETURNS only the first line, the `banked:`/`fold:`/`stamps:` lines (builders) or the consult cell (verifiers), a two-sentence verdict and the path. The `in-flight.md` row carries that verdict and the path — never the evidence — so the ledger stays inside its 16 KB-per-stage rule. The rule's other two halves: merged rungs' rows move to `archive/in-flight-<cycle>.md` at every train (the archive carries one per cycle); dated rulings as one file per day under `cycles/<cycle>-rulings/` has no directory in the tree.
+
+**The mechanical rung class, and its reader (P26 remainder plan § 3, 2026-10-03).** A MOVE with no behaviour — a giant-file split — is produced by a generator (`quality/tools/split_module.py`, built by the first split rung — not yet in the tree) and proven by identity: `--prove <old> <package>` prints `identical: N · moved: N · changed: 0` (every top-level def in exactly one module, `ast.dump` with docstrings stripped identical, nothing added), else exit 2 naming the def. Its reader is reading-only and short: paste `--prove` on baseline and head, run the rung's named behaviour pins, open the hub and five sampled defs, check every `# does-not-cover:` and `# road:` travelled (`roads --json` differs in `path` alone), and run the territory census. A split never runs beside a live editor of its file.
 
 ## Scaling the wave
 
@@ -238,29 +253,13 @@ and an ordering decision made on the wrong denominator is the actual cost.
 
 ### The reap, at every CLOSE
 
-A cycle's CLOSE reaps what the cycle grew. Three sweeps, in order, each with
-its census printed before anything is taken:
-
-1. **Worktrees whose chains closed this cycle.** `git worktree list` is the
-   census; the keep-set is a judgment, not a pattern — live agents and standing
-   builders whose chains continue into the next cycle keep theirs (the
-   chain-done rule); everything else from the closed cycle goes
-   (`git worktree remove --force`, then `git worktree prune`). Left unowned,
-   worktrees accumulate at a rate of tens of gigabytes per cycle, because no
-   single stage feels responsible for them.
-2. **Their orphaned databases.** `./scripts/db_sweep.sh --all-checkouts
-   --orphans --perf --roots <dir-holding-the-clones> --sweep --force-foreign`
-   (`--roots` is mandatory with `--force-foreign`) — the census lists FOREIGN
-   names before dropping; run it only after step 1, so the orphans are
-   genuinely orphaned. Eyes on the list; a name you cannot attribute stops the
-   sweep.
-3. **The Temporal glance** — count the task queues, record the number, and
-   sweep dead-worktree queues only with the same eyes-on listing.
-
-The reap is PM-run at CLOSE, after the readouts row and before the push — the
-push's gate then measures a tree whose neighbours are gone, and the next
-cycle's agents spawn onto a machine that is not carrying several cycles of
-archaeology.
+Every landed rung was reaped by its `pm_land.sh`; CLOSE sweeps what that missed, each census
+printed before anything is taken: (1) `git worktree list` — a closed chain's worktree is landed by
+its PR (`pm_land.sh <pr>`), one with no PR goes by `git worktree remove` + `prune`; the keep-set
+(live agents, standing builders whose chains continue) is a judgment, not a pattern; (2) after
+step 1, the orphan drop above with `--perf` — eyes on the list, a name you cannot attribute stops
+it; (3) the Temporal glance — count the task queues, record the number, sweep dead-worktree queues
+with the same eyes-on listing. It runs after the readouts row and before the push.
 
 ## Instruments fail loud
 
@@ -347,13 +346,7 @@ either way — the pre-push gate is the binding proof, and recording that
 verdict in the ledger is what makes the integration check a fact rather than a
 claim.
 
-**The verifier's single `--loop` is a consult, not a second gate.** A
-verification runs `./scripts/check.sh --loop` once in its own clone — a
-`VERDICT REUSED` banner is the observation and the gate, a miss completes and
-is recorded rather than re-run — and its ledger row carries the typed cell
-`loop: hit|miss(<reason>) <s>`, whose vocabulary `dispatch-briefs.md` § Field
-test owns. That cell is the tax made countable: a field nobody fills is a tax
-nobody can see.
+**The verifier's consult is a lookup, not a run.** `verify_start.sh --no-loop` prints a `consult:` line from the ledger and, under it, the row's `loop:` cell — one of four: `hit`, `docs-only reuse`, `miss(code: <a8>..<b8>)` or `miss(no-ledger)`. Nothing in a verification runs the gate: the builder's bank is the measurement, main's detached loop after the merge is the union's, and the train's CI is origin's. A `miss(code: …)` naming a path in the rung's territory is the one case the PM may answer with a re-measure, and the row says who asked for it.
 
 ## The environment
 

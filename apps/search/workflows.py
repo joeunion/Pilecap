@@ -28,34 +28,8 @@ from datetime import timedelta
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 
-from apps.search.types import ReconcileOutcome
-
-# --- The one setting a workflow module reads, and the seam it is read through -
-#
-# `workflow.unsafe.imports_passed_through()` is Temporal's own escape. The
-# replay sandbox RE-IMPORTS every module a workflow touches, and an unguarded
-# `from django.conf import settings` dies inside it on
-# `gettext.GNUTranslations.__mro_entries__` (measured). Passed through,
-# the module object the worker process already imported is reused and nothing
-# Django owns is re-executed in the sandbox.
-#
-# What is read is ONE number, ONCE, at import: the interval the first retry of
-# a failed activity waits. It is a constant exactly as the timeouts below are
-# constants — no clock, no ORM, no I/O, and the same value for every run this
-# worker serves — and it lives in settings so that `test` can turn a
-# fifteen-second production backoff curve into a tenth of a second without
-# touching one assertion. The argument in full, including why one knob and not
-# one per policy: `config/settings/base.py` § "The retry backoff every activity
-# policy starts at".
-with workflow.unsafe.imports_passed_through():
-    # rule-9: one deployment constant, read once at import through Temporal's
-    # own passthrough seam; the paragraph above is the whole argument.
-    from django.conf import settings
-
-#: How long the first retry of every policy below waits, doubling from there.
-#: The SDK's own default in a deployment; milliseconds under `test`, where the
-#: time-skipping server skips workflow timers and does NOT skip this.
-RETRY_INITIAL_INTERVAL = timedelta(seconds=settings.TEMPORAL_RETRY_INITIAL_INTERVAL_SECONDS)
+from apps.core.determinism import reason_of, retry_policy
+from apps.search.types import ReconcileIndexes, ReconcileOutcome
 
 #: The two activities, **named as strings** and not imported (house rule 9).
 #: Importing `apps.search.activities` here would pull the Meilisearch client and
@@ -129,66 +103,15 @@ LIST_DEADLINE = timedelta(minutes=5)
 #: keeps that true rather than incidental.
 RECONCILE_ATTEMPTS = 3
 
-#: The retry behind each kind — bounded, per the constant above.
-#:
-#: **`initial_interval` is one second in a deployment and not five, and that was
-#: measured.** The time-skipping test server does NOT skip activity retry
-#: backoff: it skips *workflow* timers, and a retry interval is the server's own
-#: scheduling. So every second of backoff here is a second on every full gate
-#: run, and at 5s → 10s the machinery test took 17.6s where at 1s → 2s it takes
-#: 5.8s (same tree, same assertion, one constant changed). One second is also
-#: the better production value for what these retries are now FOR: a container
-#: that is coming back is back in about that long, and anything slower than
-#: three seconds is an outage the hourly tick is the honest answer to.
-#:
-#: **That one second is now `RETRY_INITIAL_INTERVAL` above rather than a literal
-#: here**, which is the same argument carried one step further: `test` sets the
-#: knob to milliseconds, so the seconds this paragraph counts are spent in a
-#: deployment and nowhere else, and the assertions that ride on the policy —
-#: how many attempts, and which way the run ended — never read a clock.
-#:
-#: `maximum_interval` does not bind at three attempts — it exists so that
-#: raising `RECONCILE_ATTEMPTS` later cannot silently produce an hour-long wait
-#: inside one run, which is the failure this whole block is undoing. It is a
-#: ceiling, so it is held at or above the interval it caps rather than able to
-#: sink below it when the knob is turned down.
-RECONCILE_RETRY = RetryPolicy(
-    initial_interval=RETRY_INITIAL_INTERVAL,
-    backoff_coefficient=2.0,
-    maximum_interval=max(timedelta(minutes=5), RETRY_INITIAL_INTERVAL),
-    maximum_attempts=RECONCILE_ATTEMPTS,
-)
 
-#: How many links of a cause chain `_reason` walks. Bounded because a cause
-#: chain is somebody else's data structure; three is
-#: `apps/workflows/workflows.py::_reason`'s number and this is its shape.
-REASON_LINKS = 3
-
-
-def _reason(failure: BaseException) -> str:
-    """The cause chain, joined — never the wrapper alone.
-
-    Temporal wraps an activity's own exception in an `ActivityError` whose
-    `str()` is `"Activity task failed"`: true, and useless to whoever reads the
-    run six weeks later. What an operator needs on a reconcile that could not
-    finish is the engine's own complaint — "Meilisearch did not answer about
-    djb_..._widgets" — and that is three links down.
-
-    Deterministic (house rule 9): it reads nothing but the exception it was
-    handed. Restated here rather than imported for the reason
-    `apps/core/workflows.py` restates it — a workflow module imports its own
-    app's `types.py` and the standard library, and nothing else.
-    """
-    parts: list[str] = []
-    current: BaseException | None = failure
-    for _ in range(REASON_LINKS):
-        if current is None:
-            break
-        text = str(current).strip() or type(current).__name__
-        if text not in parts:
-            parts.append(text)
-        current = current.__cause__
-    return ": ".join(parts)
+def reconcile_retry(floor: float | None) -> RetryPolicy:
+    """`RECONCILE_ATTEMPTS` tries from the floor the run was handed, the ceiling never below it."""
+    interval = timedelta(seconds=1.0 if floor is None else floor)
+    return retry_policy(
+        initial_seconds=floor,
+        maximum_attempts=RECONCILE_ATTEMPTS,
+        maximum_interval=max(timedelta(minutes=5), interval),
+    )
 
 
 @workflow.defn
@@ -208,7 +131,7 @@ class ReconcileSearchIndexesWorkflow:
     owns_no_run = True
 
     @workflow.run
-    async def run(self) -> ReconcileOutcome:
+    async def run(self, request: ReconcileIndexes | None = None) -> ReconcileOutcome:
         """One pass: enumerate the kinds, then reconcile each in turn — and **finish**.
 
         Returns the outcome per kind — `unchanged`, `created` or `rebuilt` — so
@@ -251,17 +174,18 @@ class ReconcileSearchIndexesWorkflow:
         `asyncio.CancelledError` is a `BaseException`, so a cancel is not
         swallowed by this.
         """
+        policy = reconcile_retry(None if request is None else request.retry_floor)
         try:
             kinds: list[str] = await workflow.execute_activity(
                 LIST_KINDS_ACTIVITY,
                 start_to_close_timeout=LIST_TIMEOUT,
                 schedule_to_close_timeout=LIST_DEADLINE,
-                retry_policy=RECONCILE_RETRY,
+                retry_policy=policy,
             )
         except Exception as failure:
             # Nothing could even be enumerated, so there is no partial result to
             # report — the finding is the whole answer.
-            return ReconcileOutcome(incomplete=_reason(failure))
+            return ReconcileOutcome(incomplete=reason_of(failure))
 
         outcomes: dict[str, str] = {}
         incomplete = ""
@@ -272,14 +196,14 @@ class ReconcileSearchIndexesWorkflow:
                     kind,
                     start_to_close_timeout=RECONCILE_TIMEOUT,
                     schedule_to_close_timeout=RECONCILE_DEADLINE,
-                    retry_policy=RECONCILE_RETRY,
+                    retry_policy=policy,
                 )
             except Exception as failure:
                 # The FIRST reason is kept rather than the last: when the engine
                 # is gone every kind fails with the same complaint, and the one
                 # worth reading is the one that has not yet been retried into a
                 # different-looking message.
-                incomplete = incomplete or f"{kind}: {_reason(failure)}"
+                incomplete = incomplete or f"{kind}: {reason_of(failure)}"
         return ReconcileOutcome(outcomes=outcomes, incomplete=incomplete)
 
 

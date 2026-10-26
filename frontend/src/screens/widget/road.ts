@@ -3,7 +3,7 @@
 // golden: face end
 /**
  * EXAMPLE — the worked Widget face's road: the seat its family acts sit in and
- * the verbs it draws, declared ONCE (`@/screens/verbs` constructs every act
+ * the verbs it draws, declared ONCE (`@pilecap/ui/verbs` constructs every act
  * from it and the row's `allowed_acts`).
  *
  * A road never names a verb the wire does not serve, and it names every verb
@@ -19,7 +19,7 @@
  */
 
 // golden: face begin
-import type { Road } from "@/screens/verbs";
+import type { Road } from "@pilecap/ui/verbs";
 
 export const ROAD: Road = {
     noun: "widget",

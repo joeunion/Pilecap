@@ -1,40 +1,6 @@
 """The accounts doors: people, tokens, home-realm discovery, and SSO configuration.
 
-Four resources, at four places in the URL space, from one app:
-
-* `/api/v1/users/` — taking a person's access away: reversibly
-  (`deactivate`) or permanently (`erase`), each in a self-serve `me/` form and
-  an admin-initiated `{user_id}` form;
-* `/api/v1/tokens/` — how a person gives a machine a way in, and takes it back;
-* `/api/v1/auth/realm/` — where an address signs in, asked before anybody is
-  signed in. The one route in this app a stranger may call;
-* `/api/v1/auth/sso-connections/` — a tenant's own identity provider. The most
-  privileged rows in the product, and owner-or-admin only.
-
-**The user routes are a door onto services that already existed** (ADR
-ident-6). `erase_user` and `deactivate_user` were built, tested and audited, and
-before this door the only way to reach either was a Python shell — which is
-house rule 42's whole complaint, and it is why `erase_user` was one of the four
-names in accounts' doorless census.
-
-**What this door does NOT claim**, stated rather than left to
-be discovered: the erasure it exposes is *today's* erasure. `erase_user`
-anonymises the `User` row, revokes the tokens, drops the admin keys, closes the
-sockets and asks the identity platform to deactivate the account — and it does
-not sweep whatever else in the tree points at that person. The **contract** is
-what this door owns and it does not change when the sweep deepens: the same
-route, the same body, the same refusals. Closing the residue is wave C's, and
-the trigger to re-read these tests is its merge.
-
-**The interesting rule on tokens is on the first route.** Only a signed-in
-person may mint one: a token that can mint tokens is a token that cannot be
-revoked — revoke it and its offspring keep working — so the machine door is
-closed there even though it is open everywhere else. That is a narrowing of the
-API default, which a route may do; it is not `auth=None`, which it may not.
-
-The plaintext of a token is in the response body once. It is not stored, not
-logged, and not recoverable; `manage.py issue_token` is the same operation for
-someone with a shell instead of a session.
+Only a signed-in person may mint a token: a token that could mint would survive its own revocation.
 """
 
 from __future__ import annotations
@@ -46,7 +12,6 @@ from django.db.models import QuerySet
 from django.http import HttpRequest
 from django.shortcuts import get_object_or_404
 from ninja import Router, Status
-from ninja.errors import HttpError
 from ninja.pagination import paginate
 
 from apps.accounts.auth import API_AUTH, MINT_AUTH, SessionRequired, authenticated_by_token
@@ -61,7 +26,7 @@ from apps.accounts.schemas import (
     TokenIssuedOut,
     UserOut,
 )
-from apps.accounts.selectors import get_member, list_sso_connections, realm_for_email
+from apps.accounts.selectors import get_member, get_realm_for_email, list_sso_connections
 from apps.accounts.services import (
     create_sso_connection,
     deactivate_user,
@@ -71,34 +36,19 @@ from apps.accounts.services import (
     revoke_token,
     update_sso_connection,
 )
-from apps.core.actor import Actor, actor_from_request
+from apps.core.actor import actor_from_request
 from apps.core.api import CursorPagination, ordered_by
-from apps.core.api.docs import Tag, refuses
+from apps.core.api.acting import acting
+from apps.core.api.docs import Tag, also_refuses, refuses
 from apps.core.api.scopes import ceiling_from_request, effective_scopes
-from apps.core.models import Tenant
 from apps.core.requests import TenantRequest
+from apps.core.surfaces import STAFF, of_request
 from apps.core.throttling import AnonRateThrottle, BaseThrottle
 
-# **The root of `/api/v1/`, and deliberately.** `config/api.py` mounts one
-# router per app at the app's `PREFIX`; this app owns two resources that belong
-# in two different places — a token is not an auth-configuration thing, and
-# `/api/v1/tokens/realm` would be a lie about what the resource is. So the
-# module exposes a parent router at the root, carrying `tokens` and `auth`
-# beneath it at their own prefixes. Nothing in `config/` is edited to do it.
+# The root of `/api/v1/`: this app's resources live at three prefixes of their own.
 PREFIX = ""
 
-# What each of this app's three tags is FOR, declared beside the routers that
-# carry them and collected into the OpenAPI document's `tags` section by
-# `config/api.py`'s discovery (ADR api-1). Three, because this app's routers
-# serve three genuinely different audiences and one heading would say so badly.
-#
-# THERE IS NO `accounts` TAG, deliberately. It was an umbrella over the three
-# below, and because every operation carried it as well as its own, a renderer
-# showed all eleven twice — once in their real section and once under a heading
-# that was a copy of the other three (owner review, 2026-08-24). Removed rather
-# than left behind: a tag with no operations is worse than no tag, because it is
-# an empty heading somebody clicks. **The app is not the group; the resource
-# is.**
+# One tag per resource, never one per app (ADR api-1).
 TAGS = {
     "users": Tag(
         "People",
@@ -147,30 +97,10 @@ TAGS = {
     ),
 }
 
-# `auth` is restated on every router here rather than inherited from the API
-# default, so that reading this one file tells you what it takes to call each.
 tokens_router = Router(tags=["tokens"], auth=API_AUTH)
 
 
-def _acting(request: TenantRequest) -> tuple[Actor, Tenant]:
-    """The actor and tenant a write happens as.
-
-    Whether the actor *may* do the thing is not decided here — `services.py`
-    calls `authz.require`. What is decided here is that a write with no resolved
-    tenant is refused rather than guessed at.
-    """
-    if request.tenant is None:
-        raise HttpError(403, "No tenant for this request.")
-    return actor_from_request(request), request.tenant
-
-
-# --- People -------------------------------------------------------------------
-# Two acts, each in two forms. The forms differ only in how the person is named:
-# `me/` reads the caller off the request and cannot name anybody else, while the
-# `{user_id}` form resolves a member of the acting tenant through `get_member`
-# and hands the SAME service the SAME wall. That is why there are four routes
-# and not one with an optional id — a route that could be pointed at anybody by
-# omitting a parameter is a route whose blast radius is a typo away.
+# --- People: `me/` names only the caller; `{user_id}` resolves a member through `get_member` ---
 
 users_router = Router(tags=["users"], auth=API_AUTH)
 
@@ -198,20 +128,14 @@ def deactivate_me_route(request: TenantRequest) -> User:
 
     Refusals you can get here:
 
-    * `403 forbidden` — you are signed in but the request resolved no tenant.
+    * `403 no_acting_scope` — you are signed in but the request resolved no tenant.
       Send `X-Tenant` naming one you belong to.
     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
       `Idempotency-Key` for a different request, or the first request under it
       has not finished. Resend the identical request, or use a new key.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
-
-    ---
-
-    Deliberately takes no body: there is nothing a caller could say about
-    deactivating themselves that would change what happens, and an optional
-    field is a field somebody has to be told to omit.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     return deactivate_user(user=cast(User, request.user), actor=actor, tenant=tenant)
 
 
@@ -242,20 +166,14 @@ def erase_me_route(request: TenantRequest) -> User:
     * `409 conflict` — you are the only owner of a tenant, and erasing you
       would leave it with nobody who can administer it. The message names each
       tenant. Make somebody else an owner there first, then retry.
-    * `403 forbidden` — you are signed in but the request resolved no tenant.
+    * `403 no_acting_scope` — you are signed in but the request resolved no tenant.
       Send `X-Tenant` naming one you belong to.
     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
       `Idempotency-Key` for a different request, or the first request under it
       has not finished. Resend the identical request, or use a new key.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
-
-    ---
-
-    ADO-7: what is erased is what `services.erase_user` erases today. Rows
-    elsewhere in the tree that point at this person are wave C's sweep, and the
-    contract above does not change when it lands.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     return erase_user(user=cast(User, request.user), actor=actor, tenant=tenant)
 
 
@@ -295,14 +213,11 @@ def deactivate_user_route(request: TenantRequest, user_id: UUID) -> User:
 
     ---
 
-    The `not_found` above is `get_member`'s and is deliberately not
-    distinguishable from `Forbidden`: not-there and not-yours are one answer, or
-    the refusal itself confirms that somebody else's account exists.
+    Not-there and not-yours are one answer (`get_member`).
     """
-    actor, tenant = _acting(request)
-    return deactivate_user(
-        user=get_member(tenant=tenant, user_id=user_id, actor=actor), actor=actor, tenant=tenant
-    )
+    actor, tenant = acting(request)
+    user = get_member(tenant=tenant, user_id=user_id, actor=actor)
+    return deactivate_user(user=user, actor=actor, tenant=tenant)
 
 
 @users_router.post("/{user_id}/erase/", response=UserOut, url_name="user-erase")
@@ -345,18 +260,10 @@ def erase_user_route(request: TenantRequest, user_id: UUID) -> User:
       `Idempotency-Key` for a different request, or the first request under it
       has not finished. Resend the identical request, or use a new key.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
-
-    ---
-
-    ADO-7, again and on purpose: this route's contract is the rung's deliverable
-    and the completeness of the sweep behind it is not. Wave C deepens
-    `erase_user`; these tests should pass byte-unchanged when it does, and that
-    is the trigger to re-run them.
     """
-    actor, tenant = _acting(request)
-    return erase_user(
-        user=get_member(tenant=tenant, user_id=user_id, actor=actor), actor=actor, tenant=tenant
-    )
+    actor, tenant = acting(request)
+    user = get_member(tenant=tenant, user_id=user_id, actor=actor)
+    return erase_user(user=user, actor=actor, tenant=tenant)
 
 
 # --- Tokens -------------------------------------------------------------------
@@ -376,6 +283,7 @@ def _own_tokens(request: TenantRequest) -> QuerySet[ApiToken]:
     "session_required",
     "invalid",
     "forbidden",
+    "no_acting_scope",
     "idempotency_key_reuse",
     "in_progress",
     "rate_limited",
@@ -457,7 +365,7 @@ def create_token(request: TenantRequest, payload: TokenIn) -> Status[TokenIssued
     * `403 session_required` — you called with a bearer token instead of a
       browser session. No token can make this call, so there is no wider one to
       go and mint; sign in, or ask somebody with a shell on the server.
-    * `403 forbidden` — you are signed in, and the request resolved no tenant.
+    * `403 no_acting_scope` — you are signed in, and the request resolved no tenant.
       Send `X-Tenant` naming a tenant you belong to.
     * `400 invalid` — the `name` was empty or longer than 200 characters, or
       `scopes` was missing, empty, or named something this API does not have.
@@ -469,42 +377,20 @@ def create_token(request: TenantRequest, payload: TokenIn) -> Status[TokenIssued
 
     ---
 
-    **Through `_acting`, like every other write in this module.** It was
-    the one that was not, and it read `request.tenant` straight off the request:
-    a signed-in person with no resolvable tenant got a token pinned to nothing,
-    and because `issue_token` declares a `tenant`, `@service` filed that mint's
-    audit row in the **platform** population — the null-tenant ledger that is
-    meant to hold the deployment's own actions and nothing a stranger can reach.
-    "Platform means the deployment" was documentation enforced by nothing.
-
-    The tenantless refusal is `_acting`'s sentence and not this route's, so this
-    route and the SSO-configuration routes cannot come to disagree about what a
-    tenantless write gets told. The behaviour change is real and was ratified —
-    a tenantless session can no longer mint over the wire. `manage.py
-    issue_token` still mints an unpinned token, which is the right door for it:
-    it belongs to whoever has a shell, not to whoever has a cookie.
-
-    The CSRF sentence above exists because the guide and this route
-    both told a caller to sign in and mint, and neither said the session path
-    needs the header, so the first mint against the guide was a 403 nobody could
-    explain from the document. The mapper hole it exposed — a CSRF failure
-    answering in Django's words rather than the product's — belongs to the
-    authentication door and not to this route.
+    A tenantless session is refused (`acting`): a token pinned to nothing would audit as platform.
     """
     if authenticated_by_token(request):  # pragma: no cover - MINT_AUTH answers first
         raise SessionRequired(
             "A token cannot mint another token; sign in to do that. A token that could "
             "mint would survive being revoked, because its offspring would keep working."
         )
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     ceiling = ceiling_from_request(payload.scopes)
     token, plaintext = issue_token(
         user=cast(User, request.user),
         tenant=tenant,
         name=payload.name,
-        # The person at the session door, so the credential's birth certificate
-        # names who minted it (ADR core-22). `_acting` resolved it from
-        # the request; nothing here re-derives who is calling.
+        # The minter, so the birth row names who minted it (ADR core-22).
         actor=actor,
         scopes=ceiling,
     )
@@ -561,38 +447,19 @@ def revoke(request: TenantRequest, token_id: UUID) -> Status[None]:
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
     token = get_object_or_404(_own_tokens(request), pk=token_id)
-    # `token.tenant`, never `request.tenant` (ADR core-22): the revocation is
-    # recorded under the workspace the CREDENTIAL was pinned to, which is what
-    # puts its death row beside its birth row. An unpinned token passes `None`
-    # and lands in the platform population, exactly as its mint did. The service
-    # refuses a disagreement, so this is a claim it checks rather than trusts.
-    #
-    # And the actor says WHO ended it. This route is reachable by both a
-    # session and a bearer token — a program may revoke its own credential —
-    # so `actor_from_request` is what tells `human` from `agent` here, and a
-    # bearer revocation lands with the machine's id beside the person's.
+    # The pinned tenant puts the death row beside the birth row (ADR core-22).
     revoke_token(token=token, tenant=token.tenant, actor=actor_from_request(request))
     return Status(204, None)
 
 
-# --- Home-realm discovery and SSO configuration -------------------------------
-# Two very different audiences share the `/auth/` prefix and nothing else:
-# `realm` is the only route in this app a stranger may call, and the
-# `sso-connections` routes are the most privileged ones in the product.
+# --- Home-realm discovery (anonymous) and SSO configuration (owner-or-admin) ---
 
 auth_router = Router(tags=["auth"], auth=API_AUTH)
 
 # What `?ordering=` may name on the connection list, and nothing else.
 SSO_ORDERING = ("created_at", "updated_at", "name", "status")
 
-# The realm route's own throttle, named at module level rather than built inline
-# in the decorator. A `SimpleRateThrottle` reads its rate from settings **when it
-# is constructed**, which is import time — so an inline instance is one a test
-# can neither reach nor reconfigure, and "the throttle is wired up" would be a
-# claim with no test behind it. Named, it is both.
-#
-# Typed as the base class because ninja's `throttle=` takes `list[BaseThrottle]`
-# and a `list` is invariant: `list[AnonRateThrottle]` is not one.
+# Named so a test can reach it; typed as the base because `list` is invariant.
 REALM_THROTTLES: list[BaseThrottle] = [AnonRateThrottle()]
 
 
@@ -600,16 +467,8 @@ REALM_THROTTLES: list[BaseThrottle] = [AnonRateThrottle()]
     "/realm/",
     response=RealmOut,
     url_name="realm-discover",
-    # rule-3: pre-auth realm discovery. A login form has to ask "where does this
-    # address sign in?" *before* anybody is signed in — that is what home-realm
-    # discovery is — so there is no credential this route could require. What
-    # stands in for one is that the answer discloses nothing:
-    # `selectors.realm_for_email` answers `sso` for every address (ADR ident-6),
-    # returns no tenant name, no slug, no connection name and no count, and
-    # cannot distinguish "no SSO here", "that connection is disabled" and "never
-    # heard of that domain" — all three are byte-identical. A claimed domain
-    # differs only by an opaque id and an opaque hint. See
-    # `apps/accounts/selectors.py` for the full argument.
+    # rule-3: pre-auth realm discovery has no credential to require; the answer discloses
+    # nothing — `get_realm_for_email` is byte-identical for every unclaimed address (ADR ident-6).
     auth=None,
     throttle=REALM_THROTTLES,
 )
@@ -645,17 +504,10 @@ def discover_realm(request: HttpRequest, payload: RealmIn) -> RealmOut:
 
     ---
 
-    Throttled per client address on top of the API's own limits, because this is
-    the one route in this app anybody may call: without it, the response — one
-    bit per request — is a way to walk a domain list at whatever rate the network
-    allows. It does not make enumeration impossible; it makes it slow enough to
-    notice, which is the honest claim.
-
-    `method` keeps `password` in its vocabulary although nothing answers it any
-    more (ADR ident-6): a client that switched on the value stays correct if a
-    product ever reintroduces a local password door.
+    Throttled per address: the one anonymous route, so enumeration is slowed, not prevented.
+    `method` keeps `password` in its vocabulary for a product that restores the door (ADR ident-6).
     """
-    realm = realm_for_email(payload.email)
+    realm = get_realm_for_email(payload.email, surface=of_request(request) or STAFF)
     return RealmOut(
         method=cast(Literal["sso", "password"], realm.method),
         connection_id=realm.connection_id,
@@ -664,35 +516,15 @@ def discover_realm(request: HttpRequest, payload: RealmIn) -> RealmOut:
 
 
 def _sso_connections(request: TenantRequest) -> QuerySet[SsoConnection]:
-    """The acting tenant's connections, for the LIST. Asks `sso_connection.read`.
-
-    The read sweep put the capability inside the selector, at the tenant's
-    ROOT, so the list refuses a hat that may not see the tenant's federation
-    posture instead of handing it back an empty page.
-    """
-    actor, tenant = _acting(request)
+    """The acting tenant's connections, for the LIST. Asks `sso_connection.read` at the root."""
+    actor, tenant = acting(request)
     return list_sso_connections(tenant=tenant, actor=actor)
 
 
 def _sso_connection_reach(request: TenantRequest) -> QuerySet[SsoConnection]:
     """The REACH for a detail route: tenancy only, no capability asked here.
 
-    **Why this is not `_sso_connections`.** A `PATCH` and a `DELETE` each carry
-    their own key — `sso_connection.update`, `sso_connection.disable` — asked
-    by the service at the tenant's root. Resolving the row through the LIST
-    selector would ask `sso_connection.read` first, so a branch administrator
-    attempting a rename would be refused with *"You may not read this SSO
-    connection"* when what they attempted was a write: the right status for the
-    wrong reason, and the sentence is the half a person acts on. The ceiling
-    itself does not move — `test_sso_role_ceiling.py` drives all five acts —
-    because the service's wall is the one that was always deciding.
-
-    **Nothing asks `sso_connection.read` on this path, and that is the point.**
-    This helper is reach and nothing else; the capability for the act is the
-    service's, one call later. There is no detail `GET` on this door — if one
-    is ever added, it is that route's job to ask the read after this fetch,
-    which is R1.1's order (reach, then capability) and what
-    `selectors.get_member` does.
+    Not the list selector: that would ask `sso_connection.read` before the write's own key.
     """
     return SsoConnection.objects.for_tenant(request.tenant).prefetch_related("domains")
 
@@ -756,10 +588,10 @@ def create_sso_connection_route(
 
     Send the provider's `issuer` URL, its `client_id` and `client_secret`, a
     `name` you will recognise, and `email_domains` — the domains this provider
-    owns, such as `acme.com`. Optionally `default_role` (the role people who
-    arrive through it join at; `member` unless you say otherwise, and it never
-    changes an existing membership) and `enforced` (when `true`, people in those
-    domains may not sign in any other way).
+    owns, such as `acme.com`. Optionally `default_role` (the role key people who
+    arrive through it join at; the deployment's default role unless you say
+    otherwise, and it never changes an existing membership) and `enforced` (when
+    `true`, people in those domains may not sign in any other way).
 
     **An email domain belongs to exactly one provider across the whole
     product.** Claiming one somebody else already has is refused.
@@ -783,8 +615,9 @@ def create_sso_connection_route(
 
     Refusals you can get here:
 
-    * `403 forbidden` — you are not an owner or administrator of this tenant, or
-      the request resolved no tenant. Send `X-Tenant` naming one you belong to.
+    * `403 no_acting_scope` — the request resolved no tenant. Send `X-Tenant`
+      naming one you belong to.
+    * `403 forbidden` — you are not an owner or administrator of this tenant.
       **Measured at the tenant's root**: an administrator of one branch
       administers that branch, and may not configure the tenant's identity
       provider.
@@ -796,7 +629,7 @@ def create_sso_connection_route(
       has not finished. Resend the identical request, or use a new key.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     connection = create_sso_connection(
         tenant=tenant,
         actor=actor,
@@ -806,7 +639,7 @@ def create_sso_connection_route(
         client_secret=payload.client_secret,
         email_domains=payload.email_domains,
         protocol=payload.protocol,
-        default_role=payload.default_role,
+        default_role=payload.default_role or "",
         enforced=payload.enforced,
     )
     return Status(201, connection)
@@ -817,6 +650,7 @@ def create_sso_connection_route(
     response=SsoConnectionOut,
     url_name="sso-connection-update",
 )
+@also_refuses("enforced_without_provider")
 def update_sso_connection_route(
     request: TenantRequest, connection_id: UUID, payload: SsoConnectionPatch
 ) -> SsoConnection:
@@ -845,20 +679,28 @@ def update_sso_connection_route(
 
     * `404 not_found` — no provider with that id belongs to the tenant you are
       acting in.
-    * `403 forbidden` — you are not an owner or administrator of this tenant, or
-      the request resolved no tenant.
+    * `403 no_acting_scope` — the request resolved no tenant.
+    * `403 forbidden` — you are not an owner or administrator of this tenant.
       **Measured at the tenant's root**: an administrator of one branch
       administers that branch, and may not configure the tenant's identity
       provider.
     * `400 invalid` — a field you sent is malformed, or `default_role` is above
       your own role. `errors` names the fields.
     * `409 conflict` — one of the `email_domains` is already claimed elsewhere.
+    * `409 enforced_without_provider` — you switched `enforced` on before this
+      provider was set up at the identity platform; requiring it now would leave
+      its people no way to sign in. Read the provider back until `sync_state` is
+      `applied`, then switch it on.
     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
       `Idempotency-Key` for a different request, or the first request under it
       has not finished. Resend the identical request, or use a new key.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+
+    `enforced` in the answer is what the identity platform has applied, not only
+    what you asked for: it reads `false` with `sync_state` `pending` until the
+    change lands.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     connection = get_object_or_404(_sso_connection_reach(request), pk=connection_id)
     return update_sso_connection(
         tenant=tenant,
@@ -901,33 +743,20 @@ def disable_sso_connection_route(request: TenantRequest, connection_id: UUID) ->
 
     * `404 not_found` — no provider with that id belongs to the tenant you are
       acting in.
-    * `403 forbidden` — you are not an owner or administrator of this tenant, or
-      the request resolved no tenant.
+    * `403 no_acting_scope` — the request resolved no tenant.
+    * `403 forbidden` — you are not an owner or administrator of this tenant.
       **Measured at the tenant's root**: an administrator of one branch
       administers that branch, and may not configure the tenant's identity
       provider.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     connection = get_object_or_404(_sso_connection_reach(request), pk=connection_id)
     disable_sso_connection(tenant=tenant, actor=actor, connection=connection)
     return Status(204, None)
 
 
-# --- The mount ---------------------------------------------------------------
-# What `config/api.py` discovers. The three routers above hang off it at their
-# own prefixes, so the URL says what the resource is rather than which app holds
-# it.
-#
-# **IT CARRIES NO TAG OF ITS OWN, and that is load-bearing.** A nested router's
-# tags ACCUMULATE downward in ninja (`Router.set_api_instance`: the inherited
-# tags plus the template's own), so `tags=["accounts"]` here put a SECOND tag on
-# all eleven operations beneath it — and a renderer lists an operation under
-# every tag it carries, so the whole app appeared twice in the navigation: once
-# under its own three headings and again under an "Accounts & tokens" umbrella
-# that was a copy of all three. The owner read it in review, 2026-08-24. One
-# operation, one section: the specific router names the group, the mount names
-# nothing, and house rule 41 now refuses a second tag anywhere.
+# --- The mount: no tag of its own — nested ninja tags accumulate, and rule 41 refuses two ---
 router = Router(auth=API_AUTH)
 router.add_router("/users/", users_router)
 router.add_router("/tokens/", tokens_router)

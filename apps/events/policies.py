@@ -36,14 +36,7 @@ five `endpoint.*` keys become conforming; the four derived `webhook_endpoint.*`
 keys nobody typed are renamed below, so a `Grant` or `RolePermission` row
 carrying one goes on answering.
 
-**What this sweep deliberately did NOT do** (PM ruling, 2026-09-16): the other
-half — moving "which declared role holds this by default" out of the compat
-residue and into a `DEFAULT_ROLES` mapping — is DEFERRED to one later rung,
-because any `DEFAULT_ROLES` entry moves `defaults_for("member")` and two pins of
-the flat product in `apps/core/tests/test_vocabulary.py` read that value
-directly. This app would have had nothing to put in one — it admits no member to
-any write — but the deferral is recorded here so the next reader knows the file
-is waiting on a rung rather than finished by omission.
+No `DEFAULT_ROLES`: no key here admits a role by itself.
 
 The proof is a census rather than these paragraphs: `tests/authz_baseline.json`
 is derived on the tree before the sweep and `tests/test_authz_sweep.py`

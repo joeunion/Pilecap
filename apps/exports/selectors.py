@@ -39,7 +39,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 READ = "export.read"
 
 
-def _visible(*, tenant: Tenant | None, org: Any) -> ScopedQuerySet[Export]:
+def _visible_exports(*, tenant: Tenant | None, org: Any) -> ScopedQuerySet[Export]:
     """The rows this hat may see, before anybody has been asked anything.
 
     Split out of `list_exports` so that `get_export` can do the FETCH without
@@ -70,7 +70,7 @@ def list_exports(*, tenant: Tenant | None, org: Any = None, actor: Actor) -> Sco
     turns removing it into a failure rather than a slow page.
     """
     require(actor, READ)
-    return _visible(tenant=tenant, org=org)
+    return _visible_exports(tenant=tenant, org=org)
 
 
 def get_export(*, tenant: Tenant | None, export_id: UUID, org: Any = None, actor: Actor) -> Export:
@@ -83,10 +83,19 @@ def get_export(*, tenant: Tenant | None, export_id: UUID, org: Any = None, actor
     makes it `forbidden`. The two exception types in that order are the
     criterion.
     """
-    export = _visible(tenant=tenant, org=org).filter(pk=export_id).first()
+    export = _visible_exports(tenant=tenant, org=org).filter(pk=export_id).first()
     if export is None:
         raise NotFound()
     require(actor, READ, export)
+    return export
+
+
+def get_downloadable_export(*, tenant: Tenant | None, actor: Actor, export_id: UUID) -> Export:
+    """The export whose archive may be fetched now; one with no archive behind it is `NotFound`."""
+    export = get_export(tenant=tenant, export_id=export_id, org=actor.org, actor=actor)
+    require(actor, READ, export)
+    if not export.is_downloadable:
+        raise NotFound()
     return export
 
 

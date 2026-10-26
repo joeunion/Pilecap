@@ -10,8 +10,8 @@ platform app's own workflows closed their own runs.
 Driven against the time-skipping server wherever the question is "what does
 Temporal say", because the whole decision is the server's answer and a stub
 would be a test of the stub. The schedule half uses a stand-in for the
-schedules API, which the time-skipping server does not implement — the same
-`FakeScheduleServer` shape `apps/events/tests/test_activities.py` established.
+schedules API, which the time-skipping server does not implement — this app's
+one `FakeScheduleServer` (`apps/core/tests/fakes.py`).
 """
 
 from __future__ import annotations
@@ -25,15 +25,15 @@ from django.test import override_settings
 from django.utils import timezone
 from temporalio.client import (
     Client,
-    Schedule,
-    ScheduleAlreadyRunningError,
     ScheduleOverlapPolicy,
 )
 from temporalio.service import RPCError, RPCStatusCode
 from temporalio.testing import WorkflowEnvironment
 
+from apps.core.actor import system_actor
 from apps.core.asyncdb import run_db
 from apps.core.models import Tenant
+from apps.core.tests.fakes import FakeScheduleServer
 from apps.workflows import activities
 from apps.workflows import client as client_module
 from apps.workflows.client import attach_interceptors, build_worker, ensure_schedules
@@ -72,7 +72,9 @@ def planted(*, tenant: Tenant | None, key: str, old: bool) -> WorkflowRun:
         if tenant is not None
         else PLATFORM_RUN_ID
     )
-    run = record_run(tenant=tenant, workflow_id=wanted, workflow_type="EchoWorkflow")
+    run = record_run(
+        tenant=tenant, workflow_id=wanted, workflow_type="EchoWorkflow", actor=system_actor(tenant)
+    )
     if old:
         age(run, by=LONG_AGO)
     return run
@@ -242,51 +244,6 @@ def test_only_not_found_is_read_as_an_absence() -> None:
 # --- The schedule --------------------------------------------------------------
 
 
-class FakeScheduleServer:
-    """A stand-in for the client's schedules API, recording what was asked of it.
-
-    Hand-written for the reason `apps/events/tests/test_activities.py` gives:
-    the time-skipping test server has no schedules API, and pointing a test at
-    the dev server is forbidden. What is under test is
-    the engine's own decisions for `RECONCILE_RUNS` — create, and on "already
-    running" update — which is exactly what this records.
-
-    It answers `delete` as well, because `ensure_schedules` is **cross-app**:
-    running it drives every installed app's entries, and the events purge asks
-    to drop its legacy id first. That is not noise to be stubbed away — it is
-    the discovery this test is about, proving itself.
-    """
-
-    def __init__(self) -> None:
-        self.present: set[str] = set()
-        self.created: list[tuple[str, Schedule]] = []
-        self.updated: list[tuple[str, Schedule]] = []
-
-    async def create_schedule(self, schedule_id: str, schedule: Schedule) -> Any:
-        if schedule_id in self.present:
-            raise ScheduleAlreadyRunningError()
-        self.present.add(schedule_id)
-        self.created.append((schedule_id, schedule))
-        return self._handle(schedule_id)
-
-    def get_schedule_handle(self, schedule_id: str) -> Any:
-        return self._handle(schedule_id)
-
-    def _handle(self, schedule_id: str) -> Any:
-        server = self
-
-        class FakeHandle:
-            async def update(self, updater: Any) -> None:
-                server.updated.append((schedule_id, updater(None).schedule))
-
-            async def delete(self) -> None:
-                if schedule_id not in server.present:
-                    raise RPCError("schedule not found", RPCStatusCode.NOT_FOUND, b"")
-                server.present.discard(schedule_id)
-
-        return FakeHandle()
-
-
 # `deployment` declared out loud: the suite runs in `process` mode (ADR
 # platform-lifecycle-1), where no Schedule object is created at all, so a test
 # about what a durable Schedule does names the class it is proving.
@@ -304,7 +261,7 @@ async def test_the_worker_ensures_the_sweep_at_startup_through_discovery() -> No
     server = FakeScheduleServer()
     client: Any = server
     queue = str(django_settings.TEMPORAL_TASK_QUEUE)
-    ours = activities.reconcile_schedule_id(task_queue=queue)
+    ours = activities.RECONCILE_RUNS.schedule_id(queue)
 
     await ensure_schedules(client)
     await ensure_schedules(client)
@@ -323,21 +280,20 @@ def test_the_schedule_carries_the_threshold_and_skips_on_overlap() -> None:
     a clock (house rule 9), and `SKIP` is what stops two sweeps reading the same
     stranded rows.
     """
-    schedule = activities.reconcile_schedule(task_queue="djb-alpha")
+    schedule = activities.RECONCILE_RUNS.schedule("djb-alpha")
     action: Any = schedule.action
 
     assert action.workflow == activities.RECONCILE_WORKFLOW
     assert action.args == [ReconcileRuns(after_seconds=activities.reconcile_after_seconds())]
-    assert action.id == activities.reconcile_workflow_id(task_queue="djb-alpha")
+    assert action.id == "platform:workflows:reconcile:djb-alpha"
     assert schedule.policy.overlap is ScheduleOverlapPolicy.SKIP
     assert activities.RECONCILE_AFTER == timedelta(minutes=15)
 
 
 def test_the_schedule_and_its_runs_are_namespaced_by_task_queue() -> None:
     """Two deployments on one Temporal namespace must not fight over one sweep."""
-    assert activities.reconcile_schedule_id(task_queue="djb-alpha") != (
-        activities.reconcile_schedule_id(task_queue="djb-beta")
-    )
-    assert activities.reconcile_workflow_id(task_queue="djb-alpha") != (
-        activities.reconcile_workflow_id(task_queue="djb-beta")
-    )
+    machine = activities.RECONCILE_RUNS
+    assert machine.schedule_id("djb-alpha") != machine.schedule_id("djb-beta")
+    alpha: Any = machine.schedule("djb-alpha").action
+    beta: Any = machine.schedule("djb-beta").action
+    assert alpha.id != beta.id

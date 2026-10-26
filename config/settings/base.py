@@ -6,12 +6,16 @@ variables this module reads. The environment-specific modules (`local`, `test`,
 """
 
 import os
+import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import django_stubs_ext
 import environ
 from django.core.exceptions import ImproperlyConfigured
+
+from apps.core.roads import road
 
 from .discovery import discover_local_apps
 from .guards import DEV_DATABASE_PASSWORD
@@ -27,10 +31,36 @@ _env_file = BASE_DIR / ".env"
 if _env_file.is_file():
     env.read_env(str(_env_file))
 
+
+#: The one shape `TEMPLATE_VERSION` may state: `N.N.N`, or PEP 440's public pre-release of it.
+template_version_shape = re.compile(r"\d+\.\d+\.\d+(?:(?:a|b|rc)\d+)?")
+
+
+@road("version", example="apps/core/tests/test_template_version.py::test_the_setting_is_the_file")
+def read_template_version(base_dir: Path) -> str:
+    """The template version this tree was cloned from: its `TEMPLATE_VERSION` file, read once.
+
+    The file is the one source; `TEMPLATE_VERSION` below is its one reader in
+    settings, and the index page and the telemetry resource read the setting. No file,
+    or any text but `template_version_shape`, refuses at import, never a placeholder.
+    """
+    version = (base_dir / "TEMPLATE_VERSION").read_text(encoding="utf-8").strip()
+    if not template_version_shape.fullmatch(version):
+        raise ValueError(
+            f"TEMPLATE_VERSION states {version!r}, which is not a version this file may state:"
+            " a release N.N.N, or its pre-release N.N.NaN, N.N.NbN or N.N.NrcN."
+        )
+    return version
+
+
+TEMPLATE_VERSION: str = read_template_version(BASE_DIR)
+
 # --- Core -------------------------------------------------------------------
 
 SECRET_KEY: str = env.str("SECRET_KEY", default="")
 DEBUG: bool = env.bool("DEBUG", default=False)
+# A DEBUG 500 hides every credential-named setting: `_PAT` and `_DSN` beside Django's own.
+DEFAULT_EXCEPTION_REPORTER_FILTER = "apps.core.reporting.CredentialReporterFilter"
 ALLOWED_HOSTS: list[str] = env.list("ALLOWED_HOSTS", default=[])
 CSRF_TRUSTED_ORIGINS: list[str] = env.list("CSRF_TRUSTED_ORIGINS", default=[])
 
@@ -74,6 +104,111 @@ PRODUCT_BASE_URL: str = (
     env.str("PRODUCT_BASE_URL", default="").strip().rstrip("/") or PUBLIC_BASE_URL
 )
 
+# Which host answers as which SURFACE — one product, several audiences on one set
+# of records: `staff=sales.example.com,customer=customer.example.com`. A key is
+# a surface a product declares in an app's `surfaces.py` (`apps.core.surfaces`
+# reads both halves); a host may carry one `{tenant}` slot for a surface whose
+# tenant is named by its host. UNSET — the default, and every product that
+# declares no surface — means every host `ALLOWED_HOSTS` admits is the one
+# implicit `staff` surface, which is exactly the deployment as it was before
+# surfaces existed. The host binding is environment and the surface's content is
+# code, so moving staging to another name never edits a file.
+#
+# The SHAPE is refused here, at import; a key naming a surface nobody declared
+# is refused by `apps.core.surfaces` the first time the map is read, because the
+# declarations are code in the apps and there is no app registry yet at this
+# line.
+SURFACE_HOST_KEY = r"^[a-z][a-z0-9_]{0,31}$"
+
+
+def _surface_hosts(declaration: str) -> dict[str, str]:
+    """Parse `key=host,…` into a map, refusing a malformed clause by name."""
+    hosts: dict[str, str] = {}
+    for clause in declaration.split(","):
+        clause = clause.strip()
+        if not clause:
+            continue
+        key, separator, host = clause.partition("=")
+        key, host = key.strip().lower(), host.strip().lower()
+        if not separator or not host:
+            raise ImproperlyConfigured(
+                f"SURFACE_HOSTS: {clause!r} is not `surface=host` — for example "
+                "`staff=sales.example.com,customer=customer.example.com`."
+            )
+        if not re.match(SURFACE_HOST_KEY, key):
+            raise ImproperlyConfigured(
+                f"SURFACE_HOSTS: {key!r} is not a surface key (lower case, a letter first)."
+            )
+        if "/" in host or ":" in host.replace("{tenant}", ""):
+            raise ImproperlyConfigured(
+                f"SURFACE_HOSTS: {host!r} is a host name only — no scheme, no port, no "
+                "path; the scheme and the port come from PUBLIC_BASE_URL."
+            )
+        if key in hosts:
+            raise ImproperlyConfigured(f"SURFACE_HOSTS names {key!r} twice.")
+        if host in hosts.values():
+            raise ImproperlyConfigured(f"SURFACE_HOSTS binds {host!r} to two surfaces.")
+        hosts[key] = host
+    return hosts
+
+
+SURFACE_HOSTS: dict[str, str] = _surface_hosts(env.str("SURFACE_HOSTS", default=""))
+
+# EVERY BOUND HOST IS AN ADMITTED HOST. The map above says which host answers
+# as which surface; the two security lists at the top of this file say which
+# hosts may answer at all and which origins may post a form. They are one fact
+# spelled three times, so with the map set they are DERIVED from it: each bound
+# host joins `ALLOWED_HOSTS`, and each is trusted as an origin in
+# `PUBLIC_BASE_URL`'s scheme and port — the same scheme and port every link to
+# that surface is built with. A `{tenant}` host is admitted as its parent domain
+# (`.example.com`, `https://*.example.com`) because neither list can say "one
+# label, any value"; the surface resolver still answers only the pattern, so the
+# wider admission reaches no door the pattern does not. A pattern with no parent
+# admits nothing and its host answers 400: fails closed, never `*`.
+# The listed values stay where they are — the probe's names, a second front end
+# — and with the map UNSET both lists are exactly what the environment said.
+
+
+def _surface_names(hosts: dict[str, str]) -> list[str]:
+    """Every host the surface map binds, spelled as `ALLOWED_HOSTS` spells it."""
+    names: list[str] = []
+    for host in hosts.values():
+        if "{tenant}" not in host:
+            names.append(host)
+            continue
+        parent = host.partition("{tenant}")[2].partition(".")[2]
+        if parent:
+            names.append(f".{parent}")
+    return names
+
+
+def _surface_origins(names: list[str], base_url: str) -> list[str]:
+    """Each admitted surface name as a trusted origin, in `base_url`'s scheme and port."""
+    base = urlsplit(base_url)
+    port = f":{base.port}" if base.port else ""
+    scheme = base.scheme or "https"
+    return [f"{scheme}://{'*' if name.startswith('.') else ''}{name}{port}" for name in names]
+
+
+def admitted_hosts(listed: list[str], hosts: dict[str, str]) -> list[str]:
+    """`listed`, then every host `hosts` binds that it does not name; `listed` itself when unbound.
+
+    The one fold of the surface map into `ALLOWED_HOSTS`: this module applies it
+    to the list it read, and `config.settings.local`, which reads the list again
+    with a laptop default, applies it to that one.
+    """
+    if not hosts:
+        return listed
+    return list(dict.fromkeys([*listed, *_surface_names(hosts)]))
+
+
+ALLOWED_HOSTS = admitted_hosts(ALLOWED_HOSTS, SURFACE_HOSTS)
+if SURFACE_HOSTS:
+    _SURFACE_NAMES = _surface_names(SURFACE_HOSTS)
+    CSRF_TRUSTED_ORIGINS = list(
+        dict.fromkeys([*CSRF_TRUSTED_ORIGINS, *_surface_origins(_SURFACE_NAMES, PUBLIC_BASE_URL)])
+    )
+
 # The ONE colour the entrance chain declares, and the value the hosted identity
 # step's branding will be derived from, so the sign-in page and the
 # platform screen after it match BY CONSTRUCTION rather than because somebody
@@ -109,10 +244,13 @@ BRAND_ACCENT: str = env.str("BRAND_ACCENT", default="").strip() or DEFAULT_BRAND
 # logins, and the machine username. Those are account identifiers already
 # materialised in a running instance, not display names, and renaming one is a
 # migration rather than a setting.
-PRODUCT_NAME: str = env.str("PRODUCT_NAME", default="Pilecap")
+# Empty is treated as unset, as compose's `${PRODUCT_NAME:-…}` treats it: a
+# deployment manifest ships the slot blank, and a blank must not name anything.
+PRODUCT_NAME: str = env.str("PRODUCT_NAME", default="Pilecap") or "Pilecap"
 
 ROOT_URLCONF = "config.urls"
-WSGI_APPLICATION = "config.wsgi.application"
+# ASGI only: sockets and the MCP mount are not WSGI-shaped, so there is no
+# `WSGI_APPLICATION` and no WSGI entry module to keep in step with this one.
 ASGI_APPLICATION = "config.asgi.application"
 
 AUTH_USER_MODEL = "accounts.User"
@@ -130,6 +268,11 @@ DJANGO_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    # Not this deployment's URL source (`PUBLIC_BASE_URL` is, above); kept for
+    # its one reader, allauth: `SocialApp.sites` exists only while this app is
+    # installed, and `SocialAppManager.on_site` — what the sign-in page's
+    # provider list reads — filters by the current `Site`. The suite without it
+    # is red (the accounts tests seed providers through `app.sites.add`).
     "django.contrib.sites",
 ]
 
@@ -143,15 +286,12 @@ THIRD_PARTY_APPS = [
     "ninja",
     "allauth",
     "allauth.account",
-    # The workforce door (Google Workspace OIDC) and the customer door (one
-    # OpenID Connect provider per `accounts.SsoConnection`). Both are *off* in
-    # the sense that matters: `SOCIALACCOUNT_PROVIDERS` below leaves Google with
-    # no app unless the deployment sets credentials AND names its domains, and
-    # `openid_connect` has no apps at all except the ones
-    # `accounts.adapter.SocialAccountAdapter.list_apps` builds from the database.
-    # An installed app with no credentials is a login page nobody can start.
+    # One provider: `openid_connect`, carrying the one Zitadel app
+    # (`SOCIALACCOUNT_PROVIDERS` below). The workforce's Google and every
+    # customer's IdP sit behind Zitadel, so neither needs an allauth provider of
+    # its own. An installed app with no credentials is a login page nobody can
+    # start.
     "allauth.socialaccount",
-    "allauth.socialaccount.providers.google",
     "allauth.socialaccount.providers.openid_connect",
     "django_linear_migrations",
 ]
@@ -190,6 +330,7 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "apps.accounts.middleware.IdleSessionMiddleware",
     "apps.core.middleware.TenantMiddleware",
     # After the session and the tenant, so a replayed response is scoped to the
     # same credential and tenant the original request was.
@@ -255,125 +396,12 @@ DATABASE_USER: str = env.str("DATABASE_USER", default="djb")
 DATABASE_PASSWORD: str = env.str("DATABASE_PASSWORD", default=DEV_DATABASE_PASSWORD)
 DATABASE_HOST: str = env.str("DATABASE_HOST", default="127.0.0.1")
 DATABASE_PORT: int = env.int("DATABASE_PORT", default=5432)
-# --- Connection reuse: the pool, and the budget it fits inside --------------
-#
-# **THE ESCALATION HAS BEEN TAKEN, AND IT IS NOT PGBOUNCER** (ADR config-1,
-# 2026-08-25). What stood here until then described persistent connections —
-# `CONN_MAX_AGE=60` — and named PgBouncer as the escalation to reach for when
-# the arithmetic ran out. The arithmetic ran out, and the escalation reached
-# for was a different one; a comment naming a rejected option as THE option is
-# a doc lie once the tree disagrees with it, so this block now says what was
-# ruled and why, and PgBouncer keeps its place as the *next* escalation with
-# its cost written down.
-#
-# **What was measured.** Under ASGI every `sync_to_async` thread owns a
-# `DatabaseWrapper`, and a `DatabaseWrapper`'s connection is closed only at the
-# end of a request *that thread* served. Persistent connections then mean the
-# process's server-side connection count is the number of threads that have
-# ever served a request, not the number doing work, and nothing reclaims an
-# idle thread's slot. LOAD-1b (2026-08-25) read that off `pg_stat_activity` on
-# staging: **43 connections held against ≤4 active, flat across the whole
-# ladder and unchanged 90 seconds after the load stopped**, on an RDS instance
-# whose `max_connections` is 79 and whose neighbours hold about 30 of them.
-# Concurrency 1 was already at the wall, and the 83% error rate read as "the
-# product cannot take load" when the truth was "the product never got to try".
-#
-# **What replaced it.** Django 5.2's native psycopg pool: `OPTIONS["pool"]`,
-# assembled below, which needs nothing but this settings module and the
-# `psycopg[pool]` extra in `pyproject.toml`. Every request-end close becomes a
-# *putconn* — the socket goes back to a per-process pool instead of being kept
-# by the thread — so:
-#
-#   * server-side connections are bounded by `max_size` **by construction**,
-#     not by a convention a burst can break;
-#   * they stay **warm**: no request pays a backend fork plus a TLS handshake,
-#     which matters because the resource LOAD-1b convicted is a *burstable*
-#     RDS instance's CPU (71.8% at concurrency 16), and connection churn
-#     spends exactly that;
-#   * an idle connection is dropped after `max_idle`, so the pool shrinks back
-#     toward `min_size` between bursts instead of leaving residue.
-#
-# It also requires `CONN_MAX_AGE=0`, which is why the value below is derived
-# rather than read when the pool is on: Django refuses the contradictory pair
-# outright (`ImproperlyConfigured: Pooling doesn't support persistent
-# connections.`), and an assembly that could produce it would be an assembly
-# that fails on somebody's first request. `CONN_HEALTH_CHECKS` still carries:
-# the pool is given `ConnectionPool.check_connection`, so a connection the
-# server closed in between is discovered by the pool as a reconnect rather than
-# by a request as a 500.
-#
-# **PgBouncer, rejected, and the trigger to look again.** Transaction pooling
-# forbids server-side cursors, and `.iterator()` is how this tree streams:
-# exports walk chunked JSONL, search rebuilds walk the corpus, the workflow
-# sweeps walk tenants. `DISABLE_SERVER_SIDE_CURSORS` would silently turn every
-# one of those keyset streams into a full buffer — a platform-layer behaviour
-# change bought for nothing. Session state (the per-connection timezone and
-# role set in `_configure_connection`) is the same class of landmine. And it is
-# a container, an image in the supply chain, TLS on both legs and an auth story
-# that fights the per-checkout derived database above — surface a ≤4-active
-# demand cannot justify. It earns its keep when `Σ(per-process max_size)`
-# across replicas can no longer fit inside the budget below; **that is the
-# trigger, and it is a deployment's decision recorded in the product's
-# `architecture.md`.** Bare `CONN_MAX_AGE=0` with no pool was rejected too: it
-# pays the reconnect tax on the convicted CPU and caps nothing — 32 asgiref
-# threads under burst still open 32 slots at once.
-#
-# **The budget, with the neighbours BOUNDED**
-# (`deploy/env.staging.example` carries the same arithmetic beside the values it
-# sets, and `deploy/compose.yaml` carries the knobs that make the bounds true):
-#
-#     max_connections (db.t4g.micro)                          79
-#   − Temporal, bounded: 4 roles × 4 + 4 roles × 2         ≤ 24
-#   − Zitadel: 5 bounded + 2 its config cannot bound       ≤  7
-#   − RDS's own (rdsadmin 2, reserved/unnamed ~5)            ~7
-#   − operator headroom (psql, backup, migration — AND the
-#     oneoff door's ≤2: the release acts ride this line)      8
-#   ─────────────────────────────────────────────────────────────
-#   = the application's ceiling                              33
-#
-#     web 20 + worker 8 = 28 ≤ 33
-#
-# **What changed, and why the old number could never have held.** The previous
-# arithmetic subtracted "Temporal 17+3, Zitadel 3" as a budget CONSTANT. It was
-# not a constant; it was an at-rest reading of an unbounded thing. Temporal's
-# `auto-setup` image runs frontend + history + matching + worker in ONE process
-# and each role builds its own SQL pool from the same configuration, so the
-# image's defaults ceilinged at 4×20 + 4×10 = 120 slots against a
-# `max_connections` of 79 — and a measurement found 41 held at rest after a
-# reboot, a number no single pool of 20 could produce. It confounded a paid
-# experiment (size B's knee was slot-gated, not CPU-gated) and it refused a
-# release act on a loaded box. The sentence that used to stand here — "Temporal's
-# own 17+3 is its configuration to trim on some future Temporal touch" — is gone
-# because this **is** that touch: `deploy/compose.yaml` now sets
-# `SQL_MAX_CONNS` / `SQL_MAX_IDLE_CONNS` / `SQL_VIS_MAX_CONNS` /
-# `SQL_VIS_MAX_IDLE_CONNS` and Zitadel's `MAXOPENCONNS` / `MAXIDLECONNS`, so the
-# numbers above are **ceilings the organs enforce on themselves**
-# (`SetMaxOpenConns` inside each process), not observations that go stale.
-#
-# **Zitadel's `+2` is MEASURED AND NAMED, not rounded away.**
-# `MAXOPENCONNS` bounds Zitadel's main `Database.postgres` pool; its background
-# job queue keeps a **second** pool that no environment variable in v4.17.1
-# reaches — `strings` over the v4.17.1 binary returns `MAXOPENCONNS`,
-# `MAXIDLECONNS` and the two lifetimes, and no queue knob at all. Driven both
-# ways on the laptop deploy stack (`--profile laptop`, recreate between
-# runs):
-#
-#     image defaults 10/5   the `zitadel` database held 12 in the window after a
-#                           recreate — exactly what was measured on the box
-#     ruled 5/2             7 in the same window; **4 settled**, over four
-#                           readings 30s apart
-#
-# The delta tracks the bound; the residue is the queue's. So the budget line is
-# **7 — the observed ceiling, not the settled 4** — and the two unbounded slots
-# come out of operator headroom rather than being rounded into invisibility. A
-# census reading Zitadel at 7 is AT its bound; above 7 is the stop-and-report.
-#
-# **The revisit trigger, rewritten against the new bounds.** Not "a number went
-# stale": the census recipe reading **any principal above its stated bound**, a
-# **new process class** joining the box, or **replicas** — at which point
-# `Σ(replicas × processes × max_size)` is what stops fitting, and PgBouncer is
-# reconsidered on the terms above.
-DATABASE_POOL_APP_CEILING: int = 33
+# --- Connection reuse: the pool -----------------------------------------------
+# Django 5.2's native psycopg pool, per process, `CONN_MAX_AGE` derived to 0
+# while it is on — the measurement, the rejected alternatives (PgBouncer, bare
+# churn), the neighbour budget the sizes fit inside and the trigger to revisit
+# are ADR config-1 (`docs/product/architecture.md`, "Database connections"),
+# and `deploy/env.staging.example` carries the budget beside the values.
 
 # **A pool is per process, so its size is a property of what the process is.**
 # `DJB_SERVICE_NAME` already tells the two apart — `deploy/compose.yaml` sets it
@@ -383,10 +411,12 @@ DATABASE_POOL_APP_CEILING: int = 33
 # it is read twice rather than threaded through, because a settings module that
 # defines things in dependency order is easier to read than one that does not.)
 #
-# 20 and 8 sum to 28, inside the 33 ceiling with room for the operator. The web
-# process gets the larger half because it is the one with `ATOMIC_REQUESTS` and
-# a thread per in-flight request; the worker's activities are already
-# serialised by its own thread pool.
+# 10 and 8 are sized against ADR config-1's neighbour budget. The web
+# process gets the larger half because it holds one connection per in-flight
+# request thread; the worker's activities are already serialised by its own
+# thread pool.
+#
+# Sizes are per process; the budget is web + processes × worker (ADR config-1).
 #
 # **`oneoff` is the third entry and it is a DOOR, not an organ.** A
 # `docker compose run` used to land on the `web` service, inherit
@@ -398,14 +428,13 @@ DATABASE_POOL_APP_CEILING: int = 33
 # be the name `compose run` lands on, and this entry is the other half: 2, which
 # is what a management command actually wants. The pair is one seam rather than
 # a `-e` flag on an open set of invocations, and
-# `deploy/tests/test_release.sh`'s compose-run census keeps the population
+# `quality/tests/deploy/test_release.py`'s compose-run census keeps the population
 # closed.
 #
-# `_POOL_MAX_SIZE_OTHERWISE` stays 4 as the STRANGER default — a process that
-# named itself something this map has never heard of gets a small pool rather
-# than a deployment's worth. It is not the oneoff answer: a default nobody
-# declared cannot be the one the release acts depend on.
-_POOL_MAX_SIZE_BY_SERVICE: dict[str, int] = {"web": 20, "worker": 8, "oneoff": 2}
+# `_POOL_MAX_SIZE_OTHERWISE` stays 4 as the STRANGER default: an unknown process name gets a small
+# pool, not a deployment's worth. It is not the oneoff answer: a default nobody declared cannot be
+# the one the release acts depend on.
+_POOL_MAX_SIZE_BY_SERVICE: dict[str, int] = {"web": 10, "worker": 8, "oneoff": 2}
 _POOL_MAX_SIZE_OTHERWISE = 4
 
 DATABASE_POOL_ENABLED: bool = env.bool("DATABASE_POOL_ENABLED", default=True)
@@ -505,6 +534,10 @@ if not _database_name_in_use:
 # Merged rather than replaced: a deployment that spells an option into
 # DATABASE_URL keeps it, and the pool is added beside it.
 _database_options: dict[str, Any] = dict(_database_config.pop("OPTIONS", None) or {})
+# Each backend names its process class and host in pg_stat_activity (ADR config-1).
+_database_options.setdefault(
+    "application_name", f"{env.str('DJB_SERVICE_NAME', default='web')}@{os.uname().nodename}"
+)
 if DATABASE_POOL_ENABLED:
     # This dict IS `psycopg_pool.ConnectionPool`'s keyword arguments — Django
     # passes it straight through — so the names are psycopg's, not Django's.
@@ -514,6 +547,25 @@ if DATABASE_POOL_ENABLED:
         "timeout": DATABASE_POOL_TIMEOUT,
         "max_idle": DATABASE_POOL_MAX_IDLE,
     }
+
+# The session floor: the server bounds lock waits, idle open transactions and statements.
+_SESSION_FLOOR_BY_SERVICE: dict[str, dict[str, str]] = {
+    "web": {
+        "lock_timeout": "5s",
+        "idle_in_transaction_session_timeout": "60s",
+        "statement_timeout": "30s",
+    },
+    "worker": {
+        "lock_timeout": "5s",
+        "idle_in_transaction_session_timeout": "60s",
+        "statement_timeout": "300s",
+    },
+}
+_session_floor = _SESSION_FLOOR_BY_SERVICE.get(env.str("DJB_SERVICE_NAME", default="web"), {})
+if _session_floor:
+    _database_options["options"] = " ".join(
+        [_database_options.get("options", ""), *(f"-c {k}={v}" for k, v in _session_floor.items())]
+    ).strip()
 
 DATABASES: dict[str, dict[str, Any]] = {
     "default": {
@@ -526,7 +578,8 @@ DATABASES: dict[str, dict[str, Any]] = {
         # `ConnectionPool.check_connection`, so the check happens on the way
         # out of the pool rather than on the way into a view.
         "CONN_HEALTH_CHECKS": True,
-        "ATOMIC_REQUESTS": True,
+        # A request opens no transaction; every write's boundary is its `@service` (ADR perf-2).
+        "ATOMIC_REQUESTS": False,
         "OPTIONS": _database_options,
     }
 }
@@ -603,6 +656,12 @@ CACHE_URL: str = env.str("CACHE_URL", default="redis://127.0.0.1:6379/1")
 # anyone configuring anything. A deployment that wants something else sets
 # `CACHE_KEY_PREFIX` and it wins, which is the same sentence as the pin above.
 CACHE_KEY_PREFIX: str = env.str("CACHE_KEY_PREFIX", default="") or _database_name_in_use
+
+# The search index namespace is the third sibling: derived from the parsed name
+# above, so one checkout is one namespace in Postgres, Redis, Temporal and
+# Meilisearch. An explicit `MEILI_INDEX_PREFIX` in the environment wins
+# outright, with the pin's hazard and the per-name blind spot stated above.
+MEILI_INDEX_PREFIX: str = env.str("MEILI_INDEX_PREFIX", default="") or _database_name_in_use
 
 CACHES: dict[str, dict[str, Any]] = {
     "default": {
@@ -1043,27 +1102,10 @@ ZITADEL_ALLOW_SELF_REGISTRATION: bool = env.bool("ZITADEL_ALLOW_SELF_REGISTRATIO
 ZITADEL_ALLOW_PUBLIC_ORG_REGISTRATION: bool = env.bool(
     "ZITADEL_ALLOW_PUBLIC_ORG_REGISTRATION", default=False
 )
-# How many consecutive wrong passwords lock an account. **Zero means unlimited**
-# and zero is what the image ships (`MaxPasswordAttempts: 0` in
-# ghcr.io/zitadel/zitadel:v4.17.1's own `defaults.yaml`), so a deployment that
-# never set this is one where a password may be guessed forever.
-#
-# THE NUMBER IS NOT INVENTED HERE, and there is exactly one upstream document
-# that states one. **NIST SP 800-63B §5.2.2 "Rate Limiting (Throttling)"**: "the
-# verifier SHALL limit consecutive failed authentication attempts on a single
-# account to no more than 100." 100 is that document's CEILING, and the platform
-# takes the ceiling as its default for the same reason it takes NIST's audit
-# vocabulary in ADR core-22: the platform ships the mechanism at the bound a
-# standard names, and the product decides how much tighter it wants to be. Any
-# smaller number here would be this file having an opinion about a product's
-# users, which is not this layer's to have — and the whole distance that
-# matters is 0 → bounded.
-#
-# OWASP's Authentication Cheat Sheet names the knobs ("lockout threshold",
-# "observation window", "lockout duration") and deliberately states no number;
-# it was read before this default was chosen and is recorded here so nobody
-# re-reads it hoping for one.
-ZITADEL_MAX_PASSWORD_ATTEMPTS: int = env.int("ZITADEL_MAX_PASSWORD_ATTEMPTS", default=100)
+# Consecutive wrong passwords before Zitadel locks an account; zero (the image's) is unlimited.
+# NIST SP 800-63B §5.2.2's 100 is a ceiling ("no more than 100"), and a HIPAA-floor template
+# does not ship at the ceiling.
+ZITADEL_MAX_PASSWORD_ATTEMPTS: int = env.int("ZITADEL_MAX_PASSWORD_ATTEMPTS", default=10)
 
 # --- Zitadel as the browser relying party (ADR ident-4, P0 W2-R3) ------------
 # The OIDC client `zitadel_seed` made, as an application signs in with it. The
@@ -1112,135 +1154,10 @@ ZITADEL_MCP_AUDIENCE: list[str] = [
 # trade is not made here, and this line is where it would be.
 ZITADEL_JWKS_CACHE_SECONDS: int = env.int("ZITADEL_JWKS_CACHE_SECONDS", default=300)
 
-# --- What a product kept of the template's identity SHAPE --------------------
-# The identity suite pins two different kinds of thing, and until this setting
-# existed it could not tell them apart. A **mechanism** is a property every
-# product must hold whatever page it draws — the login policy has one writer and
-# the audit compares it; a credential appears in no log line; an absent intent
-# is not drift. A **shape** is an assertion about the template's own example
-# surface — the marker string its entrance shell carries, which command writes
-# the posture, whether it kept the template's `compose.yaml`, whether sign-in
-# lands on the shipped `/welcome/`. A product that replaced a shape and then
-# read a red suite learned nothing; a product that deleted those tests lost the
-# mechanisms with them.
-#
-# So a product declares, once, what it replaced — `key=value;key=value`, in
-# `DJB_IDENTITY_SHAPE` — and the tests that assert the replaced shape SKIP, with
-# one fixed prefix so the skips are countable. Nothing else reads this: it is a
-# test-suite declaration, not a feature flag and not tenant configuration
-# (principle 14 — this value controls neither release nor a customer's
-# behaviour; it says which of the template's example surfaces this tree still
-# has). **The platform's own tree declares nothing and runs all of them**, which
-# is why the defaults below ARE the template's shape.
-#
-# The seven keys, each with the tests it governs:
-#
-# * `entrance_marker` — the CSS custom property the entrance shell's token block
-#   declares. SKIPS `test_entrance_chain.py::test_the_shell_fetches_nothing` and
-#   `::test_the_shell_declares_both_themes`. READ BY the re-keyed shell census
-#   in the same module and by `test_welcome.py::test_it_extends_the_entrance_shell`.
-# * `login_page` — `template` if `/accounts/login/` is the shipped chooser,
-#   `own` if the product draws its own. SKIPS the five provider-chooser cases in
-#   `test_entrance_chain.py` (`no_provider_keeps_the_operator_sentence`,
-#   `one_provider_is_one_action_and_no_chooser`, `one_provider_names_the_hosted_hop`,
-#   `two_providers_bring_the_chooser_back`, `the_count_is_the_population_and_not_a_setting`).
-#   READ BY the census note in `apps/core/tests/test_template_shape.py`.
-# * `template_files` — `kept` if this tree still ships the template's
-#   `compose.yaml`, `.env.example` and `frontend/src/tokens/tokens.css`, `own` if
-#   it replaced them. SKIPS the file-content censuses:
-#   `test_entrance_chain.py::test_the_two_copies_of_the_shipped_accent_agree`,
-#   the three in `test_zitadel_posture.py`, and the two settings-derivation
-#   censuses in `test_identity_branding.py`.
-# * `posture_writer` — the management command that closes the registration and
-#   lockout posture. SKIPS the six cases in `test_zitadel_posture.py` that assert
-#   `zitadel_seed`'s own identity and wording. READ BY the re-keyed idempotence
-#   cases in the same module.
-# * `branding_writer` — the management command that writes the hosted screen's
-#   intent row. SKIPS `test_identity_branding.py::test_the_first_call_creates_and_activates`
-#   and `::test_an_agreeing_screen_is_reported_as_agreeing`. READ BY the re-keyed
-#   audit-section cases in the same module.
-# * `landing` — `template` if a completed sign-in lands on the shipped
-#   `/welcome/`, `own` if the product named its own. SKIPS
-#   `test_welcome.py::test_the_named_mechanism_has_a_reader`.
-# * `platform_apps` — `template` if the apps under `apps/` are exactly the
-#   template's platform app set (`quality/partition.yaml`'s `platform_apps`),
-#   `own` once the product has added an app of its own. SKIPS
-#   `test_template_shape.py::test_the_platform_app_set_is_every_app_in_the_tree`,
-#   the census that refuses a template app the partition forgot — on a product
-#   tree its own apps are SUPPOSED to sit outside that list.
-#
-# An unknown key, a value outside a closed vocabulary, or an empty value is
-# `ImproperlyConfigured` **at settings import**: a typo in a declaration that
-# quietly ran every test would be worse than no declaration at all, because the
-# reds it produced would look like defects.
-#
-# **ONE TEST IN THE PLATFORM'S OWN SUITE REDS WHEN YOU DECLARE, AND IT IS
-# DELIBERATE.** `apps/core/tests/test_template_shape.py::test_the_platform_
-# declares_nothing` asserts that THIS tree declared nothing — its subject is the
-# environment, which is why it reads the ambient value where every other case in
-# that module is pinned. A product that declares a divergence and sees it go red
-# is watching the criterion fire, not finding a bug: it is the template saying
-# "this checkout is no longer the template's own tree". Delete that one case, or
-# pin it to your own shape. Do not widen it to accept any declaration — then
-# nothing is left that would notice the platform quietly declaring something.
-# It is the only case in that module that behaves this way, and the module names
-# it in a constant so the exception stays a population of one.
-IDENTITY_SHAPE_DEFAULTS: dict[str, str] = {
-    "entrance_marker": "--entrance-tokens",
-    "login_page": "template",
-    "template_files": "kept",
-    "posture_writer": "zitadel_seed",
-    "branding_writer": "zitadel_brand",
-    "landing": "template",
-    "platform_apps": "template",
-}
-
-# Four of the seven are CLOSED: they are a question about this tree with two
-# answers. The other three name a product's own string — a marker, a command —
-# and have no vocabulary to check beyond "not empty".
-IDENTITY_SHAPE_VOCABULARY: dict[str, tuple[str, ...]] = {
-    "login_page": ("template", "own"),
-    "template_files": ("kept", "own"),
-    "landing": ("template", "own"),
-    "platform_apps": ("template", "own"),
-}
-
-
-def _identity_shape(declaration: str) -> dict[str, str]:
-    """Parse `key=value;…` over the seven keys, refusing anything else by name."""
-    shape = dict(IDENTITY_SHAPE_DEFAULTS)
-    for clause in declaration.split(";"):
-        clause = clause.strip()
-        if not clause:
-            continue
-        key, separator, value = clause.partition("=")
-        key, value = key.strip(), value.strip()
-        if not separator:
-            raise ImproperlyConfigured(
-                f"DJB_IDENTITY_SHAPE: {clause!r} is not `key=value`. "
-                f"The keys are {', '.join(IDENTITY_SHAPE_DEFAULTS)}."
-            )
-        if key not in IDENTITY_SHAPE_DEFAULTS:
-            raise ImproperlyConfigured(
-                f"DJB_IDENTITY_SHAPE: {key!r} is not one of the seven keys "
-                f"({', '.join(IDENTITY_SHAPE_DEFAULTS)})."
-            )
-        if not value:
-            raise ImproperlyConfigured(
-                f"DJB_IDENTITY_SHAPE: {key!r} was declared with an empty value. "
-                "Leave the key out to keep the template's default "
-                f"({IDENTITY_SHAPE_DEFAULTS[key]!r})."
-            )
-        allowed = IDENTITY_SHAPE_VOCABULARY.get(key)
-        if allowed is not None and value not in allowed:
-            raise ImproperlyConfigured(
-                f"DJB_IDENTITY_SHAPE: {key}={value!r} is not one of {', '.join(allowed)}."
-            )
-        shape[key] = value
-    return shape
-
-
-IDENTITY_SHAPE: dict[str, str] = _identity_shape(env.str("DJB_IDENTITY_SHAPE", default=""))
+# What a product kept of the template's identity shape is the test suite's
+# declaration, not a setting: it lives in `apps/core/tests/template_shape.py`,
+# beside the suite that reads it, so no deployment parses it and no typo in it
+# stops one.
 
 # --- Identity providers ------------------------------------------------------
 # Two doors, and they answer different questions (`architecture.md`, "Auth &
@@ -1335,28 +1252,10 @@ SOCIALACCOUNT_EMAIL_AUTHENTICATION = False
 SOCIALACCOUNT_EMAIL_AUTHENTICATION_AUTO_CONNECT = False
 
 SOCIALACCOUNT_PROVIDERS: dict[str, Any] = {
-    "google": {
-        "APPS": (
-            [
-                {
-                    "client_id": GOOGLE_OAUTH_CLIENT_ID,
-                    "secret": GOOGLE_OAUTH_CLIENT_SECRET,
-                    "key": "",
-                }
-            ]
-            if GOOGLE_OAUTH_CLIENT_ID and GOOGLE_WORKSPACE_DOMAINS
-            else []
-        ),
-        "SCOPE": ["profile", "email"],
-        "AUTH_PARAMS": {
-            # Google's own account-chooser hint. It is a convenience for the
-            # person signing in and **not** a control: the adapter re-checks the
-            # asserted address against `GOOGLE_WORKSPACE_DOMAINS` regardless,
-            # because a parameter in a URL is a suggestion to the IdP, not a
-            # promise to us.
-            "hd": GOOGLE_WORKSPACE_DOMAINS[0] if GOOGLE_WORKSPACE_DOMAINS else "",
-        },
-    },
+    # **No `google` block.** The workforce's Google Workspace is an identity
+    # provider INSIDE Zitadel (`accounts.services.sync_workforce_identity_config`,
+    # fed by the three `GOOGLE_*` settings above), so it arrives through the one
+    # platform app below and `accounts.adapter` walls it by domain there.
     # No `APPS` key at all: every OpenID Connect app is a `SsoConnection` row,
     # built at request time by the adapter.
     "openid_connect": {
@@ -1415,7 +1314,7 @@ SOCIALACCOUNT_PROVIDERS: dict[str, Any] = {
 # pattern: one app per `organization_slug`), and drop the refusal in
 # `create_sso_connection`. The model, the domains, the identities, the JIT
 # provisioning and the home-realm discovery are all protocol-agnostic already.
-SSO_SAML_ENABLED = False
+# There is no switch to flip: the refusal in `create_sso_connection` is the state.
 
 
 # --- API --------------------------------------------------------------------
@@ -1460,9 +1359,8 @@ EVENTS_OUTBOX_RETENTION_DAYS: int = env.int("EVENTS_OUTBOX_RETENTION_DAYS", defa
 
 # How long the two kinds of presigned URL `apps/files` mints stay valid, in
 # seconds (ADR files-2 § "Presigned URLs"). These are the only knobs that reach
-# those signatures: `AWS_QUERYSTRING_EXPIRE` below configures `STORAGES` and
-# nothing in `apps/files/storage.py` reads it, which is the confusion this
-# pair closes.
+# those signatures. `STORAGES` below signs with django-storages' own defaults
+# (signed, an hour) and names no second pair of knobs to confuse with these.
 #
 # FIVE MINUTES for a download, because a presigned URL is a stateless signature
 # and there is no such thing as revoking one — a longer life turns every issuance
@@ -1652,7 +1550,7 @@ MEDIA_ROOT: Path = BASE_DIR / env.str("MEDIA_ROOT", default="media")
 # high-signal patterns, and a minified third-party bundle contains those
 # strings as placeholders and example values — Scalar's mTLS input field
 # carries a PEM private-key header as its placeholder text, which is one of
-# the four patterns exactly. Vendoring under `apps/core/static/` turned rule
+# the four patterns exactly. Vendoring under the core app's `static/` turned rule
 # 23 red on bytes nobody in this repository wrote. The rule is right about its
 # own subject — the code we write — so the fix is to put the code we did NOT
 # write somewhere else, rather than to widen the rule's blind spot.
@@ -1700,10 +1598,10 @@ AWS_SECRET_ACCESS_KEY: str = env.str("AWS_SECRET_ACCESS_KEY", default="")
 # Private by default and signed on read: an uploaded file belongs to one tenant,
 # and a public-read bucket makes every key a URL anyone who guesses it can
 # fetch. A product that genuinely wants public assets says so in its own
-# settings, with the reason.
+# settings, with the reason. Signed-on-read is django-storages' own default
+# (`querystring_auth` True, `querystring_expire` 3600 in the installed version),
+# so `STORAGES` below restates neither.
 AWS_DEFAULT_ACL = None
-AWS_QUERYSTRING_AUTH: bool = env.bool("AWS_QUERYSTRING_AUTH", default=True)
-AWS_QUERYSTRING_EXPIRE: int = env.int("AWS_QUERYSTRING_EXPIRE", default=3600)
 # Never silently overwrite: two tenants' files with the same name must not
 # become one file, and a retried upload must not clobber the original.
 AWS_S3_FILE_OVERWRITE = False
@@ -1717,8 +1615,6 @@ _DEFAULT_FILE_STORAGE: dict[str, Any] = (
             "endpoint_url": AWS_S3_ENDPOINT_URL,
             "custom_domain": AWS_S3_CUSTOM_DOMAIN,
             "default_acl": AWS_DEFAULT_ACL,
-            "querystring_auth": AWS_QUERYSTRING_AUTH,
-            "querystring_expire": AWS_QUERYSTRING_EXPIRE,
             "file_overwrite": AWS_S3_FILE_OVERWRITE,
         },
     }
@@ -1759,6 +1655,21 @@ SECURE_CROSS_ORIGIN_OPENER_POLICY = "same-origin"
 X_FRAME_OPTIONS = "DENY"
 SESSION_COOKIE_HTTPONLY = True
 CSRF_COOKIE_HTTPONLY = False
+# The idle timeout (SF-ACCOUNTS-1, SF-SOCKET-1 read it; N2243); 0 disables sessions.
+SESSION_IDLE_SECONDS: int = env.int("SESSION_IDLE_SECONDS", default=900)
+SESSION_COOKIE_AGE = SESSION_IDLE_SECONDS
+# Kept False: accounts' IdleSessionMiddleware slides the session once a minute (ruling B).
+SESSION_SAVE_EVERY_REQUEST = False
+# Whether an outbound webhook may target a private address (SF-WEBHOOK-1 reads it; N2238).
+WEBHOOK_PRIVATE_TARGETS_ALLOWED: bool = env.bool("WEBHOOK_PRIVATE_TARGETS_ALLOWED", default=False)
+# Live sockets one credential may hold (SF-SOCKET-1 reads it; N2239).
+REALTIME_MAX_SOCKETS_PER_CREDENTIAL: int = env.int(
+    "REALTIME_MAX_SOCKETS_PER_CREDENTIAL", default=10
+)
+# Live sockets one tenant may hold (SF-SOCKET-1 reads it; N2239).
+REALTIME_MAX_SOCKETS_PER_TENANT: int = env.int("REALTIME_MAX_SOCKETS_PER_TENANT", default=500)
+# Seconds a join counts without a ping refreshing it (SF-SOCKET-1 reads it; N2239).
+REALTIME_JOIN_LEASE_SECONDS: int = env.int("REALTIME_JOIN_LEASE_SECONDS", default=90)
 # `X-Forwarded-Proto` is only trustworthy when something in front of this
 # process sets it and strips a client-supplied one. Trusting it unconditionally
 # lets any client claim its plain-HTTP request arrived over TLS, which turns
@@ -1817,11 +1728,16 @@ LOGGING: dict[str, Any] = {
     "formatters": {
         "structured": {"format": "{message}", "style": "{"},
     },
+    # uvicorn prints a socket handshake's URL, query and all, on `uvicorn.error`.
+    "filters": {
+        "socket_credentials": {"()": "apps.realtime.types.RedactSocketCredentials"},
+    },
     "handlers": {
         "console": {"class": "logging.StreamHandler", "formatter": "structured"},
     },
     "root": {"handlers": ["console"], "level": "INFO"},
     "loggers": {
         "django.db.backends": {"handlers": ["console"], "level": "WARNING", "propagate": False},
+        "uvicorn.error": {"filters": ["socket_credentials"]},
     },
 }

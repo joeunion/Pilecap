@@ -29,6 +29,7 @@ from typing import Any
 
 import pytest
 
+from apps.core.retry import retry_floor_seconds
 from apps.search import activities, registry
 from apps.search.activities import (
     CREATED,
@@ -36,10 +37,16 @@ from apps.search.activities import (
     UNCHANGED,
     document_for,
     list_search_kinds,
+    reconcile_schedule_id,
     reconcile_search_index,
-    reconcile_workflow_id,
 )
-from apps.search.types import IndexState, RecordingEngine, ScopeFilter, Searchable
+from apps.search.types import (
+    IndexState,
+    ReconcileIndexes,
+    RecordingEngine,
+    ScopeFilter,
+    Searchable,
+)
 
 from .conftest import ORGS, WIDGETS, World
 
@@ -131,9 +138,9 @@ def test_a_missing_index_is_built_from_the_declaration(
         "swap",
     ]
     assert {document["label"] for document in engine.staged} == {
-        "Widget at acme",
-        "Widget at region",
-        "Widget at sibling",
+        "Widget at root",
+        "Widget at A",
+        "Widget at B",
     }
 
 
@@ -210,7 +217,7 @@ def test_the_document_is_lean_and_carries_no_path(
     document = document_for(WIDGETS, widget)
 
     assert set(document) == {"id", "tenant_id", "org_id", "label", "name"}
-    assert world.root.path not in str(document)
+    assert world.root.path not in document.values()
     assert document["tenant_id"] == str(world.tenant.pk)
 
 
@@ -231,15 +238,10 @@ def test_the_enumeration_is_the_registry(world: World, declared: tuple[Searchabl
 
 
 def test_the_rebuild_workflow_id_is_deterministic_and_per_queue() -> None:
-    """One rebuild across N booting workers, and never two deployments' one run.
-
-    Deterministic is what makes the first half true — every worker derives the
-    same id — and per-queue is what makes the second: two checkouts polling two
-    queues must not collide on one execution.
-    """
-    first = reconcile_workflow_id("djb-alpha")
-    again = reconcile_workflow_id("djb-alpha")
-    other = reconcile_workflow_id("djb-beta")
+    """One rebuild across N booting workers, and never two deployments' one run."""
+    first = reconcile_schedule_id("djb-alpha")
+    again = reconcile_schedule_id("djb-alpha")
+    other = reconcile_schedule_id("djb-beta")
 
     assert first == again
     assert first != other
@@ -258,7 +260,7 @@ def test_the_schedule_declares_skip_on_overlap() -> None:
     # action kind Temporal has, and only the start-a-workflow one carries an id.
     action = schedule.action
     assert isinstance(action, ScheduleActionStartWorkflow)
-    assert action.id == reconcile_workflow_id("djb-alpha")
+    assert action.id == reconcile_schedule_id("djb-alpha")
 
 
 def test_the_workflow_owns_no_run_row() -> None:
@@ -322,7 +324,7 @@ def test_the_reconcile_materializes_a_real_index_and_then_no_ops(
         expression = engine_module.scope_expression(
             ScopeFilter(
                 tenant_id=world.tenant.pk,
-                org_ids=(world.root.pk, world.region.pk, world.branch.pk, world.sibling.pk),
+                org_ids=(world.root.pk, world.a.pk, world.a1.pk, world.b.pk),
             )
         )
         found = live._search_one(
@@ -341,7 +343,7 @@ def test_the_reconcile_materializes_a_real_index_and_then_no_ops(
         ):
             try:
                 live.drop_index(uid=uid)
-            except Exception:  # noqa: BLE001 - a cleanup that raises hides the real failure
+            except Exception:  # noqa: BLE001, S110 — a cleanup that raises hides the real failure
                 pass
 
 
@@ -443,6 +445,7 @@ async def test_a_refusing_engine_completes_the_pass_with_a_finding() -> None:
         ):
             outcome = await env.client.execute_workflow(
                 ReconcileSearchIndexesWorkflow.run,
+                ReconcileIndexes(retry_floor=retry_floor_seconds()),
                 id="reconcile-refusal-1",
                 task_queue="reconcile-refusal",
             )
@@ -450,7 +453,7 @@ async def test_a_refusing_engine_completes_the_pass_with_a_finding() -> None:
     assert not outcome.is_complete
     assert "invalid_api_key" in outcome.incomplete, (
         "the pass completed but says nothing about WHY. Temporal's wrapper alone is "
-        "`Activity task failed`, which is true and useless six weeks later — `_reason` "
+        "`Activity task failed`, which is true and useless six weeks later — `reason_of` "
         "walks the cause chain for exactly this."
     )
     assert outcome.incomplete.startswith("widgets:"), "the finding names the kind it is about"
@@ -489,6 +492,7 @@ async def test_a_pass_that_reconciles_some_kinds_and_not_others_says_both() -> N
         ):
             outcome = await env.client.execute_workflow(
                 ReconcileSearchIndexesWorkflow.run,
+                ReconcileIndexes(retry_floor=retry_floor_seconds()),
                 id="reconcile-partial-1",
                 task_queue="reconcile-partial",
             )

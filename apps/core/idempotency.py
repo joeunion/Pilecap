@@ -117,7 +117,7 @@ that emits them rather than in `core.exceptions` beside a class, because
 neither has a class: this middleware sits in *front* of every door and answers
 before a service is reached, which is exactly what `boundary="door"` says.
 
-**The set is closed.** `_refusal` takes a registered `Refusal` row from
+**The set is closed.** `_refusal_response` takes a registered `Refusal` row from
 `EMITTABLE`, never a string, so a third code cannot be typed at a call site —
 it has to be registered and listed, which is the one step that keeps
 `introspect`'s vocabulary the *whole* vocabulary. The test module
@@ -222,7 +222,7 @@ class IdempotencyInProgress(DomainError):
     default_detail = "An identical request is still in flight. Retry shortly."
 
 
-#: Everything this middleware can refuse with, and the whole of it. `_refusal`
+#: Everything this middleware can refuse with, and the whole of it. `_refusal_response`
 #: takes a row from here rather than a string, so the set of codes that can
 #: reach a client from in front of the doors is closed against the registry
 #: instead of being whatever somebody last typed.
@@ -230,7 +230,7 @@ EMITTABLE: tuple[Refusal, ...] = (KEY_REUSE, IN_PROGRESS)
 
 #: The class that carries each emittable code to `wire_refusal`. Keyed on the
 #: code rather than the `Refusal` row so the two halves cannot drift silently:
-#: `_refusal`'s guard already closed the set against the registry, and this
+#: `_refusal_response`'s guard already closed the set against the registry, and this
 #: closes it against the classes.
 EXCEPTION_FOR: dict[str, type[DomainError]] = {
     IdempotencyKeyReuse.code: IdempotencyKeyReuse,
@@ -533,7 +533,7 @@ def fingerprint_for(request: HttpRequest) -> str:
     return _digest(str(request.method), request.path, body.decode("utf-8", "replace"))
 
 
-def _refusal(detail: str, refusal: Refusal, status: int) -> JsonResponse:
+def _refusal_response(detail: str, refusal: Refusal, status: int) -> JsonResponse:
     """The edge's refusal body: `{detail, code}`, and the code is a declared one.
 
     The guard is not defensive programming — it is the closure. A `Refusal` can
@@ -680,13 +680,13 @@ class IdempotencyMiddleware:
                 record.delete()
                 return self.__call__(request)
             if record.fingerprint != fingerprint:
-                return _refusal(
+                return _refusal_response(
                     "That Idempotency-Key was used for a different request.",
                     KEY_REUSE,
                     409,
                 )
             if not record.is_complete:
-                return _refusal(
+                return _refusal_response(
                     "An identical request is still in flight. Retry shortly.",
                     IN_PROGRESS,
                     409,

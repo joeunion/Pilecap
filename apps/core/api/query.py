@@ -16,17 +16,31 @@ whole point:
 Neither of them narrows to a tenant. That is deliberate: they take a queryset
 that is already `for_tenant(...)`, and a helper that could widen a scope would
 be a helper nobody could audit.
+
+**A retired query parameter is declared, never re-typed.** A list that stopped
+accepting a parameter declares it beside `PREFIX` and `TAGS` in its `api.py` —
+`RETIRED_QUERY: dict[str, RetiredQuery]`, the retired name mapped to the live
+parameter to ask with instead and the one sentence a caller reads. Three readers
+defer to that one declaration: the route refuses it (`refuse_retired_query`),
+the published document marks it `deprecated` (`config/api.py`), and a product's
+strict-query seam asks `retired_query_of` before refusing a parameter the route
+does not take, so the route's own sentence is the one that answers.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import importlib
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from django.db.models import Model as DjangoModel
 from django.db.models import Q, QuerySet
+from django.http import HttpRequest
+from pydantic import BaseModel
 
 from apps.core.exceptions import Invalid
+from apps.core.roads import road
 
 DESCENDING = "-"
 
@@ -122,3 +136,97 @@ def searched[M: DjangoModel](
     for field in fields:
         matches |= Q(**{f"{field}__icontains": term})
     return queryset.filter(matches)
+
+
+@dataclass(frozen=True)
+class RetiredQuery:
+    """A query parameter a list no longer takes: the live one to ask with, and why.
+
+    `instead` is the name of the parameter the list takes now; `reason` is the
+    one sentence a caller reads, in the refusal and in the published document
+    alike. A module declares `RETIRED_QUERY: dict[str, RetiredQuery]` keyed by
+    the retired name; a module with nothing retired declares nothing.
+    """
+
+    instead: str
+    reason: str
+
+
+#: The archive family's retired switch: `?archived=` asked for the closed rows
+#: before `?show=` was the one reader of the archived cut. Every archivable list
+#: that once took it declares THIS value, so the refusal is one sentence.
+ARCHIVED_SWITCH = RetiredQuery(
+    instead="show",
+    reason=(
+        "`archived` is not a parameter of this list. Send `show=archived` for the "
+        "archived ones, `show=all` for both, or leave it out for the live ones."
+    ),
+)
+
+
+def refuse_retired_query(request: HttpRequest, retired: Mapping[str, RetiredQuery]) -> None:
+    """A retired query parameter is `400 invalid` naming the live one, never silently ignored.
+
+    The refusal names the parameter to ask with instead, not the retired one: the
+    caller's fix is to send `instead`, and `errors` keys the field it should
+    edit. Checked in name order, so two retired parameters sent at once answer
+    one refusal, the same one every time.
+    """
+    for name in sorted(retired):
+        if name in request.GET:
+            entry = retired[name]
+            raise Invalid({entry.instead: [entry.reason]})
+
+
+@road("takes_query", example="apps/core/api/query.py::retired_query_of")
+def offers_query(operation: Any, name: str) -> bool:
+    """Whether this operation takes `?<name>=` — a bare query parameter or a filter schema's field.
+
+    Read off the bound ninja operation's parameter models, so it answers what
+    the mounted route really accepts rather than what its docstring says. The
+    one reader of the question: `retired_query_of` narrows a retirement with
+    it, and house rules 41 and 74 (`apps/core/checks.py`) ask it of a
+    documented `?name=` and of an archivable noun's `?show=`.
+    """
+    for param_model in getattr(operation, "models", None) or []:
+        for field_name, field in getattr(param_model, "model_fields", {}).items():
+            if field_name == name:
+                return True
+            annotation = getattr(field, "annotation", None)
+            if (
+                isinstance(annotation, type)
+                and issubclass(annotation, BaseModel)
+                and name in annotation.model_fields
+            ):
+                return True
+    return False
+
+
+@road(
+    "retired_query", example="apps/core/tests/test_retired_query.py::StrictQuerySeam.process_view"
+)
+def retired_query_of(operation: Any) -> dict[str, RetiredQuery]:
+    """The query parameters this operation's module retired, where it takes their successor.
+
+    Read off the module that bound the operation (`operation.view_func`'s
+    module, its `RETIRED_QUERY`), narrowed to the entries whose `instead` this
+    operation actually takes: a parameter retired in favour of `?show=` is
+    retired on the list that takes `?show=`, not on the module's detail route.
+    Empty for a module that declares none.
+
+    A product's strict-query seam calls this before refusing a query parameter
+    the route does not take, and lets the route answer instead — so the
+    retired parameter's sentence is the one declared here, on every tree.
+    """
+    view = getattr(operation, "view_func", None)
+    module_name = getattr(view, "__module__", None)
+    if not module_name:
+        return {}
+    declared = getattr(importlib.import_module(module_name), "RETIRED_QUERY", None)
+    if not isinstance(declared, Mapping):
+        return {}
+    return {
+        str(name): entry
+        for name, entry in declared.items()
+        if isinstance(entry, RetiredQuery) and offers_query(operation, entry.instead)
+    }

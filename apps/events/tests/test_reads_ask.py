@@ -49,13 +49,13 @@ from apps.core.services import add_membership, create_organization, root_organiz
 from apps.events import selectors as event_selectors
 from apps.events.models import Delivery, Event, WebhookEndpoint
 from apps.events.selectors import (
-    dead_lettered,
-    endpoints_for,
     get_delivery,
     get_endpoint,
     get_event,
+    list_dead_letters,
     list_deliveries,
     list_endpoints,
+    list_endpoints_for,
     list_events,
 )
 
@@ -69,7 +69,7 @@ DEAD_LETTERS_URL = "/api/v1/dead-letters/"
 #: imported from `apps/conftest.py`: that module imports `apps.workflows`, so
 #: an import of it from this app's tests is this app importing a SIBLING —
 #: which the layer contract refuses, and which the hook catches at the commit.
-BRANCH_PASSWORD = "a-long-enough-password-for-validators"  # pragma: allowlist secret
+BRANCH_PASSWORD = "a-long-enough-password-for-validators"  # noqa: S105 — a throwaway password a test user is made with  # pragma: allowlist secret
 
 #: **`list_events`/`get_event` have no door at all** — checked while writing this
 #: module, and worth writing down rather than discovering twice: this app
@@ -109,12 +109,12 @@ def reads(tenant: Tenant, other_tenant: Tenant, member: User) -> Reads:
     endpoint = WebhookEndpoint.objects.create(
         tenant=tenant,
         url="https://ours.example/hook",
-        secret="s-ours",  # pragma: allowlist secret
+        secret="s-ours",  # noqa: S106 — a signing secret the test both signs and verifies with  # pragma: allowlist secret
     )
     foreign_endpoint = WebhookEndpoint.objects.create(
         tenant=other_tenant,
         url="https://theirs.example/hook",
-        secret="s-theirs",  # pragma: allowlist secret
+        secret="s-theirs",  # noqa: S106 — a signing secret the test both signs and verifies with  # pragma: allowlist secret
     )
     event = Event.objects.create(
         tenant=tenant, name="example.widget.created", payload={}, occurred_at=now()
@@ -193,25 +193,29 @@ def test_every_door_selector_asks_or_says_why() -> None:
     population is derived and its names asserted first, so a derivation that
     stopped finding selectors reds here instead of passing over an empty set.
 
-    `list_stranded_outbox` is the one that does not ask, and its reason is in its
-    own source: the relay sweeping the deployment's own machinery, across
-    tenants, with no person behind it and no hat to ask at.
+    The machine reads ask nothing; each says why in its own source.
     """
     selectors = door_selectors()
     assert sorted(selectors) == [
         "get_delivery",
         "get_endpoint",
         "get_event",
+        "list_active_endpoints_everywhere",
+        "list_dead_letters",
         "list_deliveries",
         "list_endpoints",
+        "list_endpoints_for",
         "list_events",
+        "list_outbox_to_replay",
         "list_stranded_outbox",
+        "list_undispatched_outbox",
     ], sorted(selectors)
 
     asking = {
         "get_delivery",
         "get_endpoint",
         "get_event",
+        "list_dead_letters",
         "list_deliveries",
         "list_endpoints",
         "list_events",
@@ -231,19 +235,13 @@ def test_every_door_selector_asks_or_says_why() -> None:
 
 
 def test_the_machine_reads_stay_open_and_the_door_reads_do_not(reads: Reads) -> None:
-    """`endpoints_for` is the dispatch activity's, and it is outside the population.
+    """The dispatch's machine read answers under a withhold; the door read over those rows refuses.
 
-    It is not a hole and it is not a valve: it does not start with `get_` or
-    `list_`, so rule 54 (d)'s census never looks at it — which is exactly why its
-    docstring says out loud that it asks nothing. What this asserts is the pair:
-    the machine read answers with a withhold in place, and the DOOR read over the
-    same rows does not. A door that reached `endpoints_for` instead of
-    `list_endpoints` would be reading the subscription list for free, and this is
-    what makes that visible rather than a matter of remembering.
+    A door reaching the valved `list_endpoints_for` instead of `list_endpoints` reads for free.
     """
     withhold(reads.reader_membership, "endpoint.read")
 
-    assert [row.pk for row in endpoints_for(tenant=reads.tenant, name=reads.event.name)] == [
+    assert [row.pk for row in list_endpoints_for(tenant=reads.tenant, name=reads.event.name)] == [
         reads.endpoint.pk
     ]
     with pytest.raises(Forbidden):
@@ -330,14 +328,14 @@ def test_a_row_in_another_tenant_is_not_found_and_one_here_without_the_key_is_fo
 def test_the_dead_letter_list_asks_the_same_key_the_delivery_list_asks(reads: Reads) -> None:
     """A narrowing is not a second question (rule 54 (e), the other direction).
 
-    `dead_lettered` is `list_deliveries` with a filter on it, and it goes through
+    `list_dead_letters` is `list_deliveries` with a filter on it, and it goes through
     that selector rather than round the side — so a `delivery.read` withhold
     reaches both. A door that could read the dead letters without being able to
     read the deliveries would be the same surface with a filter on it.
     """
     withhold(reads.reader_membership, "delivery.read")
     with pytest.raises(Forbidden) as refused:
-        dead_lettered(tenant=reads.tenant, actor=reads.actor())
+        list_dead_letters(tenant=reads.tenant, actor=reads.actor())
     assert str(refused.value.args[0]) == refusal_sentence("delivery.read")
 
 
@@ -467,7 +465,7 @@ def branch(tenant: Tenant, owner: User) -> Branch:
     endpoint = WebhookEndpoint.objects.create(
         tenant=tenant,
         url="https://branch.example/hook",
-        secret="s-branch",  # pragma: allowlist secret
+        secret="s-branch",  # noqa: S106 — a signing secret the test both signs and verifies with  # pragma: allowlist secret
     )
     event = Event.objects.create(
         tenant=tenant, name="example.widget.created", payload={}, occurred_at=now()

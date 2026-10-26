@@ -259,9 +259,10 @@ def test_send_mail_goes_through_the_bridge(tenant: Tenant, clean_bridge: None) -
 
 @pytest.mark.django_db
 def test_send_mail_without_the_workflows_app_is_a_no_op_not_a_crash(
-    tenant: Tenant, clean_bridge: None
+    tenant: Tenant, clean_bridge: None, settings: Any
 ) -> None:
     """A template with the platform apps removed still has to run."""
+    settings.BRIDGE_STRICT = False  # opt-out: a stripped tree's no-op is the subject
     bridge.clear()
 
     assert (

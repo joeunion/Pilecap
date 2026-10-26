@@ -10,9 +10,9 @@ noun a product declared:
 * **A hook a child app drops beside itself** — a conventionally named module
   (`archive_blockers.py`, `merge_repointers.py`, …) exporting one dict. The
   parent asks core; core walks every installed app; no parent imports a child
-  (A2/A3). `declared(module, attribute)` is that walk, once — and it is the
-  walk `core.authz` has always done for `policies.py` and `roles.py`, lifted
-  here so the family and the vocabulary share one (principle 13).
+  (A2/A3). `core.discovery.declared(module, attribute)` is that walk, once —
+  the walk `core.authz` does for `policies.py` and `roles.py` too, so the
+  family and the vocabulary share one (principle 13).
 * **A road the noun's doors must carry** — `ROADS`, the table house rule 74
   reads: which routes a marker demands, by `url_name`.
 
@@ -35,16 +35,24 @@ source rules do not.
 
 from __future__ import annotations
 
-import importlib
-import importlib.util
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
+from uuid import UUID
 
 from django.apps import AppConfig
 from django.apps import apps as django_apps
 from django.core.exceptions import ImproperlyConfigured
 from django.db import models
+
+# The walk lives in `core.discovery`; the family's readers (and every app that
+# imported it from here) reach it through this name.
+from apps.core.discovery import declared as declared
+from apps.core.lexicon import UNCOUNTABLE as lexicon_uncountable
+from apps.core.lexicon import inflected
+from apps.core.roads import road
+from apps.core.schemas import SHOW_WORDS
 
 #: Every hook module the family walks, and nothing else. Each is a per-app file
 #: exporting ONE dict; which attribute is the caller's (`BLOCKERS`,
@@ -68,41 +76,6 @@ HOOK_ATTRIBUTES: Mapping[str, str] = {
     "merge_repointers": "REPOINTERS",
     "importers": "IMPORTERS",
 }
-
-
-def declared(
-    module: str, attribute: str, *, refuse_shape: bool = False
-) -> list[tuple[AppConfig, dict[Any, Any]]]:
-    """Every installed app's `<module>.<attribute>` dict, in app order, with its declarer.
-
-    **The one discovery walk.** `policies.py` and `roles.py` are found this way
-    (`core.authz` calls it), and so is every family hook — drop the file and
-    the declaration counts, with no registration anywhere. The `AppConfig`
-    travels with the dict because every refusal a caller raises has to name
-    WHICH app declared the thing it is refusing.
-
-    `refuse_shape=False` (the vocabulary's reading, unchanged): a module whose
-    attribute is absent or is not a dict contributes nothing. `True` (a
-    family hook's reading): an attribute that is present and is not a dict is
-    `ImproperlyConfigured` naming `apps/<label>/<module>.py` — a malformed hook
-    that quietly counted for nothing would be a blocker that never blocks.
-    """
-    found: list[tuple[AppConfig, dict[Any, Any]]] = []
-    for config in django_apps.get_app_configs():
-        if not config.name.startswith("apps."):
-            continue
-        module_name = f"{config.name}.{module}"
-        if importlib.util.find_spec(module_name) is None:
-            continue
-        value = getattr(importlib.import_module(module_name), attribute, None)
-        if isinstance(value, dict):
-            found.append((config, value))
-        elif refuse_shape and value is not None:
-            raise ImproperlyConfigured(
-                f"apps/{config.label}/{module}.py must export `{attribute}` as a dict; "
-                f"got {type(value).__name__}."
-            )
-    return found
 
 
 def hook(module: str) -> list[tuple[AppConfig, dict[Any, Any]]]:
@@ -148,13 +121,30 @@ def declared_models(attr: str, *, registry: Any = None) -> list[type[models.Mode
     return [model for model in source.get_models() if getattr(model, attr, False)]
 
 
+def door_url_name(model: type[Any] | None, verb: str, noun: str) -> str:
+    """The door that serves `verb` on `noun`: its `act_doors` entry, else `<noun>-<verb>`.
+
+    A noun whose door for a verb is mounted under another name declares it on
+    the class — `act_doors = {"<verb>": "<url_name>"}` (files' `replace` is
+    `version-add`) — and this is the one reader of that declaration: house
+    rule 74 demands the door it names, and `allowed_acts` offers the act where
+    it is mounted, so the two can never disagree about which door serves an
+    act. `model` is `None` where no class exists yet to declare anything (a
+    copy's noun before its model is written), and the derived name answers.
+    """
+    declared: dict[str, str] = dict(getattr(model, "act_doors", {}) or {})
+    return declared.get(verb) or f"{noun}-{verb}"
+
+
+@road("family_doors", example="apps/example/models.py::Widget")
 @dataclass(frozen=True, slots=True)
 class Road:
     """What one marker demands of a noun's doors (house rule 74).
 
     `routes` are the `url_name`s the noun's REST door must carry: a bare verb
-    means `<noun>-<verb>`, and an entry holding `{noun}` is a template used as
-    written (`{noun}_history-list`). Each is paired on the machine door by rule
+    means the door `door_url_name` answers for it — `<noun>-<verb>`, or the one
+    the noun declares in `act_doors` — and an entry holding `{noun}` is a
+    template used as written (`{noun}_history-list`). Each is paired on the machine door by rule
     17's derivation. `grants` are the verbs the marker adds to the kind's
     vocabulary (`<kind>.<verb>`, derived by `core.authz.family_verbs`) — a road
     whose routes run other verbs (bulk) or only read (history) grants nothing.
@@ -170,12 +160,33 @@ class Road:
     settled: Mapping[str, Callable[[Any], bool]]
     grants: tuple[str, ...] = ()
 
-    def url_names(self, noun: str) -> tuple[str, ...]:
-        """The `url_name`s this road demands of `noun`, in road order."""
+    def url_names(self, noun: str, model: type[Any] | None = None) -> tuple[str, ...]:
+        """The `url_name`s this road demands of `noun`, in road order, read through `model`."""
         return tuple(
-            route.format(noun=noun) if "{noun}" in route else f"{noun}-{route}"
+            route.format(noun=noun) if "{noun}" in route else door_url_name(model, route, noun)
             for route in self.routes
         )
+
+
+@road("show", example="apps/core/tests/test_tool_names.py::test_shown_cuts_the_book")
+def shown(queryset: Any, show: str) -> Any:
+    """The cut of an archivable book `show` names — `live`, `archived` or `all` — else `invalid`.
+
+    Applied AFTER `for_tenant(...).visible_to(...)`: both widenings only take
+    `for_tenant()`'s live exclusion back out, so the tenant and the hat narrow
+    the archived cut exactly as they narrow the live one. An unknown word is
+    refused naming `show`, never read as `live` — a mistyped `?show=archvied`
+    answering the live book is a list that looks right and is not.
+    """
+    from apps.core.exceptions import Invalid
+
+    if show not in SHOW_WORDS:
+        raise Invalid({"show": [f"Show one of: {', '.join(SHOW_WORDS)}."]})
+    if show == "archived":
+        return queryset.archived_only()
+    if show == "all":
+        return queryset.including_archived()
+    return queryset
 
 
 def _is_archived(row: Any) -> bool:
@@ -221,7 +232,7 @@ ROADS: Mapping[str, Road] = {
         settled={},
         grants=("merge",),
     ),
-    # A duplicate IS a create (`<kind>.create` at the acting hat), so it grants
+    # A duplicate IS a create (`<kind>.create` at the hat), so it grants
     # no key of its own; `allowed_acts` offers it where the door exists.
     "duplicate": Road(marker="duplicable", routes=("duplicate",), settled={}),
 }
@@ -271,8 +282,9 @@ def _locked(tenant: Any, row: Any) -> Any:
     return _every_row(type(row), tenant).select_for_update().get(pk=row.pk)
 
 
+@road("archive", example="apps/example/services.py::archive_widget")
 def archive_row(*, tenant: Any, actor: Any, row: Any, noun: str) -> tuple[Any, bool]:
-    """Take `row` out of the book. `(the row, whether this call changed it)`.
+    """Take `row` out of the book; `restore_row` is its pair. `(row, whether this call changed it)`.
 
         @service
         def archive_widget(*, tenant: Tenant, actor: Actor, widget: Widget) -> Widget:
@@ -458,57 +470,102 @@ def _move_plan(
     return carry, blocked
 
 
+# --- One name per capability: the url_name's two halves, its plural, its tool ---
+#
+# A capability has ONE name, its `url_name` (`<noun>-<verb>`), and everything else
+# that names it is derived: the noun and the verb (`split_url_name`), the noun's
+# plural (`plural`), and the machine door's tool (`derive_tool_name`). Before
+# these, rule 17, rule 41, the document writer and the blocker's list door each
+# split and pluralised for themselves — two splitters disagreeing on six names
+# (`sso-connection-list` is `sso-connection` + `list`, not `sso` + …) and four
+# pluralisers. ADR api-2: "url_names do not move — rule 17 derives the expected
+# MCP tool names from them"; this is that derivation.
+
+
+class UnderivableName(ValueError):
+    """A `url_name` this grammar cannot split, so no tool name can be derived from it."""
+
+
+#: A verb is one lowercase word — `<noun>-<verb>`'s right half never carries a
+#: hyphen, which is what makes the LAST hyphen the split.
+_VERB = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+@road("url_name_split", example="apps/core/checks.py::check_door_parity")
+def split_url_name(url_name: str) -> tuple[str, str]:
+    """`(noun, verb)` — split at the LAST hyphen: a noun may carry hyphens, a verb never does."""
+    name = url_name.removeprefix("api:")
+    noun, separator, verb = name.rpartition("-")
+    if not separator or not noun or not _VERB.match(verb):
+        raise UnderivableName(
+            f"{url_name!r} is not `<noun>-<verb>` — a capability's url_name names the thing "
+            "and then, after its last hyphen, the one word done to it"
+        )
+    return noun, verb
+
+
+#: Words with no plural of their own (`apps.core.lexicon` holds them beside the inflection).
+UNCOUNTABLE: frozenset[str] = lexicon_uncountable
+
+
+@road("pluralize", example="apps/core/verbs.py::_list_door")
+def plural(noun: str) -> str:
+    """The plural of a noun — the ONE answer: `-ies`, `-es` after a hiss, else `-s`; a plural stays.
+
+    Only the last `_`-segment is inflected (`widget_entry` → `widget_entries`).
+    A word in `UNCOUNTABLE` is its own plural, and so is a word that already
+    reads as one (`apps.core.lexicon.looks_plural` — `dead_letters` stays,
+    `status` and `address` do not), which is what lets a list's url_name name
+    its noun in either number and still derive one tool name.
+    """
+    return inflected(noun)
+
+
+#: How a CRUD verb's tool is named, by the url_name's verb; every other verb — a
+#: family verb (`archive`, `move`, `merge`, `duplicate`, `restore`) or a noun's
+#: own (`approve`, `issue`) — is `<verb>_<noun>`. `{plural}` is `plural(noun)`,
+#: which leaves a noun the url_name already names in the plural as written
+#: (`dead_letters-list`). Rule 17 re-derives every bound pair against this table
+#: (`apps/core/tests/test_tool_names.py`), which is what makes it legal to type.
+TOOL_FORMS: Mapping[str, str] = {
+    "list": "list_{plural}",
+    "detail": "get_{noun}",
+    "create": "create_{noun}",
+    "update": "update_{noun}",
+    "delete": "delete_{noun}",
+    # The bulk road's one door acts on a selection, so its tool is plural.
+    "bulk": "bulk_{plural}",
+}
+
+
+@road(
+    "tool_name",
+    example="apps/core/tests/test_tool_names.py::test_every_tool_name_is_the_derivation",
+)
+def derive_tool_name(url_name: str) -> str:
+    """The MCP tool a capability's `url_name` names — the one name its twin carries."""
+    noun, verb = split_url_name(url_name)
+    noun = noun.replace("-", "_")
+    form = TOOL_FORMS.get(verb, "{verb}_{noun}")
+    return form.format(noun=noun, plural=plural(noun), verb=verb)
+
+
 def _list_forms(kind: str) -> list[str]:
-    """The `url_name`s a kind's list may carry, in the order they are tried."""
-    forms = [kind, f"{kind}s", f"{kind}es"]
-    if kind.endswith("y"):
-        forms.insert(1, f"{kind[:-1]}ies")
-    return [f"{form}-list" for form in forms]
+    """The `url_name`s a kind's list may carry, in the order tried: the kind, then its plural."""
+    return [f"{form}-list" for form in dict.fromkeys((kind, plural(kind)))]
 
 
 def mounted_operations() -> dict[str, Any]:
-    """`{url_name: ninja operation}` over every installed app's `api.py` router.
+    """`{url_name: ninja operation}` over every operation the API mounts.
 
-    **Discovered the way the mount discovers them** — each app's conventionally
-    named `api.py` exposing `router` — so core reads the operations every REST
-    door serves without importing `config`. Not cached: a blocker is a rare
-    answer, and the routers are module-level objects.
+    Read through `apps.core.api.mount.bound_operations`, the one mount reader
+    (imported inside the call — it imports `config.api` lazily, and this module
+    is imported while the registry populates). Not cached: a blocker is a rare
+    answer, and the mount is a module-level object.
     """
-    from django.apps import apps as django_apps
+    from apps.core.api.mount import bound_operations
 
-    found: dict[str, Any] = {}
-    for config in django_apps.get_app_configs():
-        if not config.name.startswith("apps."):
-            continue
-        module_name = f"{config.name}.api"
-        if importlib.util.find_spec(module_name) is None:
-            continue
-        pending = [getattr(importlib.import_module(module_name), "router", None)]
-        while pending:
-            router = pending.pop()
-            for path_view in getattr(router, "path_operations", {}).values():
-                for operation in path_view.operations:
-                    if operation.url_name:
-                        found[str(operation.url_name)] = operation
-            # A router may mount routers of its own (`add_router`).
-            pending.extend(entry[1] for entry in getattr(router, "_routers", []))
-    return found
-
-
-def _query_names(operation: Any) -> set[str]:
-    """The `?name=` parameters an operation declares — bare, or a filter schema's fields."""
-    from pydantic import BaseModel
-
-    names: set[str] = set()
-    for param_model in getattr(operation, "models", None) or []:
-        if getattr(param_model, "__ninja_param_source__", None) != "query":
-            continue
-        for field_name, field in getattr(param_model, "model_fields", {}).items():
-            names.add(field_name)
-            annotation = getattr(field, "annotation", None)
-            if isinstance(annotation, type) and issubclass(annotation, BaseModel):
-                names.update(annotation.model_fields)
-    return names
+    return {name: operation for _path, name, operation in bound_operations() if name}
 
 
 def _list_door(kind: str, fk: str, parent_pk: Any) -> str:
@@ -525,14 +582,18 @@ def _list_door(kind: str, fk: str, parent_pk: Any) -> str:
         operation = operations.get(name)
         if operation is None:
             continue
-        offered = _query_names(operation)
+        # The `takes_query` road: imported here, inside the call, because
+        # `apps.core.api` pulls in the routes and this module loads under them.
+        from apps.core.api.query import offers_query
+
         for parameter in (f"{fk}_id", fk):
-            if parameter in offered:
+            if offers_query(operation, parameter):
                 return f"route:{name}?{parameter}={parent_pk}"
         return f"route:{name}"
     return f"route:{kind}-list"
 
 
+@road("move", example="apps/example/services.py::move_widget")
 def rehome(
     row: Any,
     organization: Any,
@@ -649,8 +710,8 @@ def repointers_for(noun: str) -> list[tuple[str, Repointer]]:
     """
     found: list[tuple[str, Repointer]] = []
     for key in ("*", noun):
-        for config, declared in hook("merge_repointers"):
-            entry = declared.get(key)
+        for config, repointers in hook("merge_repointers"):
+            entry = repointers.get(key)
             if entry is None:
                 continue
             if not isinstance(entry, Repointer):
@@ -670,6 +731,7 @@ def merge_counts(*, tenant: Any, loser: Any, noun: str) -> tuple[Repointed, ...]
     )
 
 
+@road("merge", example="apps/example/services.py::merge_widget")
 def merge_rows(*, tenant: Any, actor: Any, loser: Any, into: Any, noun: str) -> MergeOutcome:
     """Fold `loser` into `into` (the survivor). **Called inside the noun's service's transaction.**
 
@@ -796,6 +858,7 @@ def owned_children(model: type[models.Model]) -> dict[str, Any]:
     return found
 
 
+@road("duplicate", example="apps/example/services.py::duplicate_widget")
 def duplicate_row(
     *,
     tenant: Any,
@@ -821,7 +884,7 @@ def duplicate_row(
     `duplicate = Duplicate(copies=…, resets=…)` decides: every field in
     `copies` is carried across; every field in `resets` is left at the model's
     default; the platform keys are the copy's own — a new id, the source's
-    tenant, the ACTING HAT's organization for an org-scoped noun (a duplicate
+    tenant, the HAT's organization for an org-scoped noun (a duplicate
     is a create, ADR core-20), live, `duplicated_from` the source.
 
     **`fill` is what the noun's service decides for a reset field**, set on
@@ -992,27 +1055,33 @@ def allowed_acts(actor: Any, row: Any) -> tuple[str, ...]:
     **An act is offered only where a door exists — and the door is LOOKED UP,
     never assumed.** The vocabulary also holds keys no person presses — a
     workflow's own key (`widget.onboard`) — so a verb is offered only when its
-    door's `url_name` is mounted (`mounted_url_names`): the one the noun
-    declares in `act_doors = {"<verb>": "<url_name>"}` when the door is mounted
-    under another name (files' `replace` is `version-add`), else `<kind>-<V>`.
+    door's `url_name` is mounted (`mounted_url_names`): the one `door_url_name`
+    answers — the noun's `act_doors = {"<verb>": "<url_name>"}` declaration when
+    the door is mounted under another name (files' `replace` is `version-add`),
+    else `<kind>-<V>` — the same lookup house rule 74 demands the door by.
     The declaration sits on the noun because the act is the noun's and so is
     the route that serves it; rule 17 derives the machine twin from the same
     name, so the one mount decides both doors. `duplicate` is offered on a live
     `Duplicable` row with its door when the actor may CREATE at the hat — a
     duplicate is a create.
 
+    **An act is offered only where the actor's SURFACE offers it**
+    (`core.surfaces`, `Surface.acts`): a face on a read-only surface is never
+    offered a press that surface's doors would not answer. The implicit staff
+    surface offers every act, so a product with one face sees no difference.
+
     DOES NOT COVER — declared: an MCP-only tool under a rule-17 exemption is not
     a road for an act.
     """
-    from apps.core import authz
+    from apps.core import authz, surfaces
     from apps.core.models import is_archivable, is_duplicable
 
+    offered = surfaces.acts(getattr(actor, "surface", surfaces.STAFF))
     kind = authz.kind_of(type(row))
     if kind is None or getattr(row, "merged_into_id", None) is not None:
         # A merged-away row is a tombstone: every write refuses `merged`.
         return ()
     mounted = mounted_url_names()
-    doors: dict[str, str] = dict(getattr(type(row), "act_doors", {}) or {})
     archived = is_archivable(type(row)) and getattr(row, "archived_at", None) is not None
     acts: list[str] = []
     for action, permission in authz.vocabulary().items():
@@ -1023,14 +1092,17 @@ def allowed_acts(actor: Any, row: Any) -> tuple[str, ...]:
             continue
         if not archived and verb == "restore":
             continue
-        if doors.get(verb, f"{kind}-{verb}") not in mounted:
+        if door_url_name(type(row), verb, kind) not in mounted:
+            continue
+        if verb not in offered:
             continue
         if authz.allows(actor, action, row):
             acts.append(verb)
     if (
         not archived
+        and "duplicate" in offered
         and is_duplicable(type(row))
-        and f"{kind}-duplicate" in mounted
+        and door_url_name(type(row), "duplicate", kind) in mounted
         and f"{kind}.create" in authz.vocabulary()
         and authz.allows(actor, f"{kind}.create")
     ):
@@ -1052,7 +1124,7 @@ def with_allowed_acts[R](rows: list[R], actor: Any) -> list[R]:
     a page with acts is **6 statements, flat at 5 rows and at 50** — (1) the
     page itself; (2) ONE query attaching every row's node (`_attach_nodes`);
     (3)–(5) the actor's collection at the rows' node — its memberships, its
-    grants, its roles' keys; (6) the memberships at the acting hat for the
+    grants, its roles' keys; (6) the memberships at the hat for the
     list's own `create` (`page_acts`; grants and role keys are memoized).
     Rows spread over k nodes add a collection per extra node, never per row.
 
@@ -1096,7 +1168,7 @@ def page_acts(actor: Any, model: type[models.Model]) -> tuple[str, ...]:
 
     A face draws the list's *New* act and its empty state's door from this and
     never from a guess (DESIGN's §5 / §14): `allows(actor, "<kind>.create")`
-    asked with no row, which `where_of` reads as the acting hat — the node a
+    asked with no row, which `where_of` reads as the hat — the node a
     create would land at (ADR core-20's placement law).
     """
     from apps.core import authz
@@ -1107,6 +1179,7 @@ def page_acts(actor: Any, model: type[models.Model]) -> tuple[str, ...]:
     return ("create",) if authz.allows(actor, f"{kind}.create") else ()
 
 
+@road("attach", example="apps/djb_notes/selectors.py::get_subject")
 def resolve_subject(actor: Any, kind: str, subject_id: Any) -> Any:
     """The row a `(kind, id)` pointer names, if this actor could have reached it.
 
@@ -1114,7 +1187,7 @@ def resolve_subject(actor: Any, kind: str, subject_id: Any) -> Any:
     note's subject, a bulk item's id): the kind registry names the model; the
     row is read `for_tenant(actor.tenant)` — **archived rows included**, since a
     subject's archive does not unmake what points at it — then `visible_to` the
-    acting hat and `may_be_named` (C8). Anything that fails any step is
+    hat and `may_be_named` (C8). Anything that fails any step is
     `NotFound`, never `Forbidden`: a row in a sibling branch and a row that does
     not exist are one answer, deliberately, because a refusal that told them
     apart would confirm the row exists. An unknown kind is `NotFound` too.
@@ -1142,6 +1215,95 @@ def resolve_subject(actor: Any, kind: str, subject_id: Any) -> Any:
     if is_org_scoped(model) and not authz.may_be_named(actor, row):
         raise NotFound()
     return row
+
+
+# --- the subject seam: one parser, one reader, one landing law (ADR attach-1) ---
+#
+# An attachment (a note, a file, a tag link) names its subject as `<kind>:<id>`.
+# Before this seam every owner parsed it and asked the questions in its own
+# order — notes and tags the kind first, files the row first — so one pointer
+# was `invalid` at one door and `not_found` at the next. The order here is the
+# contract: the shape, then the kind (published vocabulary — saying "a widget
+# takes no notes" leaks nothing), then the row (`resolve_subject`, C8 —
+# `not_found`, never `forbidden`, for anything this actor could not reach).
+
+#: Between a subject's kind and its id.
+SUBJECT_SEPARATOR = ":"
+
+#: The field every subject refusal names, on every door.
+SUBJECT_FIELD = "subject"
+
+
+# No Widget example: Widget does not adopt this road yet, so the example is a core test.
+@road(
+    "subject_parse",
+    example="apps/core/tests/test_attach_conformance.py::test_a_malformed_pointer_is_invalid_naming_subject",
+)
+def parse_subject(text: str) -> tuple[str, UUID]:
+    """`<kind>:<id>` into `(kind, UUID)`, or `invalid` naming `subject` — the id checked."""
+    from apps.core.exceptions import Invalid
+
+    kind, separator, raw_id = (text or "").strip().partition(SUBJECT_SEPARATOR)
+    if not separator or not kind or not raw_id:
+        raise Invalid(
+            {SUBJECT_FIELD: ["Name the subject as <kind>:<id> — for example widget:<id>."]}
+        )
+    try:
+        return kind, UUID(raw_id)
+    except ValueError:
+        raise Invalid({SUBJECT_FIELD: [f"{raw_id!r} is not an id."]}) from None
+
+
+def takes(model: Any, attachment: str) -> bool:
+    """Whether `model` lists `attachment` (`notes`, `files`, `tags`) in its `attachments`."""
+    return attachment in tuple(getattr(model, "attachments", ()) or ())
+
+
+# No Widget example: Widget does not adopt this road yet, so the example is a core test.
+@road(
+    "subject_read",
+    example="apps/core/tests/test_attach_conformance.py::test_every_owner_refuses_in_the_seam_s_order_or_is_counted",
+)
+def subject_for(actor: Any, text: str, *, attachment: str) -> Any:
+    """The row `<kind>:<id>` names, if its kind takes `attachment` and this actor can reach it.
+
+    Three answers, in this order: a malformed pointer → `invalid` naming
+    `subject`; a kind that does not declare `attachment` (or no kind at all) →
+    `invalid` naming `subject`; a row this actor could not have reached →
+    `not_found` (`resolve_subject`).
+    """
+    from apps.core import authz
+    from apps.core.exceptions import Invalid
+
+    kind, subject_id = parse_subject(text)
+    model = authz.kind_registry().get(kind)
+    if model is None or not takes(model, attachment):
+        raise Invalid({SUBJECT_FIELD: [f"A {kind} does not take {attachment}."]})
+    return resolve_subject(actor, kind, subject_id)
+
+
+# No Widget example: Widget does not adopt this road yet, so the example is a core test.
+@road(
+    "landing",
+    example="apps/core/tests/test_attach_conformance.py::test_landing_for_follows_the_law",
+)
+def landing_for(subject: Any, actor: Any) -> Any:
+    """Where an attachment on `subject` lives: its organization, else the acting hat (attach-1).
+
+    An organization is its own landing; an org-scoped subject lands at its
+    organization; a TENANT-WIDE subject has none, so the attachment lands at
+    the ACTING HAT — never the root, because visibility is down-only and a
+    root-landed row is one its own branch author could not read back. No hat is
+    `no_acting_scope`, the door's one word for it.
+    """
+    from apps.core.api.acting import require_hat
+    from apps.core.models import Organization, is_org_scoped
+
+    if isinstance(subject, Organization):
+        return subject
+    if is_org_scoped(type(subject)):
+        return subject.organization
+    return require_hat(actor)
 
 
 # --- the declared shapes the later verbs' hook modules export -------------------
@@ -1203,6 +1365,7 @@ class Repointer:
     repoint: Callable[..., int]
 
 
+@road("import_rows", example="apps/example/importers.py::apply")
 @dataclass(frozen=True, slots=True)
 class Importer:
     """How one noun is imported: its row schema, its natural key, its apply.

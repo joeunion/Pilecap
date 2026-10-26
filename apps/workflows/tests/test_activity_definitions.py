@@ -231,8 +231,8 @@ def test_build_worker_carries_the_derived_value() -> None:
     `FINISH_TIMEOUT`; a graceful window shorter than that would make the drive
     prove the cancel, not the wait.
     """
+    from apps.core.determinism import FINISH_TIMEOUT
     from apps.workflows.client import worker_graceful_shutdown
-    from apps.workflows.workflows import FINISH_TIMEOUT
 
     assert FINISH_TIMEOUT <= worker_graceful_shutdown()
 

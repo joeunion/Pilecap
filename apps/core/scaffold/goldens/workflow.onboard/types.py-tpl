@@ -1,0 +1,33 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "end", "text": ""}
+"""The shapes that cross the workflow boundary: standard-library dataclasses only (rule 9)."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+
+
+@dataclass
+class WidgetOnboarding:
+    """What `WidgetOnboardingWorkflow` is started with."""
+
+    widget_id: str
+
+
+@dataclass
+class WidgetAnnouncement:
+    """What the announcing activity is told: which widget, and how it ended."""
+
+    widget_id: str
+    approved: bool
+
+
+@dataclass
+class WidgetOnboarded:
+    """What the workflow returns; `approved` is `False` when nobody signalled in time."""
+
+    widget_id: str
+    onboarded_at: str
+    approved: bool
+
+

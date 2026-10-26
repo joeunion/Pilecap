@@ -1,0 +1,12 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "before", "text": "def test_anonymous_cannot_list(api: Client) -> None:"}
+def test_a_touch_answers_the_widget_seen_now(
+    api: Client, tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Seen")
+    api.force_login(owner)
+    touched = api.post(reverse("api:widget-touch", kwargs={"widget_id": widget.pk}))
+    assert touched.status_code == 200, touched.content
+    assert _body(touched)["id"] == str(widget.pk)
+    assert Widget.objects.for_tenant(tenant).get(pk=widget.pk).updated_at > widget.updated_at
+
+

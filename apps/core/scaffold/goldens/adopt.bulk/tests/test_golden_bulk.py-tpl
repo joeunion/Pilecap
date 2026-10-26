@@ -1,0 +1,61 @@
+import json
+from typing import Any
+
+import pytest
+from django.test import Client
+
+from apps.example.models import Widget
+from pilecap.accounts import User, create_user
+from pilecap.tenancy import Membership, Organization, Tenant, add_membership, create_organization
+from pilecap.testing import actor_for, system_actor
+
+pytestmark = pytest.mark.django_db
+
+WIDGETS_URL = "/api/v1/widgets/"
+JSON = "application/json"
+PASSWORD = "a-long-enough-password"  # noqa: S105 — a throwaway password a test user is made with  # pragma: allowlist secret
+
+
+def _body(response: Any) -> dict[str, Any]:
+    parsed: dict[str, Any] = json.loads(response.content)
+    return parsed
+
+
+def test_a_partial_batch_answers_each_id_in_order_and_replays_whole(
+    api: Client, tenant: Tenant, root_org: Organization, owner: User
+) -> None:
+    acting = actor_for(user=owner, tenant=tenant, org=root_org)
+    a = create_organization(tenant=tenant, parent=root_org, name="A", slug="a", actor=acting)
+    b = create_organization(tenant=tenant, parent=root_org, name="B", slug="b", actor=acting)
+    manager = create_user(email="a-admin@example.com", password=PASSWORD)
+    add_membership(
+        user=manager,
+        tenant=tenant,
+        organization=a,
+        is_default=True,
+        role=Membership.Role.ADMIN,
+        actor=system_actor(tenant=tenant),
+    )
+    first = Widget.objects.create(tenant=tenant, organization=a, owner=owner, name="1")
+    sibling = Widget.objects.create(tenant=tenant, organization=b, owner=owner, name="2")
+    third = Widget.objects.create(tenant=tenant, organization=a, owner=owner, name="3")
+    ids = [str(first.pk), str(sibling.pk), str(third.pk)]
+    api.force_login(manager)
+
+    def press() -> Any:
+        return api.post(
+            f"{WIDGETS_URL}bulk/",
+            {"verb": "archive", "ids": ids},
+            content_type=JSON,
+            headers={"idempotency-key": "one-batch"},
+        )
+
+    answered = press()
+    assert answered.status_code == 200, answered.content
+    results = _body(answered)["results"]
+    assert [r["outcome"] for r in results] == ["done", "refused", "done"]
+    assert results[1]["refusal"]["code"] == "not_found"
+    sibling.refresh_from_db()
+    assert sibling.archived_at is None
+
+    assert press().content == answered.content

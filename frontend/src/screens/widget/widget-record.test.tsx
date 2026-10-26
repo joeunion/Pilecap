@@ -5,9 +5,10 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { historyWhat, WIDGET_COPY as C, WIDGET_FIELD_WORDS } from "@/copy/widget";
-import { REQUIRED_STORY_EXPORTS } from "@/screens/state";
+import { WIDGET_COPY as C, WIDGET_FIELD_WORDS } from "@pilecap/copy/widget";
+import { REQUIRED_STORY_EXPORTS } from "@pilecap/ui/state";
 import { archivedOf, BENCH, LATENCY_MS, ROWING } from "@/screens/widget/widget-list.stories";
+import { historyWhat } from "@/screens/widget/widget-history";
 import { WidgetRecord } from "@/screens/widget/widget-record";
 import {
     ActsAfterFrame,

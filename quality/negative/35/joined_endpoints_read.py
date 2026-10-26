@@ -11,10 +11,10 @@
 # mean the `select_related` never reached the plan at all.
 #
 # n107-plan-shape-marker: join-to-a-lookup-table
-_negative_original_endpoints_for = endpoints_for
+_negative_original_endpoints_for = list_endpoints_for
 
 
-def endpoints_for(*, tenant, name):  # noqa: F811
+def list_endpoints_for(*, tenant, name):  # noqa: F811
     if tenant is None:
         return []
     endpoints = WebhookEndpoint.objects.for_tenant(tenant).select_related("tenant")

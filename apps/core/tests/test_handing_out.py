@@ -1,16 +1,7 @@
 """The hand-out family: nobody gives away, or takes back, what they do not hold.
 
-P4 of P20. Three refusals and six services, and the property under all of them
-is one sentence: **a grant is bounded by the granter's own effective set**, as a
-SET comparison rather than a rank. The rank table could only compare three
-words; a tenant's own role is a fourth word with no rank at all, which is the
-hole this closes — `rank("approver")` is `0`, so *everybody* outranked it and
-anybody could hand it out, whatever its collection said.
-
-The sentences of the old rank walls are asserted here **against the constants
-the existing tests hold**, because Overrule 9 says `test_role_ceiling.py` and
-`test_last_owner.py` do not move: the wrapper has to speak in the old words for
-every template pair, and in new words only where the old walls had no answer.
+A grant is bounded by the granter's own effective set — a set, since no rank orders a custom role.
+The old rank walls' sentences are asserted against `test_role_ceiling.py`, `test_last_owner.py`.
 """
 
 from __future__ import annotations
@@ -43,9 +34,10 @@ from apps.core.services import (
     set_role_collection,
     update_role,
 )
-from apps.core.tests.permissions_world import World, build_world
+from apps.core.tests.permissions_world import World, build_world, platform_keys
 from apps.core.tests.test_last_owner import LAST_OWNER, membership_of
-from apps.core.tests.test_role_ceiling import CEILING, NO_ROLE_THERE
+from apps.core.tests.test_role_ceiling import NO_ROLE_THERE, assert_ceiling
+from apps.core.tests.tree_census import source_text
 
 pytestmark = pytest.mark.django_db
 
@@ -178,12 +170,8 @@ def test_a_custom_role_is_bounded_by_its_collection_and_not_by_a_rank(world: Wor
     assert authz.refusal_sentence("organization.create") in str(refused.value)
 
 
-def test_the_template_escalation_sentences_are_byte_identical(world: World) -> None:
-    """Overrule 9: the wrapper speaks the OLD words for every template pair.
-
-    Read from the existing tests' own constants rather than retyped, so a
-    reword in either place is a failure here rather than a drift.
-    """
+def test_the_escalation_names_what_the_granter_is_short_of(world: World) -> None:
+    """An admin granting `owner` hears the sentences of the keys an owner holds and they do not."""
     admin_actor = world.admin_at_a
     with pytest.raises(Forbidden) as refused_owner:
         add_membership(
@@ -193,10 +181,11 @@ def test_the_template_escalation_sentences_are_byte_identical(world: World) -> N
             role="owner",
             actor=admin_actor,
         )
-    assert str(refused_owner.value) == (
-        "You may not grant 'owner': your own effective role there is 'admin', "
-        "and nobody grants above themselves."
-    )
+    said = str(refused_owner.value)
+    assert refused_owner.value.code == "forbidden"
+    assert said.startswith("You may not grant what you do not hold yourself:"), said
+    short = authz.collection(world.tenant, "owner") - authz.collection(world.tenant, "admin")
+    assert short and all(authz.refusal_sentence(key) in said for key in short), said
 
     with pytest.raises(Forbidden) as refused_outside:
         add_membership(
@@ -251,10 +240,10 @@ def test_reach_answers_before_the_capability_and_before_the_hand_out_wall(
 # --- P4.2 · nobody takes back what they do not hold ----------------------------
 
 
-def test_the_ceiling_sentence_survives_as_a_set_comparison(
+def test_the_ceiling_is_a_set_comparison_and_says_the_sentences(
     tenant: Tenant, owner: Any, member: Any, admin_actor: Actor, owner_actor: Actor
 ) -> None:
-    """`CEILING` is `test_role_ceiling.py`'s own constant, produced by the SET wall."""
+    """The take-back refusal names what the owner holds and the admin does not."""
     set_role(
         tenant=tenant,
         membership=membership_of(member, tenant),
@@ -270,7 +259,7 @@ def test_the_ceiling_sentence_survives_as_a_set_comparison(
             actor=admin_actor,
         )
 
-    assert str(refused.value) == CEILING
+    assert_ceiling(str(refused.value), tenant)
 
 
 def test_an_admin_may_not_withhold_from_an_owner(world: World) -> None:
@@ -293,10 +282,7 @@ def test_an_admin_may_not_withhold_from_an_owner(world: World) -> None:
             effect=Grant.Effect.WITHHOLD,
         )
 
-    assert str(refused.value) == (
-        "You may not restrict a 'owner': your own effective role there is 'admin', "
-        "and nobody restricts above themselves."
-    )
+    assert_ceiling(str(refused.value), world.tenant, verb="restrict")
     assert not Grant.objects.filter(membership=world.owner_membership).exists()
 
 
@@ -801,10 +787,9 @@ def test_a_rolled_back_grant_leaves_no_event_row(world: World, monkeypatch: Any)
     than making a production branch failable is the point: nothing in the
     service exists for this test's benefit.
     """
-    from apps.core import services
+    from apps.core.services import grants
+    from apps.core.services._hub import log as real
     from apps.events.models import Event
-
-    real = services.log
 
     class ExplodeAfterThePublish:
         def info(self, name: str, **kwargs: Any) -> None:
@@ -815,7 +800,7 @@ def test_a_rolled_back_grant_leaves_no_event_row(world: World, monkeypatch: Any)
         def __getattr__(self, attribute: str) -> Any:
             return getattr(real, attribute)
 
-    monkeypatch.setattr(services, "log", ExplodeAfterThePublish())
+    monkeypatch.setattr(grants, "log", ExplodeAfterThePublish())
     before = Event.objects.count()
 
     with pytest.raises(RuntimeError):
@@ -839,9 +824,10 @@ def test_core_emits_through_the_bridge_and_never_imports_events() -> None:
     """The import half is `test_bridge.py`'s; this is the emit half."""
     import pathlib
 
-    source = pathlib.Path("apps/core/services.py").read_text()
+    package = sorted(pathlib.Path("apps/core/services").glob("*.py"))
+    source = "".join(source_text(path) for path in package)
     assert "from apps.events" not in source
-    assert "bridge.get(bridge.EMIT)" in source or "bridge.find(bridge.EMIT)" in source
+    assert "bridge.listener(bridge.EMIT)" in source
 
 
 def test_set_role_emits_membership_updated_inside_the_transaction(world: World) -> None:
@@ -897,6 +883,176 @@ def test_the_six_event_names_reach_introspect() -> None:
         "core.grant.created",
         "core.grant.deleted",
     }
+
+
+# --- ADR core-26 · each payload is its row's `Out`, at v1 -----------------------
+
+
+def _recorded(world: World, name: str) -> tuple[int, dict[str, Any]]:
+    """The newest recorded event of `name`: its `v`, and its payload without the `v` key."""
+    from apps.events.models import Event
+
+    row = Event.objects.for_tenant(world.tenant).filter(name=name).order_by("-created_at").first()
+    assert row is not None, name
+    payload = dict(row.payload)
+    payload.pop("v", None)
+    return int(row.v), payload
+
+
+def _published(out: Any) -> dict[str, Any]:
+    """`event_payload(out)` as the REST door renders it — what `emit` stores."""
+    from apps.core.schemas import event_payload
+    from config.api import as_the_door_renders
+
+    rendered: dict[str, Any] = as_the_door_renders(event_payload(out))
+    return rendered
+
+
+def _role_out(world: World, key: str) -> Any:
+    """The role as the role doors answer it."""
+    from apps.core.schemas import RoleOut
+    from apps.core.selectors import get_role
+
+    return RoleOut.of(get_role(tenant=world.tenant, key=key, actor=world.owner))
+
+
+def _make_role(world: World, key: str) -> Role:
+    return create_role(
+        tenant=world.tenant,
+        actor=world.owner,
+        key=key,
+        name="Reviewer",
+        description="reads and approves",
+        permissions=frozenset({"widget.approve", "widget.read"}),
+    )
+
+
+def test_role_created_carries_the_role_out_at_v1(world: World) -> None:
+    from apps.core import events
+
+    _make_role(world, "reviewer")
+
+    assert _recorded(world, events.ROLE_CREATED) == (
+        1,
+        _published(_role_out(world, "reviewer")),
+    )
+
+
+def test_role_updated_by_a_rename_carries_the_role_out_at_v1(world: World) -> None:
+    from apps.core import events
+
+    role = Role.objects.for_tenant(world.tenant).get(key="approver")
+    update_role(tenant=world.tenant, actor=world.owner, role=role, name="Signer")
+
+    assert _recorded(world, events.ROLE_UPDATED) == (
+        1,
+        _published(_role_out(world, "approver")),
+    )
+
+
+def test_role_updated_by_a_collection_carries_the_role_out_at_v1(world: World) -> None:
+    """A declared role's collection: `default_permissions` and the delta ride on the payload."""
+    from apps.core import events
+
+    set_role_collection(
+        tenant=world.tenant,
+        actor=world.owner,
+        role_key="member",
+        permissions=authz.defaults_for("member") | {"organization.create"},
+    )
+
+    kind, payload = _recorded(world, events.ROLE_UPDATED)
+    assert (kind, payload) == (1, _published(_role_out(world, "member")))
+    assert _platform_added(payload) == ["organization.create"]
+
+
+def _platform_added(payload: dict[str, Any]) -> list[str]:
+    """The keys a role event's `added` names that no product app declares or owns, sorted."""
+    return platform_keys(payload["added"])
+
+
+def test_a_product_apps_keys_are_outside_the_added_pin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Planted: the worked apps read as a product's, and their key leaves the platform's `added`."""
+    from apps.core.tests import permissions_world
+
+    payload = {"added": ["widget.create", "organization.create"]}
+    assert _platform_added(payload) == ["organization.create", "widget.create"]
+    platform = permissions_world.platform_labels() - {"example", "example_portal"}
+    monkeypatch.setattr(permissions_world, "platform_labels", lambda: platform)
+    assert _platform_added(payload) == ["organization.create"]
+
+
+def test_role_deleted_carries_the_role_out_as_it_was_at_v1(world: World) -> None:
+    from apps.core import events
+
+    role = _make_role(world, "reviewer")
+    before = _published(_role_out(world, "reviewer"))
+
+    delete_role(tenant=world.tenant, actor=world.owner, role=role)
+
+    assert _recorded(world, events.ROLE_DELETED) == (1, before)
+
+
+MEMBERSHIP_EVENT_KEYS = frozenset(
+    {"id", "user_id", "organization_id", "role", "is_default", "created_at", "updated_at"}
+)
+
+
+def test_membership_updated_carries_ids_only_at_v1(world: World) -> None:
+    """`MembershipOut` through the strip: its `personal` field gone, the seven keys kept."""
+    from apps.core import events
+    from apps.core.schemas import MembershipOut
+
+    changed = set_role(
+        tenant=world.tenant,
+        membership=world.member_membership,
+        role="admin",
+        actor=world.owner,
+    )
+
+    kind, payload = _recorded(world, events.MEMBERSHIP_UPDATED)
+    assert set(payload) == MEMBERSHIP_EVENT_KEYS
+    assert "user_email" not in payload
+    door = _published(MembershipOut.from_orm(changed))
+    assert (kind, payload) == (1, {key: door[key] for key in MEMBERSHIP_EVENT_KEYS})
+
+
+def test_grant_created_carries_the_grant_out_at_v1(world: World) -> None:
+    from apps.core import events
+    from apps.core.schemas import GrantOut
+
+    grant = create_grant(
+        tenant=world.tenant,
+        actor=world.owner,
+        membership=world.member_membership,
+        permission="widget.approve",
+        effect=Grant.Effect.ALLOW,
+    )
+
+    assert _recorded(world, events.GRANT_CREATED) == (
+        1,
+        _published(GrantOut.of(grant, sentence=authz.refusal_sentence("widget.approve"))),
+    )
+
+
+def test_grant_deleted_carries_the_grant_out_as_it_was_at_v1(world: World) -> None:
+    from apps.core import events
+    from apps.core.schemas import GrantOut
+
+    grant = create_grant(
+        tenant=world.tenant,
+        actor=world.owner,
+        membership=world.member_membership,
+        permission="widget.create",
+        effect=Grant.Effect.WITHHOLD,
+    )
+    before = _published(GrantOut.of(grant, sentence=authz.refusal_sentence("widget.create")))
+
+    delete_grant(tenant=world.tenant, actor=world.owner, grant=grant)
+
+    assert _recorded(world, events.GRANT_DELETED) == (1, before)
 
 
 # --- P4.6 · the rename command -------------------------------------------------
@@ -978,21 +1134,27 @@ def test_an_exclude_of_a_read_on_a_declared_role_kicks_every_holder_once(
         permissions=frozenset(wanted),
     )
 
+    # The clerk holds `member` at A, so it is a holder too.
     assert sorted(kicked) == sorted(
-        {world.member_membership.user_id, world.approver_root_membership.user_id}
+        {
+            world.member_membership.user_id,
+            world.approver_root_membership.user_id,
+            world.clerk_membership.user_id,
+        }
     )
 
 
 def _capture_kicks(monkeypatch: Any) -> list[Any]:
     """Every `close_sockets_on_commit` this test caused, by user id, in order."""
-    from apps.core import services
+    from apps.core.services import grants, memberships, organizations
 
     seen: list[Any] = []
 
     def record(*, user_id: Any, reason: str) -> None:
         seen.append(user_id)
 
-    monkeypatch.setattr(services, "close_sockets_on_commit", record)
+    for module in (organizations, memberships, grants):
+        monkeypatch.setattr(module, "close_sockets_on_commit", record)
     return seen
 
 
@@ -1167,7 +1329,7 @@ def test_a_virtual_kind_key_named_literally_in_a_role_is_refused_as_virtual(
 
 
 def test_no_declared_roles_defaults_carry_a_virtual_key(world: World) -> None:
-    """The `compat=False` half of the same asymmetry, and the last reader of it.
+    """The declaration's half of the same asymmetry, and the last reader of it.
 
     `defaults_for` matched patterns against the whole vocabulary, so
     `defaults_for("admin")` yielded a virtual key through `("*",)` while
@@ -1188,4 +1350,4 @@ def test_no_declared_roles_defaults_carry_a_virtual_key(world: World) -> None:
     assert authz.role_declarations(), "no declared role — the loop would be vacuous"
     for role_key in sorted(authz.role_declarations()):
         assert authz.defaults_for(role_key) & virtual == set(), role_key
-        assert authz.collection(world.tenant, role_key, compat=False) & virtual == set(), role_key
+        assert authz.collection(world.tenant, role_key) & virtual == set(), role_key

@@ -20,7 +20,7 @@ from apps.example.services import create_widget
 
 pytestmark = pytest.mark.django_db
 
-PASSWORD = "a-long-enough-password"  # pragma: allowlist secret
+PASSWORD = "a-long-enough-password"  # noqa: S105 — a throwaway password a test user is made with  # pragma: allowlist secret
 
 
 @pytest.fixture(autouse=True)

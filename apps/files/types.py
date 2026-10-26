@@ -50,7 +50,7 @@ class RunFinished:
 
 @dataclass
 class FinalizeUpload:
-    """Which version to go and look at. **One id, and it is the whole payload.**
+    """Which version to go and look at, and the deployment's retry floor (rule 9).
 
     Not the key: the key is on the row, the row is the only legitimate way to
     learn it, and a key on a workflow argument would be a second place the
@@ -59,6 +59,8 @@ class FinalizeUpload:
     """
 
     version_id: str
+    #: `core.retry.retry_floor_seconds()`, read on the Django side.
+    retry_floor: float | None = None
 
 
 @dataclass

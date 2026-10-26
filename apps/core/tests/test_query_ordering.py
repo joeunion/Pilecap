@@ -179,7 +179,7 @@ def test_a_random_ordering_is_not_carried_forward_as_a_tie_breaker() -> None:
 #
 # Asserted from here rather than by editing five apps: this suite owns
 # `apps/core`, and a lane that cannot run another app's field test has no
-# business editing its routes. The apology comment at `apps/comms/api.py:296`
+# business editing its routes. The apology at `apps/comms/api.py::ordered_policies`
 # restating `-version` by hand is left exactly where it is — it is belt to this
 # brace now, and removing it belongs to whoever owns that file.
 

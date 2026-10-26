@@ -26,6 +26,7 @@ import json
 import logging
 import sys
 from collections.abc import Iterable, Iterator, Mapping
+from pathlib import Path
 from types import ModuleType
 from typing import Any
 
@@ -34,12 +35,14 @@ from django.core.exceptions import ImproperlyConfigured
 from django.core.management import call_command
 from django.db import models
 
+from apps.core import policies as core_policies
 from apps.core.actor import Actor
 from apps.core.authz import (
     RESERVED_PERMISSIONS,
     VIRTUAL_KINDS,
     DeclaredRole,
     _declarations,
+    _discover_default_roles,
     allows,
     default_role_key,
     defaults_for,
@@ -53,6 +56,7 @@ from apps.core.authz import (
     renamed_permissions,
     reset_policies,
     role_declarations,
+    role_declarers,
     vocabulary,
 )
 from apps.core.management.commands.rename_permission import (
@@ -61,6 +65,7 @@ from apps.core.management.commands.rename_permission import (
 )
 from apps.core.models import BaseModel
 from apps.core.tests.isolation import isolated_apps
+from apps.core.tests.unclaimed import unclaimed, unclaimed_role
 
 #: **This module is a census over OTHER apps' declarations, and it says so here
 #: so that nothing has to name it.** Every name below is a declaration module
@@ -69,7 +74,7 @@ from apps.core.tests.isolation import isolated_apps
 #: files in ANY app has moved what this module asserts about, so this module
 #: belongs in that rung's `--loop` selection.
 #:
-#: WHY THE DECLARATION LIVES HERE AND NOT IN THE SELECTOR. `scripts/loop_tier.sh`
+#: WHY THE DECLARATION LIVES HERE AND NOT IN THE SELECTOR. `quality/djb/scope.py`
 #: derives the seed by walking `apps/*/tests/test_*.py` for this marker, so the
 #: selector names no app and no module: the census that wants to be run is the
 #: thing that says so, and a product's own census joins the day it is written by
@@ -584,7 +589,10 @@ def test_the_virtual_kinds_are_a_printed_list_of_one() -> None:
 def test_the_template_declares_admin_and_member_with_todays_meaning() -> None:
     declared = role_declarations()
 
-    assert set(declared) == {"admin", "member"}
+    # The template's OWN declarations are core's; an app beside it may declare
+    # more (the worked customer surface declares `customer`), read off the
+    # registry rather than typed here.
+    assert {key for key, app in role_declarers().items() if app == "core"} == {"admin", "member"}
     assert declared["admin"].permissions == ("*",)
     assert declared["member"].permissions == ("*.read",)
     assert declared["member"].is_default_for_new_members
@@ -598,8 +606,19 @@ def test_the_template_declares_admin_and_member_with_todays_meaning() -> None:
     # line is where it shows.
     virtual = {action for action, word in vocabulary().items() if word.kind in VIRTUAL_KINDS}
     assert defaults_for("admin") == set(vocabulary()) - set(RESERVED_PERMISSIONS) - virtual
-    assert defaults_for("member") == {action for action in vocabulary() if action.endswith(".read")}
+    reads = {action for action in vocabulary() if action.endswith(".read")}
+    member_by_declaration = {
+        action for action, roles in _discover_default_roles().items() if "member" in roles
+    }
+    assert defaults_for("member") == reads | member_by_declaration
     assert defaults_for("member") & virtual == set()
+
+
+def test_a_scratch_key_a_product_took_is_lengthened_until_unclaimed() -> None:
+    """A template case's word a product declared is never the case's undeclared key."""
+    assert unclaimed("auditor", {"member"}) == "auditor"
+    assert unclaimed("auditor", {"auditor", "auditorx"}) == "auditorxx"
+    assert unclaimed_role("member") == "memberx"
 
 
 def test_owner_is_the_whole_vocabulary_and_is_not_a_declaration() -> None:
@@ -609,8 +628,224 @@ def test_owner_is_the_whole_vocabulary_and_is_not_a_declaration() -> None:
 
 
 def test_a_role_nobody_declared_holds_nothing() -> None:
-    assert defaults_for("auditor") == frozenset()
+    assert defaults_for(unclaimed_role("auditor")) == frozenset()
     assert defaults_for("") == frozenset()
+
+
+# --- the wall: a role a declared surface names holds exactly its declaration ---
+
+
+def _walled_roles() -> set[str]:
+    """Every declared role a DECLARED surface names — never one `staff` admits by totality."""
+    from apps.core import surfaces
+
+    return {
+        key
+        for key in role_declarations()
+        if surfaces.named(surfaces.surface_for_role(key).roles) is not None
+    }
+
+
+def _listed_outside_its_declaration(role: str) -> list[str]:
+    """The keys whose `default_roles` name `role` while its own declaration does not."""
+    declared = defaults_for(role)
+    return sorted(
+        action
+        for action, word in vocabulary().items()
+        if role in word.default_roles and action not in declared
+    )
+
+
+def test_every_declared_role_is_listed_only_where_it_declares() -> None:
+    """No compat residue on any role (clause (5) retired), walled or not.
+
+    For every declared role, the vocabulary's `default_roles` column lists it on
+    exactly the keys its patterns match and the `DEFAULT_ROLES` entries naming
+    it — `defaults_for` — and nowhere else, so `collection()`, `defaults_for`
+    and `introspect` cannot disagree about it. A virtual kind's key is in no
+    `defaults_for` (`grantable_permissions`, the one exclusion), so it is set
+    aside here. The planted sibling below proves it with a world of its own.
+    """
+    from apps.core.authz import VIRTUAL_KINDS
+
+    virtual = {key for key, word in vocabulary().items() if word.kind in VIRTUAL_KINDS}
+    roles = sorted(role_declarations())
+    assert roles and virtual
+    assert {
+        role: [key for key in _listed_outside_its_declaration(role) if key not in virtual]
+        for role in roles
+    } == {role: [] for role in roles}
+
+
+def _plant_the_two_roles(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two scratch roles declaring the same one pattern, where discovery finds `roles.py`.
+
+    `widget.create` is planted undeclared, so no role holds it but by its own pattern.
+    """
+    from apps.example import policies as example_policies
+
+    monkeypatch.setattr(example_policies, "DEFAULT_ROLES", {})
+    plant_module(
+        monkeypatch,
+        "apps.example.roles",
+        ROLES={
+            key: DeclaredRole(key, key, ("widget.read",), False)
+            for key in ("zzz_walled", "zzz_open")
+        },
+    )
+
+
+def _face(*roles: str) -> Any:
+    """A scratch one-family surface admitting `roles`."""
+    from apps.core import surfaces
+
+    return surfaces.Surface(
+        families={"widgets"},
+        acts={"read"},
+        roles=set(roles),
+        tenant_rule="membership",
+        screens=set(),
+    )
+
+
+def test_a_walled_role_and_an_open_role_each_hold_their_declaration_and_nothing_more(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both halves in one planted world, with no residue on either (clause (5) retired).
+
+    Two scratch roles declaring the SAME pattern, and a scratch surface naming
+    one of them: both hold exactly `widget.read`. The role no declared surface
+    names used to hold `widget.create` and the rest of the residue; it holds its
+    declaration now, as the walled one always did. Planted into the discovery
+    walk (a `roles` and a `surfaces` module where discovery finds them), never a file.
+    """
+    from apps.core import surfaces
+
+    _plant_the_two_roles(monkeypatch)
+    plant_module(monkeypatch, "apps.example.surfaces", SURFACES={"zzz_face": _face("zzz_walled")})
+    monkeypatch.setattr(surfaces, "_declared", None)
+    reset_policies()
+
+    assert "zzz_walled" in _walled_roles() and "zzz_open" not in _walled_roles()
+    assert defaults_for("zzz_walled") == defaults_for("zzz_open") == {"widget.read"}
+    assert _listed_outside_its_declaration("zzz_walled") == []
+    assert _listed_outside_its_declaration("zzz_open") == []
+    assert not {"zzz_open", "zzz_walled"} & set(vocabulary()["widget.create"].default_roles)
+
+
+def test_a_surface_collision_is_rule_85s_to_report_and_the_vocabulary_still_answers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A malformed surface declaration never takes the vocabulary down with it.
+
+    Two surfaces naming one role is refused by the surfaces' union, and house
+    rule 85 reports it beside every other field it judges — which it can only
+    do while the vocabulary it reads the acts from still answers. The role two
+    surfaces name is named either way, so it is walled either way.
+    """
+    from django.core.exceptions import ImproperlyConfigured
+
+    from apps.core import surfaces
+
+    _plant_the_two_roles(monkeypatch)
+    plant_module(
+        monkeypatch,
+        "apps.example.surfaces",
+        SURFACES={"zzz_left": _face("zzz_walled"), "zzz_right": _face("zzz_walled")},
+    )
+    monkeypatch.setattr(surfaces, "_declared", None)
+    reset_policies()
+
+    with pytest.raises(ImproperlyConfigured, match="admitted by two surfaces"):
+        surfaces.declared()
+    monkeypatch.setattr(surfaces, "_declared", None)
+    assert _listed_outside_its_declaration("zzz_walled") == []
+    assert _listed_outside_its_declaration("zzz_open") == []
+
+
+def _plant_an_undeclared_publish(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`widget.publish` with a predicate and no `DEFAULT_ROLES` entry — a developer's own key."""
+    from apps.example import policies as example_policies
+    from apps.example.policies import can_create
+
+    monkeypatch.setattr(
+        example_policies, "POLICIES", {**example_policies.POLICIES, "widget.publish": can_create}
+    )
+    monkeypatch.setattr(
+        example_policies,
+        "ACTION_PROSE",
+        {**example_policies.ACTION_PROSE, "widget.publish": "You may not publish that widget."},
+    )
+
+
+def test_the_declaration_owns_a_product_key_and_the_two_readers_agree(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A product key with a predicate and no declaration is held as `defaults_for` says."""
+    _plant_an_undeclared_publish(monkeypatch)
+    reset_policies()
+
+    declared = {role for role in role_declarations() if "widget.publish" in defaults_for(role)}
+    assert set(vocabulary()["widget.publish"].default_roles) == {"owner"} | declared
+    assert "member" not in vocabulary()["widget.publish"].default_roles
+
+
+def test_a_noun_sweep_records_no_residue_yes_for_an_undeclared_product_key(
+    monkeypatch: pytest.MonkeyPatch, db: None
+) -> None:
+    """The noun baseline renders `allows`: a role says yes only where its declaration holds it."""
+    from apps.core.tests.permissions_world import noun_census
+    from apps.example.models import Widget
+
+    def _row(tenant: Any, owner: Any) -> Widget:
+        from apps.core.services import root_organization
+
+        return Widget.objects.create(
+            tenant=tenant,
+            organization=root_organization(tenant=tenant),
+            owner_id=owner.pk,
+            name=f"census-{owner.pk}",
+        )
+
+    _plant_an_undeclared_publish(monkeypatch)
+    reset_policies()
+
+    cells = noun_census(Widget, row=_row)["answers"]["widget.publish"]
+    assert {role: cells[role] for role in role_declarations()} == {
+        role: "widget.publish" in defaults_for(role) for role in role_declarations()
+    }
+    assert not any(cells[f"member{side}"] for side in ("", " · own", " · other")), cells
+
+
+def test_a_platform_key_with_a_predicate_and_no_declaration_is_offered_to_nobody_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same undeclared key on a PLATFORM app is held as `defaults_for` says."""
+    _plant_an_undeclared_publish(monkeypatch)
+    reset_policies()
+
+    declared = {role for role in role_declarations() if "widget.publish" in defaults_for(role)}
+    holders = vocabulary()["widget.publish"].default_roles
+    assert set(holders) == {"owner"} | declared, holders
+    assert "member" not in holders
+
+
+def test_a_surface_role_holds_its_declaration_and_nothing_more_in_a_flat_tenant(
+    db: None,
+) -> None:
+    """`defaults_for(role) == collection(tenant, role)` for every walled role, on a flat world.
+
+    The collection is what somebody HOLDS (the code layer,
+    plus the tenant's rows — none here); for a role a declared surface names it
+    is its declaration and nothing else.
+    """
+    from apps.core.authz import collection
+    from apps.core.tests.permissions_world import flat_world
+
+    tenant, _actors = flat_world()
+    assert {role: collection(tenant, role) for role in _walled_roles()} == {
+        role: defaults_for(role) for role in _walled_roles()
+    }
 
 
 def test_two_apps_declaring_one_role_key_refuse_at_import(
@@ -684,31 +919,29 @@ def test_a_declaration_keyed_on_a_reserved_permission_is_refused(
 def test_a_default_roles_entry_widens_a_key_without_the_roles_author_knowing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The app-side half: "a member may create widgets", said in the app.
+    """The app-side half: "a member may set widget policies", said in the app, planted.
 
-    Nothing declares `DEFAULT_ROLES` on this tree, so the mechanism is proven
-    by a plant rather than by a fixture somebody could delete.
+    The plant names a key no app declares for `member`, so it proves the entry and not the tree.
     """
     from apps.example import policies as example_policies
 
-    assert "widget.create" not in defaults_for("member")
+    assert "widget_policy.create" not in defaults_for("member")
 
     reset_policies()
     monkeypatch.setattr(
-        example_policies, "DEFAULT_ROLES", {"widget.create": frozenset({"member"})}, raising=False
+        example_policies,
+        "DEFAULT_ROLES",
+        {**example_policies.DEFAULT_ROLES, "widget_policy.create": frozenset({"member"})},
     )
 
-    assert "widget.create" in defaults_for("member")
-    assert "member" in vocabulary()["widget.create"].default_roles
+    assert "widget_policy.create" in defaults_for("member")
+    assert "member" in vocabulary()["widget_policy.create"].default_roles
 
 
 # --- P1.6 · a renamed key answers as its new key -------------------------------
 
-RENAMES = {
-    "organization.rename": "organization.update",
-    "tenant.configure": "tenant.update",
-    "membership.revoke": "membership.delete",
-}
+#: Core's own table, read — never retyped.
+RENAMES = core_policies.RENAMED_PERMISSIONS
 
 #: The kinds whose successors belong to `core`, so the test below can say "these
 #: are core's three" without saying "and nobody else has swept yet".
@@ -930,6 +1163,36 @@ def test_a_product_roles_module_is_a_canonical_name(
         (probe / "helpers.py").write_text("", encoding="utf-8")
         banned = checks.check_canonical_shape()
         assert [message.id for message in banned] == ["djb.E011"], (
+            "the probe proves nothing if the check cannot fail over the same directory"
+        )
+    finally:
+        checks._rules.cache_clear()
+
+
+@pytest.mark.parametrize("stem", ["meters", "lifecycle"])
+def test_a_product_discovered_module_is_a_canonical_name(
+    stem: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Any, settings: Any
+) -> None:
+    """A module a platform reader discovers in every app passes rule 11 in a product app."""
+    from apps.core import checks
+
+    probe = tmp_path / "apps" / "zzz_probe"
+    probe.mkdir(parents=True)
+    (probe / f"{stem}.py").write_text("", encoding="utf-8")
+
+    class _Config:
+        label = "zzz_probe"
+        path = str(probe)
+
+    monkeypatch.setattr(checks, "_local_app_configs", lambda: [_Config()])
+    checks._rules.cache_clear()
+    settings.BASE_DIR = tmp_path
+    try:
+        assert checks.check_canonical_shape() == []
+
+        (probe / "wrangler.py").write_text("", encoding="utf-8")
+        novel = checks.check_canonical_shape()
+        assert [message.id for message in novel] == ["djb.E011"], (
             "the probe proves nothing if the check cannot fail over the same directory"
         )
     finally:
@@ -1249,3 +1512,11 @@ def test_two_apps_declaring_one_old_key_are_refused_by_both_names(
     assert "zzz_right" in str(caught.value)
     assert "gizmo.polish" in str(caught.value)
     assert caught.value.returncode == 2
+
+
+def test_the_image_ships_the_partition_lockfile_a_runtime_command_reads() -> None:
+    """`.dockerignore` un-ignores the lockfile `manage.py declare` reads at runtime."""
+    from django.conf import settings
+
+    ignore = (Path(settings.BASE_DIR) / ".dockerignore").read_text(encoding="utf-8").splitlines()
+    assert "!quality/partition.yaml" in ignore

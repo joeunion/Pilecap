@@ -1,0 +1,21 @@
+# The web box's `zitadel:8080` in an envelope's production shape: h2c in, h2c out to the organs box's 443.
+#
+# scripts/envelope.sh's one caller is deploy/load/compose.web.yaml's `zitadel-relay`. The Host header
+# and the edge's X-Forwarded-* pass through untouched, so Zitadel answers as it does behind one Caddy.
+{
+	admin off
+	auto_https off
+	servers {
+		protocols h1 h2c
+		trusted_proxies static private_ranges
+	}
+}
+
+:8080 {
+	# A plain dial: the upstream's :443 carries h2c here, never TLS.
+	reverse_proxy {$ZITADEL_UPSTREAM} {
+		transport http {
+			versions h2c 2
+		}
+	}
+}

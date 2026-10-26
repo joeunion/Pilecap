@@ -1,4 +1,4 @@
-"""What a service raises when it refuses — and the registry of every refusal.
+"""`register_refusal` declares each code at import; `wire_refusal` is the only builder of a body.
 
 House rule 14: **a service says what happened; only the door says what status
 code that is.** `HttpError`, `Http404` and the number `404` never appear in a
@@ -110,6 +110,12 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import OperationalError as DjangoOperationalError
 
 from apps.core.log import get_logger
+from apps.core.roads import road
+
+ROAD = road(
+    "refuse",
+    example="apps/core/tests/test_api_errors.py::test_a_product_subclass_inherits_its_parents_status",
+)(sys.modules[__name__])
 
 log = get_logger(__name__)
 
@@ -460,26 +466,6 @@ def refusal_for(code: str) -> Refusal | None:
 
 # --- The vocabulary ----------------------------------------------------------
 
-register_refusal(
-    code="error",
-    boundary="service",
-    remedy=(
-        "The base refusal: a service said no for a reason this vocabulary has no word "
-        "for yet, and the door has no status code for it either (config/api.py answers "
-        "500). Read the service's own log line and audit row, then either raise one of "
-        "the five below or give the reason its own registered subclass."
-    ),
-    fact=(
-        "A service refused, for a reason this product has not given a name to yet. "
-        "Nothing was written."
-    ),
-    remedies=(Remedy("See everything this product can refuse with", "introspect:refusals"),),
-    # 500, and the only status in this file that is not an answer: a service
-    # refused for a reason the vocabulary has no word for, so the door has no
-    # number for it either and says so honestly rather than inventing a 4xx.
-    status=500,
-)
-
 
 class DomainError(Exception):
     """The base every domain refusal derives from.
@@ -494,7 +480,12 @@ class DomainError(Exception):
     name" subclass costs nothing.
     """
 
-    code: str = "error"
+    #: The base declares no code, and that is the point: a refusal is always a
+    #: registered SUBCLASS, so every class names its own code (or inherits a
+    #: registered parent's) before its body closes. The base used to carry a
+    #: registered catch-all, `error`, that nothing raised and `handler500` never
+    #: composed through — a code in the published vocabulary with no raiser.
+    code: str = ""
     default_detail: str = "The request could not be completed."
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
@@ -530,6 +521,13 @@ class DomainError(Exception):
         *,
         remedies: Sequence[Remedy] | None = None,
     ) -> None:
+        if type(self) is DomainError:
+            raise TypeError(
+                "DomainError is the base every refusal derives from, not a refusal: it "
+                "has no registered code, so nothing could say which layer decided or what "
+                "the caller can do. Raise a registered subclass — Invalid, NotFound, "
+                "Conflict, Forbidden — or declare one of your own beside the raise site."
+            )
         self.detail = detail or self.default_detail
         #: Contextual remedies, when this raise site knows something better than
         #: the registry does ("go to the invoice that already holds this
@@ -678,6 +676,33 @@ class Conflict(DomainError):
 
 
 register_refusal(
+    code="run_failed",
+    boundary="service",
+    remedy=(
+        "A run's work stopped before it finished; the service that closed the run "
+        "stores this body in its `failure`, the cause in `detail`. Read the cause, fix "
+        "it, then start a new run — this run is over and is not retried from here."
+    ),
+    fact="The run stopped before it finished.",
+    remedies=(
+        Remedy("Read the run's reason", "field:detail"),
+        Remedy("Start a new run once the cause is fixed", f"route:{NOUN_SLOT}-create"),
+    ),
+    status=409,
+)
+
+
+class RunFailed(DomainError):
+    """A run stopped before it finished; the body its `failure` stores.
+
+    A cancelled run carries no refusal: cancel is a `status`, and its `failure` is the empty `{}`.
+    """
+
+    code = "run_failed"
+    default_detail = "The run stopped before it finished."
+
+
+register_refusal(
     code="forbidden",
     boundary="policy",
     remedy=(
@@ -702,6 +727,69 @@ class Forbidden(DomainError):
 
     code = "forbidden"
     default_detail = "You do not have permission to do that."
+
+
+# --- "No acting scope": a request that resolved no tenant, or no hat ----------
+#
+# Its own code rather than a member of `addressing_header_not_honoured`'s
+# family, and the registry's grammar is why: that code's boundary is `door` and
+# its fact is "you NAMED a place you cannot act in" — a sent header. This one
+# is the case where nothing was named at all and nothing resolved anyway: a
+# signed-in person with no membership, a token whose user holds none, a
+# membership with no organization to wear. `boundary` cannot tell the two apart
+# (both are the door's), so the fact has to, and one code cannot carry two
+# facts. Both doors raise it — `apps/core/api/acting.py` at REST and
+# `apps/core/mcp.py::acting_tenant` at MCP — so a hand-typed
+# "No tenant for this request." with no code has nowhere left to live.
+
+register_refusal(
+    code="no_acting_scope",
+    boundary="door",
+    remedy=(
+        "The credential authenticated and resolved no tenant, or no acting organization, "
+        "inside it: the person holds no Membership the request could act under. Check the "
+        "caller's Membership rows (or the token's pinned tenant) before suspecting the "
+        "route; an omitted X-Tenant/X-Org falls back to the default membership, so a person "
+        "with none has nowhere to fall back to."
+    ),
+    fact=(
+        "You are who you say you are, and this request resolved no workspace, or no part "
+        "of one, for you to act in — you hold no membership it could act under. Nothing "
+        "was read and nothing was written."
+    ),
+    remedies=(
+        Remedy("Check which memberships you actually hold", "self:membership"),
+        Remedy("Name a tenant you hold a membership in", "header:X-Tenant"),
+        Remedy(
+            "Name an organization you hold a role on, or above — roles inherit downwards only",
+            "header:X-Org",
+        ),
+    ),
+    status=403,
+)
+
+
+class NoActingScope(Forbidden):
+    """The request resolved no tenant, or no acting organization, to act in.
+
+    A `Forbidden` because the credential is fine — 401 would say "we could not
+    tell who you are", which is false. Raised by the doors' one resolver on each
+    side (`apps.core.api.acting.acting` at REST, `apps.core.mcp.acting_tenant`
+    and `acting_org` at MCP), never by a service: a service is handed a tenant.
+    """
+
+    code = "no_acting_scope"
+    #: No tenant resolved — the default, and what `acting` / `acting_tenant` say.
+    default_detail = (
+        "This request resolved no workspace for you to act in: you hold no membership it "
+        "could act under. Nothing was read and nothing was written."
+    )
+    #: A tenant and no hat — what `require_hat` / `acting_org` say. Declared here
+    #: beside the default so the two doors read one sentence, never one each.
+    no_hat_detail = (
+        "This request resolved no organization for you to act as, so there is nothing here "
+        "to read or write from. Nothing was read and nothing was written."
+    )
 
 
 register_refusal(
@@ -849,6 +937,81 @@ class RateLimited(DomainError):
         super().__init__(detail, remedies=remedies)
 
 
+# --- A signed request whose signature does not verify ----------------------
+#
+# Not `unauthenticated`: that code's remedies are sign-in moves — a session, a
+# token, a fresh mint — and a webhook sender holds none of those. What it holds
+# is a shared secret, and the one thing it can do is sign the body with the
+# current one. Declared here, in core, because an inbound receiver lives in a
+# product app and the door's refusal vocabulary is the platform's.
+
+register_refusal(
+    code="invalid_signature",
+    boundary="door",
+    remedy=(
+        "The inbound body's signature did not verify against the connection's signing "
+        "secret. Compare the sender's secret with the connection's current one (a rotation "
+        "the sender has not picked up looks exactly like this), and check the sender signs "
+        "the raw body bytes, not a re-serialised copy."
+    ),
+    fact=(
+        "This request's signature does not match the body it came with, so nothing in it "
+        "was believed. Nothing was read and nothing was written."
+    ),
+    remedies=(
+        Remedy(
+            "Re-sign the body with the connection's current secret; rotate it if you "
+            "suspect it leaked",
+            "header:X-Signature",
+        ),
+    ),
+    status=401,
+)
+
+
+class InvalidSignature(DomainError):
+    """A signed inbound body whose signature does not verify — the sender's refusal."""
+
+    code = "invalid_signature"
+    default_detail = "The signature on this request does not match its body."
+
+
+# --- A bare 503 ----------------------------------------------------------------
+#
+# The answer to a door that said "503" and nothing more (`HttpError(503, …)`),
+# which until now fell through to ninja's codeless `{"detail": …}`. Neither of
+# the two named 503s below is true of it — the database may be fine, and no
+# search was asked — so it is its own code rather than one of them borrowed. It
+# is a sibling, not a base hoisted over both, for the reason `DatabaseUnavailable`
+# gives: each named seam keeps the word it said.
+
+register_refusal(
+    code="unavailable",
+    boundary="door",
+    remedy=(
+        "A door answered 503 without naming the seam that is down. Find the raise site "
+        "(an `HttpError(503, …)`) and give the outage its own registered code, the way "
+        "`database_unavailable` and `search_unavailable` are declared."
+    ),
+    fact=(
+        "This could not be answered right now. Nothing is wrong with the request and "
+        "nothing was written — the same request sent again shortly may be answered."
+    ),
+    remedies=(Remedy("Send the same request again shortly", "self:retry"),),
+    status=503,
+)
+
+
+class Unavailable(DomainError):
+    """Something this request needed is not answering — the bare 503, said with a code."""
+
+    code = "unavailable"
+    default_detail = (
+        "This could not be answered right now. Nothing is wrong with your request — try "
+        "again shortly."
+    )
+
+
 register_refusal(
     code="search_unavailable",
     boundary="service",
@@ -865,9 +1028,9 @@ register_refusal(
         "nothing was written."
     ),
     remedies=(Remedy("Retry the same search shortly", "docs:openapi"),),
-    # 503, and one of the two 5xx in this file that are not a bug: the caller's
+    # 503, and one of the 5xx in this file that are not a bug: the caller's
     # request was fine and retrying is the remedy, which is what 503 means and
-    # what `error`'s bare 500 above does not say.
+    # what an unmapped refusal's bare 500 does not say.
     status=503,
 )
 
@@ -1084,6 +1247,77 @@ def database_unavailable(exc: BaseException, *, seam: str) -> DatabaseUnavailabl
         error=type(exc).__name__,
     )
     return DatabaseUnavailable()
+
+
+# --- A number with no code: which refusal a bare status means ----------------
+#
+# A door that spoke HTTP — `HttpError(403, "…")`, ninja's own `AuthenticationError`
+# — hands the HTTP door a number and a sentence, and the door owes the caller a
+# code. Which code is a DECISION, made once here as a list of codes; the numbers
+# are the registry's (`CODE_STATUSES`) and never typed beside them, so the table
+# `config/api.py` reads is derived from the declarations and cannot disagree with
+# the document written off the same ones.
+
+#: The codes that answer a bare status — the most general refusal at each number.
+#: A code's number is its own `status=`; two codes here declaring one number is
+#: refused at derivation (`bare_status_refusals`), never resolved by order.
+BARE_STATUS_CODES: tuple[str, ...] = (
+    "invalid",
+    "unauthenticated",
+    "forbidden",
+    "not_found",
+    "method_not_allowed",
+    "conflict",
+    "invalid_body",
+    "rate_limited",
+    "unavailable",
+)
+
+
+def _refusal_classes() -> Iterator[type[DomainError]]:
+    """Every `DomainError` subclass imported so far, parents before children."""
+    pending: list[type[DomainError]] = list(DomainError.__subclasses__())
+    while pending:
+        cls = pending.pop(0)
+        yield cls
+        pending.extend(cls.__subclasses__())
+
+
+def class_for_code(code: str) -> type[DomainError] | None:
+    """The class that declares `code` — the shallowest one carrying it, or `None`.
+
+    Several classes may share a code (`Blocked` answers `conflict` like its
+    parent); the one a bare status means is the one that DECLARED it, which is
+    the first met walking down from the base.
+    """
+    return next((cls for cls in _refusal_classes() if cls.code == code), None)
+
+
+def bare_status_refusals() -> dict[int, type[DomainError]]:
+    """`{status: class}` for every code in `BARE_STATUS_CODES`, the numbers read from the registry.
+
+    Raises `LookupError` naming the code when one has no registered status or no
+    class imported yet, and `ValueError` when two listed codes declare one number
+    — a bare status that could mean two refusals is a guess, and the table exists
+    so the door never makes one.
+    """
+    table: dict[int, type[DomainError]] = {}
+    for code in BARE_STATUS_CODES:
+        status = CODE_STATUSES.get(code)
+        cls = class_for_code(code)
+        if status is None or cls is None:
+            raise LookupError(
+                f"{code!r} is listed in BARE_STATUS_CODES and has "
+                f"{'no registered status' if status is None else 'no class imported'} — the "
+                "bare-status table cannot be derived without both."
+            )
+        if status in table:
+            raise ValueError(
+                f"{code!r} and {table[status].code!r} both declare {status}: a bare {status} "
+                "would mean two refusals. Keep one of them in BARE_STATUS_CODES."
+            )
+        table[status] = cls
+    return table
 
 
 # --- The one composer --------------------------------------------------------

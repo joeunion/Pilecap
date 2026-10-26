@@ -1,0 +1,293 @@
+from __future__ import annotations
+
+import json
+import logging
+from collections.abc import Iterator
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+import pytest
+from django.apps import apps as django_apps
+from django.db.models import QuerySet
+
+from apps.example import services
+from apps.example.events import (
+    WIDGET_CREATED,
+    WIDGET_DELETED,
+    WIDGET_ONBOARDED,
+    WIDGET_UPDATED,
+)
+from apps.example.models import Widget
+from apps.example.schemas import WidgetOut
+from apps.example.services import create_widget, delete_widget, update_widget
+from pilecap import Actor, AuditEntry, Forbidden, Invalid, NotFound, StaleVersion
+from pilecap.accounts import User
+from pilecap.events import EMIT
+from pilecap.tenancy import Tenant, add_membership, create_organization, root_organization
+from pilecap.testing import (
+    PER_VIEWER_FIELDS,
+    BridgeNotRegistered,
+    actor_for,
+    bridge_registry,
+    clear_bridge,
+    configure,
+    register_listener,
+    registered_listeners,
+    system_actor,
+)
+
+
+pytestmark = pytest.mark.django_db
+
+
+def _events(tenant: Tenant) -> QuerySet[Any]:
+    """This tenant's rows in the event spine, if the spine is installed."""
+    return django_apps.get_model("events", "Event").objects.for_tenant(tenant)
+
+
+def acting_in(user: User, tenant: Tenant) -> Actor:
+    """The same person, genuinely joined to a second tenant."""
+    add_membership(user=user, tenant=tenant, actor=system_actor(tenant=tenant))
+    return actor_for(user=user, tenant=tenant, org=root_organization(tenant=tenant))
+
+
+def test_create_widget_writes_the_row(tenant: Tenant, owner_actor: Actor) -> None:
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="  Spaced  ", notes="a note")
+    assert widget.pk is not None
+    assert widget.name == "Spaced"
+    assert widget.notes == "a note"
+    assert widget.owner_id == owner_actor.user_id
+    assert widget.tenant_id == tenant.pk
+    assert widget.created_at is not None
+    assert Widget.objects.count() == 1
+
+
+def test_update_widget_changes_only_what_it_was_given(tenant: Tenant, owner_actor: Actor) -> None:
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Before", notes="kept")
+    renamed = update_widget(tenant=tenant, actor=owner_actor, widget=widget, name="After")
+    renamed.refresh_from_db()
+    assert renamed.name == "After"
+    assert renamed.notes == "kept"
+
+
+def test_update_widget_with_nothing_to_do_is_a_no_op(tenant: Tenant, owner_actor: Actor) -> None:
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Same")
+    before = widget.updated_at
+    assert update_widget(tenant=tenant, actor=owner_actor, widget=widget).updated_at == before
+
+
+def test_a_widget_name_is_unique_per_owner_within_a_tenant(
+    tenant: Tenant, owner_actor: Actor
+) -> None:
+    create_widget(tenant=tenant, actor=owner_actor, name="Only one")
+    with pytest.raises(Invalid):
+        create_widget(tenant=tenant, actor=owner_actor, name="Only one")
+
+
+def test_the_same_owner_may_reuse_a_name_in_another_tenant(
+    tenant: Tenant, other_tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    create_widget(tenant=tenant, actor=owner_actor, name="Shared name")
+    # The same person, acting in a tenant they also belong to: the name is free again.
+    create_widget(tenant=other_tenant, actor=acting_in(owner, other_tenant), name="Shared name")
+    assert Widget.objects.count() == 2
+
+
+def test_for_tenant_returns_only_that_tenants_rows(
+    tenant: Tenant, other_tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    mine = create_widget(tenant=tenant, actor=owner_actor, name="Mine")
+    theirs = create_widget(tenant=other_tenant, actor=acting_in(owner, other_tenant), name="Theirs")
+    assert list(Widget.objects.for_tenant(tenant)) == [mine]
+    assert list(Widget.objects.for_tenant(other_tenant)) == [theirs]
+
+
+def test_for_tenant_with_no_tenant_returns_nothing(tenant: Tenant, owner_actor: Actor) -> None:
+    create_widget(tenant=tenant, actor=owner_actor, name="Present")
+    assert Widget.objects.for_tenant(None).count() == 0
+    assert Widget.objects.count() == 1
+
+
+def test_delete_widget_removes_the_row(tenant: Tenant, owner_actor: Actor) -> None:
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Doomed")
+    delete_widget(tenant=tenant, actor=owner_actor, widget=widget)
+    assert Widget.objects.count() == 0
+
+
+def test_a_member_may_touch_their_own(tenant: Tenant, member_actor: Actor) -> None:
+    mine = create_widget(tenant=tenant, actor=member_actor, name="Mine")
+    assert update_widget(tenant=tenant, actor=member_actor, widget=mine, name="Still mine")
+
+
+def test_a_member_may_not_update_somebody_elses_widget(
+    tenant: Tenant, owner_actor: Actor, member_actor: Actor
+) -> None:
+    theirs = create_widget(tenant=tenant, actor=owner_actor, name="Not yours")
+    with pytest.raises(Forbidden):
+        update_widget(tenant=tenant, actor=member_actor, widget=theirs, name="Mine now")
+    theirs.refresh_from_db()
+    assert theirs.name == "Not yours"
+
+
+def test_a_member_may_not_delete_somebody_elses_widget(
+    tenant: Tenant, owner_actor: Actor, member_actor: Actor
+) -> None:
+    theirs = create_widget(tenant=tenant, actor=owner_actor, name="Not yours")
+    with pytest.raises(Forbidden):
+        delete_widget(tenant=tenant, actor=member_actor, widget=theirs)
+    assert Widget.objects.count() == 1
+
+
+def test_an_admin_may_touch_anybodys(
+    tenant: Tenant, owner_actor: Actor, admin_actor: Actor
+) -> None:
+    theirs = create_widget(tenant=tenant, actor=owner_actor, name="Someone else's")
+    assert update_widget(tenant=tenant, actor=admin_actor, widget=theirs, name="Moderated")
+    delete_widget(tenant=tenant, actor=admin_actor, widget=theirs)
+    assert Widget.objects.count() == 0
+
+
+def test_an_event_with_nowhere_to_go_does_not_fail_the_write(
+    tenant: Tenant, owner_actor: Actor, monkeypatch: pytest.MonkeyPatch, settings: Any
+) -> None:
+    """Nothing registered under `events.emit` is the state of a tree without the spine."""
+    settings.BRIDGE_STRICT = False  # opt-out: a stripped tree's no-op is the subject
+    monkeypatch.delitem(bridge_registry, EMIT, raising=False)
+
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Unheard")
+
+    assert Widget.objects.for_tenant(tenant).get(pk=widget.pk).name == "Unheard"
+    assert not _events(tenant).filter(name=WIDGET_CREATED).exists()
+
+
+def test_the_event_reaches_the_spine_when_it_is_installed(
+    tenant: Tenant, owner_actor: Actor
+) -> None:
+    """The other half: with `apps.events` registered, the row and the event land together."""
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Heard")
+
+    event = _events(tenant).get(name=WIDGET_CREATED)
+    assert event.tenant_id == tenant.pk
+    assert event.payload["id"] == str(widget.pk)
+    assert event.actor_user_id == owner_actor.user_id
+    assert event.actor_kind == "human"
+
+
+@pytest.fixture
+def no_event_bus(settings: Any) -> Iterator[None]:
+    """The state of a tree that has been stripped back: the name is empty."""
+    settings.BRIDGE_STRICT = False  # opt-out: a stripped tree's no-op is the subject
+    saved = registered_listeners()
+    clear_bridge()
+    try:
+        yield
+    finally:
+        clear_bridge()
+        for name, registered in saved.items():
+            register_listener(name, registered)
+
+
+def test_publish_says_nobody_heard_it_when_nobody_did(
+    tenant: Tenant, owner_actor: Actor, no_event_bus: None
+) -> None:
+    """The return value is a fact, and this is the fact it was getting wrong."""
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Into the void")
+
+    assert (
+        services._publish_widget(WIDGET_UPDATED, tenant=tenant, widget=widget, actor=owner_actor)
+        is False
+    )
+
+
+def test_an_unheard_event_is_a_log_line_and_not_a_failed_write(
+    tenant: Tenant,
+    owner_actor: Actor,
+    no_event_bus: None,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Create succeeds, the line names the event, and no Event row lands."""
+    configure()
+    with caplog.at_level(logging.INFO):
+        widget = create_widget(tenant=tenant, actor=owner_actor, name="Unheard of")
+
+    assert Widget.objects.for_tenant(tenant).get(pk=widget.pk).name == "Unheard of"
+    assert not _events(tenant).exists()
+
+    lines = [
+        json.loads(record.getMessage())
+        for record in caplog.records
+        if "example.event.unpublished" in record.getMessage()
+    ]
+    assert lines, "the service said nothing about an event nobody heard"
+    assert lines[0]["event_name"] == WIDGET_CREATED
+    assert lines[0]["widget_id"] == str(widget.pk)
+
+
+# golden: field due_at begin
+DUE_AT = datetime(2026, 11, 2, 17, 0, tzinfo=UTC)
+LATER_DUE_AT = datetime(2026, 12, 1, 9, 30, tzinfo=UTC)
+DUE_AT_WIRE = "2026-11-02T17:00:00Z"
+
+
+def test_a_widget_is_created_with_its_due_at(tenant: Tenant, owner_actor: Actor) -> None:
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Due", due_at=DUE_AT)
+    widget.refresh_from_db()
+    assert widget.due_at == DUE_AT
+
+
+def test_due_at_is_changed_and_an_omitted_one_is_left_alone(
+    tenant: Tenant, owner_actor: Actor
+) -> None:
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Due", due_at=DUE_AT)
+    update_widget(tenant=tenant, actor=owner_actor, widget=widget, due_at=LATER_DUE_AT)
+    widget.refresh_from_db()
+    assert widget.due_at == LATER_DUE_AT
+
+    update_widget(tenant=tenant, actor=owner_actor, widget=widget, name="Renamed")
+    widget.refresh_from_db()
+    assert widget.due_at == LATER_DUE_AT
+
+
+def test_due_at_is_cleared_only_when_clearing_is_asked_for(
+    tenant: Tenant, owner_actor: Actor
+) -> None:
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Due", due_at=DUE_AT)
+    update_widget(tenant=tenant, actor=owner_actor, widget=widget, due_at=None)
+    widget.refresh_from_db()
+    assert widget.due_at == DUE_AT
+
+    update_widget(tenant=tenant, actor=owner_actor, widget=widget, clear_due_at=True)
+    widget.refresh_from_db()
+    assert widget.due_at is None
+
+
+def test_setting_and_clearing_due_at_at_once_is_refused(tenant: Tenant, owner_actor: Actor) -> None:
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Due", due_at=DUE_AT)
+    with pytest.raises(Invalid) as refused:
+        update_widget(
+            tenant=tenant, actor=owner_actor, widget=widget, due_at=LATER_DUE_AT, clear_due_at=True
+        )
+    assert "due_at" in refused.value.errors
+    widget.refresh_from_db()
+    assert widget.due_at == DUE_AT
+
+
+def test_the_updated_event_carries_due_at(
+    tenant: Tenant, owner_actor: Actor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    published: list[tuple[str, dict[str, Any]]] = []
+
+    def spy(name: str, *, tenant: Tenant, payload: dict[str, Any], actor: Any = None) -> None:
+        published.append((name, payload))
+
+    monkeypatch.setitem(bridge_registry, EMIT, spy)
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Due")
+    update_widget(tenant=tenant, actor=owner_actor, widget=widget, due_at=DUE_AT)
+
+    name, payload = published[-1]
+    assert name == WIDGET_UPDATED
+    assert payload["due_at"] == DUE_AT_WIRE
+
+
+# golden: field due_at end

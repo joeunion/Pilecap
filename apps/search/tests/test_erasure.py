@@ -5,7 +5,7 @@ shaped around that failure mode rather than around the code:
 
     the document survives in the shared index, and only the filter hides it.
 
-A test that asked `selectors.search` whether the erased tenant's rows were gone
+A test that asked `selectors.get_search_page` whether the erased tenant's rows were gone
 would pass in exactly that case — the chokepoint injects `tenant_id`, the erased
 tenant is not the caller, the page is empty, and the document is sitting there
 for anybody the filter does let in. So the absence is asserted through
@@ -69,7 +69,7 @@ def test_the_purge_queries_the_tenant_alone_and_deletes_what_it_is_handed(
     engine = _DrainingEngine(remaining={"widgets": [uuid4(), uuid4()], "orgs": [uuid4()]})
     monkeypatch.setattr(engine_module, "engine", lambda: engine)
 
-    deleted = delete_tenant_documents(tenant=world.tenant, actor=world.region_actor)
+    deleted = delete_tenant_documents(tenant=world.tenant, actor=world.admin_at_a)
 
     assert [scope.org_ids for scope in engine.filters] == [None] * len(engine.filters)
     assert {scope.tenant_id for scope in engine.filters} == {world.tenant.pk}
@@ -90,7 +90,7 @@ def test_a_second_purge_reads_once_per_kind_and_writes_nothing(
     the precedent for proving it this way: an empty `writes` list is the
     assertion, not a log line somebody read.
     """
-    delete_tenant_documents(tenant=world.tenant, actor=world.owner_actor)
+    delete_tenant_documents(tenant=world.tenant, actor=world.owner)
 
     assert recording.writes == []
     assert len(recording.queries) == len(registry.labels())
@@ -110,7 +110,7 @@ def test_the_purge_keeps_asking_until_the_engine_says_there_are_none(
     engine = _DrainingEngine(remaining={"widgets": list(remaining), "orgs": []})
     monkeypatch.setattr(engine_module, "engine", lambda: engine)
 
-    deleted = delete_tenant_documents(tenant=world.tenant, actor=world.owner_actor)
+    deleted = delete_tenant_documents(tenant=world.tenant, actor=world.owner)
 
     assert deleted == len(remaining)
     assert engine.remaining["widgets"] == []
@@ -294,5 +294,5 @@ def _drop(label: str) -> None:
     for uid in (engine_module.index_name(label), engine_module.staging_index_name(label)):
         try:
             live.drop_index(uid=uid)
-        except Exception:  # noqa: BLE001 - a cleanup that raises hides the real failure
+        except Exception:  # noqa: BLE001, S110 — a cleanup that raises hides the real failure
             pass

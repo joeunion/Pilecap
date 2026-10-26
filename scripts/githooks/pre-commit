@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Pre-commit: the fast static legs, unpiped, exit code trusted.
+# Pre-commit: the fast static legs, unpiped, exit code trusted — or, for a staged set wholly on the
+# declared docs-only list (`gate_docs_only_admits`, scripts/gate_ledger.sh), the admission in seconds.
 # `scripts/setup.sh` wires core.hooksPath to scripts/githooks.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
@@ -8,6 +9,74 @@ cd "$(git rev-parse --show-toplevel)"
 # — and for a commit, GIT_INDEX_FILE — into a hook whenever it could not have
 # rediscovered them from the cwd, and an inherited one overrides every `-C` in
 # every child. See scripts/githooks/pre-push for the mechanism.
+# The index this commit is made from (`commit -a` and a path commit hand git's own), kept for the admission below.
+hook_index="${GIT_INDEX_FILE:-}"
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR \
     GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE GIT_PREFIX
+# The layer step runs before the admission: a docs-only commit is no exemption from it (rule 95).
+[ -x .venv/bin/python ] || {
+    echo "!! pre-commit: COULD NOT LOOK — this checkout has no .venv/bin/python for the layer step (run ./scripts/setup.sh)" >&2
+    exit 2
+}
+env ${hook_index:+GIT_INDEX_FILE="$hook_index"} .venv/bin/python -m quality.djb.cli hook pre-commit
+# The staged set is judged now, with the sanction; rule 95 inside this commit's `--fast` skips it.
+# Declared a steering name (`quality/djb/env.py::STEERS`): every test and drive starts without it.
+export DJB_LAYER_HOOK_JUDGED=1
+# does-not-cover: the docs legs `--fast` runs over a docs path that no module declares `measured at the commit:` (dangling-docs, queue-index); the bank's docs-only road runs them.
+if [ -n "$hook_index" ]; then
+    staged=$(env GIT_INDEX_FILE="$hook_index" git diff --cached --name-only --no-renames HEAD 2>/dev/null) || staged=""
+else
+    staged=$(git diff --cached --name-only --no-renames HEAD 2>/dev/null) || staged=""
+fi
+if [ -n "$staged" ] && . ./scripts/gate_ledger.sh >/dev/null 2>&1; then
+    n=0
+    while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        gate_docs_only_admits "$p" || {
+            n=0
+            break
+        }
+        n=$((n + 1))
+    done <<<"$staged"
+    if [ "$n" -gt 0 ]; then
+        echo "pre-commit: docs-only — ${n} staged path(s) on the declared list (gate_docs_only_admits); --fast not run"
+        t0=$(clock_ms)
+        # The census names the modules whose commit-measured paths are staged (rule 90); each runs on the index's copies.
+        measured=$(.venv/bin/python -m quality.loop_key --measured) || {
+            echo "!! pre-commit: COULD NOT LOOK — python -m quality.loop_key --measured did not answer" >&2
+            exit 2
+        }
+        modules=$(DJB_STAGED="$staged" awk '
+            BEGIN { n = split(ENVIRON["DJB_STAGED"], s, "\n"); for (i = 1; i <= n; i++) staged[s[i]] = 1 }
+            ($1 in staged) { print $2 }' <<<"$measured" | LC_ALL=C sort -u)
+        ran=0
+        for module in $modules; do
+            export_root=$(mktemp -d "${TMPDIR:-/tmp}/djb-pre-commit-staged.XXXXXX") || exit 2
+            declared=$(awk -v m="$module" '$2 == m { print $1 }' <<<"$measured")
+            # shellcheck disable=SC2086
+            if ! env ${hook_index:+GIT_INDEX_FILE="$hook_index"} git checkout-index --prefix="${export_root}/" -- $declared; then
+                rm -rf "$export_root"
+                echo "!! pre-commit: COULD NOT LOOK — the index's copies of ${module}'s declared paths would not export" >&2
+                exit 2
+            fi
+            module_rc=0
+            env DJB_STAGED_ROOT="$export_root" .venv/bin/python "$module" --check || module_rc=$?
+            rm -rf "$export_root"
+            ran=$((ran + 1))
+            case "$module_rc" in
+            0) ;;
+            2)
+                echo "!! pre-commit: COULD NOT LOOK — ${module} --check exited 2 on the staged bytes" >&2
+                exit 2
+                ;;
+            *)
+                echo "!! pre-commit: ${module} --check refused the staged bytes (exit ${module_rc}) — fix the named lines" >&2
+                exit "$module_rc"
+                ;;
+            esac
+        done
+        echo "pre-commit: docs-only admission — ${ran} commit-measured module(s) run on the staged bytes · $(clock_fmt $(($(clock_ms) - t0)))"
+        exit 0
+    fi
+fi
 exec ./scripts/check.sh --fast

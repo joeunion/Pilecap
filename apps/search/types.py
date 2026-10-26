@@ -212,7 +212,7 @@ class EngineHits:
 
     `offset` is where this window started and `has_more` is whether another one
     exists. The cursor the door mints is built from those two and nothing else
-    (`selectors.search`), so a client cannot arithmetic its way anywhere.
+    (`selectors.get_search_page`), so a client cannot arithmetic its way anywhere.
     """
 
     hits: tuple[EngineHit, ...] = ()
@@ -223,6 +223,14 @@ class EngineHits:
     #: exists. On the wire because a degradation the system survives is a state
     #: it announces (ADR search-2), never one it hides.
     engine: str = "meili"
+
+
+@dataclass
+class ReconcileIndexes:
+    """What the reconcile schedule starts a pass with; `None` is a pass from an older schedule."""
+
+    #: `core.retry.retry_floor_seconds()`, read on the Django side (rule 9).
+    retry_floor: float | None = None
 
 
 @dataclass

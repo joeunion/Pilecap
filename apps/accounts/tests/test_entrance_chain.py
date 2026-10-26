@@ -42,7 +42,7 @@ from django.template.loader import get_template
 from django.test import Client
 
 from apps.accounts.templatetags.entrance import DEFAULT_ACCENT
-from apps.core.tests.template_shape import template_shape
+from apps.core.tests.template_shape import IDENTITY_SHAPE, template_shape
 from apps.core.tests.tree_census import source_text
 from config.settings.base import DEFAULT_BRAND_ACCENT
 
@@ -53,17 +53,15 @@ def token_marker() -> str:
     """The custom property THIS product's entrance token block declares.
 
     Read from the declaration (`DJB_IDENTITY_SHAPE`, key `entrance_marker`;
-    `config/settings/base.py` is the authority) rather than pinned as a literal,
+    `apps/core/tests/template_shape.py` is the authority) rather than pinned as a literal,
     because the string is the template's own shape and the property it proves is
     every product's: nothing else in a tree spells its shell's marker, so the
     marker's presence in a rendered document is proof that the document was
     built by that product's ONE shell and not by allauth's.
 
-    A function rather than a module constant so the value is read at call time —
-    a `settings` fixture, or a product's own declaration, reaches the census
-    without the module having to be re-imported.
+    The declaration is the test suite's own, parsed once by `apps/core/tests/template_shape.py`.
     """
-    return str(django_settings.IDENTITY_SHAPE["entrance_marker"])
+    return str(IDENTITY_SHAPE["entrance_marker"])
 
 
 #: `{% extends "…" %}` with a literal name. A template that extends a VARIABLE

@@ -1,0 +1,10 @@
+# golden-anchor: {"nth": 0, "scope": ["register", "create_widget_tool"], "side": "before", "text": ") -> WidgetOut:"}
+        due_at: AwareDatetime | None = None,
+# golden-anchor: {"nth": 0, "scope": ["register", "create_widget_tool"], "side": "before", "text": ")"}
+                due_at=due_at,
+# golden-anchor: {"nth": 0, "scope": ["register", "update_widget_tool"], "side": "before", "text": ") -> WidgetOut:"}
+        due_at: AwareDatetime | None = None,
+        clear_due_at: bool | None = None,
+# golden-anchor: {"nth": 0, "scope": ["register", "update_widget_tool"], "side": "before", "text": ")"}
+                due_at=due_at,
+                clear_due_at=bool(clear_due_at),

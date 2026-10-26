@@ -1,0 +1,6 @@
+# golden-anchor: {"nth": 0, "scope": ["Widget"], "side": "before", "text": "due_at = models.DateTimeField("}
+    onboarded_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the onboarding workflow marked this widget ready.",
+    )

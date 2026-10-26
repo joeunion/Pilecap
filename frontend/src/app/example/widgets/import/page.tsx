@@ -1,36 +1,16 @@
+// golden: import begin
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 
 import { importPageTitle } from "@/copy/widget";
-import { REQUIRED_STORY_EXPORTS } from "@/screens/state";
-import {
-    Empty,
-    Error as Refused,
-    ImportChecking,
-    Imported,
-    Importing,
-    ImportPreviewed,
-    ImportRepeated,
-    Loading,
-    NothingToImport,
-    Ready,
-    RefusedImport,
-} from "@/screens/widget/widget-import.stories";
+import { walkOf } from "@pilecap/ui/state";
+import * as stories from "@/screens/widget/widget-import.stories";
 
 /** The tab names the page's act and noun. */
 export const metadata: Metadata = { title: importPageTitle() };
 
-/** The four required states, then the page's own: checking, previewed, importing, imported, the same file again, a file with no rows, a file refused whole. */
-const WALK = [
-    ...REQUIRED_STORY_EXPORTS.map((name) => ({ name, Story: { Loading, Empty, Error: Refused, Ready }[name] })),
-    { name: "ImportChecking", Story: ImportChecking },
-    { name: "ImportPreviewed", Story: ImportPreviewed },
-    { name: "Importing", Story: Importing },
-    { name: "Imported", Story: Imported },
-    { name: "ImportRepeated", Story: ImportRepeated },
-    { name: "NothingToImport", Story: NothingToImport },
-    { name: "RefusedImport", Story: RefusedImport },
-] as const;
+/** Every story the import page's stories module exports, read off the module (`walkOf`): the four, then each entry's extras. */
+const WALK = walkOf(stories);
 
 /**
  * EXAMPLE — THE WORKED WIDGET IMPORT PAGE, WALKED. Development only, `/states`'
@@ -52,3 +32,4 @@ export default function WidgetImportExamplePage() {
         </div>
     );
 }
+// golden: import end

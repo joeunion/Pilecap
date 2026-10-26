@@ -89,9 +89,18 @@ import argparse
 import datetime
 import json
 import os
+import pathlib
 import subprocess
 import sys
 from typing import Any
+
+# THE CHECKOUT ROOT ON `sys.path`, so `quality/` imports from any cwd — this file
+# is run as `python3 scripts/<name>.py`, which puts `scripts/` there and nothing else.
+_ROOT = str(pathlib.Path(__file__).resolve().parent.parent)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from quality.could_not_look import CouldNotLook as CannotLook  # noqa: E402
 
 # THE REASON, SPELLED ONCE. It is asserted verbatim by the drive and read by a
 # person looking at the map, so it lives in one place and is quoted from here.
@@ -99,10 +108,6 @@ NO_SOURCE_REASON = "no source line recorded — reads the tree by path (read_tex
 
 
 MapDoc = dict[str, Any]
-
-
-class CannotLook(Exception):
-    """An input this writer cannot read. Exit 2, and nothing is written."""
 
 
 def nodeid_of_context(context: str) -> str:
@@ -215,7 +220,7 @@ def derive_tree(root: str) -> str:
     A dash rather than a guess: a reader compares this against its own tree to
     decide whether the map is stale, and a wrong sha there is worse than no sha.
 
-    `tree:` IS PART OF THE VALUE, and it is `scripts/check.sh:1681`'s idiom for
+    `tree:` IS PART OF THE VALUE, and it is `quality/djb/modes.py::store`'s idiom for
     the same measured reason: it says what the forty characters after it are —
     a git TREE sha, not a commit — and it keeps `detect-secrets`' Hex High
     Entropy String plugin from reading a public tree sha as a credential. The
@@ -227,6 +232,7 @@ def derive_tree(root: str) -> str:
     """
     try:
         out = subprocess.run(
+            # raw tree: matched against history's trees (map freshness), never a verdict key
             ["git", "-C", root, "rev-parse", "HEAD^{tree}"],
             capture_output=True,
             text=True,

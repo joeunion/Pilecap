@@ -1,0 +1,2 @@
+# paid for on 2026-09-14
+CANARY_DATED_SCAR = 1

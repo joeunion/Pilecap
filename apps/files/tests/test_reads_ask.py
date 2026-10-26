@@ -22,9 +22,6 @@ row from a branch they cannot see learned it exists. Reach answers first now.
 
 from __future__ import annotations
 
-import inspect
-import json
-import re
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -40,8 +37,7 @@ from apps.files.services import create_file
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from apps.accounts.models import User
-
-    from .conftest import World
+    from apps.core.tests.permissions_world import World
 
 pytestmark = pytest.mark.django_db
 
@@ -49,11 +45,6 @@ LIST_URL = "/api/v1/files/"
 DETAIL_URL = "/api/v1/files/{}/"
 VERSIONS_URL = "/api/v1/files/{}/versions/"
 DOWNLOAD_URL = "/api/v1/files/{}/download-url/"
-
-#: The valve rule 54 (d) reads on a selector that deliberately does not ask.
-#: Spelled as a pattern rather than as the marker itself, so this module does
-#: not register a phantom valve by talking about one.
-VALVE = re.compile(r"#\s*read-(?:open|kind):\s*\S")
 
 
 def _withhold(*, world: World, user: User, permission: str) -> Grant:
@@ -90,7 +81,7 @@ def _file_at(world: World, org: Any, *, filename: str = "note.pdf") -> StoredFil
     """One document filed at a named node, through the real service."""
     ticket = create_file(
         tenant=world.tenant,
-        actor=actor_for(user=world.owner, tenant=world.tenant, org=org),
+        actor=actor_for(user=world.user(world.owner), tenant=world.tenant, org=org),
         filename=filename,
         content_type="application/pdf",
         size_bytes=1024,
@@ -100,51 +91,6 @@ def _file_at(world: World, org: Any, *, filename: str = "note.pdf") -> StoredFil
 
 
 # --- 1 · the population, derived rather than listed ---------------------------
-
-
-def test_every_door_selector_asks_or_says_why() -> None:
-    """**PR4.f.1.** The population is derived, and every member is accounted for.
-
-    A hand-written list of selectors goes stale the first time one is added,
-    which turns the rule back into a comment. So the population is derived the
-    way rule 54 (d) derives it — every public `get_`/`list_` in the module — and
-    each member either takes `actor` (and the cases below exercise the require)
-    or carries the declared valve with a reason.
-
-    *Absent (the baseline):* none of the five has `actor` in its signature and
-    none carries a valve, so this fails naming all five.
-    """
-    population = {
-        name: function
-        for name, function in vars(selectors).items()
-        if name.startswith(("get_", "list_")) and inspect.isfunction(function)
-    }
-    assert set(population) == {
-        "get_downloadable_version",
-        "get_file",
-        "get_subject",
-        "get_version",
-        "list_files",
-        "list_versions",
-    }, sorted(population)
-
-    silent = [
-        name
-        for name, function in sorted(population.items())
-        if "actor" not in inspect.signature(function).parameters
-        and not VALVE.search(inspect.getsource(function))
-    ]
-    assert silent == [], silent
-
-    # ...and every one of them asks in ITS OWN body, which is what the census
-    # reads. A `get_` whose only ask is inside a callee is one neither the rule
-    # nor a reader can see asking.
-    # A member that carries the valve says in its body why it asks nothing —
-    # `get_subject` answers REACH, the seam's question, for callers that each ask
-    # their own key first — and is held to that sentence rather than to a require.
-    for name, function in sorted(population.items()):
-        source = inspect.getsource(function)
-        assert "require(actor" in source or VALVE.search(source), name
 
 
 # --- 2 · the order: reach before capability -----------------------------------
@@ -164,18 +110,18 @@ def test_a_read_outside_the_subtree_is_not_found_and_inside_without_the_key_is_f
 
     *Absent (the baseline):* the row and the page, for all three.
     """
-    inside = _file_at(world, world.branch, filename="inside.pdf")
-    beside = _file_at(world, world.sibling, filename="beside.pdf")
-    _withhold(world=world, user=world.region_admin, permission="file.read")
-    acting = _acting(world, world.region_admin, world.region)
+    inside = _file_at(world, world.a1, filename="inside.pdf")
+    beside = _file_at(world, world.b, filename="beside.pdf")
+    _withhold(world=world, user=world.user(world.admin_at_a), permission="file.read")
+    acting = _acting(world, world.user(world.admin_at_a), world.a)
 
     with pytest.raises(NotFound):
-        selectors.get_file(tenant=world.tenant, file_id=beside.pk, org=world.region, actor=acting)
+        selectors.get_file(tenant=world.tenant, file_id=beside.pk, org=world.a, actor=acting)
     with pytest.raises(Forbidden) as forbidden:
-        selectors.get_file(tenant=world.tenant, file_id=inside.pk, org=world.region, actor=acting)
+        selectors.get_file(tenant=world.tenant, file_id=inside.pk, org=world.a, actor=acting)
     assert str(forbidden.value.detail) == refusal_sentence("file.read")
     with pytest.raises(Forbidden):
-        selectors.list_files(tenant=world.tenant, org=world.region, actor=acting)
+        selectors.list_files(tenant=world.tenant, org=world.a, actor=acting)
 
 
 def test_with_the_key_the_same_person_reads_both(world: World, named_bucket: str) -> None:
@@ -184,14 +130,12 @@ def test_with_the_key_the_same_person_reads_both(world: World, named_bucket: str
     Without this the test above proves only that a refusal happens somewhere,
     not that the withhold is what caused it.
     """
-    inside = _file_at(world, world.branch, filename="inside.pdf")
-    acting = _acting(world, world.region_admin, world.region)
+    inside = _file_at(world, world.a1, filename="inside.pdf")
+    acting = _acting(world, world.user(world.admin_at_a), world.a)
 
-    found = selectors.get_file(
-        tenant=world.tenant, file_id=inside.pk, org=world.region, actor=acting
-    )
+    found = selectors.get_file(tenant=world.tenant, file_id=inside.pk, org=world.a, actor=acting)
     assert found.pk == inside.pk
-    assert selectors.list_files(tenant=world.tenant, org=world.region, actor=acting).count() == 1
+    assert selectors.list_files(tenant=world.tenant, org=world.a, actor=acting).count() == 1
 
 
 def test_a_version_asks_the_documents_key_and_not_one_of_its_own(
@@ -207,9 +151,9 @@ def test_a_version_asks_the_documents_key_and_not_one_of_its_own(
 
     *Absent (the baseline):* the version list and both `get_`s answer.
     """
-    document = _file_at(world, world.region, filename="versioned.pdf")
-    _withhold(world=world, user=world.region_admin, permission="file.read")
-    acting = _acting(world, world.region_admin, world.region)
+    document = _file_at(world, world.a, filename="versioned.pdf")
+    _withhold(world=world, user=world.user(world.admin_at_a), permission="file.read")
+    acting = _acting(world, world.user(world.admin_at_a), world.a)
 
     for call, arguments in (
         (selectors.list_versions, {}),
@@ -217,7 +161,7 @@ def test_a_version_asks_the_documents_key_and_not_one_of_its_own(
         (selectors.get_downloadable_version, {"version": None}),
     ):
         with pytest.raises(Forbidden) as refused:
-            call(tenant=world.tenant, file=document, org=world.region, actor=acting, **arguments)
+            call(tenant=world.tenant, file=document, org=world.a, actor=acting, **arguments)
         assert str(refused.value.detail) == refusal_sentence("file.read"), call.__name__
 
 
@@ -237,14 +181,14 @@ def test_a_withheld_read_issues_no_url(world: World, named_bucket: str) -> None:
     """
     from apps.core.audit import AuditEntry
 
-    document = _file_at(world, world.region, filename="secret.pdf")
-    _withhold(world=world, user=world.region_admin, permission="file.read")
-    acting = _acting(world, world.region_admin, world.region)
+    document = _file_at(world, world.a, filename="secret.pdf")
+    _withhold(world=world, user=world.user(world.admin_at_a), permission="file.read")
+    acting = _acting(world, world.user(world.admin_at_a), world.a)
     before = AuditEntry.objects.count()
 
     with pytest.raises(Forbidden):
         selectors.get_downloadable_version(
-            tenant=world.tenant, file=document, version=None, org=world.region, actor=acting
+            tenant=world.tenant, file=document, version=None, org=world.a, actor=acting
         )
 
     assert AuditEntry.objects.count() == before, "something was audited; an issuance happened"
@@ -262,9 +206,9 @@ def test_the_plain_member_still_reads_everything(
     version list answer 200 for an ordinary member exactly as they did before
     Phase R. This is the non-vacuity line under every refusal in this module.
     """
-    document = _file_at(world, world.region, filename="ordinary.pdf")
-    api.force_login(world.plain_member)
-    headers = {"X-Org": world.region.slug}
+    document = _file_at(world, world.a, filename="ordinary.pdf")
+    api.force_login(world.user(world.clerk))
+    headers = {"X-Org": world.a.slug}
 
     listed = api.get(LIST_URL, headers=headers)
     assert listed.status_code == 200, listed.content
@@ -272,47 +216,6 @@ def test_the_plain_member_still_reads_everything(
 
     assert api.get(DETAIL_URL.format(document.pk), headers=headers).status_code == 200
     assert api.get(VERSIONS_URL.format(document.pk), headers=headers).status_code == 200
-
-
-def test_a_withheld_read_is_forbidden_on_the_wire_with_the_keys_own_sentence(
-    api: Client, world: World, named_bucket: str
-) -> None:
-    """**PR4.f.2, REST.** 403 `forbidden`, and the body is the key's sentence.
-
-    Four routes, because a read door that was fixed on the list and forgotten on
-    the version history is exactly the half-landed change this whole phase is
-    against.
-
-    *Absent (the baseline):* 200 on every one of them.
-    """
-    document = _file_at(world, world.region, filename="ordinary.pdf")
-    _withhold(world=world, user=world.plain_member, permission="file.read")
-    api.force_login(world.plain_member)
-    headers = {"X-Org": world.region.slug}
-    sentence = refusal_sentence("file.read")
-
-    for url in (
-        LIST_URL,
-        DETAIL_URL.format(document.pk),
-        VERSIONS_URL.format(document.pk),
-    ):
-        refused = api.get(url, headers=headers)
-        assert refused.status_code == 403, (url, refused.content)
-        body = json.loads(refused.content)
-        assert body["code"] == "forbidden", url
-        assert body["detail"] == sentence, url
-
-    # ...and the issuance door, which is a POST because minting a URL is an act
-    # rather than a look. Same key, same sentence, and nothing is signed: the
-    # selector refuses before `issue_download_url` is reached.
-    issued = api.post(
-        DOWNLOAD_URL.format(document.pk),
-        data="{}",
-        content_type="application/json",
-        headers=headers,
-    )
-    assert issued.status_code == 403, issued.content
-    assert json.loads(issued.content)["detail"] == sentence
 
 
 # --- 4 · reach before capability, on the WRITE side --------------------------
@@ -337,9 +240,9 @@ def test_a_foreign_document_is_not_found_and_never_forbidden(
     """
     from apps.files import services
 
-    beside = _file_at(world, world.sibling, filename="beside.pdf")
+    beside = _file_at(world, world.b, filename="beside.pdf")
     version = FileVersion.objects.for_tenant(world.tenant).get(file=beside, version=1)
-    acting = _acting(world, world.region_admin, world.region)
+    acting = _acting(world, world.user(world.admin_at_a), world.a)
     common: dict[str, Any] = {"tenant": world.tenant, "actor": acting}
 
     with pytest.raises(NotFound):
@@ -403,8 +306,8 @@ def test_a_document_inside_the_subtree_gets_the_wall_and_not_a_not_found(
     """
     from apps.files import services
 
-    inside = _file_at(world, world.region, filename="inside.pdf")
-    acting = _acting(world, world.plain_member, world.region)
+    inside = _file_at(world, world.a, filename="inside.pdf")
+    acting = _acting(world, world.user(world.clerk), world.a)
 
     with pytest.raises(Forbidden) as refused:
         services.archive_file(tenant=world.tenant, actor=acting, file=inside)

@@ -1,142 +1,9 @@
-"""Writes for the workflows app, and the two ways a workflow is started.
+"""Writes for the run ledger, and the seams a service starts, signals, replays and cancels with.
 
-**`start_workflow_on_commit` is the one a service calls.** It is synchronous,
-because services are: a route, a management command and an admin action all run
-on a thread with no event loop, and a service that demanded `await` would push
-async up through every caller for no gain. It writes the visibility row inside
-the caller's transaction and registers a `transaction.on_commit` hook that
-starts the run — so a transaction that rolls back starts nothing, and a service
-that is retried does not leave a workflow running for a row that never existed.
-That on-commit hook is the only synchronous caller of the async client, and it
-goes through `apps.core.asyncdb.run_async`, which gives the coroutine its own
-event loop and refuses to run inside somebody else's.
-
-`start_workflow` stays for callers that are already async — the worker itself,
-another activity, and the workflow tests, which hold the test environment's
-client and must use it rather than connecting to a dev server.
-
-**Workflow ids are deterministic and required**, in the shape
-`<tenant_slug>:<app>:<noun>:<key>` — or `platform:<app>:<noun>:<key>` for a run
-the deployment owns rather than a tenant (ADR workflows-3; `check_workflow_id`
-requires the reserved first segment **iff** `tenant is None`, so neither
-population can wear the other's id). `workflow_id()` builds a tenant one and
-**both** starters refuse anything else: `start_workflow`'s `id` lost its `uuid4`
-default, because a random id would make a retried service start a second run of
-the same work, which is the exact failure Temporal's id reuse policy exists to
-prevent.
-
-And because the id is deterministic, **asking for it twice is a retry, not a
-collision** — provided it is asking for the *same work*. That proviso is
-`input_digest`: a sha256 over the run's `arg` through Temporal's own payload
-converter, computed **inside the starters** so that no caller can opt in or
-out, and passed to `record_run`, whose answer is a 2x2 (ADR workflows-4). Its
-docstring carries that contract in full.
-
-**`signal_workflow` is the other half of the seam.** `start_workflow_on_commit`
-is how a service says "begin"; this is how one says "the thing you were waiting
-for has happened". Without it the only way to end a wait is the Temporal CLI —
-which means the product cannot finish its own work, and the widget onboarding
-in `apps/example` sat for a week waiting for a signal no door could send.
-
-It puts up four walls, in this order, and each refuses something different:
-
-1. **The id.** `check_workflow_id` refuses an id that is not the house shape or
-   does not start with this tenant's slug, raising `ValueError` rather than a
-   domain refusal for the same reason `start_workflow_on_commit` does: no door
-   hands this id in from a client. A calling service builds it with
-   `workflow_id()` from a row it has already read, so a wrong one is a bug in
-   the caller and not an answer owed to anybody.
-2. **The tenant.** The row is read through `for_tenant`, and a run this tenant
-   does not own is `NotFound` — the same answer as one that never existed,
-   because a refusal that distinguished them would say that somebody else's run
-   exists.
-3. **The membership.** `require(actor, "workflow_run.signal", run)`. What that can
-   and cannot decide is `policies.py`'s subject; the short version is that
-   object-level authorization belongs to the domain service in front of this
-   one, because `WorkflowRun` does not know what the run is about.
-4. **Liveness.** A run that has already finished is `Conflict`, not a silently
-   dropped signal. Temporal would answer a signal to a completed execution with
-   an RPC error inside an `on_commit` hook nobody is watching; the row already
-   knows, so the caller is told now.
-
-The signal itself goes out on `transaction.on_commit`, exactly as a start does:
-a caller whose transaction rolls back has not approved anything, and a signal is
-not something you can take back. Signals are **idempotent from this layer's
-point of view** — a workflow that sets a flag twice is in the state it was in
-after the first — so a retried caller is safe, which is why sending the same
-signal twice while a run is still going is an `ok` and not a refusal.
-
-It is a `@service` because it is a decision about somebody's tenant that has to
-be authorized and audited, even though the only row it touches it touches for
-reading.
-
-**`start_replay` is the third half of the seam** (ADR workflows-6). `start` says
-begin, `signal` says the thing you waited for happened, and this one says *do
-that again* — a Temporal **reset** of a FAILED run back to its first workflow
-task, so the server re-executes the input its own history already witnessed.
-
-The input is never re-supplied by a client, and could not be: the row is the
-thing that knows, and re-invoking the origin door would ask a caller to
-remember an argument they may never have held. What makes a reset legal at all
-is house rule 9 — workflow code that is deterministic replays identically —
-and what makes it *safe* is the idempotency contract behind it, because a reset re-runs
-the activities and therefore re-does their side effects.
-
-It is called `start_replay` and not `replay_run` for one reason, said here
-rather than left as a puzzle: **`replay` is not a verb in house rule 16's
-declared lexicon**, that list lives in `quality/rules.yaml`, and editing
-anything under `quality/` is out of scope here. Starting a replay
-is a start, so the honest name inside the lexicon is the one it wears; the MCP
-tool and the route are `replay_run` / `run-replay`, which is rule 17's naming
-and not rule 16's. The delta needed is one line — `replay` in
-`service_verbs` — and the rename is one commit the day it lands.
-
-It puts up walls in this order, and the order is the refusal grammar:
-
-1. **The tenant.** The row is read through `for_tenant`; another tenant's run
-   is `NotFound`.
-2. **The membership.** `require(actor, "workflow_run.replay", run)`.
-3. **Whose run it is.** A run this actor did not start is `NotFound` — the
-   *same* answer as one that does not exist, on purpose: a `Forbidden`
-   here would confirm that somebody else in the tenant has a run under that id.
-   A row with no recorded starter (`started_by IS NULL` — written before the
-   column existed, or a platform run) is nobody's own run and answers the same.
-4. **The state.** RUNNING is a `Conflict` (it has not failed yet), COMPLETED is
-   a `Conflict` in `record_run`'s own words — re-running completed work is a
-   new key, not a retry — and FAILED proceeds.
-5. **The history.** A reset needs history to reset *to*, and Temporal's
-   namespace retention deletes it on a clock nothing in this row can see. A run
-   older than `HISTORY_RETENTION` is a `Conflict` that says so, decided from the
-   row's own `started_at` rather than from an RPC, so no door waits on the
-   network to be refused.
-
-Then the row goes back to RUNNING inside the caller's transaction and the reset
-itself goes out on `transaction.on_commit(..., robust=True)` — the
-`signal_workflow` shape exactly, and for the same two reasons: a caller whose
-transaction rolled back has not asked for anything, and an unreachable Temporal
-must not take the hooks queued behind it down with it.
-
-**`cancel_run` is the fourth** (ADR workflows-7), and it is the one that writes
-nothing. `start` says begin, `signal` says the thing you waited for happened,
-`start_replay` says do that again — and this one says *stop*. It puts up
-`start_replay`'s first four walls in `start_replay`'s order, refuses a run that
-is not RUNNING with a `Conflict` naming the status, and then registers the
-Temporal cancel on commit and hands back the row **untouched**.
-
-The untouched part is the decision. A cancellation is a request and not an
-outcome: the execution stops when Temporal says so, the workflow gets to run
-its cleanup, and the row closes as `cancelled` only when somebody witnessed it
-— the finish seam from inside the cancelled workflow, or the reconciler reading
-`CANCELED` off the server for a run that never got that far. A service that
-stamped the row on the way past would have the ledger asserting an outcome
-because somebody asked for one, which is the failure mode this whole table
-exists to not have.
-
-The three row-writing functions carry `@service`. The two `start_*` do not, and
-for a reason worth stating: `start_workflow` is `async`, and `@service` opens a
-synchronous transaction; `start_workflow_on_commit` is an orchestrator whose
-only write is `record_run`, which is audited. Wrapping it too would write a
-second audit row for the same fact.
+Ids are deterministic: `<tenant>:<app>:<noun>:<key>`, or `platform:…` for nobody's run (ADR
+workflows-3); asking twice for the same work is a retry, decided by `input_digest` (workflows-4).
+Every Temporal call goes out on the caller's commit, so a rolled-back caller asked for nothing.
+why-not `@service` on the two starters: `record_run` is their one write, and it is audited.
 """
 
 from __future__ import annotations
@@ -154,13 +21,18 @@ from temporalio.converter import default as default_converter
 from temporalio.exceptions import WorkflowAlreadyStartedError
 
 from apps.core import context
-from apps.core.actor import Actor
+from apps.core.actor import Actor, actor_for, system_actor
 from apps.core.asyncdb import run_async, run_db
-from apps.core.authz import require
-from apps.core.exceptions import Conflict, NotFound, as_invalid
+from apps.core.authz import holds, refusal_sentence, require
+from apps.core.context import ContextUnbound
+from apps.core.exceptions import Conflict, Forbidden, NotFound, as_invalid
 from apps.core.log import get_logger
 from apps.core.models import Organization, Tenant
+from apps.core.policies import ADMINISTERS_THE_NODE
+from apps.core.roads import road
 from apps.core.service import redact, service, write_audit
+from apps.core.services import root_organization
+from apps.core.types import Swept
 from apps.workflows.context import reset_principal, set_principal
 from apps.workflows.models import WorkflowRun
 
@@ -268,6 +140,8 @@ CANCEL_ACTION = "workflow_run.cancel"
 HISTORY_RETENTION = timedelta(days=30)
 
 
+@road("workflow_id", example="apps/example/tests/test_attach_import.py::_run_id")
+# rule-16: a marked road rule 18 reads by name; the run's column and a wire field share it
 def workflow_id(*, tenant: Tenant, app: str, noun: str, key: str) -> str:
     """Build a workflow id in the house shape: `<tenant_slug>:<app>:<noun>:<key>`.
 
@@ -568,14 +442,14 @@ def _answer_for_the_row_already_there(
 # to describe what the starters did, so the starters are the only callers.
 # Reachable from every door in the tree through them (rule 42 counts direct
 # calls, and that is the finding it is designed to make, not one here).
-@service
+@service(witness=False)
 def record_run(
     *,
     tenant: Tenant | None,
     workflow_id: str,
     workflow_type: str,
+    actor: Actor,
     input_digest: str = "",
-    user: AbstractBaseUser | None = None,
     reask_after_failure: bool = False,
 ) -> WorkflowRun:
     """Write the visibility row for a run that is about to be started.
@@ -633,13 +507,21 @@ def record_run(
     nobody can compute would be a guess wearing the authority of a fact. New
     starts always compute one, so the population converges forward.
 
-    `user` is **who asked** — the same user both starters already thread onto
-    the workflow's headers and memo, threaded one place further so the row can
-    answer it too (ADR workflows-6). It is a parameter of this function and
-    never of a door: a caller that could name a starter could hand themselves
-    somebody else's replay right. `None` is unknown and stays unknown, the
-    `input_digest` convergence pattern verbatim.
+    `actor` is **who asked**, keyword-only and required (ADR workflows-9): the
+    caller's actor, from which the row's `started_by` and this service's own
+    audit row both read who — never the bound context, which is observability
+    data and not a claim. Both starters build it for the callers that still
+    hand them a bare `user`, and a start nobody asked for is the system actor,
+    named rather than absent. It is a parameter of this function and never of
+    a door: a caller that could name a starter could hand themselves somebody
+    else's replay right. A system actor's `started_by` is `None` — unknown
+    stays unknown, the `input_digest` convergence pattern verbatim.
     """
+    # authz: the ledger's write seam records WHO asked and grants nothing; the
+    # starters' callers asked their own question at the door that started the
+    # work, and a second one here would ask it of the system actor a schedule
+    # names, which passes everything anyway.
+    user = actor.user
     existing = _run_under(tenant=tenant, workflow_id=workflow_id)
     if existing is not None:
         return _answer_for_the_row_already_there(
@@ -686,6 +568,7 @@ def record_run_id(*, run: WorkflowRun, run_id: str) -> WorkflowRun:
     return run
 
 
+# door: only this tree's own hands reach it — a run's own finish activity closes its row
 @service
 def finish_run(
     *,
@@ -768,14 +651,8 @@ def signal_workflow(
 
         run_async(_go)
 
-    # `robust=True`: Django runs a transaction's hooks in order and a hook that
-    # raises takes every hook behind it down with it. This one talks to
-    # Temporal, which is the least reliable thing in any such list — an
-    # unreachable server used to cancel the invitation email registered after
-    # it. The failure is now contained to the hook that had it, logged by
-    # Django, and swept by the reconciler that reads the row this signal was
-    # about. (The survey shows these two lines are
-    # the only production `on_commit` registrations in the tree.)
+    # `robust=True`: a raising hook takes every hook queued behind it down with it.
+    # rule-92: the signal leaves only after the write commits; the reconciler sweeps a lost one
     transaction.on_commit(_dispatch, robust=True)
     return run
 
@@ -849,9 +726,19 @@ def _refuse_unless_replayable(run: WorkflowRun) -> None:
         )
 
 
+def _require_the_tenants_administrator(actor: Actor, tenant: Tenant) -> None:
+    """A system-started run is replayed by `organization.update` at the root (ADR comms-4)."""
+    try:
+        root = root_organization(tenant=tenant)
+    except Conflict:
+        raise Forbidden(refusal_sentence(ADMINISTERS_THE_NODE)) from None
+    if not holds(actor, ADMINISTERS_THE_NODE, at=root):
+        raise Forbidden(refusal_sentence(ADMINISTERS_THE_NODE))
+
+
 @service
 def start_replay(*, tenant: Tenant, actor: Actor, run_id: UUID) -> WorkflowRun:
-    """Run a failed run again, from its first workflow task. **The actor's own.**
+    """Run a failed run again, from its first workflow task. **The actor's own**, or the system's.
 
     A **Temporal reset**, not a second start: the server re-executes the input
     its own history already witnessed, under the same deterministic id (rule
@@ -887,7 +774,9 @@ def start_replay(*, tenant: Tenant, actor: Actor, run_id: UUID) -> WorkflowRun:
     if run is None:
         raise NotFound()
     require(actor, REPLAY_ACTION, run)  # hat-scoped: no organization on this row; see policies.py
-    if run.started_by_id is None or run.started_by_id != actor.user_id:
+    if run.started_by_id is None:
+        _require_the_tenants_administrator(actor, tenant)
+    elif run.started_by_id != actor.user_id:
         raise NotFound()
     _refuse_unless_replayable(run)
 
@@ -929,9 +818,7 @@ def start_replay(*, tenant: Tenant, actor: Actor, run_id: UUID) -> WorkflowRun:
 
         run_async(_go)
 
-    # `robust=True` — the same reasoning as `signal_workflow`'s hook above, and
-    # the row is already committed as RUNNING, so a reset that could not be
-    # dispatched is swept by the reconciler that reads it rather than lost.
+    # rule-92: the reset leaves only after the RUNNING row commits; the reconciler sweeps a lost one
     transaction.on_commit(_dispatch, robust=True)
     return run
 
@@ -950,7 +837,7 @@ def cancel_run(*, tenant: Tenant, actor: Actor, run_id: UUID) -> WorkflowRun:
     That is the whole shape (ADR workflows-7). A cancellation is a *request*,
     not an outcome: Temporal decides when the execution actually stops, the
     workflow gets to run its cleanup, and the row closes as `cancelled` only
-    when somebody witnessed it — the finish seam (`workflows._finish`, which
+    when somebody witnessed it — the finish seam (`determinism.run_to_finish`, which
     marks the row from inside the cancelled workflow) or the reconciler
     (`activities.reconcile_runs`, which reads `CANCELED` off the server for a
     run that never reached its own seam). A service that stamped `cancelled`
@@ -1010,6 +897,7 @@ def cancel_run(*, tenant: Tenant, actor: Actor, run_id: UUID) -> WorkflowRun:
 
         run_async(_go)
 
+    # rule-92: the cancel reaches Temporal only after the run's status commits
     transaction.on_commit(_dispatch, robust=True)
     return run
 
@@ -1080,6 +968,35 @@ async def _start_recorded(
     return await run_db(record_run_id, run=run, run_id=handle.result_run_id or "")
 
 
+def _starter_actor(
+    *,
+    tenant: Tenant | None,
+    user: AbstractBaseUser | None,
+    org: Organization | None = None,
+    actor: Actor | None = None,
+) -> Actor:
+    """The actor a start records its run as: the caller's, or one built from its parts.
+
+    A caller that hands the actor is taken at its word, and a `user` or `org`
+    beside it that names somebody else is a caller bug (`ValueError`), never a
+    choice between two answers. A caller that hands only the parts gets a
+    `human` actor for a person — the starters' existing callers resolve a
+    person at a door that clicked — and the system actor for nobody.
+    """
+    if actor is not None:
+        if (user is not None and user.pk != actor.user_id) or (
+            org is not None and org.pk != actor.org_id
+        ):
+            raise ValueError(
+                "A start was handed an actor and a user or org that names somebody else; "
+                "pass the actor alone."
+            )
+        return actor
+    if user is None:
+        return system_actor(tenant, org)
+    return actor_for(user=user, tenant=tenant, org=org)
+
+
 async def start_workflow(
     *,
     workflow: str | Any,
@@ -1087,6 +1004,7 @@ async def start_workflow(
     tenant: Tenant | None,
     user: AbstractBaseUser | None = None,
     org: Organization | None = None,
+    actor: Actor | None = None,
     id: str,
     client: Client,
     task_queue: str | None = None,
@@ -1105,6 +1023,8 @@ async def start_workflow(
     from. `tenant=None` is the platform population and takes a `platform:`
     id (ADR workflows-3).
     """
+    acting = _starter_actor(tenant=tenant, user=user, org=org, actor=actor)
+    user, org = acting.user, acting.org
     check_workflow_id(id=id, tenant=tenant)
     check_org_agreement(tenant=tenant, org=org)
     workflow_type = _workflow_type(workflow)
@@ -1113,8 +1033,8 @@ async def start_workflow(
         tenant=tenant,
         workflow_id=id,
         workflow_type=workflow_type,
+        actor=acting,
         input_digest=hash_run_input(arg),
-        user=user,
     )
     return await _start_recorded(
         run=run,
@@ -1128,6 +1048,20 @@ async def start_workflow(
     )
 
 
+#: What a start's on-commit hook lets out: a caller's bug, never Temporal being unreachable.
+CALLER_BUGS: tuple[type[BaseException], ...] = (
+    ContextUnbound,
+    TypeError,
+    ValueError,
+    LookupError,
+    AttributeError,
+    NameError,
+    ImportError,
+    AssertionError,
+)
+
+
+@road("start_workflow", example="apps/example/services.py::create_widget")
 def start_workflow_on_commit(
     *,
     workflow: str | Any,
@@ -1135,54 +1069,31 @@ def start_workflow_on_commit(
     tenant: Tenant | None,
     user: AbstractBaseUser | None = None,
     org: Organization | None = None,
+    actor: Actor | None = None,
     id: str,
     task_queue: str | None = None,
     reask_after_failure: bool = False,
 ) -> WorkflowRun:
-    """Start a workflow when the caller's transaction commits. **The service door.**
+    """Record the run in the caller's transaction and start it on commit. **The service door.**
 
-    Synchronous, and the ordering is the point:
-
-    1. the visibility row is written *in the caller's transaction*, so it is
-       atomic with the business write it describes and disappears with it if the
-       transaction rolls back;
-    2. the client call is deferred to `transaction.on_commit`, so nothing durable
-       is started for a row that never landed.
-
-    `id` is required and must be the house shape (see `workflow_id`), and it is
-    what makes **this call idempotent**: asking twice for the same live id with
-    the same `arg` returns the same row and starts one run. Asking with a
-    *different* `arg` is a `Conflict` — `record_run`'s docstring holds the whole
-    2x2, and the digest that drives it is computed here rather than by any
-    caller.
-
-    `reask_after_failure` is the **caller's** answer to "is this work safe to
-    run again after it broke?", and it is a parameter rather than a policy
-    because this layer cannot answer it: a reconciler re-deriving the same
-    intent wants `True`, and work whose side effects must happen once wants the
-    refusal. It defaults to `False`, so a start site that says nothing behaves
-    exactly as it did before the answer existed. `record_run`'s docstring holds
-    what it does and which statuses it reaches.
-
-    `org` is the **acting hat** the run is started under. It rides on the
-    workflow's headers to every activity, so an activity acting for a branch
-    reads and writes as that branch rather than as the whole tenant. A start
-    with no org is a tenant-wide run, which is what a flat product and every
-    platform workflow (email, dispatch) is — and a hat belonging to *another*
-    tenant is refused here rather than stamped onto the headers.
+    It is idempotent on `id` for the same `arg` (`record_run`'s 2x2, ADR workflows-4); `org` is
+    the hat on the run's headers; `actor` is who asks (ADR workflows-9), the system's by default.
+    Temporal unreachable at commit is logged and swept; a `CALLER_BUGS` failure propagates.
     """
+    acting = _starter_actor(tenant=tenant, user=user, org=org, actor=actor)
+    user, org = acting.user, acting.org
     check_workflow_id(id=id, tenant=tenant)
     check_org_agreement(tenant=tenant, org=org)
     run = record_run(
         tenant=tenant,
         workflow_id=id,
         workflow_type=_workflow_type(workflow),
+        actor=acting,
         input_digest=hash_run_input(arg),
-        user=user,
         reask_after_failure=reask_after_failure,
     )
 
-    def _dispatch() -> None:
+    def start_on_commit() -> None:
         async def _go() -> None:
             from apps.workflows.client import get_client
 
@@ -1198,13 +1109,19 @@ def start_workflow_on_commit(
                 task_queue=task_queue,
             )
 
-        run_async(_go)
+        try:
+            run_async(_go)
+        except CALLER_BUGS:
+            raise
+        except Exception as unreached:
+            log.exception(
+                "workflow.start.not_dispatched",
+                workflow_id=run.workflow_id,
+                error=type(unreached).__name__,
+            )
 
-    # `robust=True` — the same reasoning as `signal_workflow`'s hook above: a
-    # start that cannot reach Temporal is a run that did not start, and must
-    # never also be an email that was never sent. The row is already committed,
-    # so the ask is not lost either.
-    transaction.on_commit(_dispatch, robust=True)
+    # why-not `robust=True`: it would swallow `CALLER_BUGS` too; the hook contains the rest.
+    transaction.on_commit(start_on_commit)
     return run
 
 
@@ -1238,59 +1155,29 @@ PURGEABLE_STATUSES: tuple[str, ...] = (
 )
 
 
+# door: only this tree's own hands reach it — the retention schedule's sweep of closed runs
 @service
-# rule-13: this service has no `tenant=` to take, and must not grow one. It is
-# deployment housekeeping that crosses EVERY population by design — one
-# `for_tenant` per tenant plus the platform rows no tenant owns — so a `tenant=`
-# parameter would be a lie about its scope and would make the wrapper write one
-# audit row naming whichever tenant the caller happened to pass. The same shape
-# and the same reason as `apps.events.services.purge_dispatched_outbox`. What
-# it did is on the schedule's run and in `workflows.purge.runs`, where an
-# operator reads a sweep; an audit row is for a decision somebody took about
-# somebody's rows, and nobody took one here.
-def purge_finished_runs(*, before: datetime) -> int:
-    """Drop runs that closed cleanly before `before`. Returns how many went.
+def purge_finished_runs(*, before: datetime, tenant: None) -> Swept:
+    """Drop runs that closed `completed` or `cancelled` before `before`, in every population.
 
-    **Only `completed` and `cancelled`.** A `running` row belongs to
-    `activities.reconcile_runs` — sweeping one would delete a promise the
-    reconciler was about to keep, which is rule 28's fear with the evidence
-    removed — and a `failed` row is the record of something that broke, which
-    is the thing somebody comes to the ledger to find. Both survive every
-    window, for ever, and that is a deliberate consequence stated on the
-    declaration rather than a gap.
-
-    Idempotent by construction: it deletes by age, so a second run in the same
-    window removes nothing.
-
-    **Read through each population's own path** (house rule 8), exactly as
-    `activities.stranded_runs` is: one `for_tenant` per tenant, then
-    `for_platform()` for the rows no tenant owns. That is one statement per
-    tenant on a daily cadence, which is the honest cost of a rule that says a
-    scoped model is read scoped — and the platform half is not optional, since
-    `for_tenant` fails closed and can never reach the deployment's own runs.
-
-    # authz: deployment housekeeping, run by a schedule as the system. It is
-    # scoped by age and by terminal status, resolves no actor, and answers to
-    # nobody's request — the same posture as
-    # `apps.events.services.purge_dispatched_outbox`.
+    `running` rows are the reconciler's and `failed` ones the finding; both survive every window.
+    `tenant` selects the platform's audit population and filters nothing (ADR core-22).
+    # authz: deployment housekeeping, run by a schedule as the system; scoped by age and status.
     """
     deleted = 0
-    for tenant in Tenant.objects.all().iterator():
+    for owner in Tenant.objects.all().iterator():
         removed, _ = (
-            WorkflowRun.objects.for_tenant(tenant)
+            WorkflowRun.objects.for_tenant(owner)
             .filter(status__in=PURGEABLE_STATUSES, finished_at__lt=before)
             .delete()
         )
         deleted += int(removed)
     removed, _ = (
         # rule-8: the platform population is the declared null-tenant one (ADR
-        # workflows-3), and `for_tenant` stays fail-closed and can never reach
-        # it. Without this half the deployment's own closed runs — every
-        # identity revocation, every workforce sync — would be the one part of
-        # the ledger no window ever applied to.
+        # workflows-3); a fail-closed `for_tenant` can never reach it.
         WorkflowRun.objects.for_platform()
         .filter(status__in=PURGEABLE_STATUSES, finished_at__lt=before)
         .delete()
     )
     deleted += int(removed)
-    return deleted
+    return Swept(label=WorkflowRun._meta.label, count=deleted)

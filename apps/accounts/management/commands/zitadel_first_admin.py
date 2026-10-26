@@ -13,8 +13,8 @@ was somebody reading Zitadel's admin UI rather than this product's.
 **What it does, all of it through the existing writers.** It makes a
 credential-less Zitadel human, mints an invitation code, and prints the hosted
 link where that person sets their own password — then the two steps after it, in
-order, as sentences an operator follows. It writes **no row of ours** and no
-audit entry, because nothing of ours changed: the birth certificate is
+order. Its one row is the audited vouch the workforce wall reads, spent by the
+first sign-in (`FirstAdminVouch`); the birth certificate is still
 `bootstrap_tenant`'s audited write (ADR core-17), and it comes last.
 
 **We never see, choose or transport a password.** `ensure_invited_user` takes
@@ -60,8 +60,11 @@ from apps.accounts import zitadel
 # called on the screen where they set their password should not depend on which
 # door invited them. It is private to `apps.accounts` and this is `apps.accounts`.
 from apps.accounts.activities import _invited_person_names
+from apps.accounts.services import issue_first_admin_vouch
+from apps.core.actor import system_actor
 from apps.core.management import BaseCommand
 from apps.core.models import Tenant
+from apps.core.surfaces import PUBLIC_BASE_URL_SETTING, STAFF, absolute_url
 
 # Deliberately loose. This is not an address validator — nothing here can know
 # whether a mailbox exists — it is a typo catch, so that `--email alice` becomes
@@ -69,13 +72,9 @@ from apps.core.models import Tenant
 # nobody can ever reach. The real proof is the person opening the link.
 EMAIL_SHAPE = re.compile(r"^[^@\s]+@[^@\s.]+\.[^@\s]+$")
 
-# Hosts that mean "this machine". A `PUBLIC_BASE_URL` on one of these is right
-# on a laptop and a lie anywhere else: the two steps this command prints are
-# addresses the invited person has to open, and an address that only resolves
-# on the server is a dead end printed with confidence. The production settings
-# module does not yet refuse a loopback PUBLIC_BASE_URL (a standing SHOULD in
-# the ledger since 2026-08-31), so this door carries its own.
-LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
+# Hosts that mean "this machine": right on a laptop, a dead end printed anywhere else.
+# The production settings do not refuse a loopback base URL, so this door carries its own check.
+LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})  # noqa: S104 — names refused, not bound
 
 
 class Command(BaseCommand):
@@ -118,7 +117,12 @@ class Command(BaseCommand):
                 )
             )
 
+        vouch = issue_first_admin_vouch(email=email, tenant=None, actor=system_actor())
         self._say_what_happens_next(email=email, url=zitadel.invite_url(user_id=user.id, code=code))
+        self.stdout.write(
+            f"Their first sign-in must happen before {vouch.expires_at:%Y-%m-%d %H:%M} UTC; "
+            "after that, run this command again for a fresh link."
+        )
 
     # --- the refusals --------------------------------------------------------
 
@@ -157,16 +161,16 @@ class Command(BaseCommand):
                 "(drop the zitadel database and the volume) and run setup again."
             )
 
-        base = str(getattr(settings, "PUBLIC_BASE_URL", "")).rstrip("/")
+        base = absolute_url(path="", surface=STAFF)
         if not settings.DEBUG and (urlsplit(base).hostname or "") in LOOPBACK_HOSTS:
             raise CommandError(
-                f"PUBLIC_BASE_URL is {base!r}, which only resolves on this machine, and "
+                f"The staff base URL is {base!r}, which only resolves on this machine, and "
                 "DEBUG is off.\n"
                 "Two of the three steps this command prints are addresses the invited "
                 "person opens in their own browser, so printing them from a loopback "
                 "base URL would be printing a dead end with confidence. Set "
-                "PUBLIC_BASE_URL to the address this deployment is actually reached at "
-                "and run this again."
+                f"{PUBLIC_BASE_URL_SETTING} to the address the deployment is actually "
+                "reached at and run this again."
             )
 
     @staticmethod
@@ -179,11 +183,11 @@ class Command(BaseCommand):
         refusal is the remainder of the runbook rather than a report of an
         error id.
         """
-        base = str(getattr(settings, "PUBLIC_BASE_URL", "")).rstrip("/")
+        sign_in = absolute_url(path=reverse("account_login"), surface=STAFF)
         return (
             f"{email} already has credentials at this identity platform, so there is "
             "nothing to invite them to set.\n"
-            f"Sign in at {base}{reverse('account_login')} as {email} — that first sign-in "
+            f"Sign in at {sign_in} as {email} — that first sign-in "
             "is what mints their record here — then run:\n"
             f"    uv run python manage.py bootstrap_tenant --email {email}"
         )
@@ -215,8 +219,8 @@ class Command(BaseCommand):
         wrong on one of the two doors, and it is the day-zero walk it would be
         wrong on.
         """
-        base = str(getattr(settings, "PUBLIC_BASE_URL", "")).rstrip("/")
-        login = f"{base}{reverse('account_login')}"
+        base = absolute_url(path="", surface=STAFF)
+        login = absolute_url(path=reverse("account_login"), surface=STAFF)
 
         self.stdout.write("")
         self.stdout.write(f"Invited {email}. They have no credentials yet; this link is how")

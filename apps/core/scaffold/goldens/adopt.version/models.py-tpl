@@ -1,0 +1,55 @@
+# golden: noun begin
+from typing import ClassVar
+
+from django.conf import settings
+from django.db import models
+
+from pilecap import Archivable, Lifecycle, LifecycleKind, OrgScopedModel
+
+
+from pilecap import Versioned
+
+# golden: noun end
+
+
+# golden: noun begin
+class Widget(
+    OrgScopedModel,
+    Archivable,
+    # golden: archive end
+    Versioned,
+    # golden: noun end
+    # golden: noun begin
+):
+    # golden: noun end
+
+    # golden: noun begin
+    lifecycle: ClassVar[Lifecycle] = Lifecycle(kind=LifecycleKind.BOUNDED)
+
+    name = models.CharField(max_length=200)
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="widgets",
+    )
+    notes = models.TextField(blank=True)
+    # golden: noun end
+
+    # golden: noun begin
+    def __str__(self) -> str:
+        return self.name
+
+    # golden: noun end
+
+    # golden: noun begin
+    @property
+    def owner_email(self) -> str:
+        """Who owns this, without the caller having to fetch the owner."""
+        return str(self.owner.email)
+
+    @property
+    def organization_slug(self) -> str:
+        """Which part of the tenant owns it — the slug an `X-Org` header names."""
+        return str(self.organization.slug)
+
+    # golden: noun end

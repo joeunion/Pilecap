@@ -14,15 +14,18 @@ activity ever calls it.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from temporalio import workflow
 from temporalio.api.common.v1 import Payload
 from temporalio.client import Interceptor as ClientInterceptor
 from temporalio.client import OutboundInterceptor, StartWorkflowInput
 from temporalio.converter import default as default_converter
+from temporalio.exceptions import ApplicationError
 from temporalio.worker import (
     ActivityInboundInterceptor,
     ExecuteActivityInput,
@@ -40,14 +43,25 @@ from temporalio.worker import (
     Interceptor as WorkerInterceptor,
 )
 
+from apps.core.headers import (
+    CAUSATION_HEADER,
+    CORRELATION_HEADER,
+    ORG_HEADER,
+    TENANT_HEADER,
+    USER_HEADER,
+)
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from apps.core.models import Organization, Tenant
 
-TENANT_HEADER = "djb-tenant-id"
-ORG_HEADER = "djb-org-id"
-USER_HEADER = "djb-user-id"
-CORRELATION_HEADER = "djb-correlation-id"
-CAUSATION_HEADER = "djb-causation-id"
+#: The namespace a run's own chain is minted in when its headers carried none
+#: (`_chain_for_run`). Fixed, because the mint must answer the same id on every
+#: replay of the same run.
+RUN_CHAIN_NAMESPACE = uuid.UUID("5b0e7c1e-2f6d-4f39-9a63-0c1f6c7f2a41")
+
+#: The `type` of the refusal `workflow_context()` raises when the run's hat is
+#: no longer one its person holds. A workflow's failure handler branches on it.
+HAT_REVOKED = "HatRevoked"
 
 _current_tenant_id: ContextVar[str | None] = ContextVar("djb_tenant_id", default=None)
 _current_org_id: ContextVar[str | None] = ContextVar("djb_org_id", default=None)
@@ -154,13 +168,31 @@ def workflow_context() -> tuple[Tenant, str | None, Organization | None]:
     shape tenancy must never take, so the tenant is now a `Tenant` in the
     signature and a `RuntimeError` naming the header when it is absent.
 
+    **The hat is revalidated here, at every activity boundary.** The headers say
+    which hat the run was started under, and that was true when it started; a
+    run that waits a week can outlive the person's role. So the boundary asks the
+    question every other door asks on every request —
+    `core.middleware.resolve_org` for this person, this tenant and this hat's
+    slug — and a run whose person no longer holds a role over the hat (the
+    membership revoked, the person deactivated, the node gone or another
+    tenant's) is refused with `HatRevoked`, non-retryable: the hat is not coming
+    back, and a retry would ask the same question forever. A run with a hat and
+    **no user** is the product acting for itself (a `system` run): the hat must
+    still exist in this tenant, and there is no membership to revoke. A run with
+    a user and **no hat** has no `resolve_org` question to ask, and still has a
+    person who can leave: they must be active and hold at least one membership in
+    this tenant, or the run is refused the same way.
+
     A caller that legitimately has no tenant uses `platform_context()`, which is
     the declared opt-out and not a synonym.
 
-    It reads the database (for the `Tenant` and `Organization` rows), so it
-    belongs in an activity and never inside a `workflows.py`. The id-only
+    It reads the database (under a hat: the tenant with its hat, the person, and
+    `resolve_org`'s two reads; with no hat: the tenant and one membership read),
+    so it belongs in an activity and never inside a `workflows.py`. The id-only
     accessors above are the ones that are safe in workflow code.
     """
+    from apps.core.models import Organization, Tenant
+
     tenant_id = current_tenant_id()
     if tenant_id is None:
         raise RuntimeError(
@@ -170,13 +202,88 @@ def workflow_context() -> tuple[Tenant, str | None, Organization | None]:
             "activity reads platform_context() instead. Returning None here would become "
             "for_tenant(None), which is empty rather than refused."
         )
-    tenant, user_id, org = platform_context()
+    user_id = current_user_id()
+    org_id = current_org_id()
+    org: Organization | None = None
+    if org_id is not None:
+        # The hat and its tenant in one read, scoped by the header's tenant: a
+        # hat id from another tenant's tree finds nothing here.
+        org = (
+            Organization.objects.select_related("tenant")
+            .filter(pk=org_id, tenant_id=tenant_id)
+            .first()
+        )
+    tenant = org.tenant if org is not None else Tenant.objects.filter(pk=tenant_id).first()
     if tenant is None:
         raise RuntimeError(
             f"The {TENANT_HEADER!r} header names tenant {tenant_id!r}, and no such row exists. "
             "The run outlived its tenant; it is refused rather than run for nobody."
         )
+    if org_id is not None:
+        _revalidate_hat(tenant=tenant, user_id=user_id, org_id=org_id, org=org)
+    elif user_id is not None:
+        _revalidate_person(tenant=tenant, user_id=user_id)
     return tenant, user_id, org
+
+
+def _revalidate_person(*, tenant: Tenant, user_id: str) -> None:
+    """Refuse a hatless run whose person can no longer act in this tenant.
+
+    One read: an active person holding any membership here. The same answer
+    `resolve_org` would give for "any hat at all", without a slug to ask about.
+    """
+    from apps.core.models import Membership
+
+    belongs = Membership.objects.filter(
+        user_id=user_id, user__is_active=True, tenant_id=tenant.pk
+    ).exists()
+    if not belongs:
+        raise ApplicationError(
+            f"This run acts for a person with no {ORG_HEADER!r} hat in tenant "
+            f"{tenant.slug!r}, and the person no longer holds a role in it. The run "
+            "outlived their place in the tenant; this activity is refused rather than "
+            "acting as somebody who can no longer act there. It will not be retried: "
+            "the role is not coming back by waiting.",
+            type=HAT_REVOKED,
+            non_retryable=True,
+        )
+
+
+def _revalidate_hat(
+    *, tenant: Tenant, user_id: str | None, org_id: str, org: Organization | None
+) -> None:
+    """Refuse a run whose hat its person no longer holds. **The one road.**
+
+    `resolve_org` is the predicate every other door asks, so a hat a request
+    would be refused is a hat an activity is refused, and the two cannot drift.
+    """
+    from apps.core.middleware import resolve_org
+
+    if org is None:
+        raise _hat_refused(tenant=tenant, hat=org_id, why="names no organization in this tenant")
+    if org.tenant_id != tenant.pk:  # pragma: no cover - the read above is tenant-keyed
+        raise _hat_refused(tenant=tenant, hat=org.slug, why="belongs to another tenant")
+    if user_id is None:
+        return
+    from django.contrib.auth import get_user_model
+
+    user = get_user_model().objects.filter(pk=user_id, is_active=True).first()
+    held = resolve_org(user=user, tenant=tenant, requested_slug=org.slug)
+    if held is None or held.pk != org.pk:
+        raise _hat_refused(
+            tenant=tenant, hat=org.slug, why="the person no longer holds a role over it"
+        )
+
+
+def _hat_refused(*, tenant: Tenant, hat: str, why: str) -> ApplicationError:
+    return ApplicationError(
+        f"The {ORG_HEADER!r} header names hat {hat!r} in tenant {tenant.slug!r}, and {why}. "
+        "The run was started under that hat and outlived it; this activity is refused "
+        "rather than acting as somebody who can no longer act there. It will not be "
+        "retried: the hat is not coming back by waiting.",
+        type=HAT_REVOKED,
+        non_retryable=True,
+    )
 
 
 def platform_context() -> tuple[Tenant | None, str | None, Organization | None]:
@@ -286,18 +393,23 @@ class _ActivityInbound(ActivityInboundInterceptor):
         from apps.core import context as observability_context
 
         principal = _decode(input.headers)
+        # The belt: the workflow door gives every run a chain (`_chain_for_run`)
+        # and stamps it on each activity, so a header without one is an activity
+        # reached some other way — started bare, outside any workflow. The door
+        # mints one there, so the work below it is never unbound.
+        correlation_id = principal.correlation_id or observability_context.new_correlation_id()
         tokens = set_principal(
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
             org_id=principal.org_id,
-            correlation_id=principal.correlation_id,
+            correlation_id=correlation_id,
             causation_id=principal.causation_id,
         )
         previous = observability_context.get()
         observability_context.clear()
         observability_context.bind(
             request_id=observability_context.new_id(),
-            correlation_id=principal.correlation_id,
+            correlation_id=correlation_id,
             causation_id=principal.causation_id,
             tenant_id=principal.tenant_id,
             org_id=principal.org_id,
@@ -350,7 +462,29 @@ class _WorkflowOutbound(WorkflowOutboundInterceptor):
         return await super().signal_external_workflow(input)
 
 
+def _chain_for_run() -> str:
+    """This run's own correlation chain, for a run whose headers carried none.
+
+    A run a Temporal Schedule starts has no caller, so no chain arrives with it;
+    the workflow door is where one is minted, once, for the whole run — minted
+    per activity instead, every activity of one run would start an unrelated
+    chain. Derived from the run's identity rather than drawn at random, so a
+    replay of the same run mints the same id (house rule 9): a name-based UUID
+    over the workflow id and run id, in the shape `new_correlation_id` answers.
+    """
+    info = workflow.info()
+    return uuid.uuid5(RUN_CHAIN_NAMESPACE, f"{info.workflow_id}/{info.run_id}").hex
+
+
 class _WorkflowInbound(WorkflowInboundInterceptor):
+    """The workflow door: restores the principal, and gives the run its chain.
+
+    A run started in a chain continues it (the header's id); a run started with
+    none (a Schedule's) gets one minted here, deterministically, and
+    `_WorkflowOutbound` stamps it onto every activity, child and signal — so
+    every activity of the run binds the same chain.
+    """
+
     def init(self, outbound: WorkflowOutboundInterceptor) -> None:
         super().init(_WorkflowOutbound(outbound))
 
@@ -360,7 +494,7 @@ class _WorkflowInbound(WorkflowInboundInterceptor):
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
             org_id=principal.org_id,
-            correlation_id=principal.correlation_id,
+            correlation_id=principal.correlation_id or _chain_for_run(),
             causation_id=principal.causation_id,
         )
         return await super().execute_workflow(input)

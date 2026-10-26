@@ -28,7 +28,7 @@ Two things it deliberately still does not do:
   `core.services._refuse_escalation`, next to the membership write it guards,
   because it is a rule about the *role being granted* rather than about the
   object being touched, and a policy predicate has no grant to look at.
-* **It does not read the acting hat.** The object decides the question. A
+* **It does not read the hat.** The object decides the question. A
   branch manager acting under the group's hat still may not touch a sibling
   branch, because the sibling is underneath no membership they hold — and that
   is now `effective_permissions`' sentence rather than a predicate's.
@@ -40,7 +40,9 @@ from typing import Any
 
 from apps.core.actor import Actor
 from apps.core.authz import Policy, holds, refuses_system
+from apps.core.exceptions import Conflict
 from apps.core.models import Organization, is_org_scoped
+from apps.core.services import root_organization
 
 # **Empty, and it is a statement.** Every key `core` used to guard with the
 # administer predicate is a plain capability now: `organization.create/update/
@@ -57,10 +59,8 @@ POLICIES: dict[str, Policy] = {}
 #: The capability that says "administers this node": renaming it. The template's
 #: `admin` role holds it (`*`) wherever its membership reaches, and `member`
 #: (`*.read`) never does. `may_archive` asks it rather than a role by value
-#: (house rule 54 (c)), and rather than `<kind>.archive` itself — that key has a
-#: predicate, so every declared role is offered it and the predicate is what
-#: narrows (`authz._attach_default_roles` clause 5); asking it back would narrow
-#: nothing.
+#: (house rule 54 (c)), and rather than `<kind>.archive` itself — that is the
+#: key this predicate decides, so asking it back would be circular.
 ADMINISTERS_THE_NODE = "organization.update"
 
 
@@ -113,11 +113,21 @@ def _administers_where_it_lives(actor: Actor, obj: Any) -> bool:
     if is_org_scoped(type(obj)):
         branch = getattr(obj, "organization", None)
         return isinstance(branch, Organization) and holds(actor, ADMINISTERS_THE_NODE, at=branch)
-    tenant = getattr(obj, "tenant", None)
-    if tenant is None:
+    tenant_id = getattr(obj, "tenant_id", None)
+    if tenant_id is None:
         return False
-    root = Organization.objects.for_tenant(tenant).filter(parent__isnull=True).first()
-    return root is not None and holds(actor, ADMINISTERS_THE_NODE, at=root)
+    # The actor's own tenant instance carries the memoised root (`Tenant`'s
+    # `remember_root`), so a page of tenant-wide rows resolves it ONCE rather
+    # than once per row through each row's own `tenant`. A row of another
+    # tenant asks at its own tenant's root, and holds nothing there.
+    tenant = (
+        actor.tenant if actor.tenant is not None and actor.tenant.pk == tenant_id else obj.tenant
+    )
+    try:
+        root = root_organization(tenant=tenant)
+    except Conflict:
+        return False
+    return holds(actor, ADMINISTERS_THE_NODE, at=root)
 
 
 @refuses_system

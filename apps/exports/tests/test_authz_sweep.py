@@ -119,6 +119,7 @@ def _rows(world: World) -> dict[str, dict[str, Export | None]]:
     }
 
 
+# does-not-cover: the tree's row classes (subtree, branches); trigger: an object axis on a tree.
 def matrix(world: World) -> dict[str, dict[str, dict[str, bool]]]:
     """`key → row class → actor → allows(...)`. The same function on both trees."""
     rows = _rows(world)
@@ -236,22 +237,6 @@ def test_a_flipped_cell_is_red(world: World) -> None:
     assert moved == [(key, row_class, name)], moved
 
 
-def test_the_apps_policies_read_no_role() -> None:
-    """**P7.5.2, the code half.** `apps/exports/policies.py` asks no role by value.
-
-    A predicate answers "may this person do this to THAT row"; "how much
-    authority does this person have" is the DATA half's question and it has one
-    owner. The grep is the same one rule 54 (c) runs, pointed at this one file,
-    so a regression here reds in the rung before it reds in the gate.
-    """
-    import re
-
-    source = (Path(settings.BASE_DIR) / "apps/exports/policies.py").read_text()
-    pattern = re.compile(r"is_privileged|ADMIN_RANK|rank\(|effective_role|actor_role|ROLE_RANK")
-    hits = [line for line in source.splitlines() if pattern.search(line)]
-    assert hits == [], hits
-
-
 def test_the_retired_key_still_answers_through_its_alias(world: World) -> None:
     """**P7.5.1.** `export.request` and `export.create` are one question.
 
@@ -287,35 +272,20 @@ def test_every_key_this_app_declares_conforms() -> None:
         assert words[key].conforms, (key, words[key].non_conformance)
 
 
-def test_what_a_member_may_do_is_still_the_transitional_residue(world: World) -> None:
-    """**P7.5.2, deferred half — the PM's ruling of 2026-09-16, asserted.**
-
-    The sweep's shape puts "a `member` may create an export" in `DEFAULT_ROLES`,
-    as data. That entry moves `defaults_for("member")`, which is a pin of the
-    flat product two core tests hold, and no per-app sweep may move it alone —
-    so this app declares no `DEFAULT_ROLES` at all and `can_request` keeps its
-    membership half as residue.
-
-    This test is the RECORD of that, so the deferral is a thing the suite knows
-    about rather than a sentence in a commit message: it fails the day somebody
-    adds the entry without the core rung that makes room for it, and it fails
-    the day the residue quietly stops holding.
-    """
+def test_what_a_member_may_create_is_declared_and_the_predicate_still_narrows(
+    world: World,
+) -> None:
+    """`member` holds `export.create` by this app's `DEFAULT_ROLES`, never by the residue."""
     from apps.core.authz import defaults_for, vocabulary
     from apps.exports import policies
 
-    assert not hasattr(policies, "DEFAULT_ROLES"), "the deferred entry landed early"
+    assert policies.DEFAULT_ROLES == {"export.create": frozenset({"member"})}
 
     member = defaults_for("member")
     assert "export.read" in member  # by the `*.read` pattern `roles.py` declares
-    assert "export.create" not in member  # the declaration's answer: not yet
+    assert "export.create" in member
     assert "export.build" not in member
-
-    # ...and the transitional column is what carries it meanwhile: a key with a
-    # predicate and no declaration is offered to every role and the predicate is
-    # what narrows it (`core.authz._attach_default_roles` clause 5).
-    assert "member" in vocabulary()["export.create"].default_roles
-    assert "member" not in vocabulary()["export.build"].default_roles
+    assert vocabulary()["export.create"].predicate is policies.can_request
 
 
 def test_a_roleless_membership_may_not_export(world: World) -> None:

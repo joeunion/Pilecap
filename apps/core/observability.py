@@ -38,6 +38,8 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace import Tracer
 
+from apps.core.service import trace_id
+
 # The name every span, log record and metric is attributed to. `web` and
 # `worker` are the two this template ships; a product adds its own by setting
 # DJB_SERVICE_NAME on the process.
@@ -65,7 +67,7 @@ def _add_trace_ids(
     """
     span_context = trace.get_current_span().get_span_context()
     if span_context.is_valid:
-        event_dict["trace_id"] = format(span_context.trace_id, "032x")
+        event_dict["trace_id"] = trace_id()
         event_dict["span_id"] = format(span_context.span_id, "016x")
     return event_dict
 
@@ -104,7 +106,9 @@ def _resource() -> Resource:
     return Resource.create(
         {
             "service.name": str(getattr(settings, "OTEL_SERVICE_NAME", DEFAULT_SERVICE_NAME)),
-            "service.version": str(getattr(settings, "TEMPLATE_VERSION", "0.1.0")),
+            # The template version settings read from the TEMPLATE_VERSION file —
+            # no default: a typed one put `0.1.0` on every trace.
+            "service.version": str(settings.TEMPLATE_VERSION),
             "deployment.environment": str(getattr(settings, "DJB_ENVIRONMENT", "local")),
         }
     )

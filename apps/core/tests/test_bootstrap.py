@@ -34,7 +34,7 @@ from apps.core.models import Membership, Organization, Tenant
 
 pytestmark = pytest.mark.django_db
 
-PASSWORD = "bootstrap-tests-only"  # pragma: allowlist secret
+PASSWORD = "bootstrap-tests-only"  # noqa: S105 — a throwaway password a test user is made with  # pragma: allowlist secret
 
 
 def _run(**options: Any) -> str:

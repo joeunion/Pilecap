@@ -52,7 +52,7 @@ anywhere in contract prose.
 
 ```python
 @router.post("/", response={201: WidgetOut}, url_name="widget-create")
-@refuses("forbidden", "not_found", "rate_limited")   # apps/example/api.py:426
+@refuses("forbidden", "not_found", "rate_limited")   # apps/example/api.py::create_widget_route
 def create_widget_route(request: TenantRequest, payload: WidgetIn) -> ...:
     """Create a widget
 

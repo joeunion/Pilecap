@@ -27,9 +27,9 @@ tooling is not being dodged: the dependency is declared on the app
 
 **What happens when nobody registered.** A template without the platform apps
 still has to run — that is the whole point of a template — so an absent
-registration is not a crash on a laptop or in the test suite: `get()` returns a
-callable that does nothing and logs `core.bridge.missing`, which is a structured
-line somebody can actually search for. In **production** it raises: a deployment
+registration is a logged no-op under `local`: `get()` logs `core.bridge.missing`
+and does nothing. In **production** and under the **test settings** (which set
+`BRIDGE_STRICT`, so a missing registration reds a test, not a request) it raises: a deployment
 where the email workflow silently never starts is worse than one that refuses to
 serve the request, and "the invitations stopped going out in March" is the
 incident this refusal prevents.
@@ -57,7 +57,7 @@ keyword-only, which have defaults, and the arity of what comes back.
 changes shape fails a test in `core` rather than a request in production.
 
 **These are the shapes as the code has them, not as prose remembered them.**
-`workflow_context()` returns a **3-tuple** — tenant, user id and the acting hat
+`workflow_context()` returns a **3-tuple** — tenant, user id and the hat
 — and said "(Tenant | None, str | None)" here until this comment was fixed; the
 org became the third element when the hierarchy landed. Code wins, and the test
 below is what keeps the comment honest from now on.
@@ -66,6 +66,7 @@ below is what keeps the comment honest from now on.
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import timedelta
 from typing import Any, Protocol
 
 from django.conf import settings
@@ -135,6 +136,33 @@ KICK = "realtime.kick"
 #: the connection. Optional, looked up with `find()`, like the other two.
 #: Shape: `KicksTenant`, below.
 KICK_TENANT = "realtime.kick_tenant"
+#: `apps.events.receivers.signature_matches` — the ONE inbound `X-Signature`
+#: verifier. `apps.connections`' receiver used to carry its own copy, and the
+#: two disagreed about an upper-case digest: a verifier is a security decision,
+#: and two of them is two answers to one question. `connections` sits beside
+#: `events`, never above it, so it reaches the one verifier through this name.
+#: Required, looked up with `get()`: a receiver with nothing to verify against
+#: must refuse, never fall through to a check of its own. Shape:
+#: `VerifiesSignature`, below.
+SIGNATURE_MATCHES = "events.signature_matches"
+#: `apps.events.receivers.signature_v2_matches` — the `X-Signature-V2`
+#: verifier: the digest over `<t>.<body>` AND the freshness window. Required,
+#: like the v1 name. Shape: `VerifiesSignature`, below — the same call.
+SIGNATURE_V2_MATCHES = "events.signature_v2_matches"
+#: `apps.events.receivers.signature_v2_tolerance` — the window, as a call,
+#: because the bridge holds callables and `register` refuses a bare value. A
+#: door that publishes the window reads it here and never types a second
+#: five-minute number. Shape: `ReadsSignatureWindow`, below.
+SIGNATURE_V2_TOLERANCE = "events.signature_v2_tolerance"
+#: `apps.events.receivers.verify_and_store` — verify, store as an `Event`, hand
+#: to the dispatch workflow. Shape: `VerifiesAndStores`, below.
+VERIFY_AND_STORE = "events.verify_and_store"
+# Asked by `core.services.create_tenant` for every new tenant: home the tenant's
+# sign-in realm (the identity app starts its workflow on commit). Looked up with
+# `find()` — until the identity app registers it, a new tenant simply has no
+# realm yet and a log line says so. Shape: `EnsuresIdentityHome`, below; the
+# identity app registers it in `AccountsConfig.ready()`.
+ENSURE_IDENTITY_HOME = "accounts.ensure_identity_home"
 
 
 # --- The shapes --------------------------------------------------------------
@@ -160,6 +188,10 @@ class StartsWorkflowOnCommit(Protocol):
     `accounts`' identity runs among them — sit below `apps.workflows` and reach
     the starter through this name, so a keyword absent from this protocol is a
     keyword they cannot pass.
+
+    `actor` is who is asking (ADR workflows-9): the run row's audit reads who
+    from it, and a caller that hands only `user` and `org` has the actor built
+    from them — the system actor when there is no person.
     """
 
     def __call__(
@@ -170,6 +202,7 @@ class StartsWorkflowOnCommit(Protocol):
         tenant: Any,
         user: Any = None,
         org: Any = None,
+        actor: Any = None,
         id: str,
         task_queue: str | None = None,
         reask_after_failure: bool = False,
@@ -288,6 +321,68 @@ class KicksTenant(Protocol):
     def __call__(self, *, tenant_id: Any, reason: str | None = None) -> None: ...
 
 
+class VerifiesSignature(Protocol):
+    """`apps.events.receivers.signature_matches` and `signature_v2_matches`.
+
+    One call shape for both schemes: the source's secret, the raw bytes, and the
+    header value exactly as it arrived. `True` only when it verifies; an empty
+    secret or an empty signature is `False`, never "skip the check".
+
+    Filled by `apps/events/apps.py`; `connections` reaches it with `get`
+    (strict — an events app that is not installed is a `BridgeNotRegistered`
+    in production, never a fall-through to a second verifier; elsewhere the
+    no-op answers `None`, which a caller reads as not verified).
+    """
+
+    def __call__(self, *, secret: str, body: bytes, signature: str) -> bool: ...
+
+
+class ReadsSignatureWindow(Protocol):
+    """`apps.events.receivers.signature_v2_tolerance` — the `X-Signature-V2` window.
+
+    Filled by `apps/events/apps.py`; reached with `get`. Outside production an
+    unregistered name answers `None`, which a caller reads as "no scheme to
+    publish a window for".
+    """
+
+    def __call__(self) -> timedelta: ...
+
+
+class EnsuresIdentityHome(Protocol):
+    """`apps.accounts.services._ask_for_identity_home` — home a new tenant's realm.
+
+    Called inside `create_tenant`'s transaction: the identity app writes the
+    tenant's `pending` home and starts its realm run on commit. The tenant row
+    and not an id, because the call is in-process and in the same transaction.
+    Optional; looked up with `find()` — a deployment without the identity app
+    creates tenants with no realm, and a log line says so.
+    """
+
+    def __call__(self, *, tenant: Any) -> None: ...
+
+
+class VerifiesAndStores(Protocol):
+    """`apps.events.receivers.verify_and_store` — the inbound door's three steps.
+
+    Keyword-only like every name here: the raw bytes, the signature as offered,
+    the ROW that carries both the tenant and the secret (never the two as loose
+    values — ADR connections-1), the inbound event's name, and an optional
+    already-decoded payload. Answers the stored `Event`.
+
+    Filled by `apps/events/apps.py`; `connections` reaches it with `get`.
+    """
+
+    def __call__(
+        self,
+        *,
+        request_body: bytes,
+        signature: str,
+        source: Any,
+        name: str,
+        payload: dict[str, Any] | None = None,
+    ) -> Any: ...
+
+
 #: Every name, and the shape whatever fills it must have. Read by
 #: `apps/core/tests/test_bridge_shape.py`, which is where the pinning happens:
 #: a registrant that gains, loses or renames a keyword fails there instead of
@@ -301,14 +396,19 @@ SHAPES: dict[str, type] = {
     REALTIME_PUSH: PushesToSockets,
     KICK: KicksUser,
     KICK_TENANT: KicksTenant,
+    SIGNATURE_MATCHES: VerifiesSignature,
+    SIGNATURE_V2_MATCHES: VerifiesSignature,
+    SIGNATURE_V2_TOLERANCE: ReadsSignatureWindow,
+    VERIFY_AND_STORE: VerifiesAndStores,
+    ENSURE_IDENTITY_HOME: EnsuresIdentityHome,
 }
 
 
 class BridgeNotRegistered(RuntimeError):
     """Nobody registered this name, and this deployment refuses to continue.
 
-    Raised only where `strict()` is true — production. Elsewhere the call is a
-    logged no-op, so a checkout without the platform apps still runs.
+    Raised only where `strict()` is true — production and the test settings.
+    Under `local` the call is a logged no-op, so a bare checkout still runs.
     """
 
 
@@ -318,9 +418,9 @@ _registry: dict[str, Callable[..., Any]] = {}
 def strict() -> bool:
     """Whether an absent registration is a refusal rather than a no-op.
 
-    Production, by the settings module that is actually in force. A product that
-    wants the refusal somewhere else — a staging environment, a test that proves
-    this behaviour — sets `BRIDGE_STRICT` and that wins.
+    `BRIDGE_STRICT` wins when set: `config.settings.test` sets it True, a test of
+    the no-op sets it False, a staging environment may set either. Unset, the
+    settings module decides: `production` is strict; `local` is the logged no-op.
     """
     configured = getattr(settings, "BRIDGE_STRICT", None)
     if configured is not None:
@@ -382,8 +482,8 @@ def _missing(name: str) -> Callable[..., Any]:
 def get(name: str) -> Callable[..., Any]:
     """The callable registered under `name`.
 
-    Absent: `BridgeNotRegistered` in production, a logging no-op everywhere
-    else. The asymmetry is deliberate — see the module docstring.
+    Absent: `BridgeNotRegistered` where `strict()` is true (production, tests),
+    a logging no-op under `local`. The asymmetry is deliberate — see the module docstring.
     """
     fn = _registry.get(name)
     if fn is not None:
@@ -395,3 +495,15 @@ def get(name: str) -> Callable[..., Any]:
             "installed and that its ready() runs."
         )
     return _missing(name)
+
+
+def listener(name: str) -> Callable[..., Any] | None:
+    """The callable registered under `name`, or `None` when nothing listens outside production.
+
+    `find()` first, then `get()` once for its production refusal; `get()` never answers `None`.
+    """
+    found = find(name)
+    if found is not None:
+        return found
+    get(name)
+    return None

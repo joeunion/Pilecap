@@ -18,6 +18,9 @@ from typing import Any
 from uuid import UUID
 
 from ninja import Schema
+from pydantic import Field
+
+from apps.core.schemas import example
 
 # The application close codes. 4000-4999 is the range RFC 6455 reserves for
 # private use, and these deliberately echo the HTTP statuses their reasons map
@@ -39,7 +42,14 @@ wrong move when that credential is the thing that stopped existing. This one say
 *do not come back with this*. Sent by `bridge.kick_user`; see ADR realtime-2 (d).
 """
 
+CLOSE_TOO_MANY_SOCKETS = 4429
+"""429 on a socket: the credential or tenant is at its socket ceiling, or the count is unread."""
 
+CLOSE_SESSION_EXPIRED = 4419
+"""419 ("session expired" in some frameworks) on a socket: the session that opened it ended."""
+
+
+# rule-16: the socket frame's published component name; renaming it moves the wire
 class EventMessage(Schema):
     """One thing that happened, pushed to everyone connected for its tenant.
 
@@ -79,3 +89,15 @@ class EventMessage(Schema):
     correlation_id: str | None = None
     organization_id: UUID | None = None
     occurred_at: datetime
+
+
+#: The ticket door's scope family; the event stream itself is no family's door (`_joins_on`).
+TICKET_FAMILY = "socket-tickets"
+
+
+class SocketTicketOut(Schema):
+    """A socket ticket: present it once as `?ticket=` on `ws/events/` within `expires_in` s."""
+
+    ticket: str = Field(..., json_schema_extra=example("q3Vb0cX9-one-use-ticket"))
+    expires_in: int = Field(..., json_schema_extra=example(60))
+    expires_at: datetime = Field(..., json_schema_extra=example("2026-10-23T18:01:00Z"))

@@ -18,12 +18,13 @@ from django.test import Client
 
 from apps.accounts.models import User
 from apps.core.admin import ServiceModelAdmin
+from apps.core.models import Tenant
 
 ADD_URL = "/admin/accounts/user/add/"
 
 
 @pytest.fixture
-def staff(db: None) -> User:
+def staff(tenant: Tenant) -> User:
     """A staff member who can reach every user page in the admin.
 
     Built through the manager rather than `create_user` because staff-ness and
@@ -32,7 +33,18 @@ def staff(db: None) -> User:
     """
     person = User.objects.create_superuser(
         email="staff@example.com",
-        password="a-long-enough-password",  # pragma: allowlist secret
+        password="a-long-enough-password",  # noqa: S106 — a throwaway password a test user is made with  # pragma: allowlist secret
+    )
+    from apps.core.actor import system_actor
+    from apps.core.models import Membership
+    from apps.core.services import add_membership
+
+    add_membership(
+        user=person,
+        tenant=tenant,
+        is_default=True,
+        role=Membership.Role.OWNER,
+        actor=system_actor(tenant=tenant),
     )
     return person
 

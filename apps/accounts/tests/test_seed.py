@@ -18,7 +18,7 @@ import pytest
 from django.core.management import call_command
 from django.core.management.base import CommandError
 
-from apps.accounts import zitadel
+from apps.accounts import zitadel, zitadel_measure_kit
 from apps.accounts.management.commands import zitadel_seed as seed
 from apps.accounts.management.commands.seed import (
     SEED_MEMBER_EMAIL,
@@ -513,7 +513,9 @@ def test_the_login_version_check_measures_both_redirects_and_deactivates_its_vic
     project_id = str(_apps_by_name(instance)["Web"]["projectId"])
     before = set(instance.apps)
 
-    seen = zitadel.check_login_version_redirects(project_id=project_id, base_uri=V2_BASE_URI)
+    seen = zitadel_measure_kit.check_login_version_redirects(
+        project_id=project_id, base_uri=V2_BASE_URI
+    )
 
     assert "/ui/login/login?authRequestID=" in seen["undeclared"]
     assert seen["declared"].startswith(f"{V2_BASE_URI}/login?authRequest=V2_")
@@ -534,10 +536,18 @@ def test_the_login_client_check_reports_the_credentials_roles(instance: FakeZita
     """
     machine = str(instance.machine["id"])
 
-    assert zitadel.check_login_client_role()["may_finalize"] is True
+    assert zitadel_measure_kit.check_login_client_role()["may_finalize"] is True
 
     instance.instance_members[machine] = ["IAM_OWNER"]
-    seen = zitadel.check_login_client_role()
+    seen = zitadel_measure_kit.check_login_client_role()
     assert seen["may_finalize"] is False
     assert seen["roles"] == ["IAM_OWNER"]
     assert seen["login_name"] == "djb-platform"
+
+
+def test_the_audience_is_labelled(instance: FakeZitadel, capsys: Any) -> None:
+    """Step 42's `ZITADEL_MCP_AUDIENCE` is the project id; the seed prints it under that name."""
+    out = _seeded("http://localhost:8000", capsys)
+    project_id = next(line for line in out.splitlines() if " project " in line).split()[-1]
+    labelled = [line.strip() for line in out.splitlines() if "ZITADEL_MCP_AUDIENCE=" in line]
+    assert labelled == [f"ZITADEL_MCP_AUDIENCE={project_id.strip('()')}"], out

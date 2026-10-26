@@ -1,0 +1,132 @@
+# golden: noun begin
+from typing import ClassVar
+
+from django.conf import settings
+from django.db import models
+
+from pilecap import Archivable, Lifecycle, LifecycleKind, OrgScopedModel
+
+
+from pilecap import Versioned
+
+# golden: noun end
+
+
+from pilecap import Movable
+
+
+# golden: noun begin
+class Widget(
+    OrgScopedModel,
+    Archivable,
+    # golden: archive end
+    Versioned,
+    # golden: noun end
+    # golden: version end
+    Movable,
+    # golden: noun begin
+):
+    # golden: noun end
+
+    # golden: noun begin
+    lifecycle: ClassVar[Lifecycle] = Lifecycle(kind=LifecycleKind.BOUNDED)
+
+    name = models.CharField(max_length=200)
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="widgets",
+    )
+    notes = models.TextField(blank=True)
+    # golden: noun end
+    # golden: archive version end
+    # The owner axis: `core.verbs.rehome` reassigns this field when a move names it.
+    move_owner_field: ClassVar[str | None] = "owner"
+    # golden: move end
+    # The verbs a selection runs, each through its own single road.
+    bulk_verbs: ClassVar[tuple[str, ...]] = ("archive", "restore", "move")
+
+    # golden: noun begin
+    def __str__(self) -> str:
+        return self.name
+
+    # golden: noun end
+
+    # golden: noun begin
+    @property
+    def owner_email(self) -> str:
+        """Who owns this, without the caller having to fetch the owner."""
+        return str(self.owner.email)
+
+    @property
+    def organization_slug(self) -> str:
+        """Which part of the tenant owns it — the slug an `X-Org` header names."""
+        return str(self.organization.slug)
+
+    # golden: noun end
+
+    # golden: archive version end
+    @property
+    def owner_name(self) -> str | None:
+        """Who owns it, in words — the move sheet's owner axis says it back."""
+        return getattr(self.owner, "full_name", None) or None
+
+
+# golden: child entry begin
+class WidgetEntry(OrgScopedModel):
+    """A widget's ledger line. **Append-only; it lands where the widget is.**"""
+
+    #: House rule 20, declared rather than named: see `core.models.is_append_only`.
+    append_only = True
+
+    #: The landing gate: this row's organization is the widget's, or it is refused.
+    derive_org_from = "widget"
+
+    #: ADR core-13, kind three of three: append-only like `core.AuditEntry` (rules 20 and 31).
+    lifecycle: ClassVar[Lifecycle] = Lifecycle(
+        kind=LifecycleKind.APPEND_ONLY,
+        reason=(
+            "the widget's ledger, and a ledger with a retention window is a ledger "
+            "whose oldest lines cannot be cited. 'When was this approved, and by "
+            "whom' has to stay answerable for as long as anybody can ask — and the "
+            "line outlives every attempt to remove its subject, because `widget` "
+            "is PROTECT rather than CASCADE."
+        ),
+        trigger=(
+            "2026-08-24 — archival, when it comes, is a DATED RESIDUAL and never a "
+            "DELETE nobody remembers (`core.audit`'s grammar). The first "
+            "of: a product whose entry table outgrows its widget table by orders "
+            "of magnitude, or a stated retention obligation. Either one turns this "
+            "into a `purged` declaration whose callable moves lines to cold "
+            "storage, and that declaration lands in the SAME COMMIT as its "
+            "`ScheduleDeclaration` — a purge with no schedule is the defect, not "
+            "the fix."
+        ),
+    )
+
+    class Kind(models.TextChoices):
+        NOTE = "note", "Note"
+        APPROVED = "approved", "Approved"
+
+    widget = models.ForeignKey(
+        Widget,
+        on_delete=models.PROTECT,
+        related_name="entries",
+        help_text="The widget this line is about. Its organization is this row's.",
+    )
+    kind = models.CharField(max_length=16, choices=Kind.choices, default=Kind.NOTE)
+    note = models.TextField(blank=True)
+
+    class Meta(OrgScopedModel.Meta):
+        verbose_name = "widget entry"
+        verbose_name_plural = "widget entries"
+
+    def __str__(self) -> str:
+        return f"{self.kind} on {self.widget_id}"
+
+    @property
+    def organization_slug(self) -> str:
+        return str(self.organization.slug)
+
+
+# golden: child entry end

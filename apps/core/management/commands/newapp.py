@@ -59,7 +59,10 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 
 from apps.core.checks import BANNED_MODULES
+from apps.core.lexicon import PLURAL_REMEDY, looks_plural
 from apps.core.management import BaseCommand
+from apps.core.reach import extended_scope
+from apps.core.scaffold import floors
 
 #: The template `startapp` renders. Its files are `*.py-tpl` so that nothing in
 #: the tree lints, type-checks or collects them as the modules they are not.
@@ -69,22 +72,9 @@ APP_TEMPLATE = Path(__file__).resolve().parents[1] / "app_template"
 #: module in the app carries and every sibling's `depends_on` spells.
 LABEL = re.compile(r"^[a-z][a-z0-9_]*$")
 
-#: House rule 16's plural test, restated — a singular noun that happens to end
-#: in `s`. The rule itself lives in `quality/checks.py::_looks_plural`, which
-#: production code may not import (the gate imports `apps`, not the other way
-#: round), so this is a deliberate second copy and
-#: `apps/core/tests/test_newapp.py::test_the_plural_test_here_is_the_gates_own`
-#: reds the day the two disagree.
-SINGULAR_S_ENDINGS = ("ss", "us", "is")
-
-
-def _looks_plural(label: str) -> bool:
-    lowered = label.lower()
-    return lowered.endswith("s") and not lowered.endswith(SINGULAR_S_ENDINGS)
-
 
 def singular_apps_the_grammar_admits() -> frozenset[str]:
-    """The singular app names rule 16 already admits, read off `rules.yaml`.
+    """The singular app names rule 16 already admits, read off `rules.yaml` and the drawer.
 
     Read rather than copied, so the escape the refusal below offers is the one
     that actually works: record the name in `app_name_exemptions` with its
@@ -102,8 +92,13 @@ def singular_apps_the_grammar_admits() -> frozenset[str]:
     for rule in loaded.get("rules") or []:
         if not isinstance(rule, dict) or str(rule.get("id")) != "16":
             continue
-        scope = rule.get("scope") or {}
-        entries = scope.get("app_name_exemptions") or [] if isinstance(scope, dict) else []
+        if not isinstance(rule.get("scope") or {}, dict):
+            return frozenset()
+        try:
+            scope = extended_scope(Path(settings.BASE_DIR), rule)
+        except ValueError as refused:
+            raise _refuse(str(refused)) from refused
+        entries = scope.get("app_name_exemptions") or []
         return frozenset(str(entry["app"]) for entry in entries if entry.get("app"))
     return frozenset()
 
@@ -151,11 +146,23 @@ class Command(BaseCommand):
             raise
 
         self.stdout.write(f"{app_dir} — the canonical shape, and nothing else.")
+        if not chosen:
+            for line in floors.record(Path(settings.BASE_DIR), label, None):
+                self.stdout.write(f"  {line}")
+            # Invariant: imported here — `_common` imports this module at its head.
+            from apps.core.scaffold.arms._common import regenerate_derived
+
+            for line in regenerate_derived(Path(settings.BASE_DIR)):
+                self.stdout.write(line)
         self.stdout.write(
             "  Registration is done: discovery reads apps.py. config/ does not change."
         )
+        shown = f"apps/{label}" if not chosen else str(app_dir)
+        self.stdout.write(f"undo: rm -r {shown} removes everything this command wrote")
         self.stdout.write(
-            f"  Next: the model (models.py's docstring), then `makemigrations {label}`."
+            f"next: uv run python manage.py roads shape noun {label} <Noun> — a noun whose "
+            f"plural no app holds (house rule 32), e.g. "
+            f"{''.join(x for x in label.title() if x != '_')}Item"
         )
 
     def refuse_what_would_red(self, label: str, directory: Path) -> None:
@@ -164,7 +171,8 @@ class Command(BaseCommand):
             raise _refuse(
                 f"{label!r} is not an app label. It has to be a lowercase Python "
                 "identifier — `apps.<label>` is the import path every module in the app "
-                "carries and every sibling's `depends_on` spells (django-conventions §1)."
+                "carries and every sibling's `depends_on` spells "
+                "(docs/sdk/the-developers-hand.md § App labels)."
             )
         if label in BANNED_MODULES:
             raise _refuse(
@@ -186,13 +194,12 @@ class Command(BaseCommand):
                 "`startapp` refuses this too; it is refused here first, before the "
                 "directory is made."
             )
-        if not _looks_plural(label) and label not in singular_apps_the_grammar_admits():
+        if not looks_plural(label) and label not in singular_apps_the_grammar_admits():
             raise _refuse(
                 f"{label!r} is not plural — an app is a collection of things (`widgets`, "
                 "not `widget`), and house rule 16 reds every `apps/*/apps.py` that says "
-                "otherwise, so this app would be born red. A singular name that is "
-                "deliberate is recorded in `quality/rules.yaml`, rule 16's "
-                "`app_name_exemptions`, with the reason — `core`, `realtime`, `usage` and "
-                "`search` are the four this tree admits — and this command reads that "
-                "list, so record it there and run again."
+                f"otherwise, so this app would be born red. {PLURAL_REMEDY} (rule 16's "
+                "`app_name_exemptions`, the list that admits `core`, `realtime`, `usage` and "
+                "`search`) — and this command reads that union, so record it there and run "
+                "again."
             )

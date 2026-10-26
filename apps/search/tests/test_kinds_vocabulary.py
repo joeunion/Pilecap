@@ -31,7 +31,7 @@ from django.test import Client
 
 from apps.core.exceptions import Invalid
 from apps.search import registry
-from apps.search.selectors import search
+from apps.search.selectors import get_search_page
 from apps.search.types import RecordingEngine, Searchable
 
 from .conftest import ORGS, WIDGETS, World
@@ -109,9 +109,9 @@ def test_a_declared_kind_beside_an_undeclared_one_still_refuses(
     and no way to tell which half was ignored.
     """
     with pytest.raises(Invalid) as refused:
-        search(
+        get_search_page(
             tenant=world.tenant,
-            actor=world.owner_actor,
+            actor=world.owner,
             q="x",
             kinds=["widgets", "invoices"],
         )
@@ -124,11 +124,11 @@ def test_naming_every_declared_kind_is_the_same_as_naming_none(
     world: World, declared: tuple[Searchable, ...], recording: RecordingEngine
 ) -> None:
     """The narrowing still narrows — the refusal is about names, not about count."""
-    search(tenant=world.tenant, actor=world.owner_actor, q="x", kinds=["widgets"])
+    get_search_page(tenant=world.tenant, actor=world.owner, q="x", kinds=["widgets"])
     assert recording.kinds_seen == [("widgets",)]
 
     recording.kinds_seen.clear()
-    search(tenant=world.tenant, actor=world.owner_actor, q="x", kinds=None)
+    get_search_page(tenant=world.tenant, actor=world.owner, q="x", kinds=None)
     assert recording.kinds_seen == [("widgets",), ("orgs",)]
 
 
@@ -146,7 +146,7 @@ def test_the_empty_page_counts_zero_when_the_count_was_asked_for(
     """
     monkeypatch.setattr(registry, "declarations", tuple)
 
-    page = search(tenant=world.tenant, actor=world.owner_actor, q="x", include_count=True)
+    page = get_search_page(tenant=world.tenant, actor=world.owner, q="x", include_count=True)
 
     assert page.items == []
     assert page.count == 0
@@ -167,12 +167,12 @@ def test_an_unresolved_hat_counts_exactly_what_a_matchless_page_counts(
     """
     from apps.core.actor import Actor
 
-    hatless = Actor(user=world.owner, token=None, kind="human", tenant=world.tenant, org=None)
+    hatless = Actor(user=world.owner.user, token=None, kind="human", tenant=world.tenant, org=None)
 
-    refused = search(tenant=world.tenant, actor=hatless, q="widget", include_count=True)
-    matchless = search(
+    refused = get_search_page(tenant=world.tenant, actor=hatless, q="widget", include_count=True)
+    matchless = get_search_page(
         tenant=world.tenant,
-        actor=world.owner_actor,
+        actor=world.owner,
         q="nothing-matches-this",
         include_count=True,
     )
@@ -186,7 +186,7 @@ def test_no_tenant_counts_zero_and_still_names_no_engine_of_its_own(
     declared: tuple[Searchable, ...], recording: RecordingEngine
 ) -> None:
     """`for_tenant(None)`'s posture, one level out, with the count honoured."""
-    page = search(tenant=None, actor=None, q="anything", include_count=True)
+    page = get_search_page(tenant=None, actor=None, q="anything", include_count=True)
 
     assert page.items == []
     assert page.count == 0

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "$(dirname -- "${BASH_SOURCE:-$0}")/../scripts/bash_only.sh" || exit 2
 # From a green tree to a healthy stage box, with every act keyed on its input.
 #
 #   deploy/stage.sh ec2-user@1.2.3.4 --env staging               stage HEAD
@@ -116,8 +117,8 @@
 #      MARKER" below);
 #   3. that staging box's readyz answers 200, probed exactly as act 6 probes;
 #   4. the nightly leak proof handed in as `--nightly <artifact dir>` is green
-#      and no older than 24 h — read by `gate_nightly_read` in
-#      scripts/gate_ledger.sh, sourced and called, never re-parsed here. Its
+#      and no older than 24 h — read by `nightly-read` in
+#      quality/djb/ledger.py, called, never re-parsed here. Its
 #      `nightly:none`, `nightly:stale:<at>`, a non-zero `rc=` and an unreadable
 #      record (its exit 2) are each a red tooth, named.
 #
@@ -132,8 +133,8 @@
 # freshness and its colour, as the design rules it.
 #
 # THE DOCS-ONLY SHORT CIRCUIT, AND WHY IT IS NOT JUST "EVERY PATH IS INERT".
-# The class list is `loop_scope__classify`'s (scripts/loop_tier.sh) — sourced
-# and CALLED, never copied, so a territory added there is known here the day it
+# The class list is `quality/djb/scope.py::classify`'s — CALLED through its
+# `classify` verb, never copied, so a territory added there is known here the day it
 # is added. But `inert` is an answer to "can this path reach a Python test",
 # and `deploy/observability/` is inert under that question while being the
 # alerts act's whole input. So a delta is docs-only here when every path is
@@ -149,34 +150,21 @@ HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd -- "$HERE/.." && pwd)"
 set +x  # never; see deploy/entrypoint.sh for the same line and the same reason
 
-# --- it refuses to be piped ---------------------------------------------------
-# release.sh's detection and release.sh's CI exemption, deliberately identical
-# (deploy/release.sh:92-98, deploy/ship.sh:70-76). A pipe replaces this script's
-# exit status with the filter's, and the exit status is the difference between
-# "the box is serving this tree" and "some of the acts ran".
-if [ -z "${CI:-}" ] && { [ -p /dev/fd/1 ] || [ -p /dev/stdout ]; }; then
-    echo "!! stage refuses pipes — a filter replaces the exit status of the stage with" >&2
-    echo "   the filter's, and the exit status is the whole verdict. Run it" >&2
-    echo "   bare or redirect to a file." >&2
-    exit 2
-fi
-
-die() {
-    # 2 is "could not get as far as staging", or "could not look". An act never
-    # attempted must never share an exit code with an act that ran and failed.
-    echo "!! stage: $*" >&2
-    echo "   Nothing was staged; no act ran." >&2
-    exit 2
-}
-
-say() { echo "stage: $*"; }
-
-usage() {
-    sed -n '2,7p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
-    echo ""
-    echo "The header of ${BASH_SOURCE[0]} says what each act is and what keys it."
-    exit 2
-}
+# THE SCAFFOLD is deploy/lib.sh's and the pipe guard is the seam's
+# `refuse_if_piped`: a pipe replaces this script's exit status with the
+# filter's, and the exit status is the difference between "the box is serving
+# this tree" and "some of the acts ran". `die` is exit 2, "could not get as far
+# as staging" or "could not look": an act never attempted must never share an
+# exit code with an act that ran and failed (`stopped`, exit 1).
+DEPLOY_NAME=stage
+DEPLOY_NOTHING="Nothing was staged; no act ran."
+DEPLOY_USAGE_LINES=6
+DEPLOY_USAGE_TAIL="The header of ${BASH_SOURCE[0]} says what each act is and what keys it."
+DEPLOY_RECOVERY="The from-the-top tool is the recovery: every act of deploy/release.sh is
+idempotent, so running it on the box repeats work rather than doubling it."
+# shellcheck source=deploy/lib.sh
+. "$HERE/lib.sh" || exit 2
+refuse_if_piped "$DEPLOY_NAME"
 
 DESTINATION=""
 KEY=""
@@ -195,10 +183,7 @@ NIGHTLY_DIR=""
 PROD_FLAGS_TYPED=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
-    -h | --help)
-        sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'
-        exit 0
-        ;;
+    -h | --help) usage 0 ;;
     --key)
         [ "$#" -ge 2 ] || die "--key needs a path"
         KEY="$2"
@@ -281,18 +266,11 @@ done
 [ -z "$KEY" ] || [ -f "$KEY" ] || die "no identity file at $KEY"
 git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1 || die "$ROOT is not a git checkout, so there is no tree to stage and nothing that could name one"
 
-# THE CLASSIFIER IS SOURCED, NOT COPIED. `loop_scope__classify` is the one
-# function in this repository that answers "what kind of territory is this
-# path", and the docs-only short circuit below is a question about exactly
-# that. A hand list here would be right the day it was written.
-# NOT SILENCED. An earlier draft sourced it under `2>/dev/null` and a missing
-# sibling library died with no message at all: the one thing a refusal must
-# never do is refuse quietly.
-# shellcheck source=scripts/loop_tier.sh
-. "$ROOT/scripts/loop_tier.sh" ||
-    die "could not source $ROOT/scripts/loop_tier.sh (its own error is above) — the docs-only short circuit is its classifier's answer and this script keeps no second list"
-command -v loop_scope__classify >/dev/null 2>&1 ||
-    die "$ROOT/scripts/loop_tier.sh defines no loop_scope__classify — the territory classes this script re-derives are gone from where they live"
+# THE CLASSIFIER IS CALLED, NOT COPIED: `quality/djb/scope.py::classify` answers "what territory is this path".
+# Invariant: asked once here, unsilenced, so a classifier that will not run refuses before anything is staged.
+stage_classify() { (cd "$ROOT" && python3 -E -S -m quality.djb.scope classify --root "$ROOT" "$@"); }
+stage_classify README.md >/dev/null ||
+    die "quality.djb.scope's classify verb would not answer from $ROOT (its own error is above) — the docs-only short circuit is its answer and this script keeps no second list"
 
 # --- THIS TREE ----------------------------------------------------------------
 TREE_TAG="$("$HERE/provision.sh" image-tag)" || exit 2
@@ -345,16 +323,13 @@ remote_at() {
     ssh ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} "$1" "$2"
 }
 
-# ONE readyz probe, from inside the box's own `readyz-prober` container, with
-# that container's target, `--connect-to` and certificate posture — act 6's
-# command, and the prod gate's probe of staging, so the two can never disagree
-# about what "answers" means.
-READYZ_PROBE="cd '${REMOTE_DIR}' && set -a && . deploy/.env && set +a && \
-curl_args=\"-sS -o /dev/null -w %{http_code} --max-time 10\" && \
-if [ \"\${PROBE_INSECURE:-0}\" = 1 ]; then curl_args=\"\$curl_args -k\"; fi && \
-if [ -n \"\${PROBE_CONNECT_TO:-}\" ]; then curl_args=\"\$curl_args --connect-to \$PROBE_CONNECT_TO\"; fi && \
-docker compose --env-file deploy/.env -f deploy/compose.yaml exec -T readyz-prober \
-curl \$curl_args \"\${PROBE_TARGET:-https://\${SITE_ADDRESS}/readyz}\""
+# ONE readyz probe: the box's own `readyz-prober` container asked for one
+# (`prober.sh --once`) — its target, its socket override and its certificate
+# posture, the same probe `release.sh`'s readyz act makes — for act 6 and for
+# the prod gate's probe of staging, so the three can never disagree about what
+# "answers" means.
+READYZ_PROBE="cd '${REMOTE_DIR}' && docker compose --env-file deploy/.env -f deploy/compose.yaml \
+exec -T readyz-prober sh /alerts/prober.sh --once"
 
 say "destination  ${DESTINATION}"
 say "namespace    ${REMOTE_DIR}  (environment ${ENVIRONMENT}; vault prefix ${REMOTE_DIR}/${ENVIRONMENT}/)"
@@ -428,18 +403,24 @@ if [ -n "$IS_PROD" ]; then
             PROD_SEEN_STAGING="${staging_tag} on ${STAGING_DEST}, readyz 200"
     fi
 
-    # 4 · the nightly leak proof, read by the ledger's own reader.
-    # shellcheck source=scripts/gate_ledger.sh
-    . "$ROOT/scripts/gate_ledger.sh" ||
-        die "could not source $ROOT/scripts/gate_ledger.sh (its own error is above) — the nightly's forms are its gate_nightly_read's and this script keeps no second parser"
-    command -v gate_nightly_read >/dev/null 2>&1 ||
-        die "$ROOT/scripts/gate_ledger.sh defines no gate_nightly_read — the nightly leak proof cannot be read, so the prod gate cannot look"
-    set +e
-    nightly_form="$(gate_nightly_read "$NIGHTLY_DIR" 2>"$WORK/nightly.err")"
-    nightly_rc=$?
-    set -e
+    # 4 · the nightly leak proof, read by the ledger's own reader under the stdlib floor.
+    # A product tree (its drawer's `rule_id_namespace:`, declared_namespace's field) is spared it unless --nightly is given.
+    case "$NIGHTLY_DIR" in "" | /*) nightly_at="$NIGHTLY_DIR" ;; *) nightly_at="$PWD/$NIGHTLY_DIR" ;; esac
+    if [ -z "$NIGHTLY_DIR" ] && grep -Eq "^[[:space:]{]*rule_id_namespace:[[:space:]]*([\"']?[^[:space:]\"'#]|$)" "$ROOT/quality/local/rules.yaml" 2>/dev/null; then
+        nightly_rc=0
+        nightly_form="nightly:product"
+        : >"$WORK/nightly.err"
+    else
+        set +e
+        nightly_form="$(cd "$ROOT" && python3 -E -S -m quality.djb.ledger nightly-read "$nightly_at" 2>"$WORK/nightly.err")"
+        nightly_rc=$?
+        set -e
+    fi
     nightly_why="$(sed -n '1p' "$WORK/nightly.err")"
     case "$nightly_rc:$nightly_form" in
+    0:nightly:product)
+        PROD_SEEN_NIGHTLY="a product tree — the platform's nightly leak proof is the template's; the product's own gate is its proof (staging proved ${PROD_SEEN_STAGING:-nothing})"
+        ;;
     0:nightly:none)
         PROD_RED+=("nightly: there is no nightly leak proof (nightly:none) — hand the downloaded nightly-leak-proof artifact's directory to --nightly")
         ;;
@@ -522,7 +503,9 @@ paths_under '^deploy/observability/' && OBSERVABILITY_MOVED=1 || true
 # is still true here.
 DIGEST_MOVED=""
 DIGEST_REPORT=""
-for stage_service in web worker; do
+# The image services are provision.sh's one list, never typed here.
+STAGE_SERVICES="$("$HERE/provision.sh" image-services)" || exit 2
+for stage_service in $STAGE_SERVICES; do
     set +e
     registry_digest="$("$HERE/provision.sh" image-digest "$stage_service" "$TREE_TAG" 2>&1)"
     digest_rc=$?
@@ -563,9 +546,9 @@ if [ "$DELTA_COUNT" -gt 0 ] && [ -z "$MIGRATIONS_MOVED" ] && [ -z "$OBSERVABILIT
     all_inert=1
     while IFS= read -r delta_path; do
         [ -n "$delta_path" ] || continue
-        shape="$(loop_scope__classify "$delta_path")" || {
-            echo "!! stage: '${delta_path}' is in the delta and scripts/loop_tier.sh's" >&2
-            echo "   loop_scope__classify cannot say what territory it is. A path nothing" >&2
+        shape="$(stage_classify "$delta_path")" || {
+            echo "!! stage: '${delta_path}' is in the delta and quality/djb/scope.py's" >&2
+            echo "   classify cannot say what territory it is. A path nothing" >&2
             echo "   can classify is an act's input that could not be read, and the" >&2
             echo "   answer is a new class THERE, not a guess here." >&2
             echo "   Nothing was staged; no act ran." >&2
@@ -593,39 +576,6 @@ ACTS=(
     "readyz — the deployment answers"
 )
 TOTAL="${#ACTS[@]}"
-ACT_INDEX=0
-ACT_NAME=""
-ACT_T0=0
-
-act_begin() {
-    ACT_INDEX=$((ACT_INDEX + 1))
-    ACT_NAME="${ACTS[$((ACT_INDEX - 1))]%% —*}"
-    ACT_T0="$(date +%s)"
-}
-
-act_ran() {
-    echo "stage: [${ACT_INDEX}/${TOTAL}] ${ACT_NAME} — ran${1:+: $1} ($(($(date +%s) - ACT_T0))s)"
-}
-
-act_skipped() {
-    echo "stage: [${ACT_INDEX}/${TOTAL}] ${ACT_NAME} — skipped: $1 unchanged ($(($(date +%s) - ACT_T0))s)"
-}
-
-act_would() {
-    echo "stage: [${ACT_INDEX}/${TOTAL}] ${ACT_NAME} — WOULD RUN${1:+: $1}"
-}
-
-# The one failure path, `release.sh`'s shape and its sentence: whatever stopped,
-# the reader gets the same paragraph and it always names the act.
-stopped() {
-    local status="$1"
-    echo "" >&2
-    echo "!! stage: STOPPED at act ${ACT_INDEX}/${TOTAL} — ${ACT_NAME} (exit ${status})." >&2
-    echo "   No act after this one ran." >&2
-    echo "   The from-the-top tool is the recovery: every act of deploy/release.sh is" >&2
-    echo "   idempotent, so running it on the box repeats work rather than doubling it." >&2
-    exit 1
-}
 
 # What each act is keyed on, decided once so the dry run and the real run can
 # never answer differently.
@@ -787,9 +737,8 @@ fi
 # after the fact rather than a second wait. When no act ran at all, this ONE
 # probe is the whole of what a re-stage of an unchanged tree is for.
 #
-# PROBED FROM INSIDE `readyz-prober`, with that container's own target, its own
-# `--connect-to` and its own certificate posture — `release.sh` act 7's
-# argument verbatim: the prober's target is the one the alert route already
+# PROBED BY `readyz-prober` ITSELF (`READYZ_PROBE` above) — `release.sh` act
+# 7's argument verbatim: the prober's target is the one the alert route already
 # watches, so this act and the 3am page agree by construction.
 act_begin
 if [ -n "$DRY_RUN" ]; then
@@ -807,14 +756,12 @@ if [ "$rc" != "0" ]; then
     stopped "$rc"
 fi
 if [ "$READYZ_CODE" != "200" ]; then
-    echo "" >&2
-    echo "!! stage: STOPPED at act ${ACT_INDEX}/${TOTAL} — ${ACT_NAME}." >&2
-    echo "   The readiness endpoint answered '${READYZ_CODE:-nothing}', not 200." >&2
-    echo "   Every act before this one ran; the deployment is not serving." >&2
-    echo "   Look at: docker compose -f ${REMOTE_DIR}/deploy/compose.yaml logs --tail 50 web worker" >&2
-    echo "   Re-running deploy/release.sh on the box from the top is safe and is the" >&2
-    echo "   usual next move." >&2
-    exit 1
+    DEPLOY_RECOVERY="The readiness endpoint answered '${READYZ_CODE:-nothing}', not 200.
+Every act before this one ran; the deployment is not serving.
+Look at: docker compose -f ${REMOTE_DIR}/deploy/compose.yaml logs --tail 50 web worker
+Re-running deploy/release.sh on the box from the top is safe and is the
+usual next move."
+    stopped 1
 fi
 act_ran "HTTP 200"
 

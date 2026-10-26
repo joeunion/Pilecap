@@ -4,13 +4,17 @@ No ORM, no network, no clock, no randomness is imported or called here; all of
 it lives in `activities.py`. That is house rule 9, and it is why the activity is
 invoked **by name** rather than by importing the function: importing
 `activities` would drag the ORM into a module that has to replay identically
-years from now.
+years from now. The one module of the platform's it imports besides its own
+`types.py` is `apps.core.determinism`, the seam rule 9 admits by name
+because it imports nothing a workflow may not.
 
-`WORKFLOWS` is what `config.temporal` discovers. An app adds a workflow by
-adding it to its own list; nothing edits the worker.
+`WORKFLOWS` is what the worker discovers (`apps.workflows.client`, through
+`apps.core.discovery.declared`). An app adds a workflow by adding it to its own
+list; nothing edits the worker.
 
 **Every workflow here closes its own `WorkflowRun` row, and closes it last.**
-That is `_finish` below, and it is a debt this app owed: every *domain* app's
+That is `run_to_finish` (`apps.core.determinism`), and it is a debt this
+app owed: every *domain* app's
 workflow marked its run finished, while the platform app's own `SendEmail` and
 `MoveOrganization` never did — so their rows said RUNNING forever, and
 `EchoWorkflow` marked itself *completed before doing anything*, which is the
@@ -27,45 +31,19 @@ places a run is ever recorded as stopped.
 
 from __future__ import annotations
 
-import asyncio
-from collections.abc import Awaitable, Callable
 from datetime import timedelta
 
 from temporalio import workflow
-from temporalio.common import RetryPolicy
 from temporalio.exceptions import ApplicationError
 
+from apps.core.determinism import run_to_finish
 from apps.workflows.types import (
     EchoOutput,
-    MarkRunFinished,
     MoveOrganization,
     PurgeFinishedRuns,
     ReconcileRuns,
     SendEmail,
 )
-
-# Closing the row is one short database write in an activity. It is given its
-# own timeout rather than the work's, because "the work took an hour" and "the
-# bookkeeping hung" are different failures.
-FINISH_TIMEOUT = timedelta(seconds=30)
-
-# Bounded, for the reason the four domain apps already bound theirs: a
-# bookkeeping activity that retried for ever would outlive the thing it is
-# bookkeeping for, holding a completed piece of work open against a database
-# that is not coming back. Five attempts, then the run fails saying so and
-# the reconciler is what sweeps the row.
-FINISH_RETRY = RetryPolicy(maximum_attempts=5)
-
-# The third terminal word (ADR workflows-7), as a literal, because this module
-# may not import `models` (house rule 9) and `WorkflowRun.Status.CANCELLED` is
-# what it has to equal. `apps/workflows/tests/test_workflows.py` pins the two
-# together, which is the seam that would otherwise drift silently: a typo here
-# writes a status no door can filter on and nothing else complains.
-CANCELLED = "cancelled"
-
-# How far `_reason` walks a `__cause__` chain before it stops. Three links is
-# wrapper, activity error, the activity's own complaint — which is all of it.
-_REASON_DEPTH = 3
 
 # How long one attempt at handing the message to the mail host may take, and how
 # long the whole thing — every retry included — may go on for. The second is the
@@ -74,94 +52,6 @@ _REASON_DEPTH = 3
 # after an hour instead of at midnight.
 ATTEMPT_TIMEOUT = timedelta(seconds=30)
 DELIVERY_DEADLINE = timedelta(hours=1)
-
-
-def _reason(failure: BaseException) -> str:
-    """The failure and what caused it, as one line for the row's `error`.
-
-    Temporal wraps an activity's own error in an `ActivityError` whose message
-    is "Activity task failed" — true, and useless to whoever is reading the run
-    row six weeks later. Walking `__cause__` puts the activity's actual
-    complaint on the row. Bounded, because a cause chain is somebody else's
-    data structure; deterministic, because it reads nothing but the exception
-    it was handed.
-    """
-    said: list[str] = []
-    seen: BaseException | None = failure
-    while seen is not None and len(said) < _REASON_DEPTH:
-        said.append(f"{type(seen).__name__}: {seen}")
-        seen = seen.__cause__
-    return " <- ".join(said)
-
-
-async def _mark(status: str, error: str = "") -> str:
-    """Invoke `mark_run_finished` **by name**. Returns the tenant it acted for."""
-    tenant_slug: str = await workflow.execute_activity(
-        "mark_run_finished",
-        MarkRunFinished(
-            workflow_id=workflow.info().workflow_id,
-            status=status,
-            error=error,
-        ),
-        start_to_close_timeout=FINISH_TIMEOUT,
-        retry_policy=FINISH_RETRY,
-        result_type=str,
-    )
-    return tenant_slug
-
-
-async def _finish[T](work: Callable[[], Awaitable[T]]) -> tuple[T, str]:
-    """Run the work, then close this run's visibility row. **The seam.**
-
-    The order is the whole point: the work happens **first**, and the row is
-    marked `completed` only after it returned — or `failed`, carrying the error
-    string, on the way out of a failure. A workflow that marked itself complete
-    and *then* did the work would leave a row saying `completed` for a run that
-    failed, and no reader anywhere could tell.
-
-    Deterministic (house rule 9): it invokes one activity by name and touches
-    nothing else.
-
-    **Three outcomes, three words** (ADR workflows-7). `completed` and `failed`
-    were always here; `cancelled` is the third, and the reason it took a rung is
-    that a cancelled workflow's `CancelledError` is a `BaseException` and slips
-    past `except Exception` untouched — so a run somebody deliberately stopped
-    used to leave a row saying `running` for ever, and the reconciler's only
-    honest guess was `failed`. Two things make the third branch work:
-
-    * **`asyncio.shield`**, because the workflow's own task is already cancelled
-      and an activity scheduled bare would be cancelled with it before it ran.
-      Shielded, it completes, and the row is closed by the same activity that
-      closes every other run. (This module's earlier docstring claimed a
-      cancelled workflow *cannot* schedule an activity. It can; measured on this
-      tree against the time-skipping server.)
-    * **`workflow.cancellation_reason()`**, which is not `None` only for a
-      cancel that came from the server. An inner `CancelledError` — a timed-out
-      scope, a race a workflow lost — is a workflow's own control flow and must
-      not be reported to the ledger as somebody having stopped the job. That one
-      is re-raised untouched and whatever catches it decides.
-
-    The order still matters everywhere: the work happens **first**, and the row
-    is marked only after it has returned, failed or been stopped. A workflow
-    that marked itself complete and *then* did the work would leave a row saying
-    `completed` for a run that failed, and no reader anywhere could tell.
-
-    Returns the work's own result **and** the tenant slug the closing activity
-    acted for. The second half is not decoration: it is what lets
-    `EchoWorkflow` prove the tenant survived client → workflow → activity
-    without a second activity existing purely to say so.
-    """
-    try:
-        result = await work()
-    except asyncio.CancelledError:
-        if workflow.cancellation_reason() is None:
-            raise
-        await asyncio.shield(_mark(CANCELLED))
-        raise
-    except Exception as failure:
-        await _mark("failed", error=_reason(failure))
-        raise
-    return result, await _mark("completed")
 
 
 @workflow.defn(name="EchoWorkflow")
@@ -173,7 +63,7 @@ class EchoWorkflow:
     having to invent a workflow first.
 
     It refuses an empty message, which is both true (an echo of nothing is not
-    a result) and the thing that makes the failure half of `_finish` testable
+    a result) and the thing that makes the failure half of `run_to_finish` testable
     from the outside: start it with `""` and the row must end `failed`.
     """
 
@@ -187,7 +77,7 @@ class EchoWorkflow:
                 )
             return message
 
-        echoed, tenant_slug = await _finish(echo)
+        echoed, tenant_slug = await run_to_finish(echo)
         return EchoOutput(message=echoed, tenant_slug=tenant_slug)
 
 
@@ -222,7 +112,7 @@ class SendEmailWorkflow:
             )
             return accepted
 
-        accepted, _tenant_slug = await _finish(deliver)
+        accepted, _tenant_slug = await run_to_finish(deliver)
         return accepted
 
 
@@ -270,7 +160,7 @@ class MoveOrganizationWorkflow:
             )
             return path
 
-        path, _tenant_slug = await _finish(rewrite)
+        path, _tenant_slug = await run_to_finish(rewrite)
         return path
 
 

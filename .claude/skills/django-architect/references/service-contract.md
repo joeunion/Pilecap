@@ -36,8 +36,8 @@ codes never appear in `services.py` or `selectors.py`; the one mapper is
 `config/api.py`.** *Why:* the service serves five doors; a status code is one
 door's vocabulary. *Enforced:* house rule **14**. **[main]** `config/api.py`
 maps `ValidationError` → 400, `IntegrityError` → 409, `PermissionDenied` →
-403, `ObjectDoesNotExist` / `Http404` → 404, body
-**`{detail, code, errors?, remedies?}`** — `code` is always present, and the
+403, `ObjectDoesNotExist` / `Http404` → 404, body keyed by
+`apps/core/exceptions.py::WIRE_COMMON_KEYS` — `code` is always present, and the
 body is not composed there: `core.exceptions.wire_refusal` builds it and
 `on_domain_error` sends it (§E9), so `core.exceptions` is the hierarchy *and*
 the composer both doors share.
@@ -45,7 +45,7 @@ the composer both doors share.
 ## C7 — the code half
 
 ```python
-# [A7a] apps/invoices/policies.py — the code half; the role comes from Membership.role
+# [A7a] apps/<invoices>/policies.py — the code half; the role comes from Membership.role
 def can(actor: Actor, action: str, obj: object) -> bool:
     if action == "invoice.void":
         return (isinstance(obj, Invoice)

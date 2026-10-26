@@ -1,0 +1,16 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "before", "text": "NAME_FINDS: dict[str, Any] = {\"name\": \"Left bench\"}"}
+def test_due_at_orders_alike_on_both_doors(
+    api: Client, tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    for name in ("Left", "Right"):
+        create_widget(tenant=tenant, actor=owner_actor, name=name)
+    api.force_login(owner)
+    listing = tool("list_widgets", register=register)
+    ctx = context_for(owner, tenant, root_organization(tenant=tenant))
+    for ordering in ("due_at", "-due_at"):
+        over_http = api.get("/api/v1/widgets/", {"ordering": ordering})
+        assert over_http.status_code == 200, over_http.content
+        ids = [item["id"] for item in json.loads(over_http.content)["items"]]
+        assert ids == [str(item.id) for item in listing(ctx=ctx, ordering=ordering).items]
+
+

@@ -1,0 +1,49 @@
+// golden: face begin
+// patterns: none — draws no face
+// golden: face end
+// golden: face begin
+import type { Road } from "@pilecap/ui/verbs";
+
+export const ROAD: Road = {
+    noun: "widget",
+    seat: "record-acts",
+    verbs: [
+        // golden: face end
+        // golden: version begin
+        "update",
+        // golden: version end
+        // golden: move begin
+        "move",
+        // golden: move end
+        // golden: duplicate begin
+        "duplicate",
+        // golden: duplicate end
+        // golden: merge begin
+        "merge",
+        // golden: merge end
+        // golden: archive begin
+        "archive",
+        "restore",
+        // golden: archive end
+        // golden: import begin
+        "import",
+        // golden: import end
+        // golden: attach begin
+        "attach",
+        // golden: attach end
+        // golden: history begin
+        "history",
+        // golden: history end
+        // golden: face begin
+    ],
+    bulk: [
+        // golden: face end
+        // golden: bulk begin
+        "archive",
+        "restore",
+        "move",
+        // golden: bulk end
+        // golden: face begin
+    ],
+};
+// golden: face end

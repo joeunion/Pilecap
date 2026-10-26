@@ -1,0 +1,6 @@
+/* A declared value in the legacy form: the drawer rules 640px, and the query is still refused for its FORM. */
+@media (max-width: 640px) {
+    .zzz-canary-row {
+        display: block;
+    }
+}

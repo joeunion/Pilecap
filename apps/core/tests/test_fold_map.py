@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import importlib
 import re
-from collections.abc import Mapping
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -51,7 +50,7 @@ VALVE_JS_REFORMATTED = (
 #: Deliberately NOT key-shaped. House rule 23's own scanner is a raw regex over
 #: `apps/` with no pragma path, so a fixture body in this file that looked like
 #: a credential would be a finding about the drive rather than about the rule.
-SECRET_TS = "export const label = 'the fixture the template ships at rule 50';\n"
+SECRET_TS = "export const label = 'the fixture the template ships at rule 50';\n"  # noqa: S105 — a signing secret the test both signs and verifies with
 
 #: A fixture that exists ONLY inside another entry's `extra_files:`.
 PROBE_PY = 'class ZzzCanaryConfig:\n    name = "apps.zzz_canary"\n'
@@ -318,52 +317,19 @@ def test_with_no_namespace_declared_a_product_rule_is_unmatched_and_gets_no_arro
 # v2.1.3, and it is red on every consumer forever: a suite the template ships
 # must not carry a case a product cannot make green.
 #
-# The condition is the ENGINE's own reading and not a second one. There is no
-# sibling template-only mark in this tree to join — the only skip mechanism
-# under `apps/` is `apps/core/tests/template_shape.py`, and it is keyed to the
-# closed `DJB_IDENTITY_SHAPE` key set (it raises `ValueError` on a key outside
-# it, on purpose), so widening it to carry "has this tree folded?" would break the
-# closed population that makes its skips countable. One template-only case
-# exists today, so the helper lives here beside it rather than in
-# `apps/conftest.py`; the second one that arrives is what moves it.
+# The condition is the ENGINE's own reading and not a second one. It began here
+# as a helper beside its one case; the second template-only case arrived (the
+# accounts scope tests that assume no product owns a word the platform gave
+# back), and that moved it, as this block said it would: the reading
+# (`_declared_namespace`) and the honour now live in `apps/conftest.py`, and the
+# case below carries `@pytest.mark.template_only` instead of calling a skip of
+# its own. `apps/test_template_only.py` is the census of every marked case.
+# (`apps/core/tests/template_shape.py` stays a different mechanism: it is keyed
+# to the closed `DJB_IDENTITY_SHAPE` key set, and "has this tree folded?" is not
+# one of its keys.)
 
 
-def _declared_namespace(doc: Mapping[str, object] | None = None) -> str | None:
-    """The `rule_id_namespace:` this tree declares, or `None` on a template.
-
-    Read off the ENGINE's own drawer parse — `quality.gate._read_local()`,
-    whose result is the module global `LOCAL_DOC` — rather than by opening
-    `quality/local/rules.yaml` here. A second reader of that file is a second
-    opinion about whether this tree has folded, and every refusal ADR gate-5
-    exists for is keyed on the engine's.
-
-    The RAW declaration and not `RULE_ID_NAMESPACE`: that global is `None`
-    whenever the declaration is malformed (`_read_namespace()` reports the
-    problem and yields nothing), and a product with a typo in its namespace is
-    still a product. The question here is whether the tree has folded, never
-    whether its declaration parses.
-
-    `doc` exists for the drive below and is the same device
-    `template_shape(shape=...)` uses for the same reason: a mark passes
-    nothing and gets the ambient declaration, while the test OF the mechanism
-    hands it a drawer it built, because reading the ambient one there would
-    make the template's own test of the mechanism red on the first product
-    that declares anything.
-    """
-    declared = (G.LOCAL_DOC if doc is None else doc).get("rule_id_namespace")
-    return str(declared or "").strip() or None
-
-
-def _skip_unless_template_tree(doc: Mapping[str, object] | None = None) -> None:
-    """Skip with ONE reason string naming the condition that turned the case off."""
-    namespace = _declared_namespace(doc)
-    if namespace is not None:
-        pytest.skip(
-            f"template-only: this tree declares rule_id_namespace {namespace}; "
-            "the self-map has content by construction on a product"
-        )
-
-
+@pytest.mark.template_only(reason="the self-map has content by construction on a product")
 def test_this_template_tree_maps_onto_itself_with_nothing_to_do(tmp_path: Path) -> None:
     """The live end: the real reader, on the real tree, is the steady state.
 
@@ -375,7 +341,6 @@ def test_this_template_tree_maps_onto_itself_with_nothing_to_do(tmp_path: Path) 
     is red by construction, so the case skips naming the declaration that made
     it so rather than handing a product a red it cannot clear.
     """
-    _skip_unless_template_tree()
     rc, lines = G.fold_map_lines(G.ROOT / "quality" / "rules.yaml")
     out = "\n".join(lines)
     assert rc == 0, out
@@ -407,11 +372,11 @@ def _read_drawer(path: Path) -> dict[str, object]:
     An absent path is legal and is the TEMPLATE's own state — `_read_local()`
     answers `{}` for it, which is what `LOCAL_DOC` holds on this tree.
     """
-    was = _swap(G, "LOCAL_RULES_PATH", path)
+    was = _swap(G.world_module(), "LOCAL_RULES_PATH", path)
     try:
         doc, _rules, problems = G._read_local()
     finally:
-        _swap(G, "LOCAL_RULES_PATH", was)
+        _swap(G.world_module(), "LOCAL_RULES_PATH", was)
     assert problems == [], problems
     assert isinstance(doc, dict), doc
     out: dict[str, object] = doc
@@ -419,7 +384,7 @@ def _read_drawer(path: Path) -> dict[str, object]:
 
 
 def test_the_self_map_is_template_only_and_the_skip_names_the_declaration(
-    tmp_path: Path,
+    tmp_path: Path, template_only_reading: Any
 ) -> None:
     """The mark's own drive: it fires on a product's drawer and not on this tree.
 
@@ -427,19 +392,32 @@ def test_the_self_map_is_template_only_and_the_skip_names_the_declaration(
     file written under `tmp_path` and `_read_local()` run over it — rather than
     a hand-built mapping, so what is proved is that the declaration a consumer
     types is the declaration the skip sees.
+
+    The reading is `apps/conftest.py`'s, reached through its
+    `template_only_reading` fixture rather than an import: the layer contract
+    keeps `apps.core` from importing a file that imports the apps above it.
     """
+    _declared_namespace = template_only_reading.declared_namespace
+    template_only_skip_reason = template_only_reading.skip_reason
     drawer = tmp_path / "quality" / "local" / "rules.yaml"
     drawer.parent.mkdir(parents=True, exist_ok=True)
     drawer.write_text("rule_id_namespace: acme\ntemplate_rule_ids_through: 60\n")
     product = _read_drawer(drawer)
     assert _declared_namespace(product) == "acme", product
 
-    with pytest.raises(pytest.skip.Exception) as raised:
-        _skip_unless_template_tree(product)
-    assert str(raised.value) == (
+    # The reason is read back off the case's OWN mark, so the sentence asserted
+    # is the one `apps/conftest.py` really skips it with — not a copy of it.
+    marks = [
+        mark
+        for mark in vars(test_this_template_tree_maps_onto_itself_with_nothing_to_do)["pytestmark"]
+        if mark.name == "template_only"
+    ]
+    assert len(marks) == 1, marks
+    reason = marks[0].kwargs["reason"]
+    assert template_only_skip_reason(reason, product) == (
         "template-only: this tree declares rule_id_namespace acme; "
         "the self-map has content by construction on a product"
-    ), str(raised.value)
+    )
 
     # THE CONTROL, and it is the TEMPLATE's own drawer state — no file at all —
     # read by the same reader. Without it the mark could be firing on every
@@ -455,7 +433,7 @@ def test_the_self_map_is_template_only_and_the_skip_names_the_declaration(
     template = _read_drawer(tmp_path / "quality" / "local" / "absent.yaml")
     assert template == {}, template
     assert _declared_namespace(template) is None, template
-    _skip_unless_template_tree(template)
+    assert template_only_skip_reason(reason, template) is None, template
 
 
 # --- HOTFIX-RULEMAP-2: WHICH FILE IS THE TEMPLATE SIDE -------------------------

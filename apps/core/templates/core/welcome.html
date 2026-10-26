@@ -47,8 +47,8 @@ guesses; `apps/core/views.py::welcome` says where each one was already decided.
             {% else %}<em>None resolved.</em> Every org-scoped read is empty until one is.{% endif %}
         </dd>
 
-        <dt>Effective role over that organization</dt>
-        <dd>{% if role %}{{ role }}{% else %}<em>None.</em>{% endif %}</dd>
+        <dt>Roles held over that organization</dt>
+        <dd>{% if roles %}{{ roles|join:", " }}{% else %}<em>None.</em>{% endif %}</dd>
     </dl>
 
     <h2>Doors</h2>

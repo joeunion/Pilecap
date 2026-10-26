@@ -3,8 +3,8 @@
     python3 quality/runners/js_ingredient_boundary.py <root> [<root> …]
 
 THE CHAIN, taken verbatim from the scaffold's own `src/primitives/README.md`
-(banked in its report, W2 SCAFFOLD): `copy <- tokens <- primitives <-
-components <- screens <- app(routes)` and `api <- app(routes)`. An import may
+(as the scaffold shipped it): `copy <- tokens <- primitives <-
+components <- kit <- screens <- app(routes)` and `api <- app(routes)`. An import may
 only run DOWNWARD through that chain — a layer may import from itself or from
 anything strictly below it, never from anything above. `api` is not on the
 chain at all: it is a leaf only `app` and `journeys` may import directly,
@@ -20,8 +20,8 @@ to reach into a route the way a person would; nothing in `src/` may import
 FROM `journeys/`, which the same downward-only rule already forbids without a
 special case.
 
-WHY THIS RUNNER CANNOT REPEAT RULE 50'S MISTAKE (mid-rung finding, P16 R-a x
-SCAFFOLD merge: `credentials: "same-origin"` read as a secret because the scan
+WHY THIS RUNNER CANNOT REPEAT RULE 50'S MISTAKE (found when the
+scaffold merged: `credentials: "same-origin"` read as a secret because the scan
 keyed on an ENGLISH WORD in a name). This rule keys on FILE-PATH POSITION and
 import-SPECIFIER RESOLUTION — never on a word appearing in an identifier — so
 a framework whose own vocabulary happens to contain "token" or "component" as
@@ -44,7 +44,7 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from quality.runners._kindscope import skip_dirs as _kind_skip_dirs  # noqa: E402
+from quality.runners import _kindscope  # noqa: E402
 
 #: This script, as `rules.yaml` spells it in a `runner.argv`.
 _SELF = "quality/runners/js_ingredient_boundary.py"
@@ -71,26 +71,30 @@ def allow_listed_api_importers(root: Path) -> frozenset[str]:
 
 
 SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
-SKIP_DIRS = _kind_skip_dirs(Path.cwd(), "js")
 ALLOW_IMPORT = allow_listed_api_importers(Path.cwd())
 
 #: The chain, ranked low-to-high. A layer may import its own rank or lower;
 #: never higher. Read from the scaffold's own declared taxonomy, not invented
-#: here — `frontend/src/{api,tokens,copy,primitives,components,screens,app}`
+#: here — `frontend/src/{api,tokens,copy,primitives,components,kit,screens,app}`
 #: plus `frontend/journeys`.
 LAYER_RANK: dict[str, int] = {
     "copy": 0,
     "tokens": 1,
     "primitives": 2,
     "components": 3,
-    "screens": 4,
-    "app": 5,
-    "journeys": 6,
+    "kit": 4,
+    "screens": 5,
+    "app": 6,
+    "journeys": 7,
 }
 #: `api` is off the chain entirely — a leaf, never a rank, reachable only by
 #: the two names in ONLY_API_IMPORTERS.
 API_LAYER = "api"
 ONLY_API_IMPORTERS = frozenset({"app", "journeys"})
+#: The kit is a door for screens: what lies past it is reached through `@pilecap/ui`, never by path.
+KIT_DOOR = "@pilecap/ui"
+SCREENS = "screens"
+PAST_THE_KIT = frozenset({"tokens", "primitives", "components"})
 
 #: A `from`-clause import or re-export, one line at a time. Deliberately
 #: line-based, as `quality/runners/js_secrets.py` already is, and for the same
@@ -128,19 +132,10 @@ TYPE_ONLY = re.compile(r"^\s*(?:import|export)\s+type\b")
 #: erased or not. That vocabulary reaches a screen through the surface-state
 #: seam (the R-d-3 route), never directly.
 GENERATED_CLIENT_MODULE = "frontend/src/api/client"
+
+#: The face's package aliases (`frontend/tsconfig.json` `paths`), resolved like `@/`.
+PACKAGE_ALIASES = {"@pilecap/ui/": "frontend/src/kit/", "@pilecap/copy/": "frontend/src/copy/"}
 GENERATED_SCHEMA_DIR = "frontend/src/api/generated/"
-
-
-def files_under(root: Path) -> list[Path]:
-    out: list[Path] = []
-    if not root.is_dir():
-        return out
-    for path in sorted(root.rglob("*")):
-        if SKIP_DIRS & set(path.parts):
-            continue
-        if path.is_file() and path.suffix in SUFFIXES:
-            out.append(path)
-    return out
 
 
 def layer_of(rel: Path) -> str | None:
@@ -178,6 +173,9 @@ def resolve_spec(spec: str, file_rel: Path) -> Path | None:
     """
     if spec.startswith("@/"):
         return Path("frontend/src") / spec[2:]
+    for alias, home in PACKAGE_ALIASES.items():
+        if spec.startswith(alias):
+            return Path(home) / spec[len(alias) :]
     if spec.startswith("."):
         combined = posixpath.normpath(posixpath.join(file_rel.parent.as_posix(), spec))
         return Path(combined)
@@ -313,10 +311,24 @@ def findings_in(path: Path, rel: Path) -> tuple[list[dict], int]:
                     "msg": (
                         f"`{own_layer}` imports from `{target_layer}` ({spec!r}) — the import "
                         "contract runs the other way (copy <- tokens <- primitives <- "
-                        "components <- screens <- app(routes)); an import may only run "
+                        "components <- kit <- screens <- app(routes)); an import may only run "
                         "DOWNWARD through it"
                     ),
                     "klass": "upward-import",
+                }
+            )
+        elif own_layer == SCREENS and target_layer in PAST_THE_KIT:
+            found.append(
+                {
+                    "path": str(rel),
+                    "line": lineno,
+                    "msg": (
+                        f"`screens` imports `{target_layer}` past the kit ({spec!r}) — a screen "
+                        f"takes what the kit draws through its door, `{KIT_DOOR}/<module>` "
+                        "(`frontend/src/kit/surface.json` names every module and export); a "
+                        "piece the kit does not export joins the kit first"
+                    ),
+                    "klass": "past-the-kit",
                 }
             )
     return found, checked
@@ -328,7 +340,7 @@ def main(argv: list[str]) -> int:
     scanned = 0
     checked_total = 0
     for root in roots:
-        for path in files_under(root):
+        for path in _kindscope.files_under(root, SUFFIXES):
             # `root` is handed to us relative to the checkout (e.g. "frontend"),
             # and `rglob` returns paths built on it — `path` IS already the
             # checkout-relative path `check_v1`'s outside-roots refusal wants,

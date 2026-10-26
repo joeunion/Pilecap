@@ -1,35 +1,7 @@
-"""One export, answered by both doors, compared ON THE WIRE.
+"""One export, answered by both doors, compared on the wire (rule 46).
 
-House rule 46: every door pair an app has owes a parity test in that app.
-`apps/exports` has a REST door and an MCP door, so it owes `(rest, mcp)`, and
-this module is the answer.
-
-**Why a registry diff is not this.** House rule 17 proves a capability exists on
-both doors; it cannot see the two doors *disagree* about one. Both times they
-did in this tree, both registries were complete: once, REST rendered a response
-by field name while the MCP transport rendered `structuredContent` by
-**alias**, so one `Field(alias=...)` made the machine door answer `owner.email`
-where the human door answered `owner_email`; another time, one consumer, one
-person, two credentials, two different sets of frames. Neither is visible to a
-diff of two registries.
-
-**The capability under test is `retrieve an export`.** It is the representative
-one on purpose: it is a read of the app's central row, both doors answer the
-*same* schema, and a shared schema is exactly the condition under which the alias mismatch hid
-— a value-by-value comparison of two `model_dump()`s of one schema cannot fail,
-because both sides of it are the same call. So nothing here calls a tool
-function: both doors are driven through the one real ASGI application, over
-`httpx`, and `response.json()` is compared with `result["structuredContent"]`.
-
-**This model publishes three COMPUTED strings and that is why this file
-matters more here than usual.** `organization_slug`, `expires_at`,
-`download_path` and `download_url` are model properties rather than schema
-aliases — deliberately, because an alias is a NAME and the two doors do not
-agree about names. Four opportunities for that alias-mismatch shape in one schema; this is
-the test that would have caught any of them.
-
-`transaction=True` because the MCP transport runs a tool body on a worker thread
-with its own database connection, which cannot see an uncommitted row.
+Both doors are driven through the one ASGI application: a shared schema hides an alias mismatch from
+any comparison of two `model_dump()`s. `transaction=True`: a tool body runs on its own connection.
 """
 
 from __future__ import annotations
@@ -40,17 +12,15 @@ from urllib.parse import parse_qs, urlsplit
 import httpx
 import pytest
 
-from apps.accounts.services import issue_token
 from apps.core.actor import actor_for
-from apps.core.authz import refusal_sentence
 from apps.core.ids import uuid7
-from apps.core.models import Grant, Membership
 from apps.core.services import root_organization
-
-# The transport harness, from the module that owns it. Copying it here would be
-# a second thing to keep in step with the MCP protocol version.
-from apps.core.tests.test_mcp import MCP_HEADERS, PROTOCOL_VERSION, running
+from apps.core.tests.doors import assert_four_doors
+from apps.core.tests.wire import MCP_HEADERS, MCP_URL, bearer, initialize, rpc, wire
+from apps.events.models import Event
+from apps.exports.events import EXPORT_REQUESTED
 from apps.exports.models import Export
+from apps.exports.services import create_export
 from apps.files import storage as files_storage
 from apps.files.storage import DOWNLOAD_URL_TTL_SECONDS
 
@@ -65,7 +35,6 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 DOOR_PAIR = ("rest", "mcp")
 
 DETAIL_URL = "/api/v1/exports/{}/"
-MCP_URL = "/mcp"
 JSON = "application/json"
 
 #: `ExportOut`'s wire contract, written out rather than derived from the schema.
@@ -92,45 +61,32 @@ EXPORT_KEYS = frozenset(
     }
 )
 
-#: **RETIRED.** This module used to name the fields whose PRECISION the
-#: two doors disagreed about. `config/mcp.py` now puts every machine-door answer
-#: out through the HTTP door's own encoder, so the two doors write the same
-#: bytes and there is no exception left to name.
-
-
-def _rpc(method: str, params: dict[str, Any], request_id: int) -> dict[str, Any]:
-    """One JSON-RPC request body, spelled the way a real MCP client spells it."""
-    return {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
-
 
 @pytest.fixture
-def bearer(tenant: Tenant, owner: User) -> str:
+def owner_bearer(tenant: Tenant, owner: User) -> str:
     """A real token for the owner — the one credential both doors accept."""
-    _, plaintext = issue_token(
-        user=owner,
-        tenant=tenant,
-        name="exports-door-parity",
-        actor=actor_for(user=owner, tenant=tenant),
-    )
-    return plaintext
+    return bearer(user=owner, tenant=tenant, name="exports-door-parity")
 
 
 @pytest.fixture
 def stranger_bearer(other_tenant: Tenant, stranger: User) -> str:
-    """A real token for somebody in the OTHER tenant.
+    """A real token for somebody in the other tenant, minted on the synchronous side."""
+    return bearer(user=stranger, tenant=other_tenant, name="stranger-parity")
 
-    A fixture rather than a line in the test, because minting one touches the
-    database and these tests are `async`: a synchronous ORM call inside an async
-    function is `SynchronousOnlyOperation`, and a fixture runs on the
-    synchronous side where it belongs.
-    """
-    _, plaintext = issue_token(
-        user=stranger,
-        tenant=other_tenant,
-        name="stranger-parity",
-        actor=actor_for(user=stranger, tenant=other_tenant),
-    )
-    return plaintext
+
+async def _both(token: str, url: str, tool: str, export_id: str) -> tuple[httpx.Response, Any]:
+    """The REST answer at `url` and the JSON-RPC answer of `tool`, for one credential."""
+    credential = {"authorization": f"Bearer {token}"}
+    async with wire() as client:
+        over_http = await client.get(url, headers={**credential, "accept": JSON})
+        await initialize(client, credential, "exports-door-parity")
+        called = await client.post(
+            MCP_URL,
+            headers={**MCP_HEADERS, **credential},
+            json=rpc("tools/call", {"name": tool, "arguments": {"export_id": export_id}}, 2),
+        )
+    assert called.status_code == 200, called.text
+    return over_http, called.json()
 
 
 @pytest.fixture
@@ -171,7 +127,7 @@ def export(tenant: Tenant, owner: User) -> Export:
 @pytest.mark.django_db(transaction=True)
 @pytest.mark.asyncio
 async def test_the_two_doors_put_the_same_export_on_the_wire(
-    bearer: str, export: Export, named_bucket: str
+    owner_bearer: str, export: Export, named_bucket: str
 ) -> None:
     """The same row over HTTP and over JSON-RPC: one key set, one set of values.
 
@@ -179,49 +135,13 @@ async def test_the_two_doors_put_the_same_export_on_the_wire(
     disagreement and values were not — a test that compared only values
     passed while the two doors described one row in two vocabularies.
     """
-    from config.asgi import build_application
+    over_http, raw = await _both(
+        owner_bearer, DETAIL_URL.format(export.pk), "get_export", str(export.pk)
+    )
 
-    application = build_application()
-    bearer_header = {"authorization": f"Bearer {bearer}"}
-
-    async with running(application):
-        transport = httpx.ASGITransport(app=application)
-        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-            over_http = await client.get(
-                DETAIL_URL.format(export.pk), headers={**bearer_header, "accept": JSON}
-            )
-            assert over_http.status_code == 200, over_http.text
-
-            headers = {**MCP_HEADERS, **bearer_header}
-            initialize = await client.post(
-                MCP_URL,
-                headers=headers,
-                json=_rpc(
-                    "initialize",
-                    {
-                        "protocolVersion": PROTOCOL_VERSION,
-                        "capabilities": {},
-                        "clientInfo": {"name": "exports-door-parity", "version": "1"},
-                    },
-                    1,
-                ),
-            )
-            assert initialize.status_code == 200, initialize.text
-
-            called = await client.post(
-                MCP_URL,
-                headers=headers,
-                json=_rpc(
-                    "tools/call",
-                    {"name": "get_export", "arguments": {"export_id": str(export.pk)}},
-                    2,
-                ),
-            )
-            assert called.status_code == 200, called.text
-
-    answered = called.json()
-    assert "error" not in answered, answered
-    over_mcp = answered["result"]["structuredContent"]
+    assert over_http.status_code == 200, over_http.text
+    assert "error" not in raw, raw
+    over_mcp = raw["result"]["structuredContent"]
     rest_body = over_http.json()
 
     # The REST body first, against the written-out contract: whatever the two
@@ -264,7 +184,7 @@ async def test_the_two_doors_put_the_same_export_on_the_wire(
 @pytest.mark.django_db(transaction=True)
 @pytest.mark.asyncio
 async def test_the_computed_download_pair_reads_the_same_on_both_doors(
-    bearer: str, export: Export, root_slug: str, named_bucket: str
+    owner_bearer: str, export: Export, root_slug: str, named_bucket: str
 ) -> None:
     """The four properties that are NOT schema aliases, and the reason they are not.
 
@@ -273,43 +193,12 @@ async def test_the_computed_download_pair_reads_the_same_on_both_doors(
     each of them and would have put four different key names on the machine door.
     Asserted as VALUES here, so the pin is not only about key sets.
     """
-    from config.asgi import build_application
-
-    application = build_application()
-    bearer_header = {"authorization": f"Bearer {bearer}"}
-
-    async with running(application):
-        transport = httpx.ASGITransport(app=application)
-        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-            over_http = await client.get(
-                DETAIL_URL.format(export.pk), headers={**bearer_header, "accept": JSON}
-            )
-            headers = {**MCP_HEADERS, **bearer_header}
-            await client.post(
-                MCP_URL,
-                headers=headers,
-                json=_rpc(
-                    "initialize",
-                    {
-                        "protocolVersion": PROTOCOL_VERSION,
-                        "capabilities": {},
-                        "clientInfo": {"name": "exports-download-parity", "version": "1"},
-                    },
-                    1,
-                ),
-            )
-            called = await client.post(
-                MCP_URL,
-                headers=headers,
-                json=_rpc(
-                    "tools/call",
-                    {"name": "download_export", "arguments": {"export_id": str(export.pk)}},
-                    2,
-                ),
-            )
+    over_http, raw = await _both(
+        owner_bearer, DETAIL_URL.format(export.pk), "download_export", str(export.pk)
+    )
 
     rest_body = over_http.json()
-    over_mcp = called.json()["result"]["structuredContent"]
+    over_mcp = raw["result"]["structuredContent"]
 
     # The download tool is the ONE place the two doors answer different SHAPES —
     # a redirect over HTTP, a location over JSON-RPC — so what is compared is the
@@ -352,128 +241,38 @@ async def test_both_doors_refuse_the_same_export_to_a_stranger(
     stranger_bearer: str, export: Export
 ) -> None:
     """Not-there and not-yours are one answer, and it is one answer at both doors."""
-    from config.asgi import build_application
-
-    application = build_application()
-    bearer_header = {"authorization": f"Bearer {stranger_bearer}"}
-
-    async with running(application):
-        transport = httpx.ASGITransport(app=application)
-        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-            over_http = await client.get(
-                DETAIL_URL.format(export.pk), headers={**bearer_header, "accept": JSON}
-            )
-            headers = {**MCP_HEADERS, **bearer_header}
-            await client.post(
-                MCP_URL,
-                headers=headers,
-                json=_rpc(
-                    "initialize",
-                    {
-                        "protocolVersion": PROTOCOL_VERSION,
-                        "capabilities": {},
-                        "clientInfo": {"name": "exports-refusal-parity", "version": "1"},
-                    },
-                    1,
-                ),
-            )
-            called = await client.post(
-                MCP_URL,
-                headers=headers,
-                json=_rpc(
-                    "tools/call",
-                    {"name": "get_export", "arguments": {"export_id": str(export.pk)}},
-                    2,
-                ),
-            )
+    over_http, raw = await _both(
+        stranger_bearer, DETAIL_URL.format(export.pk), "get_export", str(export.pk)
+    )
 
     assert over_http.status_code == 404, over_http.text
     assert over_http.json()["code"] == "not_found"
-    answered = called.json()["result"]
+    answered = raw["result"]
     assert answered.get("isError") is True
     assert "not_found" in str(answered["content"])
 
 
 @pytest.fixture
-def read_withheld(tenant: Tenant, owner: User) -> Grant:
-    """One `withhold` row on the owner's own membership. **`export.read`, gone.**
-
-    A withhold beats everything — "forbid overrides permit" — and it beats it
-    for an owner too, which is what makes this the smallest world in which a
-    perfectly ordinary credential is refused a read at both doors. Nothing about
-    the role, the hat or the row changes: the only difference between this test
-    and the one above it is this row.
-    """
-    membership = Membership.objects.filter(tenant=tenant).get(user=owner)
-    return Grant.objects.create(
-        tenant=tenant,
-        membership=membership,
-        permission="export.read",
-        effect=Grant.Effect.WITHHOLD,
-    )
+def requested(tenant: Tenant, owner: User, recorded_workflow_starts: None) -> Export:
+    """An export asked for through the service, so its `requested` event is on the spine."""
+    actor = actor_for(user=owner, tenant=tenant, org=root_organization(tenant=tenant))
+    return create_export(tenant=tenant, actor=actor, scope=Export.Scope.TENANT)
 
 
 @pytest.mark.django_db(transaction=True)
 @pytest.mark.asyncio
-async def test_both_doors_refuse_the_same_withheld_read_with_the_same_words(
-    bearer: str, export: Export, read_withheld: Grant
+async def test_the_doors_and_the_event_tell_one_export(
+    owner_bearer: str, requested: Export, named_bucket: str
 ) -> None:
-    """**PR4.e.2 — rule 46's named case for Phase R.**
-
-    A read is a permission now (ADR core-27), so there is a new refusal on both
-    doors, and a new refusal is exactly where two doors come apart: one composes
-    a body and the other stringifies an exception. Both go through
-    `core.exceptions.wire_refusal`, and this is the test that says so — the code
-    AND the sentence, not just the status.
-
-    The sentence is read from `refusal_sentence` rather than typed, so the two
-    doors are compared against the key's own prose and not against a third copy
-    of it that could drift from both.
-
-    *Absent (baseline `11b1a765`):* 200 on both doors, with the export in the
-    body — the row a withheld reader could still read.
-    """
-    from config.asgi import build_application
-
-    application = build_application()
-    bearer_header = {"authorization": f"Bearer {bearer}"}
-    sentence = refusal_sentence("export.read")
-
-    async with running(application):
-        transport = httpx.ASGITransport(app=application)
-        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-            over_http = await client.get(
-                DETAIL_URL.format(export.pk), headers={**bearer_header, "accept": JSON}
-            )
-            headers = {**MCP_HEADERS, **bearer_header}
-            await client.post(
-                MCP_URL,
-                headers=headers,
-                json=_rpc(
-                    "initialize",
-                    {
-                        "protocolVersion": PROTOCOL_VERSION,
-                        "capabilities": {},
-                        "clientInfo": {"name": "exports-read-parity", "version": "1"},
-                    },
-                    1,
-                ),
-            )
-            called = await client.post(
-                MCP_URL,
-                headers=headers,
-                json=_rpc(
-                    "tools/call",
-                    {"name": "get_export", "arguments": {"export_id": str(export.pk)}},
-                    2,
-                ),
-            )
-
-    assert over_http.status_code == 403, over_http.text
-    assert over_http.json()["code"] == "forbidden"
-    assert over_http.json()["detail"] == sentence
-
-    answered = called.json()["result"]
-    assert answered.get("isError") is True
-    assert "forbidden" in str(answered["content"])
-    assert sentence in str(answered["content"]), answered["content"]
+    """REST, MCP and the recorded `exports.export.requested` payload are one row (rule 46)."""
+    export = requested
+    over_http, raw = await _both(
+        owner_bearer, DETAIL_URL.format(export.pk), "get_export", str(export.pk)
+    )
+    assert over_http.status_code == 200, over_http.text
+    recorded = await Event.objects.aget(name=EXPORT_REQUESTED, tenant=export.tenant)
+    assert_four_doors(
+        rest=over_http.json(),
+        mcp=raw["result"]["structuredContent"],
+        event_payload=recorded.payload,
+    )

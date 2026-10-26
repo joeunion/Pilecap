@@ -1,8 +1,4 @@
-"""The history adoption's own test — copied with the adoption, and green on the copy.
-
-Every line is fenced `golden: history`: four things done to one widget read
-back as four entries, newest first, the edit naming the one field it sent.
-"""
+"""The history adoption's own test — copied with the adoption, and green on the copy."""
 
 # golden: history begin
 import json
@@ -11,11 +7,10 @@ from typing import Any
 import pytest
 from django.test import Client
 
-from apps.accounts.models import User
-from apps.core.actor import actor_for
-from apps.core.models import Organization, Tenant
-from apps.core.services import create_organization
 from apps.example.models import Widget
+from pilecap.accounts import User
+from pilecap.tenancy import Organization, Tenant, create_organization
+from pilecap.testing import actor_for
 
 pytestmark = pytest.mark.django_db
 

@@ -65,7 +65,7 @@ TOOL_FOR_ROUTE: dict[str, str] = {
     "settings-detail": "get_settings",
     "settings-update": "update_settings",
     "flags-detail": "get_flags",
-    "flags-update": "set_flags",
+    "flags-update": "update_flags",
     # The permission surface (P5). Two url_names carry an underscore in their
     # NOUN rather than a dash — `role_permissions-update`,
     # `membership_permissions-detail` — for the same reason `event_type-list`
@@ -76,10 +76,10 @@ TOOL_FOR_ROUTE: dict[str, str] = {
     "role-detail": "get_role",
     "role-create": "create_role",
     "role-update": "update_role",
-    "role_permissions-update": "set_role_permissions",
+    "role_permissions-update": "update_role_permissions",
     "role-delete": "delete_role",
     "grant-list": "list_grants",
-    "grant-update": "set_grant",
+    "grant-update": "update_grant",
     "grant-delete": "delete_grant",
     "membership_permissions-detail": "get_membership_permissions",
     "permission-list": "list_permissions",
@@ -195,13 +195,11 @@ def test_every_tool_says_what_its_route_says() -> None:
 def test_the_escalation_wall_refuses_identically_through_both_doors(
     api: Client, tenant: Tenant, tree: dict[str, Organization], owner: User
 ) -> None:
-    """B-CORE-2. The MCP message IS the REST body, rendered — string-compared.
+    """The escalation wall's MCP message IS the REST body, rendered — string-compared.
 
-    Two doors, one wall, one answer. If the machine door ever grew a refusal
-    grammar of its own this fails, which is the drift house rule 17's
-    `does_not_cover` says a registry diff cannot see.
+    A refusal grammar of the machine door's own is the drift rule 17's registry diff cannot see.
     """
-    branch_admin = create_user(email="wall-admin@example.com", password="pw-for-tests-only")
+    branch_admin = create_user(email="wall-admin@example.com", password="pw-for-tests-only")  # noqa: S106 — a throwaway password a test user is made with
     at_root = actor_for(user=owner, tenant=tenant, org=tree["root"])
     add_membership(
         user=branch_admin,
@@ -211,7 +209,7 @@ def test_the_escalation_wall_refuses_identically_through_both_doors(
         is_default=True,
         actor=at_root,
     )
-    victim = create_user(email="wall-victim@example.com", password="pw-for-tests-only")
+    victim = create_user(email="wall-victim@example.com", password="pw-for-tests-only")  # noqa: S106 — a throwaway password a test user is made with
     membership = add_membership(
         user=victim,
         tenant=tenant,
@@ -246,7 +244,7 @@ def test_a_sibling_branch_is_not_found_through_the_machine_door_too(
     tenant: Tenant, tree: dict[str, Organization], owner: User
 ) -> None:
     """Rule 24's downward-only read, on the door a registry diff cannot see."""
-    branch_admin = create_user(email="sib-admin@example.com", password="pw-for-tests-only")
+    branch_admin = create_user(email="sib-admin@example.com", password="pw-for-tests-only")  # noqa: S106 — a throwaway password a test user is made with
     add_membership(
         user=branch_admin,
         tenant=tenant,

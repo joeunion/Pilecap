@@ -25,7 +25,7 @@ from typing import Any
 
 # The classes of configuration this workflow can materialise, named once so the
 # service, the workflow argument and the activity's branch cannot disagree about
-# a string. It is a vocabulary and not a boolean because W2-R5 put three members
+# a string. It is a vocabulary and not a boolean because ADR ident-6 put three members
 # in it, and the third one is not configuration at all:
 #
 # * `SSO_CONNECTION` — one tenant's own identity provider, keyed on the row.
@@ -72,31 +72,23 @@ class IdentityConfigSync:
 class IdentityConfigApplied:
     """What the activity got back, and what the service records on the row.
 
-    `resource_id` is the Zitadel object our row now names. `created` is `True`
-    only on the call that actually made it — it is for the seed command's output
-    and for the idempotence test, never for control flow, because a run that
-    behaved differently on its second attempt would not be idempotent.
+    `resource_id` is the Zitadel object our row now names. Whether this call
+    made it or found it is not carried: the realm port answers neither, so a
+    flag here would read `False` on a connection that was just made — a value
+    that is always false is a lie on the wire. The log line of the branch that
+    can tell says it.
     """
 
     kind: str
     key: str
     resource_id: str
-    created: bool = False
 
 
 @dataclass
 class InvitationMessage:
-    """The invitation email, as it crosses into `send_email`.
+    """The invitation email as it crosses into `send_email`: `workflows.types.SendEmail`'s fields.
 
-    The field names are `apps.workflows.types.SendEmail`'s, and the worker
-    deserialises into *that* class — the same by-name crossing `RunFinished`
-    below makes, for the same reason: a workflow module may import its own
-    `types.py` and nothing else, and `send_email` is another app's activity.
-
-    `core.services.invite_member` builds this (through `core.mail.message_for`,
-    so the shape has one author) with every word of the message except the link,
-    because the link does not exist until the identity activity has run.
-    `ProvisionInvitedPersonWorkflow` merges the link in.
+    Restated, not imported: a workflow module imports its own `types.py` (rule 9).
     """
 
     to: list[str]
@@ -150,7 +142,6 @@ class InvitedIdentity:
     """
 
     zitadel_user_id: str
-    created: bool = False
     set_credentials_url: str = ""
     link_expires_on: str = ""
     already_initialized: bool = False
@@ -163,26 +154,30 @@ class InvitedPersonProvisioned:
     No URL and no code: the workflow result is the most-read row in the Temporal
     UI, and there is no reason for a credential to be the thing a person sees
     when they open a run. What is useful there is which account was settled on,
-    whether this run made it, and whether the email went.
+    whether it already signed in, and whether the email went.
     """
 
     zitadel_user_id: str
-    created: bool = False
     already_initialized: bool = False
     delivered: int = 0
 
 
 @dataclass
-class RunFinished:
-    """What `mark_run_finished` is told when this app's workflow ends.
+class IdentityHomeAsk:
+    """What `EnsureTenantIdentityHomeWorkflow` is started with: the tenant, by slug.
 
-    The activity belongs to `apps.workflows` and is invoked **by name**, as every
-    activity is (house rule 9) — so the shape crosses the boundary and the class
-    does not. Restated here rather than imported because a workflow module may
-    import its own `types.py` and nothing else. Keep the three fields matching
-    `apps.workflows.types.MarkRunFinished`; the worker deserialises into that.
+    The slug rather than the primary key because the run is the DEPLOYMENT's
+    (a `platform:` id with no tenant on its headers — the realm is identity
+    configuration, not any tenant's row), so the tenant is named in the payload
+    and read inside the activity, where the database is.
     """
 
-    workflow_id: str
-    status: str
-    error: str = ""
+    tenant_slug: str
+
+
+@dataclass
+class IdentityHomeApplied:
+    """What the run made: the tenant's realm, by its id at the identity platform."""
+
+    tenant_slug: str
+    realm_id: str

@@ -80,9 +80,9 @@ JSON = "application/json"
 # under a BRANCH hat pays, which used to be one more, once per request, and is
 # now the same as this one. The hat these budgets run under is the root, and
 # that sentence is the pin's own, not an inference (build-contract.md).
-ENDPOINT_LIST_QUERY_BUDGET = 10
-DELIVERY_LIST_QUERY_BUDGET = 10
-CATALOGUE_QUERY_BUDGET = 6
+ENDPOINT_LIST_QUERY_BUDGET = 8
+DELIVERY_LIST_QUERY_BUDGET = 8
+CATALOGUE_QUERY_BUDGET = 4
 
 
 def register(api: Client, url: str = "https://subscriber.example/hook", **body: Any) -> Any:
@@ -197,6 +197,17 @@ def test_a_plain_member_cannot_register_an_endpoint(
     response = register(api)
     assert response.status_code == 403, response.content
     assert response.json()["code"] == "forbidden"
+    assert not WebhookEndpoint.objects.exists()
+
+
+def test_a_person_of_no_tenant_is_refused_no_acting_scope_and_nothing_is_written(
+    api: Client, nomad: User
+) -> None:
+    """The door's one resolver answers an absent tenant with the registry's code, not a bare 403."""
+    api.force_login(nomad)
+    response = register(api)
+    assert response.status_code == 403, response.content
+    assert response.json()["code"] == "no_acting_scope"
     assert not WebhookEndpoint.objects.exists()
 
 
@@ -383,18 +394,18 @@ def test_another_tenants_delivery_cannot_be_replayed(
 def test_pausing_takes_an_endpoint_out_of_the_fan_out_and_resuming_puts_it_back(
     api: Client, owner: User, owner_actor: Actor, tenant: Tenant
 ) -> None:
-    """`endpoints_for` is what the dispatch loads, and it reads the active ones."""
+    """`list_endpoints_for` is what the dispatch loads, and it reads the active ones."""
     api.force_login(owner)
     endpoint_id = register(api).json()["endpoint"]["id"]
     detail = f"{ENDPOINTS_URL}{endpoint_id}/"
 
     assert api.post(f"{detail}pause/").json()["is_active"] is False
-    from apps.events.selectors import endpoints_for
+    from apps.events.selectors import list_endpoints_for
 
-    assert endpoints_for(tenant=tenant, name=WIDGET_CREATED) == []
+    assert list_endpoints_for(tenant=tenant, name=WIDGET_CREATED) == []
 
     assert api.post(f"{detail}resume/").json()["is_active"] is True
-    assert [e.pk for e in endpoints_for(tenant=tenant, name=WIDGET_CREATED)] == [
+    assert [e.pk for e in list_endpoints_for(tenant=tenant, name=WIDGET_CREATED)] == [
         WebhookEndpoint.objects.get(pk=endpoint_id).pk
     ]
 
@@ -688,3 +699,49 @@ def test_every_route_here_is_in_the_openapi_document_with_its_own_prose(
             for status, response in operation["responses"].items()
             if not str(status).startswith("2")
         ), summary
+
+
+# --- No target in private space ------------------------------------------------
+
+
+@pytest.mark.parametrize("verb", ["create", "update"])
+def test_the_metadata_address_is_refused_at_the_door_naming_the_class(
+    api: Client, owner: User, tenant: Tenant, verb: str
+) -> None:
+    """The box's credential endpoint: 400 `invalid` on `url`, and nothing is written."""
+    api.force_login(owner)
+    target = "https://169.254.169.254/latest/meta-data/"
+    if verb == "create":
+        response = register(api, url=target)
+    else:
+        endpoint_id = register(api).json()["endpoint"]["id"]
+        response = api.patch(
+            f"{ENDPOINTS_URL}{endpoint_id}/", data=json.dumps({"url": target}), content_type=JSON
+        )
+
+    assert response.status_code == 400, response.content
+    body = response.json()
+    assert body["code"] == "invalid"
+    assert body["errors"]["url"] == ["The host is or resolves to a link-local address."]
+    assert "169.254" not in response.content.decode()
+    assert not WebhookEndpoint.objects.for_tenant(tenant).filter(url=target).exists()
+
+
+def test_a_name_that_resolves_privately_is_refused_at_the_door(
+    api: Client, owner: User, tenant: Tenant, resolved_hosts: dict[str, list[str]]
+) -> None:
+    api.force_login(owner)
+    resolved_hosts["inside.example.com"] = ["10.9.8.7"]
+    response = register(api, url="https://inside.example.com/hook")
+    assert response.status_code == 400, response.content
+    assert response.json()["errors"]["url"] == ["The host is or resolves to a private address."]
+    assert "10.9.8.7" not in response.content.decode()
+
+
+def test_the_laptop_valve_lets_the_door_take_plain_http_to_localhost(
+    api: Client, owner: User, tenant: Tenant, settings: Any
+) -> None:
+    settings.WEBHOOK_PRIVATE_TARGETS_ALLOWED = True
+    api.force_login(owner)
+    response = register(api, url="http://localhost:9000/hook")
+    assert response.status_code == 201, response.content

@@ -60,10 +60,9 @@ a blind spot a reader cannot see is not declared. See `blind_spots()`.
 
 from __future__ import annotations
 
-import json
 import re
 import secrets
-from base64 import urlsafe_b64decode, urlsafe_b64encode
+from base64 import urlsafe_b64encode
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -71,7 +70,6 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlsplit
 
 from django.conf import settings
 from django.core.management.base import CommandError
@@ -83,8 +81,10 @@ from django.core.management.base import CommandError
 # importable. The one organisation it writes into is one it created, and it
 # deletes it before returning.
 from apps.accounts import zitadel
+from apps.accounts import zitadel_measure_kit as kit
 from apps.accounts.management.commands.zitadel_seed import LOGIN_BASE_PATH
 from apps.core.management import BaseCommand
+from apps.core.surfaces import PUBLIC_BASE_URL_SETTING, surface_base_urls
 
 # --- the closed vocabulary ---------------------------------------------------
 #
@@ -367,6 +367,7 @@ FIELD_SET_DEFINITIONS: Mapping[str, tuple[tuple[str, str], ...]] = {
     "/projects/{id}/apps/{id}/oidc_config": (
         ("management", "ManagementServiceUpdateOIDCAppConfigBody"),
     ),
+    "/projects/{id}": (("management", "ManagementServiceUpdateProjectBody"),),
 }
 
 #: The image line in `compose.yaml` this deployment's Zitadel is pinned to, by
@@ -531,7 +532,7 @@ def build_world(world: World) -> None:
 
 def measure_field_sets() -> Outcome:
     """C1 — every declared field set against this build's own swagger."""
-    documents = {name: zitadel.swagger_document(name=name) for name in ("admin", "management")}
+    documents = {name: kit.swagger_document(name=name) for name in ("admin", "management")}
     wrong: list[str] = []
     seen: list[str] = []
     for resource, definitions in FIELD_SET_DEFINITIONS.items():
@@ -706,7 +707,7 @@ def measure_authorize_redirect() -> Outcome:
     """M1 — where the authorize endpoint sends a person, per login version.
 
     **The one measurement that writes into a REAL project**, and the cost is
-    stated rather than hidden: `zitadel.check_login_version_redirects` makes a
+    stated rather than hidden: `kit.check_login_version_redirects` makes a
     throwaway native application under this deployment's own project, measures
     the redirect twice (undeclared, then with `loginVersion.loginV2.baseUri`),
     and DEACTIVATES it in a `finally`. A deactivated client is not a door, and
@@ -732,14 +733,14 @@ def measure_authorize_redirect() -> Outcome:
     # measurement input and not the deployment's intent —
     # `zitadel_seed.declared_login_base_uri` is the intent and answers `None`
     # until A5, which is why this does not call it.
-    public = str(getattr(settings, "PUBLIC_BASE_URL", "") or "").rstrip("/")
+    public = surface_base_urls()[0]
     if not public:
         return could_not(
-            "PUBLIC_BASE_URL is empty, so there is no base URI to declare and the "
+            f"{PUBLIC_BASE_URL_SETTING} is empty, so there is no base URI to declare and the "
             "v2 half of this measurement has nothing to compare against"
         )
     base_uri = f"{public}{LOGIN_BASE_PATH}"
-    seen = zitadel.check_login_version_redirects(
+    seen = kit.check_login_version_redirects(
         project_id=str(project.get("id", "")), base_uri=base_uri
     )
     undeclared, declared = seen["undeclared"], seen["declared"]
@@ -778,7 +779,7 @@ def measure_login_client_role() -> Outcome:
     page. That is a fact about the deployment, which is what this instrument
     is for — the remedy is `manage.py zitadel_reconcile`, and the line says so.
     """
-    seen = zitadel.check_login_client_role()
+    seen = kit.check_login_client_role()
     roles = ", ".join(str(one) for one in seen["roles"]) or "none"
     if not seen["user_id"]:
         return could_not(
@@ -1066,16 +1067,17 @@ def measure_mode_a(world: World) -> dict[str, Outcome]:
     """
     project_name = str(getattr(settings, "ZITADEL_PROJECT_NAME", "") or "")
     project = zitadel.find_project(name=project_name) if project_name else None
-    public = str(getattr(settings, "PUBLIC_BASE_URL", "") or "").rstrip("/")
+    public = surface_base_urls()[0]
     if not project or not public:
         blocked = could_not(
-            f"no project named {project_name!r} on this instance, or no PUBLIC_BASE_URL — "
+            f"no project named {project_name!r} on this instance, or {PUBLIC_BASE_URL_SETTING} "
+            "is empty — "
             "there is nothing to make a throwaway OIDC client under, and no base URI "
             "for it to declare"
         )
         return {M3: blocked, M4: blocked, M7: blocked}
 
-    seen = zitadel.check_mode_a(
+    seen = kit.check_mode_a(
         project_id=str(project.get("id", "")),
         base_uri=f"{public}{LOGIN_BASE_PATH}",
         login_name=world.login_name,
@@ -1162,34 +1164,9 @@ def _judge_refusal_enum(seen: Mapping[str, Any]) -> Outcome:
     )
 
 
-def _query_value(url: str, name: str) -> str:
-    """One query parameter off a URL, or `""`.
-
-    Deliberately not imported from the client module, where the same three
-    lines are private: the two legs below are the KIT's own reading of a
-    browser URL rather than anything `zitadel` offers its callers.
-    """
-    return (parse_qs(urlsplit(url).query).get(name) or [""])[0]
-
-
 def _unverified_subject(token: str) -> str:
-    """A JWT's `sub`, WITHOUT verifying the signature. For a measurement only.
-
-    The argument `zitadel._unverified_claims` records, for one more item: the
-    question is WHICH STRING this build puts in the claim, and a verifier here
-    would be a second opinion about token validity (principle 9) answering a
-    different question — a token that failed verification still carries the
-    subject M12 is comparing.
-    """
-    parts = token.split(".")
-    if len(parts) != 3:
-        return ""
-    payload = parts[1] + "=" * (-len(parts[1]) % 4)
-    try:
-        parsed = json.loads(urlsafe_b64decode(payload))
-    except (ValueError, TypeError):
-        return ""
-    return str(parsed.get("sub", "")) if isinstance(parsed, dict) else ""
+    """A JWT's `sub`, WITHOUT verifying the signature. For a measurement only."""
+    return str(kit.unverified_claims(token).get("sub", ""))
 
 
 def _one_person_through_both_doors(world: World) -> dict[str, Any]:
@@ -1221,10 +1198,11 @@ def _one_person_through_both_doors(world: World) -> dict[str, Any]:
         return found
     project_name = str(getattr(settings, "ZITADEL_PROJECT_NAME", "") or "")
     project = zitadel.find_project(name=project_name) if project_name else None
-    public = str(getattr(settings, "PUBLIC_BASE_URL", "") or "").rstrip("/")
+    public = surface_base_urls()[0]
     if not project or not public:
         found["trouble"] = (
-            f"no project named {project_name!r} on this instance, or no PUBLIC_BASE_URL — "
+            f"no project named {project_name!r} on this instance, or {PUBLIC_BASE_URL_SETTING} "
+            "is empty — "
             "there is nothing to make a throwaway OIDC client under, so no id_token can "
             "be minted and nothing is asserted here"
         )
@@ -1278,7 +1256,7 @@ def _one_person_through_both_doors(world: World) -> dict[str, Any]:
         # a `Location` HEADER, which `Probe` does not carry, and the token
         # endpoint takes a FORM body, which `probe` does not send. The
         # credential the factory attaches is ignored by both — measured, and
-        # recorded on `zitadel.authorize_redirect`: the 302 was taken with it on.
+        # recorded on `kit.authorize_redirect`: the 302 was taken with it on.
         with zitadel._client() as browser:
             started = browser.get(
                 "/oauth/v2/authorize",
@@ -1291,7 +1269,7 @@ def _one_person_through_both_doors(world: World) -> dict[str, Any]:
                     "code_challenge_method": "S256",
                 },
             )
-        request_id = _query_value(str(started.headers.get("location", "")), "authRequest")
+        request_id = kit.query_value(str(started.headers.get("location", "")), "authRequest")
         if not request_id:
             found["trouble"] = (
                 "the authorize endpoint did not answer a v2 auth request for a client that "
@@ -1303,7 +1281,7 @@ def _one_person_through_both_doors(world: World) -> dict[str, Any]:
             request_id=request_id, session_id=session_id, session_token=session_token
         )
         callback = str(finished.body.get("callbackUrl", ""))
-        code = _query_value(callback, "code")
+        code = kit.query_value(callback, "code")
         if not finished.ok or not code:
             found["trouble"] = (
                 f"the finalize answered {finished.status} "
@@ -1340,16 +1318,16 @@ def _one_person_through_both_doors(world: World) -> dict[str, Any]:
         found["token_subject"] = _unverified_subject(id_token)
         return found
     finally:
-        zitadel.deactivate_application(project_id=project_id, app_id=made.id)
+        kit.deactivate_application(project_id=project_id, app_id=made.id)
 
 
 def measure_subject_is_session_user_id(world: World) -> Outcome:
     """**M12** — the two doors answer the same subject, or they do not.
 
     The fact the whole identity join rests on, and until this row existed it
-    was an assumption in a docstring. `record_zitadel_identity` is keyed on
-    ONE column, `User.zitadel_sub`, and two doors write it down two different
-    roads: the hosted page comes back through allauth carrying an id_token's
+    was an assumption in a docstring. `record_identity` keys the identity
+    join on ONE string per realm, the subject, and two doors write it down two
+    different roads: the hosted page comes back through allauth carrying an id_token's
     `sub`, and this deployment's own form reads `factors.user.id` off a
     Session API answer. If this build ever stopped making those the same
     string, a person who used one door on Monday and the other on Tuesday
@@ -1380,7 +1358,7 @@ def measure_subject_is_session_user_id(world: World) -> Outcome:
         return differs(
             f"the session reports factors.user.id={ours!r} and the id_token minted for "
             f"that same session carries sub={hosted!r} — the two doors no longer name one "
-            "person with one string, and `record_zitadel_identity` would refuse the second "
+            "person with one string, and `record_identity` would refuse the second "
             "door with `Conflict` at an account its owner is standing in front of"
         )
     return ok(
@@ -1437,7 +1415,7 @@ def measure_reset_landing(world: World) -> Outcome:
         )
     if not landed.ok:
         return could_not(f"the reset link answered {landed.status}")
-    ours = f"{str(getattr(settings, 'PUBLIC_BASE_URL', '') or '').rstrip('/')}{LOGIN_BASE_PATH}"
+    ours = f"{surface_base_urls()[0]}{LOGIN_BASE_PATH}"
     if RESET_MARK not in landed.text:
         return differs(
             f"{RESET_PATH} answered {landed.status} without the Set Password form "
@@ -1567,7 +1545,7 @@ class Command(BaseCommand):
         self.stdout.write(f"  issuer        {getattr(settings, 'ZITADEL_ISSUER', '')}")
         for name in ("management", "admin"):
             try:
-                info = dict(zitadel.swagger_document(name=name).get("info") or {})
+                info = dict(kit.swagger_document(name=name).get("info") or {})
             except zitadel.ZitadelError as error:
                 self.stdout.write(f"  {name:<13} could not read this build's document: {error}")
                 continue

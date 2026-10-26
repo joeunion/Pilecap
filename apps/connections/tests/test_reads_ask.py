@@ -1,43 +1,18 @@
-"""Reads are permissions, in `connections`: every door read asks, and one says why.
+"""Reads are permissions in `connections`: reach before capability on the REST door (ADR core-27).
 
-The app's half of ADR core-27. `test_authz_sweep.py` beside this file drives the
-WRITE algebra (what a role holds); this drives the READ SEAM — that each public
-selector actually asks, that the one machine read says in its own source why it
-does not, and that the flat product still reads everything it read.
-
-**The grammar under test, in one line** (§C8, reach before capability): a row in
-another tenant is `not_found`, a row in this one without `connection.read` is
-`forbidden`, and a list without the key is `forbidden` because a list has no row
-to hide. The ORDER is asserted by the two exception types rather than described.
-
-**This app has one door, and that is a declared exemption rather than a gap.**
-`quality/rules.yaml` exempts `connections` from rule 17's REST-and-MCP parity
-with its reason — *"connection management is per-tenant configuration done by a
-person in a browser (OAuth redirects cannot round-trip through a tool call), and
-the inbound webhook receiver is a machine door of its own"* — so there is no
-twin to compare a refusal against, and no `DOOR_PAIR` case is owed. What stands
-in its place is the wire assertion below: the REST door's refusal is driven
-through the mounted API, not through the selector it calls.
-
-Raw `Grant` rows, because the services that hand permissions out are a later
-rung's and the criteria say a raw create is legal until they land.
+The selector census is rule 54 (d)/(e).
+why-not a `DOOR_PAIR` case: rule 17 records this app's REST-only exemption, so no twin answers.
 """
 
 from __future__ import annotations
 
-import inspect
-import re
-from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
 
 import pytest
-from django.db import models
 from django.test import Client
 
 from apps.accounts.models import User
 from apps.accounts.services import create_user
-from apps.connections import selectors as connection_selectors
 from apps.connections.models import Connection, InboundWebhook
 from apps.connections.selectors import (
     get_connection,
@@ -46,7 +21,7 @@ from apps.connections.selectors import (
     list_inbound_webhooks,
 )
 from apps.core.actor import Actor, actor_for, system_actor
-from apps.core.authz import kind_of, refusal_sentence
+from apps.core.authz import refusal_sentence
 from apps.core.exceptions import Forbidden, NotFound
 from apps.core.models import Grant, Membership, Organization, Tenant
 from apps.core.services import add_membership, create_organization, root_organization
@@ -59,11 +34,7 @@ LIST_URL = "/api/v1/connections/"
 #: imported from `apps/conftest.py`: that module imports `apps.workflows`, so
 #: an import of it from this app's tests is this app importing a SIBLING —
 #: which the layer contract refuses, and which the hook catches at the commit.
-BRANCH_PASSWORD = "a-long-enough-password-for-validators"  # pragma: allowlist secret
-
-#: The valve rule 54 (d) reads for a selector nobody's door calls. Spelled here
-#: so the derivation below looks for the same string the gate looks for.
-READ_OPEN = "# read-open:"
+BRANCH_PASSWORD = "a-long-enough-password-for-validators"  # noqa: S105 — a throwaway password a test user is made with  # pragma: allowlist secret
 
 
 @dataclass(frozen=True)
@@ -118,71 +89,6 @@ def withhold(membership: Membership, permission: str) -> Grant:
 # --- the population, derived from the module ----------------------------------
 
 
-def _returned_model(function: Callable[..., Any]) -> type[models.Model] | None:
-    """The model a selector's RETURN ANNOTATION names, or `None`.
-
-    Read off the annotation TEXT, the way rule 54 (d)/(e) reads it, and NOT with
-    `typing.get_type_hints`: Django's `QuerySet.__class_getitem__` returns the
-    class itself, so `ScopedQuerySet[Connection]` evaluates to `ScopedQuerySet`
-    and the model is erased — a resolver that trusted it would report this app's
-    two list selectors as outside the population and go quietly blind.
-    """
-    raw = function.__annotations__.get("return")
-    if not isinstance(raw, str):
-        return None
-    namespace = vars(inspect.getmodule(function) or connection_selectors)
-    for name in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", raw):
-        candidate = namespace.get(name)
-        if isinstance(candidate, type) and issubclass(candidate, models.Model):
-            return candidate
-    return None
-
-
-def door_selectors() -> dict[str, Callable[..., Any]]:
-    """Every public `get_`/`list_` in this app's `selectors.py` over a kind."""
-    found: dict[str, Callable[..., Any]] = {}
-    for name, function in vars(connection_selectors).items():
-        if name.startswith("_") or not name.startswith(("get_", "list_")):
-            continue
-        if not inspect.isfunction(function) or function.__module__ != connection_selectors.__name__:
-            continue
-        model = _returned_model(function)
-        if model is None or kind_of(model) is None:
-            continue
-        found[name] = function
-    return found
-
-
-def test_every_door_selector_asks_or_says_why() -> None:
-    """Each one takes `actor`, or carries the valve with its reason (rule 54 (d)).
-
-    **The instrument answers something when the thing is absent**: the
-    population is derived and its names asserted first, so a derivation that
-    stopped finding selectors reds here instead of passing over an empty set.
-    """
-    selectors = door_selectors()
-    assert sorted(selectors) == [
-        "get_connection",
-        "get_connection_for_webhook",
-        "list_connections",
-        "list_inbound_webhooks",
-    ], sorted(selectors)
-
-    asking = {"get_connection", "list_connections", "list_inbound_webhooks"}
-    for name, function in sorted(selectors.items()):
-        signature = inspect.signature(function)
-        source = inspect.getsource(function)
-        if name in asking:
-            parameter = signature.parameters["actor"]
-            assert parameter.kind is inspect.Parameter.KEYWORD_ONLY, name
-            assert parameter.default is inspect.Parameter.empty, (
-                f"{name}: `actor` has a default, so a caller that forgets it reads for free"
-            )
-        else:
-            assert "actor" not in signature.parameters, name
-            assert READ_OPEN in source, name
-
-
 def test_the_pre_auth_lookup_stays_open_and_still_scopes_by_the_row(reads: Reads) -> None:
     """The valve is not a hole: what it drops is the PERSON, not the narrowing.
 
@@ -190,15 +96,14 @@ def test_the_pre_auth_lookup_stays_open_and_still_scopes_by_the_row(reads: Reads
     nobody to ask for `connection.read`. What it still does is resolve exactly
     one row by an unguessable id, through `for_webhook`, which refuses anything
     that is not `connected` — and the receiver checks an HMAC made with that
-    row's own secret immediately afterwards. An id that names nothing is
-    `not_found`, which is the answer this asserts so the valve cannot quietly
-    become "any id resolves".
+    row's own secret immediately afterwards. An id that names nothing is `None`
+    (the receiver answers it as a bad signature), never some other row.
     """
     import uuid
 
-    assert get_connection_for_webhook(connection_id=reads.connection.pk).pk == reads.connection.pk
-    with pytest.raises(NotFound):
-        get_connection_for_webhook(connection_id=uuid.uuid4())
+    found = get_connection_for_webhook(connection_id=reads.connection.pk)
+    assert found is not None and found.pk == reads.connection.pk
+    assert get_connection_for_webhook(connection_id=uuid.uuid4()) is None
 
 
 def test_a_list_without_the_key_is_forbidden_and_says_the_keys_own_sentence(reads: Reads) -> None:

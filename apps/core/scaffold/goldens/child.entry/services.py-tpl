@@ -1,0 +1,56 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "imports", "text": ""}
+from apps.example.models import WidgetEntry
+
+from pilecap.tenancy import Organization
+
+# golden-anchor: {"nth": 3, "scope": [], "side": "after", "text": "return widget"}
+def _entry(
+    *,
+    tenant: Tenant,
+    widget: Widget,
+    kind: str,
+    note: str,
+    organization: Organization,
+) -> WidgetEntry:
+    """Append one ledger line. **The only write path onto `WidgetEntry`.**"""
+    entry = WidgetEntry(
+        tenant=tenant,
+        organization=organization,
+        widget=widget,
+        kind=kind,
+        note=note,
+    )
+    with as_invalid():
+        entry.full_clean()
+    entry.save()
+    return entry
+
+
+@service
+def record_widget_entry(
+    *,
+    tenant: Tenant,
+    actor: Actor,
+    widget: Widget,
+    kind: str = WidgetEntry.Kind.NOTE,
+    note: str = "",
+    organization_slug: str | None = None,
+) -> WidgetEntry:
+    """Append a ledger line. **The entry lands where the widget is.**"""
+    # REACHABILITY FIRST, then the capability: not-there before not-yours.
+    if not may_be_named(actor, widget):
+        raise NotFound()
+    # Every other write on the noun refuses `archived` first.
+    require_live(widget, noun="widget")
+    require(actor, "widget_entry.record", widget)
+    organization = widget.organization
+    if organization_slug is not None:
+        named = Organization.objects.for_tenant(tenant).filter(slug=organization_slug).first()
+        if named is None:
+            raise Invalid(
+                {"organization": [f"No organization here is called {organization_slug!r}."]}
+            )
+        organization = named
+    return _entry(tenant=tenant, widget=widget, kind=kind, note=note, organization=organization)
+
+

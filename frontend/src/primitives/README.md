@@ -1,14 +1,21 @@
-# `primitives/` — L1, and it is ALMOST empty on purpose
+# `primitives/` — L1: token-only shapes that know no product noun
 
-**One primitive lives here, and a house rule put it here: `dialog.tsx`.**
-Shipping anything else here would be the mistake.
+**A primitive lives here when a house rule needs it to exist, or when every
+face draws the same token-only shape** — the directory listing is what is
+here: the sheet (rule 70), and the card, the pill, the still line and the
+refusal notice's box the faces drew inline before (the book's §10, §16, §13,
+§15). Shipping a look here would be the mistake.
 
 This template ships a *system*, not a look. A component library shipped from
 here would be taste exported into every product built on it — the design strike
-that was called on exactly that proposal, and the reason this directory is a
-README and one file.
+that was called on exactly that proposal, and the reason a primitive here is
+drawn with the tokens alone and carries no product noun.
 
-**The one file is the sheet** (`patterns.md` §1), and it is here because house
+**A primitive has no stylesheet.** Its paint is inline and token-only, and
+each `style={` carries a `// paint:` comment with its reason (the book's §26:
+a sheet belongs to a face).
+
+**The dialog primitive is the sheet** (`patterns.md` §1), and it is here because house
 rule 70 says only the dialog primitive draws a `<dialog>` or a
 `role="dialog"` — a rule about the one primitive needs the primitive to exist.
 Its shape is the book's floor (one head with the one dismiss, a body, a foot of
@@ -27,15 +34,20 @@ primitive; it belongs in `components/`.
 Imports flow one way. This is house rule 7's shape, in JavaScript:
 
 ```
-copy ← tokens ← primitives ← components ← screens ← app(routes)
-                                    api ← app(routes)
+copy ← tokens ← primitives ← components ← kit ← screens ← app(routes)
+                                          api ← app(routes)
 ```
 
-- A **route** (`src/app/`) may import from `screens`, `components`,
+- A **route** (`src/app/`) may import from `screens`, `kit`, `components`,
   `primitives`, `copy` and `api`. It fetches; it does not paint.
-- A **screen** (`src/screens/`) may import `components`, `primitives`,
-  `tokens`, `copy` and `state.ts`. It may **not** import from `api` — that is
-  what keeps a screen renderable in every state without a network.
+- A **screen** (`src/screens/`) may import `kit`, `components`, `primitives`,
+  `tokens` and `copy`. It may **not** import from `api` — that is what keeps a
+  screen renderable in every state without a network.
+- The **kit** (`src/kit/`) is what every face shares — the surface state,
+  the verb and route tables, the refusal renderer, the remedy door, and the
+  primitives a screen draws — imported as `@pilecap/ui/<module>` (strings as
+  `@pilecap/copy/<module>`). It may import `components`, `primitives`,
+  `tokens` and `copy`, and `api` through `state.ts` alone.
 - A **component** (`src/components/`) may import `primitives`, `tokens` and
   `copy`. Never `api`.
 - A **primitive** (here) may import `tokens` and `copy`. Nothing else.

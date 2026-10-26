@@ -1,18 +1,12 @@
-"""The import adoption's own test — copied with the adoption, and green on the copy.
-
-Every line is fenced `golden: import`: the imports app discovers the noun's
-importer by its kind, and its `apply` creates, leaves and edits through the
-noun's own services — `created`, then `unchanged` for the same row, then
-`updated` when the file says something new — keyed on `external_ref`.
-"""
+"""The import adoption's own test — copied with the adoption, and green on the copy."""
 
 # golden: import begin
 import pytest
 
-from apps.core.actor import Actor
-from apps.core.models import Tenant
-from apps.djb_imports.selectors import list_importers
 from apps.example.models import Widget
+from pilecap import Actor
+from pilecap.imports import list_importers
+from pilecap.tenancy import Tenant
 
 pytestmark = pytest.mark.django_db
 

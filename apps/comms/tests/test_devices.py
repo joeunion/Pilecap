@@ -55,8 +55,8 @@ JSON = "application/json"
 #: A token that is visibly a placeholder rather than a plausible credential —
 #: `core.schemas.example`'s rule applied to a fixture, so nothing here reads as
 #: a secret somebody has to rotate and nothing trips the secrets leg.
-A_TOKEN = "not-a-real-registration-token-0001"
-ANOTHER_TOKEN = "not-a-real-registration-token-0002"
+A_TOKEN = "not-a-real-registration-token-0001"  # noqa: S105 — a fake token value only this test holds
+ANOTHER_TOKEN = "not-a-real-registration-token-0002"  # noqa: S105 — a fake token value only this test holds
 
 
 def _body(response: Any) -> dict[str, Any]:
@@ -309,7 +309,7 @@ def test_an_empty_token_is_refused(tenant: Tenant, owner_actor: Actor) -> None:
             actor=owner_actor,
             recipient=recipient,
             platform="ios",
-            push_token="   ",
+            push_token="   ",  # noqa: S106 — a fake token value only this test holds
         )
     assert "push_token" in raised.value.errors
 

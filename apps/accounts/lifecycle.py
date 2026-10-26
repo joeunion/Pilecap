@@ -15,7 +15,7 @@ is mounted for the sign-in path this app owns end to end (`adapter.py`,
 `auth.py`, `oauth.py`, `services.provision_sso_identity`), the rows below are
 written by that path and by nothing else, and `services.erase_user` is what
 takes a person out of them. `django_session` is deliberately NOT here — it is
-`apps/realtime`'s W1 rung, which owns the purge that empties it.
+`apps/workflows`' session sweep, which owns the purge that empties it.
 
 **Bounded, all five, and it is not a shrug.** Every one of these tables hangs off
 `accounts.User` or off a row that does, by a CASCADE that allauth declares, so
@@ -36,6 +36,9 @@ from typing import TYPE_CHECKING
 
 from allauth.account.models import EmailAddress, EmailConfirmation
 from allauth.socialaccount.models import SocialAccount, SocialApp, SocialToken
+from django.contrib.auth.models import Group, Permission
+from django.contrib.contenttypes.models import ContentType
+from django.contrib.sites.models import Site
 
 from apps.core.lifecycle import Lifecycle, LifecycleKind
 
@@ -48,7 +51,7 @@ SOURCE = "apps/accounts/lifecycle.py"
 
 
 def register(registry: LifecycleRegistry) -> None:
-    """Declare allauth's five tables. Discovered by `apps.core.lifecycle`."""
+    """Declare allauth's five tables and Django's four. Discovered by `apps.core.lifecycle`."""
     registry.declare(
         EmailAddress,
         Lifecycle(kind=LifecycleKind.BOUNDED),
@@ -85,6 +88,76 @@ def register(registry: LifecycleRegistry) -> None:
                 "2026-08-24 — a deployment that starts registering providers "
                 "per tenant through this table instead of through settings, "
                 "which would make it grow with the customer list."
+            ),
+        ),
+        source=SOURCE,
+    )
+    registry.declare(
+        Group,
+        Lifecycle(
+            kind=LifecycleKind.UNBOUNDED,
+            reason=(
+                "configuration, not anybody's data: no code path on this tree "
+                "writes a group (a role is `core.Membership` plus "
+                "`core.RolePermission`); the table exists because `accounts.User` "
+                "carries `PermissionsMixin`, and only an operator in Django's admin "
+                "can add a row, so it grows with operator clicks and never with "
+                "tenants or people."
+            ),
+            trigger=(
+                "2026-10-04 — the first code path that creates or assigns a "
+                "group, which would make the table grow with data."
+            ),
+        ),
+        source=SOURCE,
+    )
+    registry.declare(
+        Permission,
+        Lifecycle(
+            kind=LifecycleKind.UNBOUNDED,
+            reason=(
+                "Django's permission catalogue: `migrate` writes four rows per "
+                "installed model and nothing on this tree writes or reads one "
+                "(grants are `core.RolePermission` keys), so the population "
+                "grows with the code, never with tenants or people."
+            ),
+            trigger=(
+                "2026-10-04 — a product that grants Django permissions to users "
+                "or creates models at runtime, which would make it grow with data."
+            ),
+        ),
+        source=SOURCE,
+    )
+    registry.declare(
+        ContentType,
+        Lifecycle(
+            kind=LifecycleKind.UNBOUNDED,
+            reason=(
+                "Django's model catalogue, the table `auth.Permission` hangs off: "
+                "`migrate` writes one row per installed model and no code path on "
+                "this tree writes one, so the population grows with the code, "
+                "never with tenants or people."
+            ),
+            trigger=(
+                "2026-10-04 — a product that creates models at runtime, which "
+                "would make the table grow with data."
+            ),
+        ),
+        source=SOURCE,
+    )
+    registry.declare(
+        Site,
+        Lifecycle(
+            kind=LifecycleKind.UNBOUNDED,
+            reason=(
+                "allauth's site binding, configuration and not anybody's data: "
+                "one row (`SITE_ID = 1`) that `SocialApp.sites` points at, and no "
+                "code path on this tree writes another, so it hangs off no "
+                "person and no tenant."
+            ),
+            trigger=(
+                "2026-10-04 — a deployment that adds a `Site` per host, which "
+                "would make the table grow with the customer list."
             ),
         ),
         source=SOURCE,

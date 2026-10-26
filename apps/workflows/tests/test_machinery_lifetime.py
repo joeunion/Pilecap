@@ -46,7 +46,6 @@ from django.core.exceptions import ImproperlyConfigured
 from django.test import override_settings
 from temporalio.client import (
     Schedule,
-    ScheduleAlreadyRunningError,
     WorkflowExecutionStatus,
 )
 from temporalio.common import WorkflowIDConflictPolicy
@@ -54,6 +53,7 @@ from temporalio.service import RPCError, RPCStatusCode
 from temporalio.testing import WorkflowEnvironment
 
 from apps.core.schedules import ScheduleDeclaration
+from apps.core.tests.fakes import FakeScheduleServer
 from apps.workflows import activities as workflows_activities
 from apps.workflows.client import (
     attach_interceptors,
@@ -88,68 +88,6 @@ DEPLOYMENT = "deployment"
 PROCESS = "process"
 
 deployment_machinery = override_settings(TEMPORAL_MACHINERY_LIFETIME=DEPLOYMENT)
-
-
-# --- Stand-ins ----------------------------------------------------------------
-
-
-class FakeScheduleServer:
-    """The client's schedules API, recording every question asked of it.
-
-    The same shape `apps/events/tests/test_activities.py` established, with one
-    further addition: it also records `start_workflow`, because the
-    central claim of `process` mode is a **negative** — that no schedule is
-    ever created — and a negative is only worth anything beside the positive
-    that replaced it.
-    """
-
-    def __init__(self, *, present: set[str] | None = None) -> None:
-        self.present: set[str] = set(present or ())
-        self.created: list[tuple[str, Schedule]] = []
-        self.updated: list[tuple[str, Schedule]] = []
-        self.deleted: list[str] = []
-        self.started: list[dict[str, Any]] = []
-        #: Every question, in the order it was asked. Ordering is a property
-        #: here — the legacy drop must land BEFORE the suffixed create — and
-        #: three separate lists cannot say anything about order between them.
-        self.log: list[tuple[str, str]] = []
-
-    async def create_schedule(self, schedule_id: str, schedule: Schedule) -> Any:
-        if schedule_id in self.present:
-            raise ScheduleAlreadyRunningError()
-        self.present.add(schedule_id)
-        self.created.append((schedule_id, schedule))
-        self.log.append(("create", schedule_id))
-        return self._handle(schedule_id)
-
-    def get_schedule_handle(self, schedule_id: str) -> Any:
-        return self._handle(schedule_id)
-
-    async def start_workflow(self, workflow: str, **kwargs: Any) -> Any:
-        self.started.append({"workflow": workflow, **kwargs})
-        started_id = str(kwargs["id"])
-
-        class Started:
-            id = started_id
-
-        return Started()
-
-    def _handle(self, schedule_id: str) -> Any:
-        server = self
-
-        class FakeHandle:
-            async def update(self, updater: Any) -> None:
-                server.updated.append((schedule_id, updater(None).schedule))
-                server.log.append(("update", schedule_id))
-
-            async def delete(self) -> None:
-                if schedule_id not in server.present:
-                    raise RPCError("schedule not found", RPCStatusCode.NOT_FOUND, b"")
-                server.present.discard(schedule_id)
-                server.deleted.append(schedule_id)
-                server.log.append(("delete", schedule_id))
-
-        return FakeHandle()
 
 
 #: The three this tree declares, by the stable name each carries. Named rather
@@ -235,9 +173,7 @@ def settings_module(name: str, **environment: str) -> Iterator[Any]:
 #: exists to be accepted here and nowhere else.
 #: A real-looking key: strong enough that the guards accept it, and not a
 #: secret — it exists to be accepted here and nowhere else.
-A_REAL_SECRET_KEY = (
-    "0f7c3ae1e0f0a2b6c5d4e3f201928374655647382910abcdeff0123456789abcd"  # pragma: allowlist secret
-)
+A_REAL_SECRET_KEY = "0f7c3ae1e0f0a2b6c5d4e3f201928374655647382910abcdeff0123456789abcd"  # noqa: S105 — a signing secret the test both signs and verifies with  # pragma: allowlist secret
 
 #: A URL rather than the parts, so the published-password refusal has no parts
 #: password to look at at all.
@@ -297,6 +233,31 @@ def test_local_declares_the_process_class() -> None:
     """A laptop's queue is derived from its checkout, so its machinery is mortal."""
     with settings_module("config.settings.local", DATABASE_NAME="djb_probe") as local:
         assert local.TEMPORAL_MACHINERY_LIFETIME == PROCESS
+
+
+def test_local_admits_every_bound_surface_host_after_its_own_read() -> None:
+    """The local module re-reads `ALLOWED_HOSTS`; the surface map is folded into THAT list.
+
+    Placed here because this is the file that imports `config.settings.local`
+    under an environment. Unbound, the list is what the environment said;
+    bound, every host the map names joins it, or `customer.localhost` answers
+    400 on the stack `scripts/serve.sh` runs.
+    """
+    listed = "localhost,127.0.0.1"
+    bound = "staff=localhost,customer=customer.localhost"
+    with settings_module(
+        "config.settings.local", DATABASE_NAME="djb_probe", ALLOWED_HOSTS=listed, SURFACE_HOSTS=""
+    ) as local:
+        assert local.ALLOWED_HOSTS == listed.split(",")
+    with settings_module(
+        "config.settings.local",
+        DATABASE_NAME="djb_probe",
+        ALLOWED_HOSTS=listed,
+        SURFACE_HOSTS=bound,
+    ) as local:
+        assert local.ALLOWED_HOSTS == list(
+            dict.fromkeys([*listed.split(","), *local.SURFACE_HOSTS.values()])
+        )
 
 
 def test_the_test_module_declares_the_process_class_from_a_clean_import() -> None:

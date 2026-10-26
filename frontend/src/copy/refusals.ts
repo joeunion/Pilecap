@@ -13,6 +13,20 @@
  */
 
 /**
+ * THE REFUSAL PANEL'S DEFAULT WORDS — its first line per member of the refusal
+ * union, and the heading over the server's remedies. Declared once, here, and
+ * read by the one renderer (`@pilecap/ui/refusal-panel`) when a surface passes
+ * none: every surface says these three the same way, so no surface's copy
+ * module carries them. A surface whose word truly differs passes its own.
+ */
+// road: refusal_words — The refusal panel's default words; a surface passes its own only where its word differs. · example: frontend/src/screens/widget/widget-list.tsx::ListRefusal
+export const REFUSAL_WORDS = {
+    errorLabel: "The server refused",
+    transportLabel: "The server did not answer",
+    remedies: "What you can do",
+} as const;
+
+/**
  * THE CLOSE-FRAME WORDS (design J4; P-14). The socket half of the same
  * argument: a close frame carries no envelope at all — no code the registry
  * knows, no fact, no remedies — so these words are this client's own, exactly
@@ -54,4 +68,26 @@ export const TRANSPORT_COPY = {
     // accounts of one event.
     socket_handshake_rejected: SOCKET_CLOSE_COPY.socket_handshake_rejected.detail,
     socket_credential_withdrawn: SOCKET_CLOSE_COPY.socket_credential_withdrawn.detail,
+} as const;
+
+/**
+ * THE SURFACE WORDS — the face's own, because both are things the face
+ * decided rather than things a server said about this page.
+ *
+ * `couldNotLook` is the label over a 200 the face could not read as the
+ * answer to "which surface is this address" (the panel renders that refusal's
+ * own words under it). `offSurface` is what a page says when the surface the
+ * server named does not draw it: client state, told in the face's words with
+ * the surface's KEY and nothing else — no wire code, since no server said it
+ * about this page, and never which surfaces do draw it (an address says what
+ * it is, not what the others are).
+ */
+export const SURFACE_COPY = {
+    couldNotLook: {
+        label: "This address could not say what it offers",
+    },
+    offSurface: {
+        label: "Not offered at this address",
+        detail: (surface: string) => `This page is not part of the ${surface} face this address serves. Nothing was read.`,
+    },
 } as const;

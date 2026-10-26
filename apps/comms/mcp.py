@@ -1,35 +1,4 @@
-"""The machine door onto comms — every capability the REST door has, no exemption.
-
-Door parity (house rule 17): every capability `api.py` offers a person,
-`mcp.py` offers a machine, over the *same* selectors, the *same* service and
-the *same* schemas. `tests/test_mcp.py` diffs the two answers for the same row
-so a divergence is a failing test rather than a review note.
-
-**And the same words** (ADR api-1, house rule 41): every `description=` below is
-`contract_of(<the REST route>)` — the contract half of the very docstring the
-OpenAPI document describes that route with — so one capability cannot be
-explained two ways. A description typed here would be the first place the doors
-drift, and prose drifts long before behaviour does.
-
-The consent wall is the reason this matters more here than anywhere else in the
-template. An agent is exactly the kind of caller that will happily send a
-thousand messages, and there is deliberately no tool that sends without going
-through `services.send` — so quiet hours, consent and suppression apply to the
-machine door by construction rather than by an agent remembering them.
-
-`send_message` returns a `MessageOut` whose `status` may be `suppressed`, and
-that is not an error: a tool that raised there would teach an agent to retry,
-which is the one response to "this person opted out" that must never happen.
-
-The management half is C1-1b's, and the two shapes it keeps are the ones an
-agent is most likely to try to go around. **`revise_template` publishes a new
-version and there is no tool that edits one** — an agent asked to "fix a typo in
-the receipt" gets a v2 and the words already sent stay readable. **Consent is
-five verbs and no settable column**: `PreferenceOut` reports
-`marketing_consented_at` and `suppressed_at`, and nothing on this door accepts
-them, so an agent cannot write a consent record on somebody's behalf by naming
-a timestamp.
-"""
+"""The machine door onto comms: every REST capability, over the same services (rule 17)."""
 
 from __future__ import annotations
 
@@ -44,7 +13,6 @@ from mcp.server.mcpserver import Context
 from apps.comms.api import (
     ENGAGEMENT_ORDERING,
     ORDERING,
-    POLICY_ORDERING,
     RECIPIENT_ORDERING,
     TEMPLATE_ORDERING,
     archive_recipient_route,
@@ -59,6 +27,7 @@ from apps.comms.api import (
     list_preferences_route,
     list_recipients_route,
     list_templates_route,
+    ordered_policies,
     register_device_route,
     restore_recipient_route,
     retire_device_route,
@@ -104,7 +73,6 @@ from apps.comms.schemas import (
     RecipientFilter,
     RecipientOut,
     RecipientPage,
-    RecipientShow,
     TemplateFilter,
     TemplateOut,
     TemplatePage,
@@ -147,6 +115,7 @@ from apps.core.api import ordered_by
 from apps.core.api.docs import contract_of
 from apps.core.api.pagination import cursor_page
 from apps.core.mcp import acting_tenant, tool_call
+from apps.core.schemas import Show
 from apps.core.verbs import with_allowed_acts
 
 
@@ -168,16 +137,16 @@ def register(server: MCPServer[Any]) -> None:
         include_count: bool = False,
     ) -> MessagePage:
         with tool_call(ctx) as acting:
-            # Scoped first and only narrowed after — the type widens from
-            # `ScopedQuerySet` to `QuerySet` because filtering returns the plain
-            # one, and narrowing a queryset cannot widen its tenant.
+            # Narrowing a scoped queryset cannot widen its tenant.
             messages: QuerySet[Message] = MessageFilter(
                 status=status, channel=channel, template=template
-            ).filter(list_messages(tenant=acting.tenant, org=acting.org, actor=acting.actor()))
+            ).filter(
+                list_messages(tenant=acting_tenant(acting), org=acting.org, actor=acting.actor())
+            )
             messages = ordered_by(messages, ordering, allowed=ORDERING, default="-created_at")
             page = cursor_page(
                 messages,
-                tenant=acting.tenant,
+                tenant=acting_tenant(acting),
                 cursor=cursor,
                 limit=limit,
                 include_count=include_count,
@@ -195,12 +164,10 @@ def register(server: MCPServer[Any]) -> None:
     )
     def get_message_tool(ctx: Context[Any], message_id: UUID) -> MessageOut:
         with tool_call(ctx) as acting:
-            # A message in another tenant is `not_found`, exactly as it is over
-            # HTTP: a refusal that distinguished the two would tell the caller
-            # the row exists, which is the fact the scoping was hiding.
+            # Another tenant's message is `not_found`, as over HTTP: not-there reads as not-yours.
             return MessageOut.from_orm(
                 get_message(
-                    tenant=acting.tenant,
+                    tenant=acting_tenant(acting),
                     message_id=message_id,
                     org=acting.org,
                     actor=acting.actor(),
@@ -265,20 +232,20 @@ def register(server: MCPServer[Any]) -> None:
         include_count: bool = False,
     ) -> MessageEngagementPage:
         with tool_call(ctx) as acting:
-            # The message is resolved through the same selector the REST door
-            # uses, so a message this hat cannot see is `not_found` here too —
-            # and the engagement list never becomes a way to learn that
-            # somebody else's message exists.
+            # Resolved through the REST door's selector: an unseen message is `not_found` here too.
             message = get_message(
-                tenant=acting.tenant, message_id=message_id, org=acting.org, actor=acting.actor()
+                tenant=acting_tenant(acting),
+                message_id=message_id,
+                org=acting.org,
+                actor=acting.actor(),
             )
             rows: QuerySet[MessageEngagement] = list_engagements(
-                tenant=acting.tenant, message=message, org=acting.org, actor=acting.actor()
+                tenant=acting_tenant(acting), message=message, org=acting.org, actor=acting.actor()
             )
             rows = ordered_by(rows, ordering, allowed=ENGAGEMENT_ORDERING, default="-occurred_at")
             page = cursor_page(
                 rows,
-                tenant=acting.tenant,
+                tenant=acting_tenant(acting),
                 cursor=cursor,
                 limit=limit,
                 include_count=include_count,
@@ -290,15 +257,7 @@ def register(server: MCPServer[Any]) -> None:
                 count=page.count,
             )
 
-    # --- devices: the push address book -------------------------------------
-    #
-    # **There is no `list_devices` tool, because there is no list ROUTE** — T3
-    # shipped a registration door and a retirement door and no read, so
-    # `devices:read` derives into the vocabulary and reaches nothing (the
-    # `usage:write` shape, recorded in `apps/core/api/scopes.py`). House rule 17
-    # compares the two doors' capabilities, and adding a machine-only read here
-    # would be the disagreement it exists to refuse — in the direction nobody
-    # checks, because an agent would have a capability a person does not.
+    # --- devices: no `list_devices` — no list route, and a machine-only read breaks rule 17 --
 
     @server.tool(
         name="register_device",
@@ -360,11 +319,11 @@ def register(server: MCPServer[Any]) -> None:
         with tool_call(ctx) as acting:
             templates: QuerySet[MessageTemplate] = TemplateFilter(
                 name=name, channel=channel, category=category
-            ).filter(list_templates(tenant=acting.tenant, actor=acting.actor()))
+            ).filter(list_templates(tenant=acting_tenant(acting), actor=acting.actor()))
             templates = ordered_by(templates, ordering, allowed=TEMPLATE_ORDERING, default="name")
             page = cursor_page(
                 templates,
-                tenant=acting.tenant,
+                tenant=acting_tenant(acting),
                 cursor=cursor,
                 limit=limit,
                 include_count=include_count,
@@ -383,7 +342,7 @@ def register(server: MCPServer[Any]) -> None:
     def get_template_tool(ctx: Context[Any], name: str) -> TemplateOut:
         with tool_call(ctx) as acting:
             return TemplateOut.from_orm(
-                get_template(tenant=acting.tenant, name=name, actor=acting.actor())
+                get_template(tenant=acting_tenant(acting), name=name, actor=acting.actor())
             )
 
     @server.tool(
@@ -452,8 +411,6 @@ def register(server: MCPServer[Any]) -> None:
                 retire_template(tenant=tenant, actor=acting.actor(), template=template)
             )
 
-    # --- recipients --------------------------------------------------------
-
     # --- delivery policies: the five twins of the five routes ---------------------
 
     @server.tool(
@@ -470,12 +427,12 @@ def register(server: MCPServer[Any]) -> None:
     ) -> PolicyPage:
         with tool_call(ctx) as acting:
             policies: QuerySet[DeliveryPolicy] = PolicyFilter(name=name).filter(
-                list_policies(tenant=acting.tenant, actor=acting.actor())
+                list_policies(tenant=acting_tenant(acting), actor=acting.actor())
             )
-            policies = ordered_by(policies, ordering, allowed=POLICY_ORDERING, default="name")
+            policies = ordered_policies(policies, ordering)
             page = cursor_page(
                 policies,
-                tenant=acting.tenant,
+                tenant=acting_tenant(acting),
                 cursor=cursor,
                 limit=limit,
                 include_count=include_count,
@@ -494,7 +451,7 @@ def register(server: MCPServer[Any]) -> None:
     def get_policy_tool(ctx: Context[Any], name: str) -> PolicyOut:
         with tool_call(ctx) as acting:
             return PolicyOut.from_orm(
-                get_policy(tenant=acting.tenant, name=name, actor=acting.actor())
+                get_policy(tenant=acting_tenant(acting), name=name, actor=acting.actor())
             )
 
     @server.tool(
@@ -556,7 +513,7 @@ def register(server: MCPServer[Any]) -> None:
     def list_recipients_tool(
         ctx: Context[Any],
         email: str | None = None,
-        show: RecipientShow = "live",
+        show: Show = "live",
         ordering: str = "email",
         cursor: str | None = None,
         limit: int | None = None,
@@ -566,7 +523,7 @@ def register(server: MCPServer[Any]) -> None:
             actor = acting.actor()
             recipients: QuerySet[Recipient] = RecipientFilter(email=email).filter(
                 list_recipients(
-                    tenant=acting.tenant,
+                    tenant=acting_tenant(acting),
                     org=acting.org,
                     show=show,
                     actor=actor,
@@ -575,13 +532,10 @@ def register(server: MCPServer[Any]) -> None:
             recipients = ordered_by(
                 recipients, ordering, allowed=RECIPIENT_ORDERING, default="email"
             )
-            # `actor=` is what makes this the family's page: every contact's
-            # `allowed_acts` and the list's own, from the seam the REST door's
-            # `ActsPagination` calls, so the two doors cannot disagree about
-            # who may do what.
+            # `actor=` makes it the family's page: per-row and page `allowed_acts`, as REST's.
             page = cursor_page(
                 recipients,
-                tenant=acting.tenant,
+                tenant=acting_tenant(acting),
                 cursor=cursor,
                 limit=limit,
                 include_count=include_count,
@@ -603,7 +557,7 @@ def register(server: MCPServer[Any]) -> None:
         with tool_call(ctx) as acting:
             actor = acting.actor()
             recipient = get_recipient(
-                tenant=acting.tenant, recipient_id=recipient_id, org=acting.org, actor=actor
+                tenant=acting_tenant(acting), recipient_id=recipient_id, org=acting.org, actor=actor
             )
             return RecipientOut.from_orm(with_allowed_acts([recipient], actor)[0])
 
@@ -703,17 +657,20 @@ def register(server: MCPServer[Any]) -> None:
     ) -> PreferencePage:
         with tool_call(ctx) as acting:
             recipient = get_recipient(
-                tenant=acting.tenant,
+                tenant=acting_tenant(acting),
                 recipient_id=recipient_id,
                 org=acting.org,
                 actor=acting.actor(),
             )
             preferences: QuerySet[ChannelPreference] = list_preferences(
-                tenant=acting.tenant, recipient=recipient, org=acting.org, actor=acting.actor()
+                tenant=acting_tenant(acting),
+                recipient=recipient,
+                org=acting.org,
+                actor=acting.actor(),
             )
             page = cursor_page(
                 preferences,
-                tenant=acting.tenant,
+                tenant=acting_tenant(acting),
                 cursor=cursor,
                 limit=limit,
                 include_count=include_count,

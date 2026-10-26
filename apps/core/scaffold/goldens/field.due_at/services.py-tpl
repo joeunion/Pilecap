@@ -1,0 +1,14 @@
+# golden-anchor: {"nth": 0, "scope": ["create_widget"], "side": "before", "text": ") -> Widget:"}
+    due_at: datetime | None = None,
+# golden-anchor: {"nth": 0, "scope": ["create_widget"], "side": "after", "text": "notes=notes,"}
+        due_at=due_at.astimezone(UTC) if due_at is not None else None,
+# golden-anchor: {"nth": 0, "scope": ["update_widget"], "side": "before", "text": ") -> Widget:"}
+    due_at: datetime | None = None,
+    clear_due_at: bool = False,
+# golden-anchor: {"nth": 0, "scope": ["update_widget"], "side": "before", "text": "updated: list[str] = []"}
+    if clear_due_at and due_at is not None:
+        raise Invalid({"due_at": ["Send a new value or ask to clear it, not both."]})
+# golden-anchor: {"nth": 0, "scope": ["update_widget"], "side": "before", "text": "if not updated:"}
+    if due_at is not None or clear_due_at:
+        locked.due_at = due_at.astimezone(UTC) if due_at is not None else None
+        updated.append("due_at")

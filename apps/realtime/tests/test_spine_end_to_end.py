@@ -49,7 +49,8 @@ from apps.core.asyncdb import run_db
 from apps.core.models import Tenant
 from apps.core.services import root_organization
 from apps.realtime.schemas import EventMessage
-from apps.realtime.tests.test_consumers import opened, session_headers
+from apps.realtime.tests.sockets import opened
+from apps.realtime.tests.test_consumers import session_headers
 
 pytestmark = [pytest.mark.django_db(transaction=True), pytest.mark.asyncio]
 

@@ -1,0 +1,33 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "imports", "text": ""}
+from apps.example.services import record_widget_entry
+
+# golden-anchor: {"nth": 0, "scope": [], "side": "before", "text": "DUE_AT_WIRE = \"2026-11-02T17:00:00Z\""}
+# `/entries/`: the fixed request cost plus the page.
+ENTRIES_QUERY_BUDGET = REQUEST_FIXED_QUERIES + 1
+
+
+def test_entries_list_query_count_does_not_grow_with_rows(
+    api: Client,
+    tenant: Tenant,
+    owner: User,
+    django_assert_num_queries: Any,
+    owner_actor: Actor,
+) -> None:
+    """The same pin on the ledger, for the same reason and against the same N+1."""
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Subject")
+    for index in range(10):
+        record_widget_entry(tenant=tenant, actor=owner_actor, widget=widget, note=f"line {index}")
+    api.force_login(owner)
+
+    with django_assert_num_queries(ENTRIES_QUERY_BUDGET):
+        response = api.get(reverse("api:widget_entries-list"))
+
+    assert response.status_code == 200, response.content
+    assert len(_body(response)["items"]) == 10
+
+
+def test_the_entry_routes_are_mounted_where_they_say() -> None:
+    """The ledger paths, pinned by name: house rule 3 reads the names a test proves."""
+    assert reverse("api:widget_entry-record") == reverse("api:widget_entries-list")
+
+

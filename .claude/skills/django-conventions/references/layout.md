@@ -5,7 +5,7 @@ The long form of `django-conventions` §1.
 ### Registering an app
 
 ```python
-# apps/orders/apps.py — the whole registration; nothing else is edited
+# apps/<orders>/apps.py — the whole registration; nothing else is edited
 class OrdersConfig(AppConfig):
     name = "apps.orders"
     depends_on = ("core", "accounts", "events")   # what this app may import; rule 7 reads it

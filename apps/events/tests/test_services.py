@@ -7,6 +7,9 @@ is written; and the payload that lands is the one the REST door would have put
 on the wire for the same row.
 """
 
+# names, never reads: docs/product/build-contract.md — a basename `services.__doc__` must name
+# as its pointer; the test reads the docstring, never the file
+
 from __future__ import annotations
 
 import inspect
@@ -20,19 +23,29 @@ import pytest
 from django.core.exceptions import ImproperlyConfigured
 from django.db import transaction
 from django.test import Client
+from ninja import Schema
 from ninja.renderers import JSONRenderer
+from pydantic import Field
 
 from apps.accounts.models import User
 from apps.core.actor import Actor, system_actor
 from apps.core.exceptions import Forbidden, Invalid
 from apps.core.models import Tenant
-from apps.core.schemas import PER_VIEWER_FIELDS
+from apps.core.schemas import (
+    PER_VIEWER_FIELDS,
+    event_payload,
+    example,
+    personal,
+    without_personal,
+)
 from apps.core.service import service
 from apps.events import selectors, services
 from apps.events.events import ENDPOINT_REGISTERED, declared_names
 from apps.events.models import Delivery, Event, Outbox, WebhookEndpoint
+from apps.events.schemas import WebhookEndpointOut
 from apps.events.tests.bodies import in_the_root
 from apps.example.events import WIDGET_CREATED
+from apps.example.schemas import WidgetOut
 from apps.workflows.models import WorkflowRun
 
 pytestmark = pytest.mark.django_db
@@ -126,6 +139,30 @@ def test_a_payload_carrying_a_per_viewer_field_is_refused_and_writes_nothing(
     assert not Event.objects.for_tenant(tenant).exists()
 
 
+class _PersonOut(Schema):
+    """A row naming a person, emitted under a declared name."""
+
+    id: str
+    organization_id: str
+    email: str = Field(json_schema_extra=personal(example("dana@example.com")))
+
+
+def test_a_payload_carrying_a_personal_field_is_refused_and_writes_nothing(
+    tenant: Tenant, owner_actor: Actor
+) -> None:
+    """A `personal` field put back after the strip is refused by name."""
+    root = in_the_root(tenant)["organization_id"]
+    payload = event_payload(_PersonOut(id="x", organization_id=root, email="dana@example.com"))
+    assert "email" not in payload
+    payload["email"] = "dana@example.com"
+    with pytest.raises(ImproperlyConfigured) as raised:
+        services.emit(name=WIDGET_CREATED, tenant=tenant, payload=payload, actor=owner_actor)
+    assert "'email'" in str(raised.value)
+    assert "personal" in str(raised.value)
+    assert not Event.objects.for_tenant(tenant).exists()
+    assert not Outbox.objects.exists()
+
+
 def test_an_undeclared_name_is_refused_and_writes_nothing(tenant: Tenant) -> None:
     """A typo reaches no subscriber and would otherwise raise nothing at all."""
     with pytest.raises(Invalid) as raised:
@@ -211,6 +248,23 @@ def test_the_correlation_chain_is_carried_onto_the_event(tenant: Tenant) -> None
     assert event.causation_id == "chain-1"
 
 
+def test_the_event_carries_the_trace_core_stamps_on_its_audit_rows(tenant: Tenant) -> None:
+    """`emit` stamps `core.service.trace_id()`: the 32 hex digits of the trace it runs in."""
+    from opentelemetry import trace
+
+    from apps.core.service import trace_id
+
+    span = trace.NonRecordingSpan(trace.SpanContext(trace_id=0xABC, span_id=0xDEF, is_remote=False))
+    with trace.use_span(span):
+        inside = services.emit(
+            name=WIDGET_CREATED,
+            tenant=tenant,
+            payload=in_the_root(tenant),
+            actor=system_actor(tenant=tenant),
+        )
+        assert inside.trace_id == trace_id() == format(0xABC, "032x")
+
+
 # --- Subscribers -------------------------------------------------------------
 
 
@@ -223,52 +277,99 @@ def test_registering_an_endpoint_needs_a_privileged_role(
     """
     with pytest.raises(Forbidden):
         services.register_endpoint(
-            tenant=tenant, actor=member_actor, url="https://example.com/hook", secret="s"
+            tenant=tenant,
+            actor=member_actor,
+            url="https://example.com/hook",
+            secret="s",  # noqa: S106 — a signing secret the test both signs and verifies with
         )
 
     endpoint = services.register_endpoint(
-        tenant=tenant, actor=admin_actor, url="https://example.com/hook", secret="s"
+        tenant=tenant,
+        actor=admin_actor,
+        url="https://example.com/hook",
+        secret="s",  # noqa: S106 — a signing secret the test both signs and verifies with
     )
     assert endpoint.is_active
     assert Event.objects.for_tenant(tenant).filter(name=ENDPOINT_REGISTERED).count() == 1
 
 
+def test_the_registered_event_carries_the_endpoint_as_every_door_reads_it(
+    tenant: Tenant, owner_actor: Actor
+) -> None:
+    """The payload is the endpoint's `Out`, so the signing key has no field to ride in."""
+    endpoint = services.register_endpoint(
+        tenant=tenant,
+        actor=owner_actor,
+        url="https://example.com/hook",
+        secret="s",  # noqa: S106 — a signing secret the test both signs and verifies with
+    )
+    event = Event.objects.for_tenant(tenant).get(name=ENDPOINT_REGISTERED)
+    expected = event_payload(WebhookEndpointOut.from_orm(endpoint))
+    assert set(event.payload) - {"v"} == set(expected)
+    assert event.payload["id"] == expected["id"] == str(endpoint.pk)
+    assert "secret" not in json.dumps(event.payload)
+
+
+def test_the_registered_event_says_its_payload_is_v1(tenant: Tenant, owner_actor: Actor) -> None:
+    """The `Out`-shaped payload is the event's first published shape, so it says `v: 1`."""
+    services.register_endpoint(
+        tenant=tenant,
+        actor=owner_actor,
+        url="https://example.com/hook",
+        secret="s",  # noqa: S106 — a signing secret the test both signs and verifies with
+    )
+    event = Event.objects.for_tenant(tenant).get(name=ENDPOINT_REGISTERED)
+    assert (event.v, event.payload["v"]) == (1, 1)
+
+
 def test_an_endpoint_with_no_names_wants_everything(tenant: Tenant, owner_actor: Actor) -> None:
     everything = services.register_endpoint(
-        tenant=tenant, actor=owner_actor, url="https://example.com/all", secret="s"
+        tenant=tenant,
+        actor=owner_actor,
+        url="https://example.com/all",
+        secret="s",  # noqa: S106 — a signing secret the test both signs and verifies with
     )
     narrow = services.register_endpoint(
         tenant=tenant,
         actor=owner_actor,
         url="https://example.com/one",
-        secret="s",
+        secret="s",  # noqa: S106 — a signing secret the test both signs and verifies with
         event_names=[WIDGET_CREATED],
     )
 
-    wanted = selectors.endpoints_for(tenant=tenant, name=WIDGET_CREATED)
+    wanted = selectors.list_endpoints_for(tenant=tenant, name=WIDGET_CREATED)
     assert {endpoint.pk for endpoint in wanted} == {everything.pk, narrow.pk}
 
-    wanted = selectors.endpoints_for(tenant=tenant, name=ENDPOINT_REGISTERED)
+    wanted = selectors.list_endpoints_for(tenant=tenant, name=ENDPOINT_REGISTERED)
     assert [endpoint.pk for endpoint in wanted] == [everything.pk]
 
 
 def test_a_deactivated_endpoint_is_not_delivered_to(tenant: Tenant, owner_actor: Actor) -> None:
     endpoint = services.register_endpoint(
-        tenant=tenant, actor=owner_actor, url="https://example.com/hook", secret="s"
+        tenant=tenant,
+        actor=owner_actor,
+        url="https://example.com/hook",
+        secret="s",  # noqa: S106 — a signing secret the test both signs and verifies with
     )
     services.deactivate_endpoint(tenant=tenant, actor=owner_actor, endpoint=endpoint)
 
-    assert selectors.endpoints_for(tenant=tenant, name=WIDGET_CREATED) == []
+    assert selectors.list_endpoints_for(tenant=tenant, name=WIDGET_CREATED) == []
 
 
 def test_an_endpoint_in_another_tenant_is_invisible(
     tenant: Tenant, other_tenant: Tenant, owner_actor: Actor, stranger_actor: Actor
 ) -> None:
     services.register_endpoint(
-        tenant=tenant, actor=owner_actor, url="https://example.com/mine", secret="s"
+        tenant=tenant,
+        actor=owner_actor,
+        url="https://example.com/mine",
+        secret="s",  # noqa: S106 — a signing secret the test both signs and verifies with
     )
     services.register_endpoint(
-        tenant=other_tenant, actor=stranger_actor, url="https://example.com/theirs", secret="s"
+        tenant=other_tenant,
+        actor=stranger_actor,
+        url="https://example.com/theirs",
+        secret="s",  # noqa: S106 — a signing secret the test both signs and verifies with
     )
 
     assert [
@@ -282,7 +383,10 @@ def test_an_endpoint_in_another_tenant_is_invisible(
 def test_recording_the_same_attempt_twice_keeps_one_row(tenant: Tenant, owner_actor: Actor) -> None:
     """Temporal runs an activity at least once; the row has to absorb that."""
     endpoint = services.register_endpoint(
-        tenant=tenant, actor=owner_actor, url="https://example.com/hook", secret="s"
+        tenant=tenant,
+        actor=owner_actor,
+        url="https://example.com/hook",
+        secret="s",  # noqa: S106 — a signing secret the test both signs and verifies with
     )
     event = services.emit(
         name=WIDGET_CREATED,
@@ -325,7 +429,10 @@ def test_giving_up_does_not_rewrite_what_the_server_said(
     dispatch policy's ceiling and the shape the stranger-run met.
     """
     endpoint = services.register_endpoint(
-        tenant=tenant, actor=owner_actor, url="https://example.com/hook", secret="s"
+        tenant=tenant,
+        actor=owner_actor,
+        url="https://example.com/hook",
+        secret="s",  # noqa: S106 — a signing secret the test both signs and verifies with
     )
     event = services.emit(
         name=WIDGET_CREATED,
@@ -369,7 +476,10 @@ def test_a_delivery_parked_before_any_attempt_was_recorded_still_says_why(
     the only thing there is to write, and it is written.
     """
     endpoint = services.register_endpoint(
-        tenant=tenant, actor=owner_actor, url="https://example.com/hook", secret="s"
+        tenant=tenant,
+        actor=owner_actor,
+        url="https://example.com/hook",
+        secret="s",  # noqa: S106 — a signing secret the test both signs and verifies with
     )
     event = services.emit(
         name=WIDGET_CREATED,
@@ -441,10 +551,32 @@ def test_purging_leaves_the_failures_alone(tenant: Tenant) -> None:
     services.close_outbox(tenant=tenant, event_id=failed.pk, status=Outbox.Status.FAILED)
     Outbox.objects.filter(event=dispatched).update(dispatched_at=now() - timedelta(days=40))
 
-    removed = services.purge_dispatched_outbox(before=now() - timedelta(days=30))
+    swept = services.purge_dispatched_outbox(before=now() - timedelta(days=30), tenant=None)
 
-    assert removed == 1
+    assert (swept.label, swept.count) == ("events.Outbox", 1)
     assert list(Outbox.objects.values_list("event_id", flat=True)) == [failed.pk]
+
+
+def test_the_dispatch_is_handed_the_deployments_retry_floor(
+    tenant: Tenant, settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The floor rides the run's argument; the dispatch workflow reads no settings (rule 9)."""
+    from apps.core import bridge
+
+    started: list[Any] = []
+    real_get = bridge.get
+
+    def get(name: str) -> Any:
+        if name == bridge.START_WORKFLOW_ON_COMMIT:
+            return lambda **kwargs: started.append(kwargs["arg"])
+        return real_get(name)
+
+    monkeypatch.setattr(bridge, "get", get)
+    settings.TEMPORAL_RETRY_INITIAL_INTERVAL_SECONDS = 0.25
+    services.emit(
+        name=WIDGET_CREATED, tenant=tenant, payload=in_the_root(tenant), actor=system_actor(tenant)
+    )
+    assert [arg.retry_floor for arg in started] == [0.25]
 
 
 def test_a_system_actor_may_emit(tenant: Tenant) -> None:
@@ -479,10 +611,13 @@ def test_the_surveyor_can_see_what_never_dispatched(
     )
     services.close_outbox(tenant=tenant, event_id=delivered.pk, status=Outbox.Status.DISPATCHED)
 
-    assert [row.event_id for row in selectors.undispatched()] == [stuck.pk]
+    assert [row.event_id for row in selectors.list_undispatched_outbox()] == [stuck.pk]
 
     endpoint = services.register_endpoint(
-        tenant=tenant, actor=owner_actor, url="https://example.com/hook", secret="s"
+        tenant=tenant,
+        actor=owner_actor,
+        url="https://example.com/hook",
+        secret="s",  # noqa: S106 — a signing secret the test both signs and verifies with
     )
     services.dead_letter_delivery(
         tenant=tenant, endpoint_id=endpoint.pk, event_id=delivered.pk, error="gone"
@@ -490,11 +625,11 @@ def test_the_surveyor_can_see_what_never_dispatched(
 
     assert [
         d.event_id
-        for d in selectors.dead_lettered(tenant=tenant, actor=system_actor(tenant=tenant))
+        for d in selectors.list_dead_letters(tenant=tenant, actor=system_actor(tenant=tenant))
     ] == [delivered.pk]
     # A tenant sees its own dead letters and nobody else's.
     assert (
-        selectors.dead_lettered(
+        selectors.list_dead_letters(
             tenant=other_tenant, actor=system_actor(tenant=other_tenant)
         ).count()
         == 0
@@ -503,11 +638,17 @@ def test_the_surveyor_can_see_what_never_dispatched(
 
 def test_an_endpoint_is_unique_per_tenant_and_url(tenant: Tenant, owner_actor: Actor) -> None:
     services.register_endpoint(
-        tenant=tenant, actor=owner_actor, url="https://example.com/hook", secret="s"
+        tenant=tenant,
+        actor=owner_actor,
+        url="https://example.com/hook",
+        secret="s",  # noqa: S106 — a signing secret the test both signs and verifies with
     )
     with pytest.raises(Invalid):
         services.register_endpoint(
-            tenant=tenant, actor=owner_actor, url="https://example.com/hook", secret="s"
+            tenant=tenant,
+            actor=owner_actor,
+            url="https://example.com/hook",
+            secret="s",  # noqa: S106 — a signing secret the test both signs and verifies with
         )
     assert WebhookEndpoint.objects.for_tenant(tenant).count() == 1
 
@@ -691,7 +832,9 @@ def test_the_event_and_the_rest_body_for_one_row_are_the_same_bytes(
     per_viewer = set(PER_VIEWER_FIELDS)
     assert per_viewer <= set(body), "the door answers this viewer's acts"
     assert not per_viewer & set(payload), "an event never carries a per-viewer field"
-    body = {key: value for key, value in body.items() if key not in per_viewer}
+    body = without_personal(
+        WidgetOut, {key: value for key, value in body.items() if key not in per_viewer}
+    )
     # The DETAIL also answers the words on the widget (`tags`, read through the
     # tags app): the record's, not the row's, and an event is the row.
     assert body.pop("tags") == []
@@ -872,3 +1015,37 @@ def test_an_org_less_kind_with_a_branch_is_refused(tenant: Tenant, owner_actor: 
     message = raised.value.errors["organization_id"][0]
     assert "an org-less event cannot name a branch" in message, message
     assert not Event.objects.for_tenant(tenant).exists()
+
+
+# --- The service's half of the target check: no I/O inside its transaction -----
+
+
+def test_a_private_literal_is_refused_by_the_service_without_resolving(
+    tenant: Tenant, owner_actor: Actor, no_dns: list[str]
+) -> None:
+    with pytest.raises(Invalid) as caught:
+        services.register_endpoint(tenant=tenant, actor=owner_actor, url="http://10.0.0.1/")
+    assert caught.value.errors["url"] == ["The address must use https."]
+    with pytest.raises(Invalid) as caught:
+        services.register_endpoint(tenant=tenant, actor=owner_actor, url="https://10.0.0.1/")
+    assert caught.value.errors["url"] == ["The host is or resolves to a private address."]
+
+    endpoint = services.register_endpoint(
+        tenant=tenant, actor=owner_actor, url="https://subscriber.example/hook"
+    )
+    with pytest.raises(Invalid):
+        services.update_endpoint(
+            tenant=tenant, actor=owner_actor, endpoint=endpoint, url="https://[::1]/hook"
+        )
+    assert no_dns == [], "the service resolved a host inside its transaction"
+    assert not WebhookEndpoint.objects.for_tenant(tenant).filter(url__contains="10.0.0.1").exists()
+
+
+def test_the_laptop_valve_lets_the_service_take_localhost(
+    tenant: Tenant, owner_actor: Actor, settings: Any
+) -> None:
+    settings.WEBHOOK_PRIVATE_TARGETS_ALLOWED = True
+    endpoint = services.register_endpoint(
+        tenant=tenant, actor=owner_actor, url="http://localhost:9000/hook"
+    )
+    assert endpoint.url == "http://localhost:9000/hook"

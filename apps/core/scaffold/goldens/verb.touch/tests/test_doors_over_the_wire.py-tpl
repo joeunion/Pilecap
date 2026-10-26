@@ -1,0 +1,25 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "before", "text": "def _without_acts(body: dict[str, Any]) -> dict[str, Any]:"}
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_a_touch_is_one_body_on_rest_mcp_and_the_outbox(
+    bearer: str, widget: Widget, tenant: Tenant
+) -> None:
+    """The REST press and its event are one row; the MCP read answers that row byte for byte."""
+    from asgiref.sync import sync_to_async
+
+    bearer_header = {"authorization": f"Bearer {bearer}"}
+    async with wire() as client:
+        over_http = await client.post(
+            f"{LIST_URL}{widget.pk}/touch/", headers={**bearer_header, "accept": JSON}
+        )
+        assert over_http.status_code == 200, over_http.text
+        over_mcp = await _mcp_call(
+            client, {**MCP_HEADERS, **bearer_header}, "get_widget", {"widget_id": str(widget.pk)}
+        )
+    rest_body: dict[str, Any] = over_http.json()
+    event = await sync_to_async(_event_payload)(tenant, "example.widget.touched")
+    assert set(rest_body) == WIDGET_KEYS
+    assert over_mcp.pop("tags", []) == []
+    assert_four_doors(rest=rest_body, mcp=over_mcp, event_payload=event, out=WidgetOut)
+
+

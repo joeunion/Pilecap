@@ -19,23 +19,24 @@ from typing import Literal
 from uuid import UUID
 
 from ninja import Schema
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, model_validator
 
-from apps.core.schemas import StrictIn, example
+from apps.accounts.models import SsoConnection
+from apps.core.schemas import StrictIn, example, personal
 
 
 class UserOut(Schema):
     """A person, as the deactivation and erasure doors hand them back.
 
     **What is not here is the point.** `is_superuser` is the deployment's own
-    business and no tenant's; `zitadel_sub` is the identity platform's subject
-    and naming it over the wire would hand a caller the key to somebody's
-    account on it; `password` is a hash and there is no door in this repository
-    that returns one.
+    business and no tenant's; the identity platform's subjects (the identity
+    join, `SsoIdentity`) are not here either, because naming one over the wire
+    would hand a caller the key to somebody's account on it; `password` is a
+    hash and there is no door in this repository that returns one.
 
     `email` **is** here, and it is what makes an erasure legible: the address
     that comes back from `POST /users/{id}/erase` is the anonymised
-    `erased+<uuid>@invalid` one, which is the caller's evidence that the act
+    `erased+<uuid>@erased.invalid` one, which is the caller's evidence that the act
     landed rather than a copy of the person who used to be there.
     """
 
@@ -43,8 +44,8 @@ class UserOut(Schema):
 
     id: UUID
     email: str = Field(
-        description="After an erasure this is the anonymised `erased+<uuid>@invalid` form.",
-        json_schema_extra=example("dana@example.com"),
+        description="After an erasure this is the anonymised `erased+<uuid>@erased.invalid` form.",
+        json_schema_extra=personal(example("dana@example.com")),
     )
     is_active: bool = Field(description="False once the person is deactivated or erased.")
     is_staff: bool = Field(description="Django admin access. An erasure always drops it.")
@@ -137,7 +138,7 @@ class RealmIn(StrictIn):
 class RealmOut(Schema):
     """Where that address signs in — and nothing else about it.
 
-    **`method` is `sso` for every address** (ADR ident-6, W2-R5). Zitadel hosts
+    **`method` is `sso` for every address** (ADR ident-6). Zitadel hosts
     every interactive authentication now, including the passwords of local
     users, so there is one door and the question "which door" has one answer.
     `authorize_url` is always populated and always points at that door;
@@ -189,10 +190,12 @@ class SsoConnectionIn(StrictIn):
         default="oidc",
         description="OpenID Connect. SAML is a recorded escalation and is refused.",
     )
-    default_role: Literal["owner", "admin", "member"] = Field(
-        default="member",
-        description="The role a person provisioned by this connection joins at. It is "
-        "applied to new memberships only and never changes an existing one.",
+    default_role: str | None = Field(
+        default=None,
+        max_length=64,
+        description="The role key a person provisioned by this connection joins at; when "
+        "omitted, this deployment's default role. It is applied to new memberships only and "
+        "never changes an existing one.",
     )
     enforced: bool = Field(
         default=False,
@@ -212,7 +215,7 @@ class SsoConnectionPatch(StrictIn):
     client_id: str | None = Field(default=None, max_length=500)
     client_secret: str | None = Field(default=None, max_length=500)
     email_domains: list[str] | None = Field(default=None, min_length=1)
-    default_role: Literal["owner", "admin", "member"] | None = None
+    default_role: str | None = Field(default=None, max_length=64)
     enforced: bool | None = None
 
 
@@ -240,7 +243,52 @@ class SsoConnectionOut(Schema):
     #: which only a value shaped like a domain can show.
     verified_domains: list[str] = Field(..., json_schema_extra=example(["acme.com"]))
     default_role: str
-    enforced: bool
+    #: **The materialised fact, not the intent.** True only when the connection
+    #: asks for it AND the last run that reached the identity platform applied
+    #: it — so a switch that has not landed yet reads `false`, with `sync_state`
+    #: saying why. Read `sync_state` beside it: `pending` means the change is on
+    #: its way.
+    enforced: bool = Field(
+        description="Whether sign-in for these domains requires this provider now.",
+        json_schema_extra=example(False),
+    )
+    #: Where this connection's configuration has got to on its way into the
+    #: identity platform: `unmanaged`, `pending`, `applied` or `failed`.
+    sync_state: str = Field(
+        description="`applied` once the identity platform agrees with this connection; "
+        "`pending` while a change is on its way; `failed` if it could not be applied.",
+        json_schema_extra=example("applied"),
+    )
     created_at: datetime
     updated_at: datetime
     disabled_at: datetime | None
+
+    @model_validator(mode="after")
+    def _enforced_is_what_landed(self) -> SsoConnectionOut:
+        """`enforced` is what the realm's policy says: the intent, on a live connection, applied.
+
+        A disabled connection's run takes the provider off the realm's sign-in
+        and gives the password back, so once it has landed the wall is gone and
+        this reads `false` — the row's standing `enforced` is the intent a
+        re-enabled connection would carry, not a fact about the realm now.
+
+        A validator on the validated fields rather than a `resolve_` hook, which
+        dies inside a `Page` (django-conventions, "Two gotchas"): the list door
+        re-validates its items, and this reads the same on the second pass.
+        """
+        self.enforced = (
+            self.enforced
+            and self.status == SsoConnection.Status.ACTIVE
+            and self.sync_state == SsoConnection.SyncState.APPLIED
+        )
+        return self
+
+
+class IdentityHomeOut(Schema):
+    """A tenant's identity home, as `accounts.identity_home.created` carries it."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    tenant_id: UUID
+    realm_id: str
+    state: str

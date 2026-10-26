@@ -18,7 +18,7 @@ import pytest
 from django.core.exceptions import ImproperlyConfigured
 from django.db import models
 
-from apps.core import verbs
+from apps.core import discovery, verbs
 from apps.core.authz import _declarations, policies, reset_policies
 from apps.core.blockers import BLOCKER_VERBS, blockers_for, declared_blockers
 from apps.core.exceptions import Blocker
@@ -70,19 +70,19 @@ def held_by_live_rows(*, tenant: Any, obj: Any) -> tuple[Blocker, ...]:
 
 
 def test_the_vocabulary_walks_through_the_family_seam(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`authz._declarations` is a caller of `verbs.declared` — one walk, two readers.
+    """`authz._declarations` is a caller of `discovery.declared` — one walk, two readers.
 
     A planted `policies.py` reaches the policy registry through the family's
     walk, so the two can never come to disagree about what an app declared.
     """
     calls: list[tuple[str, str]] = []
-    real = verbs.declared
+    real = discovery.declared
 
     def counted(module: str, attribute: str, **kwargs: Any) -> Any:
         calls.append((module, attribute))
         return real(module, attribute, **kwargs)
 
-    monkeypatch.setattr(verbs, "declared", counted)
+    monkeypatch.setattr(discovery, "declared", counted)
     assert _declarations("policies", "POLICIES") == real("policies", "POLICIES")
     assert ("policies", "POLICIES") in calls
 
@@ -100,11 +100,19 @@ def test_the_vocabulary_walks_through_the_family_seam(monkeypatch: pytest.Monkey
 def test_the_vocabulary_reading_ignores_a_non_dict_and_a_hook_refuses_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    plant(monkeypatch, "apps.example_portal.archive_blockers", BLOCKERS={})
+    elsewhere = _declarers_beside(HOME, "archive_blockers")
+    assert "apps.example_portal" in elsewhere
     plant(monkeypatch, f"{HOME}.archive_blockers", BLOCKERS=["not", "a", "dict"])
-    assert verbs.declared("archive_blockers", "BLOCKERS") == []
+    assert _declarers_beside(None, "archive_blockers") == elsewhere
     with pytest.raises(ImproperlyConfigured) as caught:
         verbs.hook("archive_blockers")
     assert "apps/example/archive_blockers.py" in str(caught.value)
+
+
+def _declarers_beside(home: str | None, module: str) -> list[str]:
+    """The apps whose `<module>.BLOCKERS` the vocabulary reads, `home` left out."""
+    return [config.name for config, _ in verbs.declared(module, "BLOCKERS") if config.name != home]
 
 
 def test_a_hook_name_outside_the_closed_tuple_is_never_walked(

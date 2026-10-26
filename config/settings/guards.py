@@ -177,17 +177,13 @@ from __future__ import annotations
 # or a start-up assertion in the deployment itself. That is the only place with
 # the values in hand.
 #
-# TRIGGER: the first production deploy — where a code-level
-# promise is honest until there is a deployment to put the belt on, and the
-# belt is written then rather than guessed now. Until that day the four
-# compose-only values stay published and unrefused. That is the true state of
-# this tree, recorded here so nobody has to re-derive it.
+# THAT BELT EXISTS: `deploy/assert_not_published.sh` refuses the four
+# compose-only values by name and value (its `COMPOSE_ONLY` table), and
+# `deploy/entrypoint.sh` runs it at boot before anything serves.
 
 # The development values published in `.env.example`. Worth exactly nothing, and
 # meant to be — but only if production says so out loud.
-DEV_SECRET_KEY = (
-    "insecure-local-development-key-change-me-000000000000000000"  # pragma: allowlist secret
-)
+DEV_SECRET_KEY = "insecure-local-development-key-change-me-000000000000000000"  # noqa: S105 — the published dev key the production guard refuses  # pragma: allowlist secret
 DEV_CONNECTIONS_ENCRYPTION_KEY = (
     "X8S2D9HPCtxlLLMHRNYByWXXQf2JRMmaH16DIxD7vdo="  # pragma: allowlist secret
 )
@@ -196,18 +192,16 @@ DEV_CONNECTIONS_ENCRYPTION_KEY = (
 # `compose.yaml`, and `config.settings.base`'s default for DATABASE_PASSWORD —
 # which is the point: the default STAYS (deleting it breaks every laptop for a
 # production problem), and production refuses it instead.
-DEV_DATABASE_PASSWORD = "djb"  # pragma: allowlist secret
+DEV_DATABASE_PASSWORD = "djb"  # noqa: S105 — the published compose DB password the production guard refuses  # pragma: allowlist secret
 
 # The one `config.settings.test` uses, so a test tree cannot be deployed either.
-TEST_SECRET_KEY = (
-    "insecure-test-key-000000000000000000000000000000000000000000"  # pragma: allowlist secret
-)
+TEST_SECRET_KEY = "insecure-test-key-000000000000000000000000000000000000000000"  # noqa: S105 — the published test key the production guard refuses  # pragma: allowlist secret
 
-GENERATE_SECRET_KEY = 'python -c "import secrets; print(secrets.token_hex(32))"'
+GENERATE_SECRET_KEY = 'python -c "import secrets; print(secrets.token_hex(32))"'  # noqa: S105 — the command the refusal tells an operator to run, not a key
 GENERATE_FERNET_KEY = (
     'python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"'
 )
-GENERATE_DATABASE_PASSWORD = 'python -c "import secrets; print(secrets.token_urlsafe(32))"'
+GENERATE_DATABASE_PASSWORD = 'python -c "import secrets; print(secrets.token_urlsafe(32))"'  # noqa: S105 — the command the refusal tells an operator to run, not a password
 
 PUBLISHED_SECRET_KEYS = frozenset({DEV_SECRET_KEY, TEST_SECRET_KEY})
 PUBLISHED_ENCRYPTION_KEYS = frozenset({DEV_CONNECTIONS_ENCRYPTION_KEY})

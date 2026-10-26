@@ -22,7 +22,7 @@ from apps.workflows.services import record_run, workflow_id
 
 pytestmark = pytest.mark.django_db
 
-PASSWORD = "a-long-enough-password"  # pragma: allowlist secret
+PASSWORD = "a-long-enough-password"  # noqa: S105 — a throwaway password a test user is made with  # pragma: allowlist secret
 LIST_URL = "/admin/workflows/workflowrun/"
 PLATFORM_RUN_ID = "platform:accounts:identity:workforce"
 
@@ -51,11 +51,13 @@ def test_the_changelist_shows_the_tenants_runs_and_never_the_platforms(
         tenant=tenant,
         workflow_id=workflow_id(tenant=tenant, app="workflows", noun="echo", key="visible"),
         workflow_type="EchoWorkflow",
+        actor=system_actor(tenant),
     )
     record_run(
         tenant=None,
         workflow_id=PLATFORM_RUN_ID,
         workflow_type="EchoWorkflow",
+        actor=system_actor(None),
     )
 
     api.force_login(staff_owner)

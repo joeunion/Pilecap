@@ -38,8 +38,8 @@ from django.utils import timezone
 from apps.accounts.models import SsoConnection, SsoDomain, SsoIdentity, User
 from apps.accounts.selectors import (
     get_connection_for_email,
-    realm_for_email,
-    sso_enforced_for,
+    get_enforcing_connection_for,
+    get_realm_for_email,
 )
 from apps.accounts.services import (
     SsoRefused,
@@ -48,7 +48,7 @@ from apps.accounts.services import (
     update_sso_connection,
     verify_sso_domain,
 )
-from apps.accounts.tests.conftest import CLIENT_ID, CLIENT_SECRET, ISSUER
+from apps.accounts.tests.conftest import CLIENT_ID, CLIENT_SECRET, ISSUER, provider_landed
 from apps.accounts.tests.stub_issuer import StubIssuer
 from apps.accounts.tests.test_rp_login import sign_in
 from apps.core.actor import Actor, system_actor
@@ -99,13 +99,13 @@ def test_an_unverified_claim_routes_nobody(
     update_sso_connection(
         tenant=unverified_sso_connection.tenant,
         actor=_operator(unverified_sso_connection.tenant),
-        connection=unverified_sso_connection,
+        connection=provider_landed(unverified_sso_connection),
         enforced=True,
     )
 
-    assert realm_for_email("x@acme.com") == realm_for_email("x@nobody.example")
+    assert get_realm_for_email("x@acme.com") == get_realm_for_email("x@nobody.example")
     assert get_connection_for_email("x@acme.com") is None
-    assert sso_enforced_for("x@acme.com") is None
+    assert get_enforcing_connection_for("x@acme.com") is None
 
     claimed = api.post(REALM_URL, {"email": "x@acme.com"}, content_type="application/json")
     unclaimed = api.post(REALM_URL, {"email": "x@nobody.example"}, content_type="application/json")
@@ -128,7 +128,7 @@ def test_a_claim_still_reserves_the_name_before_it_is_verified(
             name="Globex Entra",
             issuer="https://idp.globex.example",
             client_id="globex-client-id",
-            client_secret="globex-client-secret",  # pragma: allowlist secret
+            client_secret="globex-client-secret",  # noqa: S106 — a fake IdP client secret the test world configures  # pragma: allowlist secret
             email_domains=["acme.com"],
             default_role=Membership.Role.MEMBER,
         )
@@ -142,7 +142,7 @@ def test_a_verified_claim_routes_as_before(sso_connection: SsoConnection) -> Non
     at all — which is exactly the failure a routing change can introduce.
     """
     assert get_connection_for_email("someone@acme.com") == sso_connection
-    assert realm_for_email("someone@acme.com") != realm_for_email("someone@nobody.example")
+    assert get_realm_for_email("someone@acme.com") != get_realm_for_email("someone@nobody.example")
 
 
 # --- F1.3 · the lockout and the absorption, over the wire ---------------------
@@ -181,7 +181,8 @@ def test_a_claim_on_a_domain_with_people_elsewhere_locks_nobody_out(
     assert response.status_code == 302
     assert api.session.get("_auth_user_id") == str(stranger.pk)
     assert Membership.objects.filter(user_id=stranger.pk).count() == held_before
-    assert not SsoIdentity.objects.filter(user_id=stranger.pk).exists()
+    # No CUSTOMER connection's row: the platform join is the sign-in's own.
+    assert not SsoIdentity.objects.filter(user_id=stranger.pk, connection__isnull=False).exists()
 
 
 def test_a_stranger_at_an_unverified_domain_is_not_absorbed(
@@ -225,7 +226,8 @@ def test_a_stranger_at_an_unverified_domain_is_not_absorbed(
 
     assert response.status_code == 302
     newcomer = User.objects.get(email="newcomer@example.com")
-    assert not SsoIdentity.objects.filter(user_id=newcomer.pk).exists()
+    # No CUSTOMER connection's row: the platform join is the sign-in's own.
+    assert not SsoIdentity.objects.filter(user_id=newcomer.pk, connection__isnull=False).exists()
     assert not Membership.objects.filter(user_id=newcomer.pk, tenant=tenant).exists()
     landed = Membership.objects.get(user_id=newcomer.pk, tenant=other_tenant)
     assert landed.role == Membership.Role.ADMIN
@@ -267,7 +269,8 @@ def test_once_verified_the_claim_moved_case_is_the_documented_refusal(
 
     assert response.status_code == 403
     assert "_auth_user_id" not in api.session
-    assert not SsoIdentity.objects.filter(user_id=stranger.pk).exists()
+    # No CUSTOMER connection's row: the platform join is the sign-in's own.
+    assert not SsoIdentity.objects.filter(user_id=stranger.pk, connection__isnull=False).exists()
 
 
 # --- F1.4 · the public-mail refusal at the door ------------------------------
@@ -383,7 +386,7 @@ def test_a_member_may_not_verify(
 def test_verifying_twice_is_one_state_and_two_receipts(
     unverified_sso_connection: SsoConnection, tenant: Tenant
 ) -> None:
-    """Idempotent on the column, not on the ledger — `record_zitadel_identity`'s shape."""
+    """Idempotent on the column, not on the ledger — `record_identity`'s shape."""
     first = verify_sso_domain(
         tenant=tenant,
         actor=_operator(tenant),

@@ -1,7 +1,7 @@
 
 
-def _canary_record(user, cleaned):
+def _canary_record(user, realm, cleaned):
     """The audited writer, where it lives. Silent, or the rule forbids its own answer."""
-    user.zitadel_sub = cleaned
-    user.save(update_fields=["zitadel_sub"])
-    return user
+    row = SsoIdentity(user=user, realm=realm, subject=cleaned, connection=None)
+    row.save()
+    return row

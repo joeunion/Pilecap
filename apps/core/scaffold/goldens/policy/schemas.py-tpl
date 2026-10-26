@@ -1,0 +1,53 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "imports", "text": ""}
+from pilecap import ListPage
+
+# golden-anchor: {"nth": 0, "scope": ["WidgetIn"], "side": "before", "text": "due_at: AwareDatetime | None = Field("}
+    policy_id: UUID | None = Field(
+        default=None, json_schema_extra=example("019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d43")
+    )
+# golden-anchor: {"nth": 0, "scope": ["WidgetPatch"], "side": "before", "text": "due_at: AwareDatetime | None = Field("}
+    policy_id: UUID | None = Field(
+        default=None, json_schema_extra=example("019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d43")
+    )
+# golden-anchor: {"nth": 0, "scope": ["WidgetFilter"], "side": "before", "text": "due_before: Annotated[AwareDatetime | None, FilterLookup(q=\"due_at__lt\")] = Field("}
+    # The widgets that name one policy: the door an `archive_blocked` points at.
+    policy: Annotated[UUID | None, FilterLookup(q="policy_id")] = Field(
+        default=None, json_schema_extra=example("019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d43")
+    )
+# golden-anchor: {"nth": 0, "scope": ["WidgetOut"], "side": "after", "text": "due_at: datetime | None = Field(default=None, json_schema_extra=example(\"2026-11-02T17:00:00Z\"))"}
+    # The policy this widget was created under, or null; the id, never the row.
+    policy_id: UUID | None = Field(
+        default=None, json_schema_extra=example("019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d43")
+    )
+# golden-anchor: {"nth": 0, "scope": [], "side": "after", "text": "\"\"\"One widget, as its detail door answers it: the row and the words on it.\"\"\""}
+class WidgetPolicyIn(StrictIn):
+    """What a client may send to set a policy."""
+
+    name: str = Field(min_length=1, max_length=200, json_schema_extra=example("Heavy equipment"))
+    body: str = Field(
+        default="", json_schema_extra=example("Anything over 50kg needs two approvals.")
+    )
+
+
+class WidgetPolicyOut(ArchivedOut):
+    """What a client gets back for a policy."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID = Field(json_schema_extra=example("019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d43"))
+    name: str = Field(json_schema_extra=example("Heavy equipment"))
+    body: str = Field(json_schema_extra=example("Anything over 50kg needs two approvals."))
+    tenant_id: UUID = Field(json_schema_extra=example("019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d47"))
+    organization_id: UUID = Field(json_schema_extra=example("019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d41"))
+    # `WidgetPolicy.organization_slug`: the property, not a traversal (ADR example-3).
+    organization_slug: str = Field(json_schema_extra=example("northern-branch"))
+    created_at: datetime = Field(json_schema_extra=example("2026-09-26T08:24:00Z"))
+    updated_at: datetime = Field(json_schema_extra=example("2026-09-26T08:24:00Z"))
+
+
+class WidgetPolicyPage(ListPage):
+    """A page of policies — the same envelope `@paginate` gives the REST list."""
+
+    items: list[WidgetPolicyOut]
+
+

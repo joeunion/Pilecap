@@ -1,0 +1,37 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "imports", "text": ""}
+from apps.example.services import create_widget_policy
+
+# golden-anchor: {"nth": 0, "scope": [], "side": "before", "text": "DUE_AT_WIRE = \"2026-11-02T17:00:00Z\""}
+# `/policies/`: the fixed request cost plus the page; `select_related` keeps the page one query.
+POLICIES_QUERY_BUDGET = REQUEST_FIXED_QUERIES + 1
+
+
+def test_policies_list_query_count_does_not_grow_with_rows(
+    api: Client,
+    tenant: Tenant,
+    owner: User,
+    django_assert_num_queries: Any,
+    owner_actor: Actor,
+) -> None:
+    """One query for the page however many policies it holds — the `select_related`."""
+    for index in range(10):
+        create_widget_policy(tenant=tenant, actor=owner_actor, name=f"Policy {index}")
+    api.force_login(owner)
+
+    with django_assert_num_queries(POLICIES_QUERY_BUDGET):
+        response = api.get(reverse("api:widget_policies-list"))
+
+    assert response.status_code == 200, response.content
+    assert len(_body(response)["items"]) == 10
+
+
+def test_the_policy_routes_are_mounted_where_they_say() -> None:
+    """The policy paths, pinned by name: house rule 3 reads the names a test proves."""
+    policies = reverse("api:widget_policies-list")
+    policy_id = "00000000-0000-0000-0000-000000000001"
+    assert reverse("api:widget_policy-create") == policies
+    assert reverse("api:governing_widget_policy-detail") == f"{policies}governing/"
+    archive = reverse("api:widget_policy-archive", kwargs={"policy_id": policy_id})
+    assert archive == f"{policies}{policy_id}/archive/"
+
+

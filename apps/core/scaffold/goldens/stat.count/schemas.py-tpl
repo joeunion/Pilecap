@@ -1,0 +1,10 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "imports", "text": ""}
+from ninja import Schema
+
+from pilecap import MeasuredOut
+
+# golden-anchor: {"nth": 0, "scope": [], "side": "after", "text": "\"\"\"One widget, as its detail door answers it: the row and the words on it.\"\"\""}
+class WidgetStatsOut(Schema):
+    """The widget count for the acting hat, **with the arithmetic attached**."""
+
+    count: MeasuredOut

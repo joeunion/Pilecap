@@ -123,7 +123,7 @@ Walk `create_widget` line by line — it is the canonical write:
    the hat the door resolved from `X-Org` and revalidated this request.
 4. `full_clean()` under `as_invalid()` — Django's validation, spoken in the
    domain's refusal vocabulary (**rule 14**: no HTTP below the doors).
-5. `_publish(WIDGET_CREATED, ...)` — the event, emitted *inside the write's
+5. `_publish_widget(WIDGET_CREATED, ...)` — the event, emitted *inside the write's
    transaction*, through `core.bridge` (the upward-call registry — a lower
    layer never imports a higher one). The name is a constant from
    `apps/example/events.py`, never a literal (**rule 16**).
@@ -209,8 +209,8 @@ door's side).
 becomes a number. `STATUS_FOR` there is the whole mapping — read it rather
 than remember its length; it is walked up the MRO, so a product's
 `InsufficientFunds(Conflict)` is a 409 for free. The body
-comes from `core.exceptions.wire_refusal` — `{detail, code, errors?,
-remedies?}` — composed once and rendered identically by the machine door. The
+comes from `core.exceptions.wire_refusal` — keyed by
+`apps/core/exceptions.py::WIRE_COMMON_KEYS` — composed once and rendered identically by the machine door. The
 Django-native escapes (`ValidationError`, `IntegrityError`, `Http404`,
 `ObjectDoesNotExist`, throttling) are mapped in the same file so a database
 constraint answers a machine with a `conflict` body, not a 500 and a page of
@@ -241,7 +241,7 @@ of **rule 16**, declared once per app and never a literal at a call site,
 because an event name is a published contract a webhook subscriber matches on.
 A past-tense verb always: an event states that something *has happened*;
 `widget.create` would be an instruction, and instructions are service calls.
-`_publish` in `services.py` says them through `core.bridge` inside the write's
+`_publish_widget` in `services.py` says them through `core.bridge` inside the write's
 transaction; `apps/events` (the outbox, the signed deliveries with retries and
 dead-letter, the realtime push) takes it from there. `WIDGET_ONBOARDED` is the
 one a request cannot emit — it is stated by an activity, days later, same
@@ -306,8 +306,9 @@ is the current list; four of them matter to an arrival:
   environment: the week-long wait, both endings.
 
 `./scripts/check.sh --loop` is run by the builder, per rung, in a worktree with
-its own database (`scripts/db.sh`); and by the verifier, once, as the consult —
-a `VERDICT REUSED` banner is the gate, a miss completes and is recorded. The
+its own database (`scripts/db.sh`). The verifier never runs it: its consult is a
+lookup of the builder's banked key (`product-manager/SKILL.md` § The loop,
+stage 6). The
 full gate self-tests the enforcement —
 every canary planted through the real scope must fire, every negative must
 stay silent, and a dead canary is exit 2, not a pass. Run the gate **bare, or
@@ -341,7 +342,7 @@ optional.
   `core.log` (rule 19), all under the request's trace.
 
 A refusal leaves a trail too: the audit row (outside the rolled-back
-transaction), the `.failed` log line, and a `{detail, code, remedies}` body a
+transaction), the `.failed` log line, and a `wire_refusal` body (`apps/core/exceptions.py::WIRE_COMMON_KEYS`) a
 client can branch on. Nothing here un-happens; it accumulates, and that is the
 provenance the whole class of products this template serves is bought with.
 
@@ -393,7 +394,7 @@ POST /api/v1/widgets/       tool create_widget          door: authenticate, reso
         └────────────► services.create_widget ◄────────┘   (rules 3, 10)
                          require · fail-closed org       (rules 13, 24)
                          write + audit, one transaction  (rules 13, 20)
-                         _publish(WIDGET_CREATED)        (rule 16; the outbox)
+                         _publish_widget(WIDGET_CREATED) (rule 16; the outbox)
                          start_workflow_on_commit        (rule 18; the hat rides)
                                   │
                     WidgetOnboardingWorkflow (rule 9: deterministic)

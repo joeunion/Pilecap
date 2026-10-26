@@ -4,7 +4,7 @@ Thirteen `core` services could previously be reached from nothing. These
 tests are about the four properties that make the doors safe rather than merely
 present:
 
-* **the hat decides what you see** — your acting organization's subtree, never a
+* **the hat decides what you see** — your hat's subtree, never a
   parent's and never a sibling's, and a sibling's id is `not_found` rather than
   `forbidden` so the tree cannot be used as an existence oracle;
 * **the escalation wall holds at the door** — nobody grants above their own
@@ -36,6 +36,7 @@ from apps.core.services import (
     invite_member,
     root_organization,
 )
+from apps.core.tests.wire import REQUEST_FIXED_QUERIES
 
 pytestmark = pytest.mark.django_db
 
@@ -80,7 +81,7 @@ def branch_admin(tenant: Tenant, tree: dict[str, Organization], owner: User) -> 
     """A person who administers branch A and nothing else."""
     from apps.accounts.services import create_user
 
-    user = create_user(email="branch-admin@example.com", password="pw-for-tests-only")
+    user = create_user(email="branch-admin@example.com", password="pw-for-tests-only")  # noqa: S106 — a throwaway password a test user is made with
     add_membership(
         user=user,
         tenant=tenant,
@@ -122,7 +123,7 @@ def test_an_anonymous_caller_is_refused(api: Client) -> None:
     assert api.post(ORGANIZATIONS, data={}, content_type=JSON).status_code == 401
 
 
-# --- B-CORE-3: visibility is the hat's, downward only -------------------------
+# --- visibility is the hat's, downward only -----------------------------------
 
 
 def test_the_list_is_the_hats_subtree_and_nothing_above_it(
@@ -198,7 +199,7 @@ def test_another_tenants_rows_are_absent(
     )
 
 
-# --- B-CORE-2: the escalation wall, at the door -------------------------------
+# --- the escalation wall, at the door -----------------------------------------
 
 
 def test_an_admin_cannot_promote_above_their_own_role(
@@ -207,7 +208,7 @@ def test_an_admin_cannot_promote_above_their_own_role(
     """The wall, and the row is unchanged afterwards."""
     from apps.accounts.services import create_user
 
-    victim = create_user(email="victim@example.com", password="pw-for-tests-only")
+    victim = create_user(email="victim@example.com", password="pw-for-tests-only")  # noqa: S106 — a throwaway password a test user is made with
     membership = add_membership(
         user=victim,
         tenant=tenant,
@@ -272,7 +273,7 @@ def test_a_branch_admin_may_not_configure_the_whole_tenant(
     assert tenant.locale == "en-us"
 
 
-# --- B-CORE-4: the persona's steps, and the standards they ride on ------------
+# --- the persona's steps, and the standards they ride on ----------------------
 
 
 def test_the_persona_can_set_up_a_team(
@@ -356,7 +357,7 @@ def test_the_same_write_sent_twice_happens_once(api: Client, owner: User, tenant
     assert Invitation.objects.for_tenant(tenant).filter(email="once@example.com").count() == 1
 
 
-# --- B-CORE-5: the audit trail ------------------------------------------------
+# --- the audit trail ----------------------------------------------------------
 
 
 def test_every_write_leaves_an_audit_row_naming_the_service_and_the_door(
@@ -450,12 +451,12 @@ def _query_count(api: Client, url: str, query: str = "") -> int:
 #: actor whatever the number of questions in the request (PR0's memo). It moved
 #: 7 → 10, once, and the "once" is the claim: a request that asked twice would
 #: have moved it to 13.
-LIST_QUERY_BUDGET = 10
+LIST_QUERY_BUDGET = REQUEST_FIXED_QUERIES + 1  # the page
 
 #: What the same list costs when a caller asks for the total. Exactly one more
 #: statement, and the pair is the instrument: the count(*) tax the ADR removed
-#: is now something a test can see arrive and leave. 8 → 11 with the read.
-COUNTED_LIST_QUERY_BUDGET = 11
+#: is now something a test can see arrive and leave. 8 → 9 with the read.
+COUNTED_LIST_QUERY_BUDGET = 9
 
 
 @pytest.mark.parametrize("url", [ORGANIZATIONS, MEMBERSHIPS, INVITATIONS])
@@ -531,7 +532,7 @@ def _seed(
             slug=f"seeded-{index}",
             actor=acting,
         )
-        person = create_user(email=f"seeded-{index}@example.com", password="pw-for-tests-only")
+        person = create_user(email=f"seeded-{index}@example.com", password="pw-for-tests-only")  # noqa: S106 — a throwaway password a test user is made with
         add_membership(
             user=person,
             tenant=tenant,

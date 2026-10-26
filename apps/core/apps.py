@@ -1,4 +1,16 @@
+import sys
+from collections.abc import Sequence
+from pathlib import Path
+from typing import ClassVar
+
 from django.apps import AppConfig
+
+#: Where a dev-only command is found, and the one sentence the image answers it with.
+COMMANDS = "apps/core/management/commands/"
+OUTSIDE_CHECKOUT = (
+    "`manage.py {command}` runs in a checkout, never in the image: it reads the gate, which the "
+    "image does not carry — docs/sdk/the-one-path.md is the road.\n"
+)
 
 
 class CoreConfig(AppConfig):
@@ -14,6 +26,30 @@ class CoreConfig(AppConfig):
     name = "apps.core"
     verbose_name = "Core"
     depends_on: tuple[str, ...] = ()
+    ratchet_floors: ClassVar[dict[str, int]] = {
+        "91.block-tail": 4408,
+        "91.docstring-tail": 11213,
+        "91.module-tail": 4174,
+        "91.narrative": 121,
+    }
+    #: The paths that read the gate (`quality/`): checkout-only, and `.dockerignore` drops each.
+    DEV_ONLY: ClassVar[tuple[str, ...]] = (
+        "apps/core/scaffold",
+        f"{COMMANDS}declare.py",
+        f"{COMMANDS}newapp.py",
+        f"{COMMANDS}roads.py",
+        f"{COMMANDS}scaffold.py",
+    )
+
+    @classmethod
+    def refuse_outside_checkout(cls, argv: Sequence[str], root: Path) -> None:
+        """Exit 2 with the one refusal when `argv` names a `DEV_ONLY` command the tree lacks."""
+        if len(argv) < 2:
+            return
+        path = f"{COMMANDS}{argv[1]}.py"
+        if path in cls.DEV_ONLY and not (root / path).is_file():
+            sys.stderr.write(OUTSIDE_CHECKOUT.format(command=argv[1]))
+            raise SystemExit(2)
 
     def ready(self) -> None:
         """Install logging and tracing, once, for whatever started this process.

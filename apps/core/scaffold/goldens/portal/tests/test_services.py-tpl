@@ -1,0 +1,182 @@
+from typing import get_args
+from uuid import UUID, uuid4
+
+import pytest
+
+from apps.example.models import Widget
+from apps.example.services import archive_widget, create_widget, move_widget
+from apps.example_portal.events import PORTAL_REQUEST_MOVED, PORTAL_REQUEST_SUBMITTED
+from apps.example_portal.models import PortalRequest
+from apps.example_portal.schemas import PortalRequestFilter, Priority
+from apps.example_portal.selectors import list_portal_requests
+from apps.example_portal.services import move_portal_requests, submit_portal_request
+from apps.example_portal.tests.conftest import CUSTOMER_ROLE
+from pilecap import Actor, Conflict, Forbidden, NotFound
+from pilecap.accounts import User, create_user
+from pilecap.tenancy import Organization, Tenant, add_membership, create_organization
+from pilecap.testing import Event, actor_for, system_actor
+
+pytestmark = pytest.mark.django_db
+
+
+def test_a_customer_submits_and_the_request_lands_at_their_hat(
+    tenant: Tenant, root_org: Organization, customer_actor: Actor, widget: Widget
+) -> None:
+    row = submit_portal_request(
+        tenant=tenant, actor=customer_actor, widget=widget, note="Send another?"
+    )
+
+    assert row.organization_id == root_org.pk
+    assert row.requester_id == customer_actor.user.pk  # type: ignore[union-attr]
+    assert row.widget_id == widget.pk
+    (said,) = Event.objects.for_tenant(tenant).filter(name=PORTAL_REQUEST_SUBMITTED)
+    assert said.payload["id"] == str(row.pk)
+    assert said.payload["organization_id"] == str(root_org.pk)
+    # `requester_email` is the doors' alone: `PortalRequestOut` marks it personal.
+    assert set(said.payload) == {
+        "v",
+        "id",
+        "widget_id",
+        "note",
+        "priority",
+        "requester_id",
+        "tenant_id",
+        "organization_id",
+        "created_at",
+        "updated_at",
+    }
+
+
+def test_a_widget_of_another_tenant_is_not_found_and_nothing_is_written(
+    tenant: Tenant,
+    other_tenant: Tenant,
+    stranger_actor: Actor,
+    customer_actor: Actor,
+    recorded_workflow_starts: None,
+) -> None:
+    elsewhere = create_widget(tenant=other_tenant, actor=stranger_actor, name="Theirs")
+
+    with pytest.raises(NotFound):
+        submit_portal_request(
+            tenant=tenant, actor=customer_actor, widget=elsewhere, note="Is it mine?"
+        )
+    assert not PortalRequest.objects.for_tenant(tenant).exists()
+
+
+def test_an_archived_widget_refuses_the_request(
+    tenant: Tenant, owner_actor: Actor, customer_actor: Actor, widget: Widget
+) -> None:
+    archived = archive_widget(tenant=tenant, actor=owner_actor, widget=widget)
+
+    with pytest.raises(Conflict) as refused:
+        submit_portal_request(tenant=tenant, actor=customer_actor, widget=archived, note="Hello?")
+    assert refused.value.code == "archived"
+    assert not PortalRequest.objects.for_tenant(tenant).exists()
+
+
+def test_a_staff_member_who_reads_everything_may_not_submit(
+    tenant: Tenant, member_actor: Actor, widget: Widget
+) -> None:
+    """`member` is `("*.read",)`: it reads requests and sends none — the verb is a role's."""
+    with pytest.raises(Forbidden):
+        submit_portal_request(tenant=tenant, actor=member_actor, widget=widget, note="Hi")
+
+
+def test_a_widget_merge_carries_its_requests_and_says_so_once_each(
+    tenant: Tenant, owner_actor: Actor, customer_actor: Actor, widget: Widget
+) -> None:
+    survivor = create_widget(tenant=tenant, actor=owner_actor, name="Right mount")
+    asked = submit_portal_request(
+        tenant=tenant, actor=customer_actor, widget=widget, note="Which one?"
+    )
+
+    moved = move_portal_requests(tenant=tenant, actor=owner_actor, loser=widget, survivor=survivor)
+    again = move_portal_requests(tenant=tenant, actor=owner_actor, loser=widget, survivor=survivor)
+
+    asked.refresh_from_db()
+    assert (moved, again) == (1, 0)
+    assert asked.widget_id == survivor.pk
+    assert Event.objects.for_tenant(tenant).filter(name=PORTAL_REQUEST_MOVED).count() == 1
+
+
+def _listed(tenant: Tenant, actor: Actor, widget_id: UUID | None = None) -> set[UUID]:
+    filters = PortalRequestFilter(widget_id=widget_id)
+    rows = list_portal_requests(tenant=tenant, actor=actor, filters=filters)
+    return {row.pk for row in rows}
+
+
+def test_the_list_narrows_to_one_widget_and_unfiltered_is_unchanged(
+    tenant: Tenant, owner_actor: Actor, customer_actor: Actor, widget: Widget
+) -> None:
+    other = create_widget(tenant=tenant, actor=owner_actor, name="Right mount")
+    about = submit_portal_request(tenant=tenant, actor=customer_actor, widget=widget, note="A")
+    elsewhere = submit_portal_request(tenant=tenant, actor=customer_actor, widget=other, note="B")
+
+    assert _listed(tenant, customer_actor, widget.pk) == {about.pk}
+    assert _listed(tenant, customer_actor) == {about.pk, elsewhere.pk}
+    unfiltered = list_portal_requests(tenant=tenant, actor=customer_actor)
+    assert {row.pk for row in unfiltered} == {about.pk, elsewhere.pk}
+
+
+def test_a_widget_nobody_has_or_another_tenants_lists_nothing(
+    tenant: Tenant,
+    other_tenant: Tenant,
+    stranger_actor: Actor,
+    customer_actor: Actor,
+    widget: Widget,
+) -> None:
+    submit_portal_request(tenant=tenant, actor=customer_actor, widget=widget, note="A")
+    theirs = create_widget(tenant=other_tenant, actor=stranger_actor, name="Theirs")
+
+    assert _listed(tenant, customer_actor, uuid4()) == set()
+    assert _listed(tenant, customer_actor, theirs.pk) == set()
+
+
+def test_a_request_is_normal_unless_it_says_otherwise_and_the_list_narrows_by_it(
+    tenant: Tenant, customer_actor: Actor, widget: Widget
+) -> None:
+    plain = submit_portal_request(tenant=tenant, actor=customer_actor, widget=widget, note="A")
+    urgent = submit_portal_request(
+        tenant=tenant,
+        actor=customer_actor,
+        widget=widget,
+        note="B",
+        priority=PortalRequest.Priority.HIGH,
+    )
+
+    plain.refresh_from_db()
+    urgent.refresh_from_db()
+    assert (plain.priority, urgent.priority) == ("normal", "high")
+    said = Event.objects.for_tenant(tenant).filter(name=PORTAL_REQUEST_SUBMITTED)
+    assert {event.payload["priority"] for event in said} == {"normal", "high"}
+    high = PortalRequestFilter(priority="high")
+    rows = list_portal_requests(tenant=tenant, actor=customer_actor, filters=high)
+    assert {row.pk for row in rows} == {urgent.pk}
+
+
+def test_the_wire_priorities_are_the_models() -> None:
+    assert set(get_args(Priority)) == set(PortalRequest.Priority.values)
+
+
+def test_a_widget_moved_out_of_reach_lists_nothing_though_its_requests_stay(
+    tenant: Tenant,
+    root_org: Organization,
+    owner: User,
+    owner_actor: Actor,
+    recorded_workflow_starts: None,
+) -> None:
+    """The reads-ask rule (ADR core-27): a widget the hat cannot reach is not there — empty."""
+    system = system_actor(tenant=tenant)
+    a = create_organization(tenant=tenant, parent=root_org, name="A", slug="a", actor=system)
+    b = create_organization(tenant=tenant, parent=root_org, name="B", slug="b", actor=system)
+    person = create_user(email="sam@customer.example")
+    add_membership(user=person, tenant=tenant, organization=a, role=CUSTOMER_ROLE, actor=system)
+    at_a = actor_for(user=person, tenant=tenant, org=a)
+    owner_at_a = actor_for(user=owner, tenant=tenant, org=a)
+    gone = create_widget(tenant=tenant, actor=owner_at_a, name="Moving")
+    asked = submit_portal_request(tenant=tenant, actor=at_a, widget=gone, note="Where?")
+    move_widget(tenant=tenant, actor=owner_actor, widget=gone, organization=b)
+
+    reader = actor_for(user=person, tenant=tenant, org=a)
+    assert _listed(tenant, reader) == {asked.pk}
+    assert _listed(tenant, reader, gone.pk) == set()

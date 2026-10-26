@@ -110,11 +110,11 @@
 			"label": "postgres (for a GUI client on your machine)",
 			"onAutoForward": "silent"
 		},
-		// Forwarded, and nothing is behind it until you ask for it: `setup.sh`
-		// starts db, redis, temporal and zitadel, and Mailpit is not in that list.
-		// `docker compose up -d mailpit` and this port answers.
+		// Mailpit is in `setup.sh`'s service list (`SERVICES` in
+		// `scripts/setup.sh` is the authority), so this port answers once
+		// setup has run.
 		"8025": {
-			"label": "mailpit — every email this product sends (compose up -d mailpit)",
+			"label": "mailpit — every email this product sends",
 			"onAutoForward": "silent"
 		},
 		// 8081 ON 8081, NOT WHATEVER IS FREE. `ZITADEL_ISSUER` is

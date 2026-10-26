@@ -102,7 +102,8 @@ def test_the_queued_event_carries_the_same_shape_the_read_door_returns(
     event = Event.objects.for_tenant(tenant).get(name="comms.message.queued")
     assert event.payload["id"] == str(message.pk)
     assert event.payload["status"] == Message.Status.QUEUED
-    assert event.payload["recipient_email"] == recipient.email
+    assert "recipient_email" not in event.payload
+    assert event.payload["recipient_id"] == str(recipient.pk)
     assert event.payload["organization_slug"] == message.organization.slug
     assert message.correlation_id == "test-chain"
     assert event.correlation_id == message.correlation_id

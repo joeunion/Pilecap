@@ -21,18 +21,10 @@ from typing import Any
 
 from django.db import close_old_connections
 from temporalio import activity
-from temporalio.client import (
-    Schedule,
-    ScheduleActionStartWorkflow,
-    ScheduleIntervalSpec,
-    ScheduleOverlapPolicy,
-    SchedulePolicy,
-    ScheduleSpec,
-)
 
 from apps.core.integrations import IntegrationStatus, census
 from apps.core.log import get_logger
-from apps.core.schedules import ScheduleDeclaration
+from apps.core.schedules import ScheduleDeclaration, platform_schedule
 
 log = get_logger("apps.core.activities")
 
@@ -83,13 +75,6 @@ def probe_integrations() -> dict[str, str]:
 
 # --- the schedule ------------------------------------------------------------
 
-#: `<tenant>:<app>:<noun>:<key>` with `platform` in the tenant position — the
-#: deployment's own housekeeping belongs to no tenant — and per task queue, so
-#: two deployments sharing a Temporal namespace never fight over one execution.
-#: The events purge's precedent, and house rule 18's `platform:` shape.
-PROBE_WORKFLOW_PREFIX = "platform:core:integrations"
-PROBE_SCHEDULE_PREFIX = "system:core:integrations"
-
 #: How often. Six-hourly: a probe is cheap, and the number that matters is how
 #: long a deployment can stand on a fake before somebody is told. A day is a
 #: working day of password resets printed to a log; an hour buys nothing over
@@ -97,41 +82,20 @@ PROBE_SCHEDULE_PREFIX = "system:core:integrations"
 PROBE_EVERY = timedelta(hours=6)
 
 
-def probe_schedule_id(task_queue: str) -> str:
-    """The schedule id for one deployment's prober. One per task queue."""
-    return f"{PROBE_SCHEDULE_PREFIX}:{task_queue}"
-
-
-def probe_workflow_id(task_queue: str) -> str:
-    """The deterministic id of the run the schedule starts (house rule 18).
-
-    Per queue and derived, so every worker in a deployment computes the same one
-    and Temporal's `SKIP` overlap policy means the second to ask is told it is
-    already happening. The server appends the scheduled time; the part this
-    repository chooses is the part that must be deterministic.
-    """
-    return f"{PROBE_WORKFLOW_PREFIX}:{task_queue}"
-
-
-def probe_schedule(task_queue: str) -> Schedule:
-    """The prober's schedule, as a value so a test can read it without a server."""
-    return Schedule(
-        action=ScheduleActionStartWorkflow(
-            "ProbeIntegrationsWorkflow",
-            id=probe_workflow_id(task_queue=task_queue),
-            task_queue=task_queue,
-        ),
-        spec=ScheduleSpec(intervals=[ScheduleIntervalSpec(every=PROBE_EVERY)]),
-        policy=SchedulePolicy(overlap=ScheduleOverlapPolicy.SKIP),
-    )
-
-
 #: The standing prober — the census's fourth surface, and the only one that
-#: catches rot. No legacy id: this schedule has never existed under another name.
-PROBE_INTEGRATIONS = ScheduleDeclaration(
+#: catches rot. Declared through the platform factory, so its schedule and its
+#: run are both `platform:core:integrations:<queue>` (house rule 18) — the
+#: schedule used to be `system:core:integrations:<queue>`, the one id of core's
+#: that `check_workflow_id` would have refused. The old schedule id was keyed by
+#: the queue, which `legacy_ids` (constants) cannot name; a long-lived deployment
+#: still holding it removes it by hand once (CHANGELOG.md, "A long-lived
+#: deployment's old integrations-prober schedule").
+PROBE_INTEGRATIONS = platform_schedule(
+    app="core",
+    noun="integrations",
+    workflow="ProbeIntegrationsWorkflow",
+    every=PROBE_EVERY,
     name="core.probe-integrations",
-    schedule_id=probe_schedule_id,
-    schedule=probe_schedule,
     log_prefix="core",
 )
 

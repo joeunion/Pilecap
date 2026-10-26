@@ -1,0 +1,21 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "before", "text": "def test_a_tool_and_its_route_answer_with_the_same_row("}
+NAME_FINDS: dict[str, Any] = {"name": "Left bench"}
+NAME_MISSES: dict[str, Any] = {"name": "Other"}
+NAME_ASKS: dict[str, Any] = {"name": "bench"}
+
+
+def test_the_name_filter_narrows_alike_on_both_doors(
+    api: Client, tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    found = create_widget(tenant=tenant, actor=owner_actor, **{"name": "Found", **NAME_FINDS})
+    create_widget(tenant=tenant, actor=owner_actor, **{"name": "Missed", **NAME_MISSES})
+    api.force_login(owner)
+    over_http = api.get("/api/v1/widgets/", NAME_ASKS)
+    over_mcp = tool("list_widgets", register=register)(
+        ctx=context_for(owner, tenant, root_organization(tenant=tenant)), **NAME_ASKS
+    )
+    assert over_http.status_code == 200, over_http.content
+    assert [item["id"] for item in json.loads(over_http.content)["items"]] == [str(found.pk)]
+    assert [str(item.id) for item in over_mcp.items] == [str(found.pk)]
+
+

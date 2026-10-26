@@ -12,17 +12,17 @@ Every row is written by the service that really writes it rather than by
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from apps.accounts.models import SsoConnection, User
-from apps.accounts.services import create_sso_connection, create_user, verify_sso_domain
+from apps.accounts.services import create_sso_connection, verify_sso_domain
 from apps.conftest import organ
-from apps.core.actor import Actor, actor_for, system_actor
+from apps.core.actor import actor_for, system_actor
 from apps.core.models import Membership, Organization, Tenant
-from apps.core.services import add_membership, create_organization, invite_member
+from apps.core.services import invite_member
+from apps.core.tests.permissions_world import World, build_world
 from apps.example.services import create_widget, record_widget_entry
 from apps.files import storage as files_storage
 
@@ -33,85 +33,30 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 #: validators and nothing else. Allow-listed because it is exactly what the
 #: scanner is right to look at — a `PASSWORD =` in source — and exactly what a
 #: reader should be able to see is fake.
-PASSWORD = "a-long-enough-password-for-validators"  # pragma: allowlist secret
-
-
-@dataclass(frozen=True)
-class World:
-    """One tenant shaped like a real customer, plus a neighbour to leak into.
-
-    `region` and `branch` are a two-level chain under the root and `sibling` is
-    beside `region`, which is the smallest tree in which "downward only" is a
-    claim that can fail: an export taken at `region` must contain `branch`'s
-    rows, must not contain `sibling`'s, and must not contain the root's.
-    """
-
-    tenant: Tenant
-    root: Organization
-    region: Organization
-    branch: Organization
-    sibling: Organization
-    owner: User
-    region_admin: User
-    owner_actor: Actor
-    region_actor: Actor
+PASSWORD = "a-long-enough-password-for-validators"  # noqa: S105 — a throwaway password a test user is made with  # pragma: allowlist secret
 
 
 @pytest.fixture
-def world(tenant: Tenant, owner: User, root_org: Organization) -> World:
-    """A tenant with a three-node tree, rows in each node, and two people."""
-    acting = actor_for(user=owner, tenant=tenant, org=root_org)
-    region = create_organization(
-        tenant=tenant, parent=root_org, name="Region", slug="region", actor=acting
+def world() -> World:
+    """Core's world; a widget and a ledger line at root, A, A1 and B; an invitation at A."""
+    built = build_world()
+    for org, who in (
+        (built.root, built.owner),
+        (built.a, built.admin_at_a),
+        (built.b, built.owner),
+    ):
+        acting = actor_for(user=who.user, tenant=built.tenant, org=org)
+        widget = create_widget(tenant=built.tenant, actor=acting, name=f"Widget at {org.slug}")
+        record_widget_entry(
+            tenant=built.tenant, actor=acting, widget=widget, note=f"line at {org.slug}"
+        )
+    at_a1 = actor_for(user=built.owner.user, tenant=built.tenant, org=built.a1)
+    branch_widget = create_widget(tenant=built.tenant, actor=at_a1, name="Widget at a1")
+    record_widget_entry(tenant=built.tenant, actor=at_a1, widget=branch_widget, note="line at a1")
+    invite_member(
+        tenant=built.tenant, email="invited@acme.com", organization=built.a, actor=built.owner
     )
-    branch = create_organization(
-        tenant=tenant, parent=region, name="Branch", slug="branch", actor=acting
-    )
-    sibling = create_organization(
-        tenant=tenant, parent=root_org, name="Sibling", slug="sibling", actor=acting
-    )
-
-    region_admin = create_user(email="region-admin@acme.com", password=PASSWORD)
-    add_membership(
-        user=region_admin,
-        tenant=tenant,
-        organization=region,
-        is_default=True,
-        role=Membership.Role.ADMIN,
-        actor=acting,
-    )
-    region_acting = actor_for(user=region_admin, tenant=tenant, org=region)
-
-    # One widget per node, each with a ledger line, so every assertion about
-    # which branch's rows travelled has something to be wrong about.
-    for org, who in ((root_org, acting), (region, region_acting), (sibling, acting)):
-        widget = create_widget(tenant=tenant, actor=who, name=f"Widget at {org.slug}")
-        record_widget_entry(tenant=tenant, actor=who, widget=widget, note=f"line at {org.slug}")
-    branch_widget = create_widget(
-        tenant=tenant,
-        actor=actor_for(user=owner, tenant=tenant, org=branch),
-        name="Widget at branch",
-    )
-    record_widget_entry(
-        tenant=tenant,
-        actor=actor_for(user=owner, tenant=tenant, org=branch),
-        widget=branch_widget,
-        note="line at branch",
-    )
-    # A standing offer, which is a tenant-scoped-shaped row that is org-scoped:
-    # it is what makes `core.Invitation` travel in a subtree export.
-    invite_member(tenant=tenant, email="invited@acme.com", organization=region, actor=acting)
-    return World(
-        tenant=tenant,
-        root=root_org,
-        region=region,
-        branch=branch,
-        sibling=sibling,
-        owner=owner,
-        region_admin=region_admin,
-        owner_actor=acting,
-        region_actor=region_acting,
-    )
+    return built
 
 
 @pytest.fixture
@@ -135,7 +80,7 @@ def neighbour(other_tenant: Tenant, stranger: User, other_root_org: Organization
 #: and which `test_archive_privacy.py` proves does not travel in an archive. A
 #: distinctive literal, so a hit anywhere in an export is a hit and never a
 #: coincidence — the same discipline the erasure probe uses for its needles.
-CLIENT_SECRET = "exports-idp-secret-nobody-should-ever-see"  # pragma: allowlist secret
+CLIENT_SECRET = "exports-idp-secret-nobody-should-ever-see"  # noqa: S105 — a fake IdP client secret the test world configures  # pragma: allowlist secret
 
 
 @pytest.fixture
@@ -149,7 +94,7 @@ def sso_connection(world: World) -> SsoConnection:
     """
     connection = create_sso_connection(
         tenant=world.tenant,
-        actor=world.owner_actor,
+        actor=world.owner,
         name="Acme Okta",
         issuer="https://idp.acme.example",
         client_id="acme-client-id",

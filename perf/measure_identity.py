@@ -27,7 +27,7 @@ The world names itself — `perf/conftest.py`'s `spec` fixture reads the stamp �
 so nothing here is passed a flag.
 
 ## The declared budgets (measured, then written down; see
-`quality/perf-identity-measurement.md` for the triples and the EXPLAIN
+the retired `perf-identity-measurement.md` for the triples and the EXPLAIN
 excerpts)
 
 Every constant below is a query count at the seeded scale. They are the
@@ -139,7 +139,7 @@ def doubled_axis(spec: ScaleSpec) -> str | None:
         try:
             if DEFAULT_SPEC.doubled(axis) == spec:
                 return axis
-        except Exception:  # noqa: BLE001 - an axis the platform refuses to double
+        except Exception:  # noqa: BLE001, S112 — an axis the platform refuses to double
             continue
     return None
 
@@ -152,7 +152,7 @@ def _pin(spec: ScaleSpec, *, what: str, measured: int, budget: int) -> None:
             raise AssertionError(
                 f"{what}: measured {measured} queries at the declared scale, "
                 f"budget is {budget}. A number that moved is a FINDING — record "
-                "it with its EXPLAIN pair in quality/perf-identity-measurement.md."
+                "it with its EXPLAIN pair in the retired perf-identity-measurement.md."
             )
         return
     flat_under_doubling(base=budget, doubled=measured, axis=axis, what=what)

@@ -45,20 +45,12 @@ from uuid import UUID
 
 from django.db import close_old_connections
 from temporalio import activity
-from temporalio.client import (
-    Schedule,
-    ScheduleActionStartWorkflow,
-    ScheduleIntervalSpec,
-    ScheduleOverlapPolicy,
-    SchedulePolicy,
-    ScheduleSpec,
-)
 
 from apps.core.actor import system_actor
 from apps.core.exceptions import NotFound
 from apps.core.log import get_logger
 from apps.core.models import Organization, Tenant
-from apps.core.schedules import ScheduleDeclaration
+from apps.core.schedules import ScheduleDeclaration, platform_schedule
 from apps.core.time import now
 from apps.files import services, storage
 from apps.files.models import PENDING_UPLOAD_TTL_HOURS, FileVersion
@@ -227,87 +219,21 @@ def sweep_pending_uploads(window: SweepPendingUploads) -> SweepOutcome:
 
 # --- the declared machine (ADR platform-lifecycle-1) --------------------------
 
-#: How often the sweep runs. **Hourly, and the cadence only has to be small
-#: against the window** — the TTL is a day, so an hourly pass means an abandoned
-#: document leaves somebody's list within an hour of becoming abandoned rather
-#: than within a day of it. It is cheap to run that often: the read is a
-#: two-column filter over a population that is normally empty, and the overlap
-#: policy below means a long first sweep is never joined by a second.
+#: Hourly: small against the day-long TTL, so an abandoned upload leaves the lists within the hour.
 SWEEP_EVERY = timedelta(hours=1)
 
-#: **Both ids are namespaced by task queue**, and that is not cosmetic (ADR
-#: events-2, observed live): a schedule id is global to the Temporal
-#: namespace, so a constant one makes every worker's startup a silent fight over
-#: where the sweep runs. There is no legacy un-suffixed id to drop here; this
-#: schedule has never existed under one.
-SWEEP_SCHEDULE_PREFIX = "files-sweep-pending-uploads"
-SWEEP_WORKFLOW_PREFIX = "platform:files:sweep-pending"
-
-
-def sweep_schedule_id(task_queue: str) -> str:
-    """The schedule id for one deployment's abandoned-upload sweep."""
-    return f"{SWEEP_SCHEDULE_PREFIX}:{task_queue}"
-
-
-def sweep_workflow_id(task_queue: str) -> str:
-    """The id of the run the schedule starts. Deterministic, and per queue too.
-
-    Two schedules starting runs under one workflow id would be two deployments
-    fighting over one execution — the schedule id alone is not enough.
-
-    This is the **prefix** Temporal is given: the server appends the scheduled
-    time to it, so an actual run is
-    `platform:files:sweep-pending:<queue>-2026-08-25T03:00:00Z`. That is the
-    server's doing and not a random id; the part this repository chooses is
-    deterministic, which is what house rule 18 is about.
-    """
-    return f"{SWEEP_WORKFLOW_PREFIX}:{task_queue}"
-
-
-def sweep_pending_uploads_schedule(task_queue: str) -> Schedule:
-    """The hourly sweep, as a value so a test can read it.
-
-    The TTL rides on the ACTION rather than being read inside the activity, for
-    the reason `apps.exports`' and `apps.connections`' sweeps both carry their
-    windows there: an operator can read the number off the schedule in the
-    Temporal UI instead of out of the source, and both lifetime classes read the
-    same value out of the same declaration.
-
-    `SKIP` on overlap: two sweeps at once would both select the same expired
-    rows, and while the second delete is a harmless no-op there is no reason to
-    pay for the race — or for two of them arguing over the same document's
-    archive lock.
-    """
-    return Schedule(
-        action=ScheduleActionStartWorkflow(
-            SWEEP_WORKFLOW,
-            SweepPendingUploads(ttl_hours=PENDING_UPLOAD_TTL_HOURS),
-            id=sweep_workflow_id(task_queue=task_queue),
-            task_queue=task_queue,
-        ),
-        spec=ScheduleSpec(intervals=[ScheduleIntervalSpec(every=SWEEP_EVERY)]),
-        policy=SchedulePolicy(overlap=ScheduleOverlapPolicy.SKIP),
-    )
-
-
-#: The one periodic machine this app owns, declared as data (ADR
-#: platform-lifecycle-1).
-#:
-#: **This is the far end of `FileVersion.lifecycle`.** House rule 31 walks from
-#: the model's `purged_by` to the service, to the activity above that calls it,
-#: to the workflow that executes that activity, to this declaration — and refuses
-#: the declaration if the walk stops short. Delete this entry and the model's
-#: promise becomes the poller that was never built, loudly, at the gate.
-SWEEP_PENDING_UPLOADS = ScheduleDeclaration(
+#: `platform:files:sweep-pending:<queue>` — the far end of `FileVersion.lifecycle` (rule 31).
+SWEEP_PENDING_UPLOADS = platform_schedule(
+    app="files",
+    noun="sweep-pending",
+    workflow=SWEEP_WORKFLOW,
+    every=SWEEP_EVERY,
+    arg=SweepPendingUploads(ttl_hours=PENDING_UPLOAD_TTL_HOURS),
     name="files.sweep-pending-uploads",
-    schedule_id=sweep_schedule_id,
-    schedule=sweep_pending_uploads_schedule,
     log_prefix="files",
 )
 
 
 ACTIVITIES: list[Callable[..., Any]] = [verify_object, record_stored, sweep_pending_uploads]
 
-#: Discovered by `apps.workflows.client.discovered_schedules`, which the worker
-#: consults at startup. One declaration per periodic machine this app owns.
 SCHEDULES: list[ScheduleDeclaration] = [SWEEP_PENDING_UPLOADS]

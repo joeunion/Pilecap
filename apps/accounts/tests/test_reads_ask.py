@@ -56,8 +56,8 @@ pytestmark = pytest.mark.django_db
 #: working in an environment nobody tests by hand.
 PRE_AUTH_READS: tuple[str, ...] = (
     "get_connection_for_email",
-    "realm_for_email",
-    "sso_enforced_for",
+    "get_realm_for_email",
+    "get_enforcing_connection_for",
 )
 
 
@@ -248,17 +248,8 @@ def test_get_connection_for_email_takes_no_actor_and_answers_before_anybody_sign
     assert get_connection_for_email("nobody@nowhere.invalid") is None
 
 
-def test_every_pre_authentication_read_carries_its_valve() -> None:
-    """The census, so the valve is read off the module and never assumed.
-
-    A `# read-open:` that somebody deleted while tidying is a selector the gate
-    then reports as a new violation — which is the belt. This is the braces: it
-    names the population by hand, because the population is exactly "the reads
-    that happen before a principal exists" and no annotation can derive that.
-    """
-    source = inspect.getsource(selectors)
+def test_every_pre_authentication_read_takes_no_actor() -> None:
+    """The reads before a principal exists take no actor; rule 54(d) reads their valves."""
     for name in PRE_AUTH_READS:
         function = getattr(selectors, name)
         assert "actor" not in inspect.signature(function).parameters, name
-        assert f"def {name}(" in source, name
-    assert source.count("# read-open:") >= 1

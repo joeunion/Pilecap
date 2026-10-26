@@ -24,17 +24,15 @@ scoping bug through while every assertion in this directory passed.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import pytest
 
 from apps.accounts.models import User
-from apps.accounts.services import create_user
 from apps.conftest import organ
 from apps.core.actor import Actor, actor_for
-from apps.core.models import Membership, Organization, Tenant
-from apps.core.services import add_membership, create_organization
+from apps.core.models import Organization, Tenant
+from apps.core.tests.permissions_world import World, build_world
 from apps.files import storage
 from apps.files.models import FileVersion, StoredFile
 
@@ -46,7 +44,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 #: validators and nothing else. Allow-listed because it is exactly what the
 #: scanner is right to look at — a `PASSWORD =` in source — and exactly what a
 #: reader should be able to see is fake.
-PASSWORD = "a-long-enough-password-for-validators"  # pragma: allowlist secret
+PASSWORD = "a-long-enough-password-for-validators"  # noqa: S105 — a throwaway password a test user is made with  # pragma: allowlist secret
 
 
 @pytest.fixture
@@ -173,81 +171,10 @@ def bucket(settings: Any) -> Iterator[str]:
 # --- The world the door tests are measured against ------------------------------
 
 
-@dataclass(frozen=True)
-class World:
-    """One tenant shaped like a real customer, with the hats a scoping claim needs.
-
-    `region` and `branch` are a two-level chain under the root and `sibling` sits
-    beside `region`, which is the smallest tree in which "downward only" is a claim
-    that can FAIL: a document filed at `region` must be visible to the region's
-    admin and to the owner at the root, must be visible from `branch`'s parent and
-    not from `sibling`, and a document at the root must not be visible from
-    `region`.
-
-    `region_admin` is an ADMIN rather than a member because archiving takes a role
-    — a world whose only privileged person sat at the root could not tell "an
-    administrator of this branch may archive" from "an owner may archive
-    anything".
-    """
-
-    tenant: Tenant
-    root: Organization
-    region: Organization
-    branch: Organization
-    sibling: Organization
-    owner: User
-    region_admin: User
-    plain_member: User
-    owner_actor: Actor
-    region_actor: Actor
-    member_actor: Actor
-
-
 @pytest.fixture
-def world(tenant: Tenant, owner: User, root_org: Organization) -> World:
-    """A tenant with a three-node tree and three people wearing three hats."""
-    acting = actor_for(user=owner, tenant=tenant, org=root_org)
-    region = create_organization(
-        tenant=tenant, parent=root_org, name="Region", slug="region", actor=acting
-    )
-    branch = create_organization(
-        tenant=tenant, parent=region, name="Branch", slug="branch", actor=acting
-    )
-    sibling = create_organization(
-        tenant=tenant, parent=root_org, name="Sibling", slug="sibling", actor=acting
-    )
-
-    region_admin = create_user(email="region-admin@acme.com", password=PASSWORD)
-    add_membership(
-        user=region_admin,
-        tenant=tenant,
-        organization=region,
-        is_default=True,
-        role=Membership.Role.ADMIN,
-        actor=acting,
-    )
-    plain_member = create_user(email="member@acme.com", password=PASSWORD)
-    add_membership(
-        user=plain_member,
-        tenant=tenant,
-        organization=region,
-        is_default=True,
-        role=Membership.Role.MEMBER,
-        actor=acting,
-    )
-    return World(
-        tenant=tenant,
-        root=root_org,
-        region=region,
-        branch=branch,
-        sibling=sibling,
-        owner=owner,
-        region_admin=region_admin,
-        plain_member=plain_member,
-        owner_actor=acting,
-        region_actor=actor_for(user=region_admin, tenant=tenant, org=region),
-        member_actor=actor_for(user=plain_member, tenant=tenant, org=region),
-    )
+def world() -> World:
+    """Core's world: `root → A → A1 → A1X`, sibling `B`, an admin and a clerk at A."""
+    return build_world()
 
 
 @pytest.fixture

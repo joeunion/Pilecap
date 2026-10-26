@@ -1,0 +1,290 @@
+// golden: merge begin
+// patterns: §1, §13, §14, §15
+"use client";
+// golden: merge end
+// golden: merge begin
+import { useEffect, useRef, useState } from "react";
+
+import { WIDGET_COPY as C, mergeMovesSentence, mergeQuestion, mergeSheetTitle } from "@pilecap/copy/widget";
+// golden: merge end
+// golden: bulk+merge begin
+import { mergePairTitle } from "@pilecap/copy/widget";
+// golden: bulk+merge end
+// golden: merge begin
+import { Dialog } from "@pilecap/ui/dialog";
+import { RefusalPanel } from "@pilecap/ui/refusal-panel";
+import { STAFF_SURFACE } from "@pilecap/ui/routes";
+import type { Refusal, SurfaceState } from "@pilecap/ui/state";
+import { type Act, footAct, type Road } from "@pilecap/ui/verbs";
+import { StillLine } from "@pilecap/ui/still-line";
+import { type Widget, type WidgetMergePreview } from "@/screens/widget/parts";
+
+/** What the route hands the merge: the candidates it read, the dry run for the pick, and the merge. */
+export type MergePress = {
+    readonly candidates: SurfaceState<readonly Widget[]>;
+    /** The chooser opened: the route reads the candidates now, and not before. */
+    readonly onOpen?: () => void;
+    /** The search changed: the route reads the list narrowed by it. */
+    readonly onSearch?: (q: string) => void;
+    /** A survivor was picked: the route reads the dry run for the pair. */
+    readonly onPick: (into: Widget) => void;
+    readonly preview: SurfaceState<WidgetMergePreview> | null;
+    /** The merge, with both versions read; answers whether it merged. */
+    readonly onMerge: (into: Widget) => Promise<boolean>;
+    /** The survivor a refused merge was asked into, when the route opens the confirm again on it. */
+    readonly chosen?: Widget | null;
+};
+
+export function MergeSheet({
+    widget,
+    road,
+    busy,
+    refused,
+    press,
+    onClose,
+}: {
+    readonly widget: Widget;
+    readonly road: Road;
+    readonly busy: boolean;
+    readonly refused: Refusal | null;
+    readonly press: MergePress;
+    /** Called when the sheet goes down: `true` after the merge was answered, `false` when it was dismissed. */
+    readonly onClose: (done: boolean) => void;
+}) {
+    const [into, setInto] = useState<Widget | null>(press.chosen ?? null);
+    const merge = footAct({ allowed_acts: widget.allowed_acts ?? [] }, road, "merge");
+    if (merge === null) return null;
+    if (into === null) {
+        return (
+            <Chooser
+                widget={widget}
+                press={press}
+                onPick={(survivor) => {
+                    press.onPick(survivor);
+                    setInto(survivor);
+                }}
+                onClose={() => onClose(false)}
+            />
+        );
+    }
+    return <Confirm widget={widget} into={into} merge={merge} busy={busy} refused={refused} press={press} onBack={() => setInto(null)} onClose={onClose} />;
+}
+
+// golden: bulk+merge begin
+/** What the list hands the selection bar's Merge: the dry run for the pair as picked, and the merge. */
+export type MergePairPress = {
+    /** The survivor was picked: the route reads the dry run for (loser, survivor). */
+    readonly onPick: (loser: Widget, into: Widget) => void;
+    readonly preview: SurfaceState<WidgetMergePreview> | null;
+    readonly onMerge: (loser: Widget, into: Widget) => Promise<boolean>;
+    /**
+     * The merge landed: the face goes to the survivor's record (the route
+     * navigates there, and the record lands focus on its name). Without it the
+     * list stays, the survivor on it.
+     */
+    readonly onMerged?: (into: Widget) => void;
+};
+
+/**
+ * THE SELECTION BAR'S MERGE, at exactly two checked rows: the chooser opens
+ * pre-filled with the two — *Merge ⟨a⟩ and ⟨b⟩ into…*, each one press, the
+ * one pressed the survivor — and picking opens the SAME confirm, the other
+ * row the one that goes. Escape on the confirm returns to the two.
+ */
+export function MergePairSheet({
+    rows,
+    road,
+    busy,
+    refused,
+    press,
+    onClose,
+}: {
+    readonly rows: readonly [Widget, Widget];
+    readonly road: Road;
+    readonly busy: boolean;
+    readonly refused: Refusal | null;
+    readonly press: MergePairPress;
+    readonly onClose: (done: boolean) => void;
+}) {
+    const [into, setInto] = useState<Widget | null>(null);
+    const first = useRef<HTMLButtonElement>(null);
+    useEffect(() => {
+        if (into === null) first.current?.focus();
+    }, [into]);
+    const [a, b] = rows;
+    if (into === null) {
+        return (
+            <Dialog open title={mergePairTitle(a.name, b.name)} onDismiss={() => onClose(false)}>
+                <ul className="widget-choices">
+                    {rows.map((row, index) => (
+                        <li key={row.id}>
+                            <button
+                                type="button"
+                                className="widget-pick"
+                                ref={index === 0 ? first : undefined}
+                                onClick={() => {
+                                    press.onPick(row === a ? b : a, row);
+                                    setInto(row);
+                                }}
+                            >
+                                {row.name}
+                            </button>
+                        </li>
+                    ))}
+                </ul>
+            </Dialog>
+        );
+    }
+    const loser = into === a ? b : a;
+    const merge = footAct({ allowed_acts: loser.allowed_acts ?? [] }, road, "merge");
+    if (merge === null) return null;
+    return (
+        <Confirm
+            widget={loser}
+            into={into}
+            merge={merge}
+            busy={busy}
+            refused={refused}
+            press={{
+                candidates: { kind: "empty" },
+                onPick: () => undefined,
+                preview: press.preview,
+                onMerge: async (survivor) => {
+                    const merged = await press.onMerge(loser, survivor);
+                    if (merged) press.onMerged?.(survivor);
+                    return merged;
+                },
+            }}
+            onBack={() => setInto(null)}
+            onClose={onClose}
+        />
+    );
+}
+// golden: bulk+merge end
+
+/** The chooser: the search and the survivors, by name; its empty says so. */
+function Chooser({
+    widget,
+    press,
+    onPick,
+    onClose,
+}: {
+    readonly widget: Widget;
+    readonly press: MergePress;
+    readonly onPick: (survivor: Widget) => void;
+    readonly onClose: () => void;
+}) {
+    const title = mergeSheetTitle(widget.name);
+    const field = useRef<HTMLInputElement>(null);
+    const [q, setQ] = useState("");
+    const state = press.candidates;
+    // Opening lands on the search, the chooser's first field.
+    useEffect(() => {
+        field.current?.focus();
+    }, []);
+    const survivors = state.kind === "ready" ? state.data.filter((row) => row.id !== widget.id && (row.allowed_acts ?? []).includes("merge")) : [];
+    return (
+        <Dialog open title={title} onDismiss={onClose}>
+            <div className="widget-sheet">
+                <input
+                    ref={field}
+                    type="search"
+                    className="widget-search"
+                    aria-label={title}
+                    value={q}
+                    onChange={(event) => {
+                        setQ(event.target.value);
+                        press.onSearch?.(event.target.value);
+                    }}
+                />
+                {state.kind === "loading" ? (
+                    <div aria-busy="true" aria-live="polite">
+                        <p>{C.loadingList}</p>
+                        <StillLine tall />
+                        <StillLine tall />
+                    </div>
+                ) : null}
+                {state.kind === "empty" || (state.kind === "ready" && survivors.length === 0) ? <p>{C.mergeNoneMatch}</p> : null}
+                {state.kind === "error" ? <RefusalPanel surface={STAFF_SURFACE} refusal={state.refusal} /> : null}
+                {survivors.length === 0 ? null : (
+                    <ul className="widget-choices">
+                        {survivors.map((row) => (
+                            <li key={row.id}>
+                                <button type="button" className="widget-pick" onClick={() => onPick(row)}>
+                                    {row.name}
+                                </button>
+                            </li>
+                        ))}
+                    </ul>
+                )}
+            </div>
+        </Dialog>
+    );
+}
+
+/** The confirm: the question, the dry run's answer, ONE primary *Merge*; a refusal above the foot. */
+function Confirm({
+    widget,
+    into,
+    merge,
+    busy,
+    refused,
+    press,
+    onBack,
+    onClose,
+}: {
+    readonly widget: Widget;
+    readonly into: Widget;
+    readonly merge: Act;
+    readonly busy: boolean;
+    readonly refused: Refusal | null;
+    readonly press: MergePress;
+    readonly onBack: () => void;
+    readonly onClose: (done: boolean) => void;
+}) {
+    const preview = press.preview;
+    const answered = preview?.kind === "ready";
+    return (
+        <Dialog
+            open
+            focusTitle
+            title={mergeQuestion(widget.name, into.name)}
+            onDismiss={onBack}
+            foot={
+                !answered ? undefined : (
+                    <button
+                        type="button"
+                        className="widget-act widget-primary"
+                        {...merge.attrs}
+                        aria-busy={busy ? "true" : undefined}
+                        onClick={async () => {
+                            if (await press.onMerge(into)) onClose(true);
+                        }}
+                    >
+                        {busy ? merge.busy : merge.label}
+                    </button>
+                )
+            }
+        >
+            <div className="widget-sheet">
+                {preview === null || preview.kind === "loading" ? (
+                    <div aria-busy="true" aria-live="polite">
+                        <p>{C.loadingMerge}</p>
+                        <StillLine />
+                    </div>
+                ) : null}
+                {preview?.kind === "ready" ? <p>{mergeMovesSentence(preview.data.repoints, into.name)}</p> : null}
+                {preview?.kind === "empty" ? <p>{mergeMovesSentence([], into.name)}</p> : null}
+                {preview?.kind === "error" ? (
+                    <RefusalPanel surface={STAFF_SURFACE} refusal={preview.refusal} refused={merge.words.refused} />
+                ) : null}
+                {refused === null ? null : (
+                    <div className="widget-refusal-seat">
+                        <RefusalPanel surface={STAFF_SURFACE} refusal={refused} seat="sheet-foot" refused={merge.words.refused} />
+                    </div>
+                )}
+            </div>
+        </Dialog>
+    );
+}
+// golden: merge end

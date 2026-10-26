@@ -1,6 +1,6 @@
 """The join between a person here and a subject at the identity platform.
 
-One column, `User.zitadel_sub`, and one writer — `record_zitadel_identity`. This
+One column, `User.zitadel_sub`, and one writer — `record_identity`. This
 module is about the writer's own law rather than about any door: what it does
 with each of the four states a (person, subject) pair can be in, and what the
 operator does when the identity platform legitimately hands out new subjects for
@@ -21,9 +21,13 @@ import logging
 
 import pytest
 from allauth.socialaccount.models import SocialAccount
+from django.http import HttpRequest
 
-from apps.accounts.models import User
-from apps.accounts.services import record_zitadel_identity, unlink_zitadel_identity
+from apps.accounts.adapter import SocialAccountAdapter
+from apps.accounts.models import STAFF_REALM, User
+from apps.accounts.selectors import get_platform_provider_id
+from apps.accounts.services import record_identity, unlink_zitadel_identity
+from apps.accounts.tests.conftest import assertion, join, subject_of
 from apps.accounts.tests.test_rp_login import structured
 from apps.core.actor import Actor, system_actor
 from apps.core.audit import AuditEntry
@@ -49,21 +53,24 @@ def test_the_writer_refuses_a_second_subject(owner: User) -> None:
     somebody the platform has not seen here before, and the only honest answers
     are "no" and "an operator cut the old join on purpose" (the road below).
     """
-    owner.zitadel_sub = "sub-original"
-    owner.save(update_fields=["zitadel_sub"])
+    join(owner, "sub-original")
 
     with pytest.raises(Conflict) as refused:
-        record_zitadel_identity(
-            user=owner, subject="sub-impostor", tenant=None, actor=platform_actor()
+        record_identity(
+            realm=STAFF_REALM,
+            user=owner,
+            subject="sub-impostor",
+            tenant=None,
+            actor=platform_actor(),
         )
 
     # The sentence is the writer's own, and it names no account.
     assert "already linked to a different account" in refused.value.detail
     owner.refresh_from_db()
-    assert owner.zitadel_sub == "sub-original"
+    assert subject_of(owner) == "sub-original"
     # The refusal keeps its receipt: a service's ordinary error row.
     refusals = AuditEntry.objects.for_platform().filter(
-        action="accounts.record_zitadel_identity", outcome="error"
+        action="accounts.record_identity", outcome="error"
     )
     assert refusals.count() == 1
 
@@ -74,16 +81,17 @@ def test_the_same_subject_is_a_no_op_and_still_audited(owner: User) -> None:
     The row is written anyway: "the platform asserted this identity again" is
     the fact the ledger is being asked for.
     """
-    owner.zitadel_sub = "sub-original"
-    owner.save(update_fields=["zitadel_sub"])
+    join(owner, "sub-original")
 
-    record_zitadel_identity(user=owner, subject="sub-original", tenant=None, actor=platform_actor())
+    record_identity(
+        realm=STAFF_REALM, user=owner, subject="sub-original", tenant=None, actor=platform_actor()
+    )
 
     owner.refresh_from_db()
-    assert owner.zitadel_sub == "sub-original"
+    assert subject_of(owner) == "sub-original"
     assert (
         AuditEntry.objects.for_platform()
-        .filter(action="accounts.record_zitadel_identity", outcome="ok")
+        .filter(action="accounts.record_identity", outcome="ok")
         .count()
         == 1
     )
@@ -91,12 +99,14 @@ def test_the_same_subject_is_a_no_op_and_still_audited(owner: User) -> None:
 
 def test_a_free_subject_on_an_unlinked_account_is_recorded(owner: User) -> None:
     """The first-login path, and the only one that writes the column."""
-    assert owner.zitadel_sub is None
+    assert subject_of(owner) is None
 
-    record_zitadel_identity(user=owner, subject="sub-new", tenant=None, actor=platform_actor())
+    record_identity(
+        realm=STAFF_REALM, user=owner, subject="sub-new", tenant=None, actor=platform_actor()
+    )
 
     owner.refresh_from_db()
-    assert owner.zitadel_sub == "sub-new"
+    assert subject_of(owner) == "sub-new"
 
 
 def test_a_subject_held_by_somebody_else_is_refused(owner: User, member: User) -> None:
@@ -106,16 +116,19 @@ def test_a_subject_held_by_somebody_else_is_refused(owner: User, member: User) -
     the four together are the population, and a reader who sees three of them
     would have to go looking for the fourth to know the law is complete.
     """
-    owner.zitadel_sub = "a-subject-that-is-taken"
-    owner.save(update_fields=["zitadel_sub"])
+    join(owner, "a-subject-that-is-taken")
 
     with pytest.raises(Conflict):
-        record_zitadel_identity(
-            user=member, subject="a-subject-that-is-taken", tenant=None, actor=platform_actor()
+        record_identity(
+            realm=STAFF_REALM,
+            user=member,
+            subject="a-subject-that-is-taken",
+            tenant=None,
+            actor=platform_actor(),
         )
 
     member.refresh_from_db()
-    assert member.zitadel_sub is None
+    assert subject_of(member) is None
 
 
 # --- the legitimate road: an operator cuts the join -------------------------
@@ -132,8 +145,7 @@ def test_unlinking_clears_the_subject_and_leaves_an_audit_row_with_the_reason(
     than a flag on the sign-in road: a door that takes accounts over on a flag
     is the hole, wearing a switch.
     """
-    owner.zitadel_sub = "sub-old"
-    owner.save(update_fields=["zitadel_sub"])
+    join(owner, "sub-old")
 
     unlink_zitadel_identity(
         user=owner,
@@ -142,7 +154,7 @@ def test_unlinking_clears_the_subject_and_leaves_an_audit_row_with_the_reason(
         reason="the identity platform was re-seeded",
     )
 
-    assert User.objects.get(pk=owner.pk).zitadel_sub is None
+    assert subject_of(owner) is None
     row = (
         AuditEntry.objects.for_platform()
         .filter(action="accounts.unlink_zitadel_identity")
@@ -156,7 +168,9 @@ def test_unlinking_clears_the_subject_and_leaves_an_audit_row_with_the_reason(
 
 def test_a_re_seeded_subject_is_recorded_after_an_unlink(owner: User) -> None:
     """The whole road, end to end, in the order an operator walks it."""
-    record_zitadel_identity(user=owner, subject="sub-old", tenant=None, actor=platform_actor())
+    record_identity(
+        realm=STAFF_REALM, user=owner, subject="sub-old", tenant=None, actor=platform_actor()
+    )
 
     unlink_zitadel_identity(
         user=owner,
@@ -164,10 +178,12 @@ def test_a_re_seeded_subject_is_recorded_after_an_unlink(owner: User) -> None:
         tenant=None,
         reason="issuer swap",
     )
-    record_zitadel_identity(user=owner, subject="sub-new", tenant=None, actor=platform_actor())
+    record_identity(
+        realm=STAFF_REALM, user=owner, subject="sub-new", tenant=None, actor=platform_actor()
+    )
 
     owner.refresh_from_db()
-    assert owner.zitadel_sub == "sub-new"
+    assert subject_of(owner) == "sub-new"
 
 
 def test_unlinking_removes_the_allauth_row_too(
@@ -186,8 +202,7 @@ def test_unlinking_removes_the_allauth_row_too(
     identity platform's join and not about the person: taking Google's row with
     it would be an erasure wearing an unlink's name.
     """
-    owner.zitadel_sub = "sub-old"
-    owner.save(update_fields=["zitadel_sub"])
+    join(owner, "sub-old")
     SocialAccount.objects.create(user=owner, provider="zitadel", uid="sub-old")
     SocialAccount.objects.create(user=owner, provider="google", uid="g|owner")
     # Somebody else's platform row, to prove the filter is on this person too.
@@ -220,3 +235,34 @@ def test_unlinking_removes_the_allauth_row_too(
     assert len(unlinked) == 1, structured(caplog)
     assert unlinked[0]["social_accounts_removed"] == 1
     assert unlinked[0]["user_id"] == str(owner.pk)
+
+
+def test_a_person_from_the_direct_google_road_is_joined_at_their_first_zitadel_sign_in(
+    platform_provider: None, login_request: HttpRequest
+) -> None:
+    """The fold's step two: somebody the retired direct road created, arriving through Zitadel.
+
+    Their row predates the platform join — no `zitadel_sub` — and carries the
+    direct road's own `SocialAccount(provider="google")`, keyed on Google's
+    subject rather than Zitadel's. Through Zitadel's Google button they arrive
+    as a platform assertion with a subject nobody holds, at their verified
+    address, OUTSIDE any configured workforce domain (a deployment may have
+    changed the list since). The door's rule — the subject resolves the person,
+    the address introduces one while nothing already speaks for either — JOINS
+    them: the same row, the subject recorded, no second account and no wall,
+    because an existing person is not a signup.
+    """
+    person = User.objects.create(email="staff@moved-domain.example")
+    SocialAccount.objects.create(user=person, provider="google", uid="google-sub-1")
+
+    login = assertion(
+        provider=get_platform_provider_id(), subject="zitadel-sub-1", email=person.email
+    )
+    SocialAccountAdapter(login_request).pre_social_login(login_request, login)
+
+    assert login.user is not None and login.user.pk == person.pk
+    person.refresh_from_db()
+    assert subject_of(person) == "zitadel-sub-1"
+    assert User.objects.filter(email=person.email).count() == 1
+    # The direct road's row is left where it was; it signs nobody in any more.
+    assert SocialAccount.objects.filter(provider="google", user_id=person.pk).count() == 1

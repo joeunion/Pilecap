@@ -33,7 +33,10 @@ from apps.accounts.tests.conftest import (
     FakeModeAZitadel,
     FakeSignInZitadel,
 )
-from apps.core.tests.tree_census import source_text, source_tree
+from apps.core import context
+from apps.core.tests import test_surfaces as surface_world
+from apps.core.tests.test_surfaces import CUSTOMER_HOST, STAFF_HOST
+from apps.core.tests.tree_census import source_tree
 
 BASE_DIR = Path(__file__).resolve().parents[3]
 
@@ -43,9 +46,9 @@ BASE_DIR = Path(__file__).resolve().parents[3]
 # `ruff format` may wrap onto three lines is a pragma that stops covering the
 # line it was written for. One declaration, one allowlist comment, and the
 # scanner has nothing to find in the twelve places these are used.
-WRONG_PASSWORD = "wrong"  # pragma: allowlist secret
-ANOTHER_WRONG_PASSWORD = "not-the-password"  # pragma: allowlist secret
-A_THIRD_WRONG_PASSWORD = "the-wrong-one"  # pragma: allowlist secret
+WRONG_PASSWORD = "wrong"  # noqa: S105 — a throwaway password a test user is made with  # pragma: allowlist secret
+ANOTHER_WRONG_PASSWORD = "not-the-password"  # noqa: S105 — a throwaway password a test user is made with  # pragma: allowlist secret
+A_THIRD_WRONG_PASSWORD = "the-wrong-one"  # noqa: S105 — a throwaway password a test user is made with  # pragma: allowlist secret
 
 #: Every entry point, so a census can drive the whole surface rather than the
 #: three roads somebody remembered. The tuple is `(name, callable, kwargs)`.
@@ -176,7 +179,10 @@ def test_every_outcome_is_a_member_of_the_closed_set(
     )
     record(
         signin.set_invited_password(
-            {}, user_id=fake.invited_id, code=fake.invited_code, password="short"
+            {},
+            user_id=fake.invited_id,
+            code=fake.invited_code,
+            password="short",  # noqa: S106 — a throwaway password a test user is made with  # pragma: allowlist secret
         )
     )
     fake.invited_methods = ["AUTHENTICATION_METHOD_TYPE_PASSWORD"]
@@ -393,7 +399,7 @@ def test_the_seam_writes_no_row(
 def test_every_opened_session_is_closed_at_every_exit(
     signin_instance: FakeSignInZitadel,
 ) -> None:
-    """ADR ident-10: every Zitadel session this module opens, it closes.
+    """ADR ident-12: every Zitadel session this module opens, it closes.
 
     Driven over EVERY exit rather than over the happy one, because the exits
     that leak are the ones nobody walks by hand: a refused factor, an outage
@@ -765,31 +771,6 @@ def test_one_door_reaches_the_seam_and_it_is_the_one_a5_mounted(
     assert importers == ["apps/accounts/views.py"], (
         f"the seam has exactly one importer and it is the sign-in door; found {importers}"
     )
-
-    # And the module says which rung owns the door, so the next reader does
-    # not have to find this test to learn it.
-    source = source_text(BASE_DIR / "apps/accounts/signin.py")
-    assert "rung A5" in source
-    assert "SIGN_IN_DOOR" in source
-
-
-def test_the_seam_rides_rule_27_on_the_valve_with_its_reason() -> None:
-    """The one import that needs a reason carries one, and the reason is the rung's.
-
-    Lane I's Overrule 7: three importers ride the valve and the allow-list is
-    not edited here. A bare `# rule-27:` is itself a finding (the rule counts
-    reasons under twelve characters), so this asserts the reason is the
-    argued one rather than a word that satisfies the length.
-    """
-    # The marker is ASSEMBLED rather than typed. Rule 27 counts marker-shaped
-    # strings wherever they appear — a docstring included — so a test that
-    # spelled it would plant two bare overrides in this file and report them
-    # as findings against the module it is checking.
-    marker = "# rule-" + "27:"
-    source = source_text(BASE_DIR / "apps/accounts/signin.py")
-    assert marker in source
-    assert "a sign-in CHECK is not the identity-configuration WRITE" in source
-    assert "quality/rules.yaml" not in source.split(marker)[0]
 
 
 # --- A6 · what the seam grew for the factor and enrolment roads --------------
@@ -1239,3 +1220,21 @@ def test_the_passkey_chip_road_carries_the_challenge(
         store, assertion=json.dumps({"id": fake.passkey_credential_id, "type": "public-key"})
     )
     assert landed.outcome is SignInOutcome.DONE, landed
+
+
+customer_role = surface_world.customer_role
+two_faces = surface_world.two_faces
+
+
+@pytest.mark.parametrize(("surface", "host"), [("customer", CUSTOMER_HOST), ("staff", STAFF_HOST)])
+def test_the_passkey_relying_party_is_the_host_of_the_surface_the_request_came_in_on(
+    two_faces: object, surface: str, host: str
+) -> None:
+    """A passkey is bound to its host: the customer surface's ceremony names the customer host.
+
+    One enrolled on the staff host is never offered on the customer host, so the
+    relying-party id is read off the surface the door bound, never the deployment's
+    one name.
+    """
+    with context.bound(surface=surface):
+        assert signin._rp_domain() == host

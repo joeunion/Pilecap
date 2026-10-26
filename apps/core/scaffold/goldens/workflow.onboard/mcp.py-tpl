@@ -1,0 +1,11 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "imports", "text": ""}
+from apps.example.api import approve_widget_route, widget_approve
+
+# golden-anchor: {"nth": 0, "scope": ["register"], "side": "before", "text": "@server.tool(name=\"delete_widget\", description=contract_of(delete_widget_route))"}
+    @server.tool(name="approve_widget", description=contract_of(approve_widget_route))
+    def approve_widget_tool(ctx: Context[Any], widget_id: UUID) -> WidgetOut:
+        with tool_call(ctx) as acting:
+            return widget_approve(
+                tenant=acting_tenant(acting), actor=acting.actor(), widget_id=widget_id
+            )
+

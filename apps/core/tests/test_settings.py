@@ -1,4 +1,3 @@
-# census: cross-app population=config/settings/*.py,.env.example parses base.py for env reads
 """What the settings layer promises: discovery, and what production refuses.
 
 Two things are proved here that cannot be seen from a diff:
@@ -12,11 +11,9 @@ Two things are proved here that cannot be seen from a diff:
 
 from __future__ import annotations
 
-import ast
 import importlib
 import json
 import os
-import shutil
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -32,17 +29,21 @@ from csp.middleware import CSPMiddleware
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.core.management import call_command
+from django.db import connection
 from django.http import HttpResponse
-from django.test import RequestFactory, override_settings
+from django.test import Client, RequestFactory, override_settings
+from django.test.utils import CaptureQueriesContext
 
+import apps as apps_package
 from apps.accounts.management.commands import zitadel_seed
 from apps.core.models import Tenant
-from apps.core.tests.tree_census import (
-    TRANSIENT_APP_MODULES,
-    source_tree,
-    without_transient_apps,
+from apps.core.tests.settings_env import (
+    IDENTITY_KEY_PREFIXES,
+    PRODUCTION_ENVIRONMENT,
+    _settings_module,
+    identity_keys_base_reads,
 )
-from config.settings.base import DEFAULT_BRAND_ACCENT
+from config.settings.base import DEFAULT_BRAND_ACCENT, read_template_version
 from config.settings.base import _env_file as SETTINGS_ENV_FILE
 from config.settings.discovery import DEFAULT_ORDER, discover_apps, discover_local_apps
 from config.settings.guards import (
@@ -68,59 +69,25 @@ class ZzzProbeConfig(AppConfig):
     depends_on: tuple[str, ...] = ("core",)
 """
 
-# The probe is built under a name discovery ignores, then renamed into place.
-# `discover_apps` skips any directory beginning with "." or "_", so nothing can
-# observe a half-written app: the rename is atomic within one filesystem, so a
-# concurrent scan sees either no probe at all or a complete one.
-PROBE_BUILD = f".{PROBE}.building"
-PROBE_DOOMED = f".{PROBE}.removing"
-
-
-#: Discovery's answer with the throwaway probe app taken out. The tolerance —
-#: and the argument for filtering rather than serialising — moved to
-#: `apps.core.tests.tree_census` at RACE-1, because `test_optional_apps.py` was
-#: counting the same directory with no filter at all and a helper only
-#: this module could reach is a helper the next census does without.
-without_the_probe = without_transient_apps
-
-
-def test_the_seam_knows_the_name_this_module_plants() -> None:
-    """The two ends of the filter, pinned together.
-
-    The probe's name lives here, where it is built; the list a census filters on
-    lives in `tree_census`. Nothing else would notice them drifting apart — the
-    filter would simply stop filtering, and the race would come back wearing the
-    same clothes as before.
-    """
-    assert PROBE_MODULE in TRANSIENT_APP_MODULES
-
-
 # --- Registration by discovery ----------------------------------------------
 
 
 def test_installed_apps_is_what_the_tree_contains() -> None:
-    """No hand-written LOCAL_APPS: the list and the directory agree by construction.
-
-    `without_the_probe` because a sibling test creates a real app under `apps/`
-    and, under `-n auto`, runs while this one scans. See its docstring for why
-    the exclusion is the honest form of this assertion rather than a dodge.
-    """
-    discovered = without_the_probe(discover_local_apps(APPS_DIR))
+    """No hand-written LOCAL_APPS: the list and the directory agree by construction."""
+    discovered = discover_local_apps(APPS_DIR)
     assert discovered == list(settings.LOCAL_APPS)
     for name in discovered:
         assert name in settings.INSTALLED_APPS
 
 
 def test_the_foundation_comes_first_and_the_rest_is_alphabetical() -> None:
-    labels = [app.label for app in discover_apps(APPS_DIR) if app.name != PROBE_MODULE]
+    labels = [app.label for app in discover_apps(APPS_DIR)]
     assert labels[:2] == ["core", "accounts"]
     assert labels[2:] == sorted(labels[2:])
 
 
 def test_every_app_declares_what_it_may_import() -> None:
-    declared = {
-        app.label: app.depends_on for app in discover_apps(APPS_DIR) if app.name != PROBE_MODULE
-    }
+    declared = {app.label: app.depends_on for app in discover_apps(APPS_DIR)}
     # `core` imports nothing above it; that is the whole of its contract.
     assert declared["core"] == ()
     for label, depends_on in declared.items():
@@ -164,47 +131,39 @@ def test_depends_on_is_read_off_the_app_config(tmp_path: Path) -> None:
 
 
 @pytest.fixture
-def probe_app() -> Iterator[Path]:
-    """A throwaway app, on disk, removed again whatever happens.
+def probe_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    """`apps.zzz_probe` under `tmp_path`, on the `apps` package's path for this test only.
 
-    **Built under an ignored name and renamed into place**, because another
-    xdist worker is scanning `apps/` while this runs and a directory that
-    already holds `apps.py` but not yet `__init__.py` is a state no reader
-    should ever see. `discover_apps` skips a leading "." or "_", so the build
-    directory is invisible to discovery, and `Path.rename` within one directory
-    is atomic — the probe appears complete or not at all. It leaves the same way.
+    Never in the real `apps/`: a sibling worker's discovery would boot an app that then vanishes.
     """
-    build = APPS_DIR / PROBE_BUILD
-    app_dir = APPS_DIR / PROBE
-    doomed = APPS_DIR / PROBE_DOOMED
-    for stale in (build, doomed):
-        shutil.rmtree(stale, ignore_errors=True)
-    build.mkdir()
-    (build / "__init__.py").write_text("")
-    (build / "apps.py").write_text(PROBE_APPS_PY)
-    build.rename(app_dir)
-    # The `apps` package's directory listing is cached by the import system.
+    root = tmp_path / "apps"
+    app_dir = root / PROBE
+    app_dir.mkdir(parents=True)
+    (app_dir / "__init__.py").write_text("")
+    (app_dir / "apps.py").write_text(PROBE_APPS_PY)
+    _forget_probe_modules()
+    monkeypatch.setattr(apps_package, "__path__", [*apps_package.__path__, str(root)])
     importlib.invalidate_caches()
     try:
-        yield app_dir
+        yield root
     finally:
-        app_dir.rename(doomed)
+        _forget_probe_modules()
         importlib.invalidate_caches()
-        shutil.rmtree(doomed)
+
+
+def _forget_probe_modules() -> None:
+    """Drop `apps.zzz_probe` and its submodules from `sys.modules`."""
+    for name in [m for m in sys.modules if m == PROBE_MODULE or m.startswith(f"{PROBE_MODULE}.")]:
+        del sys.modules[name]
 
 
 @pytest.mark.django_db
 def test_a_new_app_appears_without_anyone_editing_settings(probe_app: Path) -> None:
-    """The claim, end to end: a directory is an app.
+    """A directory with an `AppConfig` is an app: discovery finds it and `introspect` reports it."""
+    discovered = discover_local_apps(probe_app)
+    assert discovered == [PROBE_MODULE]
 
-    Nothing under `config/` is touched — the app is created, discovery finds it,
-    and `introspect` reports it.
-    """
-    discovered = discover_local_apps(APPS_DIR)
-    assert "apps.zzz_probe" in discovered
-
-    installed = list(settings.DJANGO_APPS) + list(settings.THIRD_PARTY_APPS) + discovered
-    with override_settings(INSTALLED_APPS=installed):
+    with override_settings(INSTALLED_APPS=[*settings.INSTALLED_APPS, *discovered]):
         out = StringIO()
         call_command("introspect", stdout=out)
         payload: dict[str, Any] = json.loads(out.getvalue())
@@ -259,9 +218,7 @@ def test_production_refuses_the_key_the_test_suite_runs_on(settings: Any) -> Non
 #: A real-looking key: strong enough that `refuse_development_defaults` accepts it,
 #: and not a secret — it exists to be accepted here and nowhere else. It lives at
 #: module level because the pragma and the 64-hex literal do not fit one line.
-A_REAL_SECRET_KEY = (
-    "0f7c3ae1e0f0a2b6c5d4e3f201928374655647382910abcdeff0123456789abcd"  # pragma: allowlist secret
-)
+A_REAL_SECRET_KEY = "0f7c3ae1e0f0a2b6c5d4e3f201928374655647382910abcdeff0123456789abcd"  # noqa: S105 — a signing secret the test both signs and verifies with  # pragma: allowlist secret
 
 
 def test_a_real_pair_of_keys_is_accepted() -> None:
@@ -378,183 +335,42 @@ def test_the_proxy_header_is_off_unless_the_deployment_says_it_is_behind_one() -
     assert "BEHIND_PROXY" in _env_example()
 
 
-# --- Static files and object storage -----------------------------------------
-
-
-@contextmanager
-def _settings_module(name: str, **environment: str | None) -> Iterator[Any]:
-    """Import a settings module under a given environment, then put it back.
-
-    Settings are read at import time — the honest thing for settings to do, and
-    awkward to test: the only way to see what a deployment with an S3 bucket
-    gets is to import the module with the bucket set. So the module is reloaded,
-    asserted on, and reloaded again with the original environment.
-    `django.conf.settings` is a separate object and is untouched throughout.
-
-    **A value of `None` CLEARS the key instead of setting it**, and that is the
-    half a pinned environment cannot do without. A dict that only ever adds
-    variables pins nothing about the ones it is silent on: the checkout's own
-    `.env` supplies those, so the same assertion is green on a laptop with no
-    sign-in door and red on one that has configured a client id — a test whose
-    verdict is the machine it ran on. Clearing takes
-    BOTH sources, because there are two: the process environment, and the `.env`
-    file `config.settings.base` reads at import — `environ.Env.read_env`
-    SETDEFAULTS, so a key popped here would be handed straight back by the
-    reload. So `read_env` is wrapped for the length of the block and the cleared
-    keys are popped again after it runs.
-    """
-    base = importlib.import_module("config.settings.base")
-    is_base = name == base.__name__
-    applied = {key: value for key, value in environment.items() if value is not None}
-    cleared = tuple(key for key, value in environment.items() if value is None)
-    read_env = environ.Env.read_env
-
-    def _read_env_minus_the_cleared(_self: Any, *args: Any, **kwargs: Any) -> None:
-        read_env(*args, **kwargs)
-        for key in cleared:
-            os.environ.pop(key, None)
-
-    try:
-        with mock.patch.dict(os.environ, applied):
-            for key in cleared:
-                os.environ.pop(key, None)
-            with mock.patch.object(environ.Env, "read_env", _read_env_minus_the_cleared):
-                importlib.reload(base)
-                if is_base:
-                    yield base
-                else:
-                    # Dropped rather than reloaded, both here and on the way
-                    # out: `config.settings.production` raises unless the
-                    # environment it demands is present, so it must be
-                    # *executed* under the patch and simply not left behind
-                    # afterwards.
-                    sys.modules.pop(name, None)
-                    yield importlib.import_module(name)
-    finally:
-        if not is_base:
-            sys.modules.pop(name, None)
-        importlib.reload(base)
-
-
-# Every environment key `config/settings/base.py` reads under the identity, the
-# front-end and the brand names — the population `PRODUCTION_ENVIRONMENT` has to
-# be complete over, DERIVED from `base.py` below rather than typed here, because
-# a hand list goes stale the day somebody adds the next key and nothing says so.
-IDENTITY_KEY_PREFIXES = (
-    "ZITADEL_",
-    "GOOGLE_",
-    "PRODUCT_BASE_URL",
-    "PUBLIC_BASE_URL",
-    "BRAND_ACCENT",
-    # Both spellings, and the second one is the setting. I0 wrote `SIGN_IN_DOOR`
-    # here one rung before the door existed; A5 reads the environment under the
-    # product's own `DJB_` prefix (`DJB_SIGN_IN_DOOR`), which starts with none of
-    # the names above — so the census could not see the key the rider was about
-    # and the pin below would have been silent on exactly the setting that
-    # decides where every person in the deployment types their password. The
-    # bare name stays: a product that reads `SIGN_IN_DOOR` unprefixed is still
-    # in the population this census is over.
-    "SIGN_IN_DOOR",
-    "DJB_SIGN_IN_DOOR",
-    "DJB_IDENTITY_SHAPE",
+SECURITY_WAVE_KEYS = (
+    "SESSION_IDLE_SECONDS",
+    "WEBHOOK_PRIVATE_TARGETS_ALLOWED",
+    "REALTIME_MAX_SOCKETS_PER_CREDENTIAL",
+    "REALTIME_MAX_SOCKETS_PER_TENANT",
+    "REALTIME_JOIN_LEASE_SECONDS",
 )
 
 
-def identity_keys_base_reads() -> frozenset[str]:
-    """Every `env.<kind>("<KEY>", …)` in `base.py` whose key is an identity one.
+@pytest.mark.parametrize(
+    ("module", "private_targets"),
+    [
+        ("config.settings.production", False),
+        ("config.settings.local", True),
+        ("config.settings.test", False),
+    ],
+)
+def test_the_security_wave_settings_resolve_to_their_defaults(
+    module: str, private_targets: bool
+) -> None:
+    """A session idles out after 900 s; only a laptop lets a webhook reach private space."""
+    cleared: dict[str, str | None] = dict.fromkeys(SECURITY_WAVE_KEYS)
+    if module == "config.settings.production":
+        cleared = {**PRODUCTION_ENVIRONMENT, **cleared}
+    with _settings_module(module, **cleared) as loaded:
+        assert loaded.SESSION_IDLE_SECONDS == 900
+        assert loaded.SESSION_COOKIE_AGE == 900
+        assert loaded.SESSION_SAVE_EVERY_REQUEST is False  # the slide is the middleware's (B)
+        assert loaded.WEBHOOK_PRIVATE_TARGETS_ALLOWED is private_targets
+        assert loaded.REALTIME_MAX_SOCKETS_PER_CREDENTIAL == 10
+        assert loaded.REALTIME_MAX_SOCKETS_PER_TENANT == 500
+        assert loaded.REALTIME_JOIN_LEASE_SECONDS == 90
+    assert set(SECURITY_WAVE_KEYS) - set(_env_example()) == set(), "undocumented in .env.example"
 
-    Parsed rather than grepped: an `env.str(` split over two lines is invisible
-    to a line-oriented census, and that is exactly the key the next F14 will be
-    about.
-    """
-    found: set[str] = set()
-    for node in ast.walk(source_tree(BASE_DIR / "config" / "settings" / "base.py")):
-        if not isinstance(node, ast.Call):
-            continue
-        callee = node.func
-        if not isinstance(callee, ast.Attribute):
-            continue
-        receiver = callee.value
-        if not isinstance(receiver, ast.Name) or receiver.id != "env":
-            continue
-        if not node.args:
-            continue
-        first = node.args[0]
-        if isinstance(first, ast.Constant) and isinstance(first.value, str):
-            if first.value.startswith(IDENTITY_KEY_PREFIXES):
-                found.add(first.value)
-    return frozenset(found)
 
-
-# What `config.settings.production` refuses to start without, and what it
-# refuses to read from the machine underneath it. A throwaway pair of
-# real-shaped keys, so the guards pass and the module can be read.
-#
-# **`None` means CLEARED, and the identity population is cleared in full.** A
-# test that imports production under this dict is asking what a deployment with
-# no sign-in door configured gets. The dict used to be SILENT about the identity
-# keys, so `.env` answered instead, and `test_an_unconfigured_provider_gets_no_
-# origin` below went red on the first checkout that configured a client id — a
-# platform test that fails because sign-in works. Silence is not a pin, and the
-# census above is what keeps it from going quiet again. An arm is an explicit
-# override —
-# `IDENTITY_ENVIRONMENT` below is the worked one.
-PRODUCTION_ENVIRONMENT: dict[str, str | None] = {
-    "DEBUG": "0",
-    "ALLOWED_HOSTS": "example.test",
-    "SECRET_KEY": "b3a1" * 16,  # pragma: allowlist secret
-    "CONNECTIONS_ENCRYPTION_KEY": "aGVsbG93b3JsZGhlbGxvd29ybGRoZWxsb3dvcmxkMTI9",
-    # Third throwaway: the suite runs with the published
-    # `DATABASE_PASSWORD=djb` in its environment (base reads .env), and
-    # production refuses to start on it. Anything that loads production
-    # settings needs a complete production environment, which is what this
-    # dict is for.
-    "DATABASE_PASSWORD": "throwaway-production-database-password",  # pragma: allowlist secret
-    # The identity population, cleared. Kept in one block and in the order the
-    # census prints, so adding the key the census names is a one-line edit.
-    "BRAND_ACCENT": None,
-    # The shape declaration. Cleared like the rest: a production import
-    # under this dict is asking what a deployment that declared nothing gets,
-    # and an ambient declaration in the checkout's own `.env` would otherwise
-    # answer for it — the same silence the block above was written to end.
-    "DJB_IDENTITY_SHAPE": None,
-    # The sign-in door (rung A5, design C-13). Cleared, so a production import
-    # under this dict is asking what a deployment that declared nothing gets —
-    # and what it gets is `hosted`, the default, which is the answer every
-    # criterion in lane A is proven against. A checkout that had turned its own
-    # door to `ours` in `.env` would otherwise answer for the test, and the CSP
-    # census below would then be measuring that checkout rather than the
-    # derivation.
-    "DJB_SIGN_IN_DOOR": None,
-    "GOOGLE_OAUTH_CLIENT_ID": None,
-    "GOOGLE_OAUTH_CLIENT_SECRET": None,
-    "GOOGLE_WORKSPACE_DOMAINS": None,
-    "PRODUCT_BASE_URL": None,
-    "PUBLIC_BASE_URL": None,
-    "ZITADEL_ALLOW_PUBLIC_ORG_REGISTRATION": None,
-    "ZITADEL_ALLOW_SELF_REGISTRATION": None,
-    "ZITADEL_BROWSER_APP_NAME": None,
-    "ZITADEL_CLIENT_ID": None,
-    "ZITADEL_CLIENT_SECRET": None,
-    "ZITADEL_DEV_USER_EMAIL": None,
-    "ZITADEL_DEV_USER_PASSWORD": None,
-    "ZITADEL_ISSUER": None,
-    "ZITADEL_JWKS_CACHE_SECONDS": None,
-    "ZITADEL_MANAGEMENT_TIMEOUT": None,
-    "ZITADEL_MAX_PASSWORD_ATTEMPTS": None,
-    "ZITADEL_MCP_AUDIENCE": None,
-    "ZITADEL_MCP_CLIENT_NAME": None,
-    "ZITADEL_MCP_RESOURCE_NAME": None,
-    "ZITADEL_PAT": None,
-    "ZITADEL_PROJECT_NAME": None,
-    # The sign-in seam's two clocks (rung A3, design I-A §3.2). They are here
-    # because the census above is DERIVED from `base.py`'s own `env.<kind>`
-    # reads and these two match `IDENTITY_KEY_PREFIXES` — the same one-line
-    # consequence A5's rider names for `SIGN_IN_DOOR`, arriving two rungs
-    # early because the clocks land with the seam rather than with the door.
-    "ZITADEL_SIGNIN_DEADLINE": None,
-    "ZITADEL_SIGNIN_TIMEOUT": None,
-}
+# --- Static files and object storage -----------------------------------------
 
 
 def test_the_production_environment_pins_every_identity_key_base_reads() -> None:
@@ -728,6 +544,105 @@ def test_a_product_base_url_moves_where_sign_in_lands() -> None:
         assert base.LOGIN_REDIRECT_URL == "/welcome/"
 
 
+#: One deployment's environment, bound and unbound: the listed values the
+#: operator typed, and a surface map with an exact host and a `{tenant}` host.
+LISTED_HOSTS = {
+    "ALLOWED_HOSTS": "sales.example.test,127.0.0.1",
+    "CSRF_TRUSTED_ORIGINS": "https://sales.example.test",
+    "PUBLIC_BASE_URL": "https://sales.example.test:8443",
+}
+BOUND_SURFACES = "staff=sales.example.test,customer=customer.example.test,club={tenant}.clubs.test"
+
+
+def test_every_bound_surface_host_is_an_allowed_host() -> None:
+    """`ALLOWED_HOSTS` gains every host `SURFACE_HOSTS` binds; unbound, it is what was listed.
+
+    A customer host the map names but the admitted list does not is a surface
+    that answers 400 before the resolver ever sees it — the map and the list
+    are one fact, so the list is derived from the map. A `{tenant}` host is
+    admitted as its parent domain; the resolver narrows it to the pattern.
+    """
+    with _settings_module("config.settings.base", **LISTED_HOSTS, SURFACE_HOSTS=None) as base:
+        assert base.ALLOWED_HOSTS == LISTED_HOSTS["ALLOWED_HOSTS"].split(",")
+
+    with _settings_module(
+        "config.settings.base", **LISTED_HOSTS, SURFACE_HOSTS=BOUND_SURFACES
+    ) as base:
+        listed = LISTED_HOSTS["ALLOWED_HOSTS"].split(",")
+        assert base.ALLOWED_HOSTS[: len(listed)] == listed
+        assert set(base.ALLOWED_HOSTS) == {
+            *listed,
+            *(host for host in base.SURFACE_HOSTS.values() if "{tenant}" not in host),
+            ".clubs.test",
+        }
+        assert len(base.ALLOWED_HOSTS) == len(set(base.ALLOWED_HOSTS))
+
+
+def test_every_bound_surface_origin_is_a_trusted_origin() -> None:
+    """`CSRF_TRUSTED_ORIGINS` gains every bound host in `PUBLIC_BASE_URL`'s scheme and port.
+
+    Unbound it is exactly what was listed. Bound, a form posted from the
+    customer host is trusted the way one from the staff host already was — the
+    scheme and the port are the ones every link to that surface is built with.
+    """
+    with _settings_module("config.settings.base", **LISTED_HOSTS, SURFACE_HOSTS=None) as base:
+        assert base.CSRF_TRUSTED_ORIGINS == LISTED_HOSTS["CSRF_TRUSTED_ORIGINS"].split(",")
+
+    with _settings_module(
+        "config.settings.base", **LISTED_HOSTS, SURFACE_HOSTS=BOUND_SURFACES
+    ) as base:
+        base_url = urlsplit(LISTED_HOSTS["PUBLIC_BASE_URL"])
+        assert set(base.CSRF_TRUSTED_ORIGINS) == {
+            *LISTED_HOSTS["CSRF_TRUSTED_ORIGINS"].split(","),
+            *(
+                f"{base_url.scheme}://{host}:{base_url.port}"
+                for host in base.SURFACE_HOSTS.values()
+                if "{tenant}" not in host
+            ),
+            f"{base_url.scheme}://*.clubs.test:{base_url.port}",
+        }
+        assert len(base.CSRF_TRUSTED_ORIGINS) == len(set(base.CSRF_TRUSTED_ORIGINS))
+
+
+#: Every `SURFACE_HOSTS` shape the identity-home drive binds, each with the
+#: `PUBLIC_BASE_URL` it runs under (`quality/tests/test_identity_home.py`
+#: exports the hosts and builds the base URL from the staff host and its port),
+#: plus the production shape of the same map: https, no port.
+SURFACE_SHAPES = (
+    ("staff=localhost,customer=customer.localhost", "http://localhost:8123"),
+    ("staff=localhost,customer=customer.localhost", "https://localhost"),
+    ("customer=customer.localhost", "http://localhost:8123"),
+)
+
+
+@pytest.mark.parametrize(("hosts", "base_url"), SURFACE_SHAPES)
+def test_the_trusted_origins_and_the_sign_in_bases_are_one_derivation(
+    hosts: str, base_url: str, settings: Any
+) -> None:
+    """Settings' trusted origins and `surface_base_urls()` name the same origins.
+
+    Two derivations of one fact: `base.py` folds each bound host into
+    `CSRF_TRUSTED_ORIGINS` (it runs before any app exists), and
+    `core.surfaces.surface_base_urls()` builds each surface's base with
+    `absolute_url` for the identity platform's redirect registrations. A
+    browser that finishes a sign-in at a surface's base and then posts a form
+    there needs both to name that origin; this holds them equal over every
+    shape the drive uses, so a change to either alone is red here.
+    """
+    from apps.core.surfaces import surface_base_urls
+    from config.settings.base import _surface_hosts, _surface_names, _surface_origins
+
+    bound = _surface_hosts(hosts)
+    settings.SURFACE_HOSTS = bound
+    settings.PUBLIC_BASE_URL = base_url
+
+    trusted = [
+        origin for origin in _surface_origins(_surface_names(bound), base_url) if "*" not in origin
+    ]
+    assert trusted, f"{hosts} binds no exact host — the shape proves nothing"
+    assert set(surface_base_urls()) == {base_url, *trusted}
+
+
 def test_an_empty_brand_accent_falls_back_rather_than_shipping_nothing() -> None:
     """The seam's other variable, given the same treatment for the same reason.
 
@@ -785,7 +700,9 @@ def test_naming_a_bucket_is_the_whole_switch_to_s3() -> None:
     assert default["OPTIONS"]["bucket_name"] == "djb-uploads"
     # Private and signed: a key is not a capability anyone who guesses it holds.
     assert default["OPTIONS"]["default_acl"] is None
-    assert default["OPTIONS"]["querystring_auth"] is True
+    # Signed on read by django-storages' own default; settings restate neither knob.
+    assert "querystring_auth" not in default["OPTIONS"]
+    assert "querystring_expire" not in default["OPTIONS"]
     assert default["OPTIONS"]["file_overwrite"] is False
 
 
@@ -838,7 +755,9 @@ def test_connections_are_reused_and_checked_before_they_are_handed_out() -> None
     # 0 by construction rather than by a value somebody typed.
     assert database["CONN_MAX_AGE"] == 0
     assert database["OPTIONS"]["pool"]["max_size"] >= 1
-    assert _env_example()["DATABASE_CONN_MAX_AGE"] == "0"
+    # The clone gets the pool, and no live `DATABASE_CONN_MAX_AGE` line: with the
+    # pool on that variable is not read, so a value there would steer nothing.
+    assert "DATABASE_CONN_MAX_AGE" not in _env_example()
     assert _env_example()["DATABASE_POOL_ENABLED"] == "true"
 
     # And the reason the live value differs is the one stated above, not drift.
@@ -861,15 +780,14 @@ def test_english_only_by_default_and_time_is_a_different_question() -> None:
 
 def test_the_template_states_its_version_once() -> None:
     """`TEMPLATE_VERSION` is how a product knows what it cloned; one source."""
-    version = (BASE_DIR / "TEMPLATE_VERSION").read_text().strip()
+    version = read_template_version(BASE_DIR)
 
     # The SHAPE, never the value. A literal here would be a SECOND source of the
     # version — the exact thing this test's name says there is only one of — and
     # it would redden on every release, which the child-commit publish makes a
     # standing cadence rather than a one-off. What is actually load-bearing is
     # below: whatever version this file states, CHANGELOG.md has its section.
-    parts = version.split(".")
-    assert len(parts) == 3 and all(p.isdigit() for p in parts), version
+    assert settings.TEMPLATE_VERSION == version
     assert f"## [{version}]" in (BASE_DIR / "CHANGELOG.md").read_text()
 
 
@@ -1415,9 +1333,11 @@ def test_the_sign_in_repair_runs_after_the_pat_is_in_env() -> None:
 # actually configured join the directive — derived from the configured
 # endpoints, never a per-environment literal.
 
-# A production environment with both sign-in doors armed. Throwaway values: the
-# point is that the provider blocks in `SOCIALACCOUNT_PROVIDERS` are non-empty,
-# which is what makes their origins reachable and therefore needed.
+# A production environment with the sign-in door armed AND the workforce's
+# Google configured behind it. Throwaway values: the point is that the Zitadel
+# block in `SOCIALACCOUNT_PROVIDERS` is non-empty, which is what makes its origin
+# reachable and therefore needed — and that configured Google credentials open
+# no second origin, because that Google lives inside Zitadel.
 IDENTITY_ENVIRONMENT = {
     **PRODUCTION_ENVIRONMENT,
     "GOOGLE_OAUTH_CLIENT_ID": "throwaway.apps.googleusercontent.com",
@@ -1461,17 +1381,20 @@ def _form_action(**environment: str | None) -> list[str]:
 
 
 def test_the_provider_redirect_survives_form_action() -> None:
-    """Both doors' authorize origins are in the directive, and 'self' stays.
+    """The one door's authorize origin is in the directive, and 'self' stays.
 
-    Google's origin is a constant of the provider; Zitadel's is the origin of
-    `ZITADEL_ISSUER` — the same setting the allauth app's `server_url` is built
-    from, so a deployment that moved its identity host moves this with it and
-    nobody edits a policy by hand.
+    Zitadel's is the origin of `ZITADEL_ISSUER` — the same setting the allauth
+    app's `server_url` is built from, so a deployment that moved its identity
+    host moves this with it and nobody edits a policy by hand. **Google's is
+    NOT, even with the workforce's Google configured:** that Google is an
+    identity provider inside Zitadel, so our form's redirect chain ends at
+    Zitadel, and a Google origin here would be wider than the doors this
+    deployment opened.
     """
     sources = _form_action(**IDENTITY_ENVIRONMENT)
 
     assert "'self'" in sources
-    assert "https://accounts.google.com" in sources
+    assert "https://accounts.google.com" not in sources
     assert "https://auth.example.test" in sources
 
 
@@ -1559,6 +1482,25 @@ def test_the_csp_form_action_admits_every_declared_redirect_origin() -> None:
         assert origin in sources, f"{origin} is registered with Zitadel and not in {sources}"
 
 
+def test_the_csp_form_action_admits_every_surfaces_redirect_origin() -> None:
+    """A sign-in completed on the customer host comes back to the customer host's callback.
+
+    The seed registers a browser redirect URI for every surface the deployment
+    answers at, and the policy admits each surface's origin — derived by this
+    settings layer's own reading of the same map (`base.py`'s surface origins,
+    since settings may not import `apps`) — so the hop back from our own page on
+    the customer host is not refused.
+    """
+    environment = {
+        **OUR_DOOR_ENVIRONMENT,
+        "SURFACE_HOSTS": "staff=app.example.test,customer=customer.example.test",
+    }
+    sources = _form_action(**environment)
+
+    assert "https://app.example.test" in sources
+    assert "https://customer.example.test" in sources
+
+
 def test_the_redirect_origins_are_not_admitted_under_the_hosted_door() -> None:
     """The control, and it is the derivation rather than a second list.
 
@@ -1574,3 +1516,70 @@ def test_the_redirect_origins_are_not_admitted_under_the_hosted_door() -> None:
     for uri in _declared_redirect_uris("https://app.example.test"):
         parts = urlsplit(uri)
         assert f"{parts.scheme}://{parts.netloc}" not in sources, uri
+
+
+# --- What a DEBUG 500 prints ------------------------------------------------
+
+CREDENTIAL_SUFFIXES = ("_PAT", "_TOKEN", "_SECRET", "_KEY", "_PASSWORD", "_DSN")
+
+
+def _a_500() -> tuple[Any, Any, Any]:
+    """An exception whose traceback holds no frame that saw a planted value."""
+    try:
+        raise RuntimeError("a deliberate 500")
+    except RuntimeError:
+        return sys.exc_info()
+
+
+def test_a_debug_500_hides_every_credential_setting() -> None:
+    """No setting or request variable named as a credential reaches the technical 500 page.
+
+    does-not-cover: a credential named outside the vocabulary; a value code echoes into the page.
+    """
+    from django.views.debug import technical_500_response
+
+    names = sorted(n for n in dir(settings) if n.isupper() and n.endswith(CREDENTIAL_SUFFIXES))
+    assert names, "no setting carries the credential vocabulary"
+    names += [f"PLANTED{suffix}" for suffix in CREDENTIAL_SUFFIXES]
+    planted = {name: f"planted-{index:03d}-credential-sentinel" for index, name in enumerate(names)}
+    with override_settings(DEBUG=True, **planted):
+        request = RequestFactory().get("/")
+        request.META.update(planted)
+        body = technical_500_response(request, *_a_500()).content.decode()
+    shown = sorted(name for name, value in planted.items() if value in body)
+    assert shown == [], f"the DEBUG 500 prints {shown}"
+
+
+# --- The request opens no transaction (ADR perf-2) ---------------------------
+
+
+@pytest.mark.django_db(transaction=True)
+def test_requests_open_no_transaction(tenant: Tenant, owner: Any) -> None:
+    """A GET of the widget list reaches its selector with no transaction open around it."""
+    from apps.accounts.services import issue_token
+    from apps.core.actor import actor_for
+    from apps.example import api as widget_api
+    from apps.example.selectors import list_widgets
+
+    _, bearer = issue_token(
+        user=owner,
+        tenant=tenant,
+        name="no-request-transaction",
+        actor=actor_for(user=owner, tenant=tenant),
+    )
+    seen: list[bool] = []
+
+    def watched(**kwargs: Any) -> Any:
+        seen.append(connection.in_atomic_block)
+        return list_widgets(**kwargs)
+
+    with (
+        mock.patch.object(widget_api, "list_widgets", watched),
+        CaptureQueriesContext(connection) as queries,
+    ):
+        answered = Client().get("/api/v1/widgets/", headers={"authorization": f"Bearer {bearer}"})
+
+    assert answered.status_code == 200, answered.content
+    assert seen == [False]
+    assert not [q["sql"] for q in queries if q["sql"].upper().startswith(("SAVEPOINT", "BEGIN"))]
+    assert settings.DATABASES["default"]["ATOMIC_REQUESTS"] is False

@@ -32,13 +32,19 @@ from django.db import models
 from django.http import HttpRequest
 
 from apps.core.models import Organization, Tenant
+from apps.core.surfaces import STAFF
 
 ActorKind = Literal["human", "agent", "system"]
 
 # Where `apps.accounts.auth.ApiTokenAuth` leaves what it resolved. Declared
 # here, in the layer below, so both sides name the same string once.
-TOKEN_AUTH_ATTR = "authenticated_by_token"
-TOKEN_ATTR = "api_token"
+TOKEN_AUTH_ATTR = "authenticated_by_token"  # noqa: S105 — the request attribute name marking token authentication
+TOKEN_ATTR = "api_token"  # noqa: S105 — the request attribute name holding the ApiToken row
+# Where `actor_from_request` keeps the one actor it built for a request, so
+# every caller in that request — the route, its paginator, a helper — shares
+# one `Actor` and therefore one permission memo. The request's private names
+# live here, together, and nowhere else spells them.
+ACTOR_ATTR = "_djb_actor"
 
 
 @dataclass(frozen=True)
@@ -49,12 +55,18 @@ class Actor:
     token: models.Model | None
     kind: ActorKind
     tenant: Tenant | None
-    #: The **acting hat**: which organization in the tenant this call is being
+    #: The **hat**: which organization in the tenant this call is being
     #: made as. Resolved by the door (`X-Org`, the MCP principal, the workflow
     #: headers) and revalidated every request — never chosen by the caller and
     #: never remembered from the last one. `None` means no hat was resolved,
     #: and every org-scoped read made with it returns nothing (`visible_to`).
     org: Organization | None = None
+    #: **Which surface the call came in at** — the key of the audience's address
+    #: the door resolved (`apps.core.surfaces`). A door fact: it narrows which
+    #: acts a face is offered (`core.verbs.allowed_acts`) and it lands on the
+    #: audit row, and no service asks it. `staff` for every actor no surface
+    #: door made — a workflow, a command, a test.
+    surface: str = STAFF
     #: **The permission memo, and it is a cache with a declared contract.**
     #:
     #: * **Source of truth** — the three tables `core.authz.effective_permissions`
@@ -69,8 +81,10 @@ class Actor:
     #:   and reads the tables, which is what keeps a wall reading the truth
     #:   rather than the granter's warm rows.
     #: * **TTL** — the instance's lifetime, which is one request, one activity,
-    #:   one command. Doors build a fresh `Actor` per request
-    #:   (`actor_from_request`), so nothing outlives the call that made it.
+    #:   one command. Doors take the request's one `Actor`
+    #:   (`actor_from_request`, built on the first call and kept on the request),
+    #:   so nothing outlives the call that made it and no second instance in the
+    #:   same request pays the three statements again.
     #: * **Invalidation** — `forget_permissions()`, and nothing else.
     #: * **Failure** — a miss is the three statements. A miss never widens.
     #: * **Stampede** — none: one actor, one thread, one request.
@@ -140,24 +154,38 @@ class Actor:
 
 
 def actor_from_request(request: HttpRequest) -> Actor:
-    """The actor a door resolved for this request.
+    """The actor a door resolved for this request — one per request, every call.
+
+    Built on the first call and kept on the request (`ACTOR_ATTR`); every later
+    call in the same request answers that same instance, so the route, its
+    paginator and any helper share one permission memo. A request is one
+    tenant, one hat and one principal by construction — the middleware and the
+    auth resolve them before any route runs — which is what makes the request
+    the memo's honest owner. The consequence, stated: attributes changed on the
+    request after the first call are not read again.
 
     A bearer token makes the call an `agent` even though it acts as a person:
     the person authorised the machine once, months ago, and "a human clicked
     this" is not true of it. A session makes it `human`. Neither makes it
     `system` — that one is reserved for work nobody asked for directly.
     """
+    kept = getattr(request, ACTOR_ATTR, None)
+    if isinstance(kept, Actor):
+        return kept
     user = getattr(request, "user", None)
     if user is not None and not user.is_authenticated:
         user = None
     by_token = bool(getattr(request, TOKEN_AUTH_ATTR, False))
-    return Actor(
+    actor = Actor(
         user=user,
         token=getattr(request, TOKEN_ATTR, None),
         kind="agent" if by_token else "human",
         tenant=getattr(request, "tenant", None),
         org=getattr(request, "org", None),
+        surface=getattr(getattr(request, "surface", None), "key", STAFF),
     )
+    setattr(request, ACTOR_ATTR, actor)
+    return actor
 
 
 def actor_for(

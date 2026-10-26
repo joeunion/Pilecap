@@ -21,16 +21,29 @@ from apps.core.actor import Actor
 from apps.core.models import Tenant
 
 # The shared secret the signature tests sign with.
-WEBHOOK_SECRET = "a-shared-secret-nobody-else-has"  # pragma: allowlist secret
+WEBHOOK_SECRET = "a-shared-secret-nobody-else-has"  # noqa: S105 — a signing secret the test both signs and verifies with  # pragma: allowlist secret
 
 
 @pytest.fixture
 def connection(tenant: Tenant, owner_actor: Actor) -> Connection:
-    """A live connection with a webhook secret, made the way a caller would."""
+    """A live connection with a webhook secret that still takes `X-Signature`, as old rows do."""
     return create_connection(
         tenant=tenant,
         actor=owner_actor,
         provider="example",
         name="Primary",
+        credentials={"webhook_secret": WEBHOOK_SECRET, "access_token": "an-access-token"},
+        is_signature_v2_required=False,
+    )
+
+
+@pytest.fixture
+def v2_connection(tenant: Tenant, owner_actor: Actor) -> Connection:
+    """A live connection made the way a caller makes one today: `X-Signature-V2` only."""
+    return create_connection(
+        tenant=tenant,
+        actor=owner_actor,
+        provider="example",
+        name="Current",
         credentials={"webhook_secret": WEBHOOK_SECRET, "access_token": "an-access-token"},
     )

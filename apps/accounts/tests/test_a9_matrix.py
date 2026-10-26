@@ -37,17 +37,16 @@ from django.urls import NoReverseMatch, reverse
 
 from apps.accounts import services as accounts_services
 from apps.accounts.adapter import (
-    GOOGLE_PROVIDER,
     AccountAdapter,
     SocialAccountAdapter,
 )
-from apps.accounts.models import SsoConnection, SsoDomain, SsoIdentity, User
+from apps.accounts.models import STAFF_REALM, SsoConnection, SsoDomain, SsoIdentity, User
+from apps.accounts.policies import is_workforce_email
 from apps.accounts.selectors import (
     get_connection_for_email,
+    get_enforcing_connection_for,
     get_platform_login_url,
     get_platform_provider_id,
-    is_workforce_email,
-    sso_enforced_for,
 )
 from apps.accounts.services import (
     SsoRefused,
@@ -59,11 +58,11 @@ from apps.accounts.services import (
     erase_user,
     issue_token,
     provision_sso_identity,
-    record_zitadel_identity,
+    record_identity,
     sync_workforce_identity_config,
     update_sso_connection,
 )
-from apps.accounts.tests.conftest import CLIENT_SECRET, FakeZitadel, assertion
+from apps.accounts.tests.conftest import CLIENT_SECRET, FakeZitadel, assertion, provider_landed
 from apps.core.actor import Actor, actor_for, system_actor
 from apps.core.audit import AuditEntry
 from apps.core.exceptions import Forbidden, Invalid
@@ -79,17 +78,15 @@ LIST_URL = "/api/v1/auth/sso-connections/"
 
 @pytest.fixture
 def workforce(settings: Any) -> None:
-    """A deployment that has configured the workforce door — both halves of it."""
+    """A deployment that has configured the workforce door — both halves of it.
+
+    The credentials feed the Google IdP materialised inside Zitadel; the domain
+    list is the wall the platform door applies. No allauth app is registered for
+    Google: its people arrive through the platform provider like everybody's.
+    """
     settings.GOOGLE_OAUTH_CLIENT_ID = "google-client-id"
-    settings.GOOGLE_OAUTH_CLIENT_SECRET = "google-client-secret"  # pragma: allowlist secret
+    settings.GOOGLE_OAUTH_CLIENT_SECRET = "google-client-secret"  # noqa: S105 — a fake IdP client secret the test world configures  # pragma: allowlist secret
     settings.GOOGLE_WORKSPACE_DOMAINS = [WORKFORCE_DOMAIN]
-    settings.SOCIALACCOUNT_PROVIDERS = {
-        **settings.SOCIALACCOUNT_PROVIDERS,
-        "google": {
-            "APPS": [{"client_id": "google-client-id", "secret": "google-secret", "key": ""}],
-            "SCOPE": ["profile", "email"],
-        },
-    }
 
 
 @pytest.fixture
@@ -146,7 +143,7 @@ def test_row_01_a_wrong_domain_refusal_writes_no_user_row(
     with pytest.raises(ImmediateHttpResponse):
         adapter(login_request).pre_social_login(
             login_request,
-            assertion(provider=GOOGLE_PROVIDER, subject="g|1", email="stranger@gmail.com"),
+            platform_assertion(email="stranger@gmail.com", subject="zitadel|stranger"),
         )
     assert not User.objects.filter(email="stranger@gmail.com").exists()
 
@@ -164,17 +161,13 @@ def test_row_02_an_unverified_address_is_refused_at_every_door(
     """An IdP that has not verified an address has asserted a profile field.
 
     Honouring it means whoever can make an IdP claim an address owns the local
-    account at it. Three doors, one answer.
+    account at it. Every door, one answer — the workforce's Google now arriving
+    through the platform provider like everybody else.
     """
     with pytest.raises(ImmediateHttpResponse):
         adapter(login_request).pre_social_login(
             login_request,
-            assertion(
-                provider=GOOGLE_PROVIDER,
-                subject="g|1",
-                email=f"someone@{WORKFORCE_DOMAIN}",
-                verified=False,
-            ),
+            platform_assertion(email=f"someone@{WORKFORCE_DOMAIN}", verified=False),
         )
     with pytest.raises(ImmediateHttpResponse):
         adapter(login_request).pre_social_login(
@@ -202,7 +195,7 @@ def test_row_03_a_refusal_names_no_domain_and_no_customer(
     with pytest.raises(ImmediateHttpResponse) as refused:
         adapter(login_request).pre_social_login(
             login_request,
-            assertion(provider=GOOGLE_PROVIDER, subject="g|1", email="stranger@gmail.com"),
+            platform_assertion(email="stranger@gmail.com", subject="zitadel|stranger"),
         )
     page = refused.value.response.content.decode()
     assert refused.value.response.status_code == 403
@@ -222,9 +215,13 @@ def test_row_03_a_refusal_names_no_domain_and_no_customer(
 
 
 def test_row_04_an_empty_workforce_domain_list_is_the_provider_off(
-    settings: Any, tenant: Tenant, operator_actor: Actor, instance: FakeZitadel
+    settings: Any,
+    tenant: Tenant,
+    operator_actor: Actor,
+    instance: FakeZitadel,
+    login_request: Any,
 ) -> None:
-    """Empty means OFF, not "allow any" — and W2-R5 carries that into Zitadel.
+    """Empty means OFF, not "allow any" — and ADR ident-6 carries that into Zitadel.
 
     A deployment that set credentials and forgot the domain list would otherwise
     let anybody with a Google account create a user here, and the failure would
@@ -233,7 +230,7 @@ def test_row_04_an_empty_workforce_domain_list_is_the_provider_off(
     product then refuses everybody at.
     """
     settings.GOOGLE_OAUTH_CLIENT_ID = "google-client-id"
-    settings.GOOGLE_OAUTH_CLIENT_SECRET = "google-client-secret"  # pragma: allowlist secret
+    settings.GOOGLE_OAUTH_CLIENT_SECRET = "google-client-secret"  # noqa: S105 — a fake IdP client secret the test world configures  # pragma: allowlist secret
     settings.GOOGLE_WORKSPACE_DOMAINS = []
 
     assert is_workforce_email("anybody@anywhere.example") is False
@@ -242,6 +239,15 @@ def test_row_04_an_empty_workforce_domain_list_is_the_provider_off(
     with pytest.raises(Invalid):
         sync_workforce_identity_config(tenant=tenant, actor=operator_actor)
     assert instance.idps == {}
+
+    # And the door itself FAILS CLOSED: with no workforce domain configured, the
+    # platform mints no stranger — not even one at the address the door would
+    # have admitted had it been on.
+    with pytest.raises(ImmediateHttpResponse):
+        adapter(login_request).pre_social_login(
+            login_request, platform_assertion(email=f"someone@{WORKFORCE_DOMAIN}")
+        )
+    assert not User.objects.filter(email=f"someone@{WORKFORCE_DOMAIN}").exists()
 
 
 # --- 5 ------------------------------------------------------------------------
@@ -253,11 +259,6 @@ def test_row_05_an_existing_account_is_linked_never_duplicated(
     """Somebody who predates a door does not get a second account the first time
     they use it — the seeded owner, an invitee, a superuser."""
     existing = create_user(email=f"already@{WORKFORCE_DOMAIN}", password=None)
-
-    login = assertion(provider=GOOGLE_PROVIDER, subject="g|1", email=f"already@{WORKFORCE_DOMAIN}")
-    adapter(login_request).pre_social_login(login_request, login)
-    assert login.user is not None
-    assert login.user.pk == existing.pk
 
     platform = platform_assertion(email=f"already@{WORKFORCE_DOMAIN}", subject="zitadel|7")
     adapter(login_request).pre_social_login(login_request, platform)
@@ -280,7 +281,7 @@ def test_row_06_a_fresh_workforce_login_lands_with_nothing(
     """
     adapter(login_request).pre_social_login(
         login_request,
-        assertion(provider=GOOGLE_PROVIDER, subject="g|1", email=f"new@{WORKFORCE_DOMAIN}"),
+        platform_assertion(email=f"new@{WORKFORCE_DOMAIN}", subject="zitadel|new"),
     )
     newcomer = create_user(email=f"new@{WORKFORCE_DOMAIN}", password=None)
 
@@ -379,22 +380,22 @@ def test_row_10_enforced_refuses_a_password_before_it_is_checked(
     answer "that password was right" for an account a customer has deliberately
     taken out of password reach. The door it guarded is gone entirely
     (`test_password_door_retired.py` asserts the URLs do not resolve, which is
-    stronger); the belt is kept for a product that reopens one, and W2-R5 leaves
+    stronger); the belt is kept for a product that reopens one, and ADR ident-6 leaves
     the flag as the row a Zitadel login policy is materialised from.
     """
     update_sso_connection(
         tenant=sso_connection.tenant,
         actor=owner_actor,
-        connection=sso_connection,
+        connection=provider_landed(sso_connection),
         enforced=True,
     )
-    assert sso_enforced_for("anyone@acme.com") == sso_connection
+    assert get_enforcing_connection_for("anyone@acme.com") == sso_connection
 
     with pytest.raises(ValidationError):
         AccountAdapter(login_request).pre_authenticate(
             login_request,
             email="anyone@acme.com",
-            password="not-even-looked-at",  # pragma: allowlist secret
+            password="not-even-looked-at",  # noqa: S106 — a throwaway password a test user is made with  # pragma: allowlist secret
         )
 
     with pytest.raises(NoReverseMatch):
@@ -403,7 +404,7 @@ def test_row_10_enforced_refuses_a_password_before_it_is_checked(
     disable_sso_connection(
         tenant=sso_connection.tenant, actor=owner_actor, connection=sso_connection
     )
-    assert sso_enforced_for("anyone@acme.com") is None
+    assert get_enforcing_connection_for("anyone@acme.com") is None
 
 
 # --- 11 -----------------------------------------------------------------------
@@ -453,7 +454,7 @@ def test_row_11_realm_discovery_leaks_nothing(
 def test_row_12_the_client_secret_never_leaves_the_column_except_to_the_management_api(
     api: Client, owner: User, sso_connection: SsoConnection, owner_actor: Actor, tenant: Tenant
 ) -> None:
-    """Four claims, and the fourth is new to W2-R5.
+    """Four claims, and the fourth is ADR ident-6's.
 
     Ciphertext at rest; no door returns it; an omitted secret leaves the stored
     one; and the workflow that materialises a connection **carries no secret** —
@@ -500,7 +501,7 @@ def test_row_13_a_domain_belongs_to_one_connection_across_every_tenant(
         name="Globex",
         issuer="https://idp.globex.example",
         client_id="globex",
-        client_secret="globex-secret",  # pragma: allowlist secret
+        client_secret="globex-secret",  # noqa: S106 — a fake IdP client secret the test world configures  # pragma: allowlist secret
         email_domains=["contested.example"],
     )
 
@@ -537,7 +538,7 @@ def test_row_14_saml_is_refused_with_the_reason(tenant: Tenant, owner_actor: Act
     """A sentence, not a connection that never authenticates.
 
     The refusal points at where the decision is recorded and what turning it on
-    costs. W2-R5 did not change it: Zitadel speaks SAML, but nothing in this
+    costs. ADR ident-6 did not change it: Zitadel speaks SAML, but nothing in this
     product writes a SAML IdP config yet, and saying otherwise would be the
     dishonest half of "federation is done".
     """
@@ -548,7 +549,7 @@ def test_row_14_saml_is_refused_with_the_reason(tenant: Tenant, owner_actor: Act
             name="Acme SAML",
             issuer="https://idp.acme.example",
             client_id="acme",
-            client_secret="secret",  # pragma: allowlist secret
+            client_secret="secret",  # noqa: S106 — a fake IdP client secret the test world configures  # pragma: allowlist secret
             email_domains=["acme.com"],
             protocol=SsoConnection.Protocol.SAML,
         )
@@ -636,7 +637,7 @@ def test_row_17_a_member_may_not_configure_and_the_door_says_the_same(
             name="Mine",
             issuer="https://idp.example",
             client_id="c",
-            client_secret="s",
+            client_secret="s",  # noqa: S106 — a fake IdP client secret the test world configures
             email_domains=["mine.example"],
         ),
         lambda: update_sso_connection(
@@ -679,15 +680,22 @@ def test_row_18_a_disabled_connection_cannot_sign_anybody_in_and_keeps_its_claim
 
     Deleting the claims would let another tenant take the domain while this one
     is mid-migration, and would take the record of who arrived through it too.
+
+    With the connection off, nobody claims the address, so a person who is new
+    here meets the workforce wall and is refused outright — no account, no
+    identity, no membership — unless the deployment's own workforce or an
+    invitation vouches for them.
     """
     disable_sso_connection(
         tenant=sso_connection.tenant, actor=owner_actor, connection=sso_connection
     )
 
     assert get_connection_for_email("someone@acme.com") is None
-    adapter(login_request).pre_social_login(
-        login_request, platform_assertion(email="someone@acme.com")
-    )
+    with pytest.raises(ImmediateHttpResponse):
+        adapter(login_request).pre_social_login(
+            login_request, platform_assertion(email="someone@acme.com")
+        )
+    assert not User.objects.filter(email="someone@acme.com").exists()
     assert SsoIdentity.objects.for_tenant(sso_connection.tenant).count() == 0
     assert not Membership.objects.filter(
         tenant=sso_connection.tenant, user__email="someone@acme.com"
@@ -719,12 +727,12 @@ def test_row_19_the_signup_lock_agrees_with_the_gate(workforce: None, login_requ
     """
     gate = adapter(login_request)
 
-    outside = assertion(provider=GOOGLE_PROVIDER, subject="g|1", email="stranger@gmail.com")
+    outside = platform_assertion(email="stranger@gmail.com", subject="zitadel|1")
     assert gate.is_open_for_signup(login_request, outside) is False
     with pytest.raises(ImmediateHttpResponse):
         gate.pre_social_login(login_request, outside)
 
-    inside = assertion(provider=GOOGLE_PROVIDER, subject="g|2", email=f"new@{WORKFORCE_DOMAIN}")
+    inside = platform_assertion(email=f"new@{WORKFORCE_DOMAIN}", subject="zitadel|2")
     assert gate.is_open_for_signup(login_request, inside) is True
     gate.pre_social_login(login_request, inside)
 
@@ -759,8 +767,12 @@ def test_row_20_erasure_revokes_the_identity_platform_account(
     is Zitadel's — that argument already won — so the run is the platform's,
     for everybody, and no tenant's ledger carries it.
     """
-    record_zitadel_identity(
-        user=member, subject="zitadel-user-9001", tenant=None, actor=system_actor(tenant=None)
+    record_identity(
+        realm=STAFF_REALM,
+        user=member,
+        subject="zitadel-user-9001",
+        tenant=None,
+        actor=system_actor(tenant=None),
     )
 
     erase_user(user=member, actor=owner_actor, tenant=tenant)
@@ -833,6 +845,10 @@ def test_row_21_the_changed_set_is_exactly_what_the_plan_named(
         # this census to catch by silently reddening — a fourth (now fifth)
         # caller added quietly is exactly what W2R5-21 exists to refuse.
         "set_identity_branding",
+        # A tenant's realm (identity option B): asked for when the tenant is
+        # created, through `core.bridge`, and by the reconciler for a tenant
+        # with none — one private starter both roads call.
+        "_ask_for_a_realm",
     }
 
     before = WorkflowRun.objects.count()
@@ -853,8 +869,8 @@ def test_row_21_the_changed_set_is_exactly_what_the_plan_named(
 
 ACCOUNTS_SCOPE_ENTRIES = {
     ("3", "allow_unauthenticated", "api:realm-discover"),
-    ("8", "exemptions", "apps/accounts/selectors.py::realm_for_email"),
-    ("8", "exemptions", "apps/accounts/selectors.py::sso_enforced_for"),
+    ("8", "exemptions", "apps/accounts/selectors.py::get_realm_for_email"),
+    ("8", "exemptions", "apps/accounts/selectors.py::get_enforcing_connection_for"),
     ("8", "exemptions", "apps/accounts/services.py::_apply_domains"),
     ("8", "exemptions", "apps/accounts/services.py::provision_sso_identity"),
     ("13", "exemptions", "apps/accounts/services.py::touch_token"),
@@ -868,6 +884,13 @@ ACCOUNTS_SCOPE_ENTRIES = {
     # authenticate — the fourth member of the `zitadel_*` shell-door family, and
     # the reason is beside the entry in `quality/rules.yaml`.
     ("27", "allow_import", "apps/accounts/management/commands/zitadel_first_admin.py"),
+    # Added 2026-09-30 with the identity realm port (identity option B), the
+    # conversation held and ruled before the line landed: the port's Zitadel
+    # adapter composes the client's idempotent writers for a tenant's realm,
+    # and its callers are the activities and commands already on the list.
+    ("27", "allow_import", "apps/accounts/realms/zitadel.py"),
+    # The measurement kit, out of the production client (rule 27 allow-list).
+    ("27", "allow_import", "apps/accounts/zitadel_measure_kit.py"),
     # R2-E1's allow-lists, 2026-09-16: the modules that may route the home realm
     # and write the identity join — the owner-ratified R2 fix set.
     ("56", "allow_router", "apps/accounts/selectors.py"),

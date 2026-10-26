@@ -1,3 +1,5 @@
+from typing import ClassVar
+
 from django.apps import AppConfig
 
 
@@ -28,3 +30,9 @@ class TagsConfig(AppConfig):
     name = "apps.djb_tags"
     verbose_name = "Tags"
     depends_on: tuple[str, ...] = ("core", "accounts", "events")
+    ratchet_floors: ClassVar[dict[str, int]] = {
+        "91.block-tail": 36,
+        "91.docstring-tail": 81,
+        "91.module-tail": 63,
+        "91.narrative": 4,
+    }

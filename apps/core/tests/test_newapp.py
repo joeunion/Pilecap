@@ -27,23 +27,33 @@ and a module that read directly "because its own walk is safe" is the first
 sentence of every module that later walked `apps/`.
 """
 
+# names, never reads: docs/product/architecture.md — the scratch product's own page, planted and regenerated under tmp_path; the checkout's copy is never opened  # noqa: E501
+
 from __future__ import annotations
 
 import ast
 import importlib
+import io
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
+import yaml
 from _pytest.outcomes import Failed, Skipped
+from django.conf import settings
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.template import Context, Engine
 
 from apps.core.checks import BANNED_MODULES, CANONICAL_MODULES
+from apps.core.lexicon import looks_plural
 from apps.core.management.commands import newapp
+from apps.core.scaffold.arms._common import NOUN_WORD
+from apps.core.scaffold.copier import plural_of, snake
 from apps.core.tests.test_query_ordering import ordered_by_call_sites
 from apps.core.tests.tree_census import source_lines, source_text
 from config.settings.discovery import discover_apps
@@ -68,6 +78,7 @@ CANONICAL_SHAPE = frozenset(
 )
 
 LABEL = "widgets"
+ROOT = Path(__file__).resolve().parents[3]
 
 
 def camel_case(label: str) -> str:
@@ -92,7 +103,7 @@ def files_of(app: Path) -> set[str]:
 def run_module(path: Path) -> dict[str, object]:
     """Execute a generated module the way pytest's importer would, and hand back its namespace."""
     namespace: dict[str, object] = {"__file__": str(path), "__name__": path.stem}
-    exec(compile(source_text(path), str(path), "exec"), namespace)  # noqa: S102
+    exec(compile(source_text(path), str(path), "exec"), namespace)  # noqa: S102 — runs the module this test just generated, as pytest would import it
     return namespace
 
 
@@ -252,7 +263,7 @@ def test_the_refusal_is_exit_2_from_a_real_shell(tmp_path: Path) -> None:
     """
     root = Path(__file__).resolve().parents[3]
     environment = dict(os.environ, DJANGO_SETTINGS_MODULE="config.settings.test")
-    finished = subprocess.run(
+    finished = subprocess.run(  # noqa: S603 — argv list built here from constants and paths; `python`, no shell
         [sys.executable, "manage.py", "newapp", "widget", "--directory", str(tmp_path)],
         cwd=root,
         env=environment,
@@ -366,39 +377,13 @@ def test_no_generated_line_crosses_the_line_limit_even_for_a_long_label(
     assert too_long == []
 
 
-def test_the_plural_test_here_is_the_gates_own(tmp_path: Path) -> None:
-    """The one thing the command copies rather than reads, pinned to its source.
+def test_the_plural_test_here_is_the_gates_own() -> None:
+    """The command and rule 16 judge a plural by one function, `apps.core.lexicon.looks_plural`.
 
-    Production code under `apps/` may not import `quality` — the gate imports
-    `apps`, and the other direction would invert that — so `newapp` carries its
-    own two-line copy of house rule 16's plural test. A test may import
-    `quality` (the worked precedent is `apps/exports/tests/test_census.py`), so
-    the copy is held to the original here: the day `_looks_plural` moves, this
-    is what says the command stopped agreeing with the rule it is standing on.
+    `import_module` keeps mypy, whose world is `apps` and `config`, out of `quality/`.
     """
-    # Imported by name rather than by `from quality.checks import …` on purpose:
-    # mypy's world here is `apps` and `config` (pyproject `[tool.mypy] files`),
-    # it follows what a module imports, and `quality/` is deliberately outside
-    # that world — a plain import would drag 74 errors in somebody else's file
-    # into this leg. `import_module` keeps the runtime import real and the type
-    # checker out of a directory it was never pointed at.
-    the_rules_own = importlib.import_module("quality.checks")._looks_plural
-
-    corpus = [
-        "widgets",
-        "widget",
-        "analysis",
-        "status",
-        "bus",
-        "photos",
-        "memos",
-        "core",
-        "usage",
-        "a" * 29 + "s",
-    ]
-    assert [newapp._looks_plural(word) for word in corpus] == [
-        bool(the_rules_own(word)) for word in corpus
-    ]
+    the_rules_own = importlib.import_module("quality.checks").looks_plural
+    assert the_rules_own is looks_plural is newapp.__dict__["looks_plural"]
 
 
 def test_the_singular_names_the_grammar_admits_are_read_not_typed() -> None:
@@ -410,4 +395,155 @@ def test_the_singular_names_the_grammar_admits_are_read_not_typed() -> None:
     """
     admitted = newapp.singular_apps_the_grammar_admits()
     assert {"core", "realtime", "usage", "search"} <= admitted
-    assert not newapp._looks_plural("usage")
+    assert not looks_plural("usage")
+
+
+def test_an_irregular_plural_app_is_born_green(tmp_path: Path) -> None:
+    """`people` is a plural with no `s`: generated whole, and rule 16 finds no app to refuse."""
+    naming_grammar = importlib.import_module("quality.checks").naming_grammar
+    rules = (Path(__file__).resolve().parents[3] / "quality" / "rules.yaml").read_text()
+    rule_16 = next(r for r in yaml.safe_load(rules)["rules"] if str(r["id"]) == "16")
+    app = generate("people", tmp_path / "apps")
+    assert files_of(app) == CANONICAL_SHAPE
+    assert [f for f in naming_grammar(tmp_path, rule_16).findings if f.klass == "apps"] == []
+
+
+def test_the_plural_refusal_admits_irregulars_and_names_the_valve(tmp_path: Path) -> None:
+    with pytest.raises(CommandError) as refused:
+        call_command("newapp", "widget", directory=str(tmp_path))
+    assert (
+        "an irregular plural (people, children…) is already admitted; a deliberate singular "
+        "(a mass noun such as billing) is an entry under scope_extensions: {16: …} in "
+        "quality/local/rules.yaml, with its reason"
+    ) in str(refused.value)
+
+
+def test_the_next_line_is_the_one_paths_next_command(tmp_path: Path) -> None:
+    out = io.StringIO()
+    call_command("newapp", LABEL, directory=str(tmp_path), stdout=out)
+    last = out.getvalue().splitlines()[-1]
+    assert last.startswith(f"next: uv run python manage.py roads shape noun {LABEL} <Noun> — ")
+
+
+def test_the_next_lines_example_noun_is_one_rule_32_accepts(tmp_path: Path) -> None:
+    out = io.StringIO()
+    call_command("newapp", "jobs", directory=str(tmp_path), stdout=out)
+    found = re.search(r" e\.g\. (\w+)$", out.getvalue().splitlines()[-1])
+    assert found, out.getvalue().splitlines()[-1]
+    noun = found[1]
+    labels = {name.removeprefix("apps.") for name in settings.LOCAL_APPS} | {"jobs"}
+    assert NOUN_WORD.match(noun) and not looks_plural(snake(noun)), noun
+    assert plural_of(snake(noun)) not in labels, noun
+
+
+def test_newapp_prints_the_undo_line_that_removes_all_it_wrote(tmp_path: Path) -> None:
+    out = io.StringIO()
+    call_command("newapp", LABEL, directory=str(tmp_path), stdout=out)
+    undo = out.getvalue().splitlines()[-2]
+    assert undo == f"undo: rm -r {tmp_path / LABEL} removes everything this command wrote"
+    subprocess.run(["rm", "-r", undo.split()[3]], check=True)  # noqa: S603, S607 — the printed line, run as printed
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_label_refusal_points_at_the_sdk_page(tmp_path: Path) -> None:
+    with pytest.raises(CommandError) as refused:
+        call_command("newapp", "Widgets", directory=str(tmp_path))
+    assert "docs/sdk/the-developers-hand.md § App labels" in str(refused.value)
+
+
+def _rule_91_census(app: Path) -> dict[str, int]:
+    """Rule 91's count per class over every module of `app`; a module must parse first."""
+    from quality.checks.rule_91 import comment_census
+
+    rules = yaml.safe_load(source_text(newapp.APP_TEMPLATE.parents[3] / "quality/rules.yaml"))
+    rule = next(r for r in rules["rules"] if str(r["id"]) == "91")
+    narrative = re.compile("|".join(f"(?:{p})" for p in rule["narrative"]), re.IGNORECASE)
+    seen: dict[str, int] = {}
+    for path in sorted(app.rglob("*.py")):
+        ast.parse(source_text(path), filename=str(path))
+        for klass, (lines, _) in comment_census(path, narrative).items():
+            seen[f"{path.relative_to(app).as_posix()} {klass}"] = lines
+    return seen
+
+
+def test_a_new_app_is_born_at_zero_rule_91(tmp_path: Path) -> None:
+    """`newapp`, then `scaffold noun` over it, write no line rule 91 counts (rule 91)."""
+    from apps.core.scaffold import copier
+
+    app = generate(LABEL, tmp_path)
+    assert _rule_91_census(app) == {}
+    root = newapp.APP_TEMPLATE.parents[3]
+    noun = copier.from_golden(root, copier.index(root)["noun"], LABEL, "Gizmo")
+    for rel, text in noun.files.items():
+        (app / rel).parent.mkdir(parents=True, exist_ok=True)
+        (app / rel).write_text(text)
+    assert _rule_91_census(app) == {}
+
+
+#: A product's decision page reduced to the one block the scaffold keeps current.
+APP_MAP_PAGE = "# Architecture\n\n<!-- derived: app-map -->\n<!-- /derived -->\n"
+
+
+def plant_architecture(docs: Path, root: Path) -> Path:
+    """`APP_MAP_PAGE` at `docs/product/architecture.md`, its block made current over `root`."""
+    from quality import docs_derived
+
+    page = docs / "product" / "architecture.md"
+    page.parent.mkdir(parents=True)
+    page.write_text(APP_MAP_PAGE)
+    docs_derived.write(page, root)
+    return page
+
+
+def own_architecture(root: Path) -> Path:
+    """`root`'s `docs/` link replaced by a directory holding a decision page of its own."""
+    (root / "docs").unlink()
+    plant_architecture(root / "docs", root)
+    return root
+
+
+def derived_blocks_check(root: Path) -> subprocess.CompletedProcess[str]:
+    """The hook's derived-blocks leg, `docs_derived_check <root>`, from this checkout's library."""
+    return subprocess.run(  # noqa: S603 — `bash -c` over the hook's own library and a scratch root
+        ["bash", "-c", '. scripts/docs_legs.sh || exit 2; docs_derived_check "$1"', "-", str(root)],  # noqa: S607 — `bash` on PATH, as the hook runs it
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_a_new_app_regenerates_the_derived_blocks_so_its_first_commit_passes(
+    tmp_path: Path, settings: Any
+) -> None:
+    """`newapp` on a product writes its app-map row; the hook's derived-blocks leg exits 0."""
+    from apps.core.tests.platform_tree import platform_tree
+
+    settings.BASE_DIR = root = own_architecture(platform_tree(tmp_path, "zzzprobe"))
+    out = io.StringIO()
+    call_command("newapp", "zz_probes", stdout=out)
+    hook = derived_blocks_check(root)
+    assert hook.returncode == 0, hook.stdout + hook.stderr
+    said = out.getvalue().splitlines()
+    assert (
+        "wrote: docs/product/architecture.md derived block 'app-map' — commit it with the app"
+        in said
+    )
+    assert "| `zz_probes` | `core`, `accounts` | — | product |" in source_text(
+        root / "docs/product/architecture.md"
+    )
+
+
+def test_a_linked_architecture_is_never_written_through(tmp_path: Path, settings: Any) -> None:
+    """A tree whose `docs/` is a link out of it leaves the linked file as it was, and says so."""
+    from apps.core.tests.platform_tree import platform_tree
+
+    settings.BASE_DIR = root = platform_tree(tmp_path, "zzzprobe")
+    (root / "docs").unlink()
+    page = plant_architecture(tmp_path / "elsewhere", root)
+    (root / "docs").symlink_to(tmp_path / "elsewhere")
+    before = page.read_text()
+    out = io.StringIO()
+    call_command("newapp", "zz_probes", stdout=out)
+    assert page.read_text() == before
+    said = out.getvalue().splitlines()
+    assert any(line.startswith("derived blocks: NOT regenerated") for line in said), said

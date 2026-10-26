@@ -18,7 +18,7 @@
 // golden: import begin
 import { useState } from "react";
 
-import type { SurfaceState, WireRefusal } from "@/screens/state";
+import type { SurfaceState, WireRefusal } from "@pilecap/ui/state";
 import { LATENCY_MS } from "@/screens/widget/widget-list.stories";
 import { type ImportPress, type ImportRow, type ImportRun, type ImportView, WidgetImport } from "@/screens/widget/widget-import";
 
@@ -66,7 +66,7 @@ const REFUSED_ROWS: readonly ImportRow[] = [
     },
 ];
 
-/** `import_invalid`: the file refused whole, before any row was judged. */
+/** `import_invalid`: the apply refused because the file was refused whole. */
 const IMPORT_INVALID: WireRefusal = {
     code: "import_invalid",
     detail: "This file cannot be imported as it is. It is not a UTF-8 CSV file, or its header row does not name the columns this kind of import reads, or it has more rows than one import takes. Nothing was imported.",
@@ -159,8 +159,9 @@ export function NothingToImport() {
     return <ImportWalk initial={{ kind: "ready", data: { run: runOf("previewed", { create: 0, update: 0, unchanged: 0, refused: 0 }, 0), refusedRows: [] } }} />;
 }
 
-/** §5 · §15: the file refused whole — *Couldn't import* under the head, the file field and *Import* alive. */
+/** §5 · §15: the apply refused, the file refused whole — *Couldn't import* under the head, over the preview. */
 export function RefusedImport() {
-    return <ImportWalk initial={{ kind: "empty" }} refused={IMPORT_INVALID} />;
+    return <ImportWalk initial={{ kind: "ready", data: { run: PREVIEWED, refusedRows: REFUSED_ROWS } }} refused={IMPORT_INVALID} />;
 }
+RefusedImport.door = "djb_import-apply";
 // golden: import end

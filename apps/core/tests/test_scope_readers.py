@@ -165,10 +165,9 @@ def test_the_enforcement_seams_are_the_three_doors() -> None:
 
 
 def test_the_reader_census_tolerates_a_file_that_vanishes_at_open() -> None:
-    """The falsifier for the tolerant read. RED before RACE-1: `FileNotFoundError`.
+    """The reader census skips a source file deleted between listing and open.
 
-    The plant reads no ceiling, so a census that survives it survives by
-    skipping it.
+    The plant reads no ceiling, so a census that survives it survives by skipping it.
     """
     with vanishing_source_file() as planted:
         assert measured_readers() is not None

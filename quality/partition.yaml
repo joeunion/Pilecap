@@ -38,6 +38,7 @@ platform_apps:
   - djb_tags
   - events
   - example
+  - example_portal
   - exports
   - files
   - realtime
@@ -64,12 +65,13 @@ closure_classes:
     members:
       - apps/__init__.py
       - apps/conftest.py
+      - apps/testing/**
       - apps/conftest_local.py
       - apps/test_gate_liveness.py
       - apps/test_temporal_guard.py
     why: >-
       `apps/conftest.py` is the fixture module every platform test loads — and
-      every product test too. It sits ON the boundary: a product that edits it
+      every product test too; `apps/testing/**` is the harness package behind it. It sits ON the boundary: a product that edits it
       invalidates the partition, which is correct, because it changed machinery
       the banked verdict ran on. A product extends fixtures in its own app's
       `tests/conftest.py`, which pytest scopes by directory ancestry and the
@@ -97,8 +99,10 @@ closure_classes:
       INSTALLED_APPS), the mounts, the URL map, the one exception mapper.
   - id: C4
     what: dependency truth, and the declared environment
-    members: [pyproject.toml, uv.lock, .env.example]
+    members: [pyproject.toml, uv.lock, .env.example, .dockerignore]
     why: >-
+      `.dockerignore` is read by `apps/core/tests/test_vocabulary.py` to pin that the
+      image ships `quality/partition.yaml`, the lockfile the vocabulary reads at runtime;
       dependency behaviour — and the pytest configuration itself lives in
       `pyproject.toml`: DJANGO_SETTINGS_MODULE, addopts, the randomization
       policy, the liveness ceiling. `.env.example` joins them because it is the
@@ -198,6 +202,20 @@ closure_classes:
       is a product's churn and no platform test builds a path into it, so
       widening this class would re-run the platform suite for every client
       edit — the dividend deleted rather than protected.
+
+  - id: C11
+    what: the generated REST contract the scaffold's screen and drive tests plant from
+    members: ["frontend/openapi.json"]
+    why: >-
+      FOUND BY the partition proof on the fit-and-finish train (2026-10-20):
+      `apps/core/tests/test_scaffold.py` reads `frontend/openapi.json` to plant
+      the Widget wire as a scratch noun and scaffold a screen over it, and
+      `quality/tests/test_drive_doors.py` drives a mock transport over the same
+      contract. Editing that one file changes those platform tests' answers
+      with nothing else in the tree moving — the stale green a banked skip
+      would license. **ONE FILE, NOT `frontend/**`**, for C10's reason: the
+      contract is derived from the platform's own routes, so a product's edit
+      of it is a product's change to the platform's wire, not client churn.
 
 # --- §3 · the ONE enumerated exclusion ----------------------------------------
 
@@ -303,7 +321,7 @@ digest_sections:
       platform service answers, so the population is part of the key. The
       functions' identities are deliberately NOT serialized: the module's
       presence is the declaration, and its body is a C1 file already.
-    walks: [apps.core.verbs]
+    walks: [apps.core.verbs, apps.core.discovery]
 
 # --- §3 · non-file inputs: the environment read-set ---------------------------
 

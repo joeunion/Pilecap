@@ -1,0 +1,12 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "before", "text": "def test_a_tool_and_its_route_answer_with_the_same_row("}
+def test_the_transition_tool_moves_the_status_one_step(
+    tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Staged")
+    transition = tool("transition_widget", register=register)
+    ctx = context_for(owner, tenant, root_organization(tenant=tenant))
+    assert transition(ctx=ctx, widget_id=widget.pk, status="active").status == "active"
+    with pytest.raises(ToolError):
+        transition(ctx=ctx, widget_id=widget.pk, status="draft")
+
+

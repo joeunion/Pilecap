@@ -1,28 +1,11 @@
-"""The machine door onto widgets, and the parity it owes the human one.
+"""The machine door onto widgets: parity off the real registries, behaviour through the tool."""
 
-Two kinds of test here, and they answer different questions.
-
-**Parity** (`test_every_rest_capability_...`) reads the *real* registries out of
-`manage.py introspect` — the ninja routes and the MCP tools the server actually
-holds — and refuses a REST capability that has no tool. It is house rule 17 with
-teeth: adding a route to `api.py` and forgetting `mcp.py` fails here, in a test
-that names the missing tool.
-
-**Behaviour** calls the tool functions directly, with a fake `Context` carrying a
-`Principal` on its scope — exactly what `config.mcp`'s token middleware leaves
-there. Calling the function rather than driving JSON-RPC is deliberate: the
-transport runs a tool body on a worker thread with its own database connection,
-which cannot see a test's uncommitted rows, and the thing under test here is the
-tool, not the transport. The transport has its own tests
-(`apps/core/tests/test_mcp.py`).
-"""
-
+# golden: noun begin
 from __future__ import annotations
 
 import io
 import json
-from collections.abc import Callable
-from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID
 
@@ -33,139 +16,43 @@ from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 
-from apps.accounts.models import User
-from apps.core import context
-from apps.core.actor import Actor
-from apps.core.audit import AuditEntry
-from apps.core.mcp import SCOPE_KEY, Principal
-from apps.core.models import Organization, Tenant
-from apps.core.services import root_organization
 from apps.example.mcp import register
 from apps.example.models import Widget
 from apps.example.schemas import WidgetOut
 from apps.example.services import create_widget
-from apps.workflows.models import WorkflowRun
-from apps.workflows.services import finish_run, workflow_id
 from config.api import as_the_door_renders
+from pilecap import Actor, AuditEntry
+from pilecap.accounts import User
+from pilecap.tenancy import Tenant, root_organization
+from pilecap.testing import (
+    FakeRequest,
+    FakeRequestContext,
+    WorkflowRun,
+    bind,
+    context_for,
+    derive_tool_name,
+    finish_run,
+    tool,
+)
+from pilecap.workflows import workflow_id
 
 pytestmark = pytest.mark.django_db
 
-# The whole point of the file: for every REST capability, the tool that is its
-# twin. A new route with no entry here fails the parity test, and an entry with
-# no tool fails it too.
-# Measured at ten rows, not guessed: the page and its COUNT. There is no session
-# row, no middleware and no savepoint out here — a tool call is not a request —
-# which is why this budget is smaller than the HTTP list's rather than the same
-# number written twice.
-# ADR core-18 took one statement OFF this pin: the default list issues no
-# COUNT any more — `has_more` comes from fetching one row more than asked
-# for. `?include_count=true` puts it back, and costs exactly one more.
-#
-# **+3 since Phase R** (ADR core-27, rule 5): `list_widgets` asks `widget.read`
-# at the acting hat, and resolution reads three tables — this person's
-# memberships in the tenant, the grants on them, and the role deltas for the
-# roles on the chain. The machine door pays exactly what the human door pays,
-# which is the point: a tool that asked a cheaper question would be a tool
-# answering a different one (rule 46).
-#
-# **+1 for `allowed_acts`** (`cursor_page(..., actor=actor)`): the seam's ONE
-# query attaching every row's node. The tool hands the seam the same actor its
-# `widget.read` already asked with, so the collection is memoized and the acts
-# cost nothing more — which the HTTP list, whose paginator resolves a second
-# actor, does not get (`test_api.py`'s pin says what that costs). The list's
-# `create` predicate (`_is_member`) reads the actor's memo through
-# `membership_for` too, so it adds nothing (5 → 4).
+# The page and the acts' one node read, on the `widget.read` memo; no request out here.
 LIST_QUERY_BUDGET = 4
 
 # The two doors this file compares, spelled once.
 JSON = "application/json"
+# golden: noun end
 APPROVE_URL = "/api/v1/widgets/{}/approve/"
 
-TOOL_FOR_ROUTE: dict[str, str] = {
-    "widget-list": "list_widgets",
-    "widget-detail": "get_widget",
-    "widget-create": "create_widget",
-    "widget-update": "update_widget",
-    "widget-approve": "approve_widget",
-    "widget-delete": "delete_widget",
-    # The hierarchy's own capabilities. `governing_widget_policy-detail` is the
-    # one whose twin matters most: an agent that cannot ask what governs it can
-    # only guess, and guessing is what a policy exists to stop.
-    "widget_stats-detail": "get_widget_stats",
-    "widget_policies-list": "list_widget_policies",
-    "widget_policy-create": "create_widget_policy",
-    "governing_widget_policy-detail": "get_governing_widget_policy",
-    "widget_entries-list": "list_widget_entries",
-    # There is deliberately no update or delete twin for an entry, on either
-    # door: `WidgetEntry` is append-only, so the capability does not exist to
-    # be mirrored.
-    "widget_entry-record": "record_widget_entry",
-    # Archive and restore, on both nouns: rule 74 demands the pair of routes and
-    # rule 17 derives each twin's name from its `url_name`.
-    "widget-archive": "archive_widget",
-    "widget-restore": "restore_widget",
-    "widget_policy-archive": "archive_widget_policy",
-    "widget_policy-restore": "restore_widget_policy",
-    # The rest of the family: a move and its twin, the batch over a selection
-    # (plural, because the selection is), and the history card.
-    "widget-move": "move_widget",
-    "widget-bulk": "bulk_widgets",
-    "widget_history-list": "list_widget_history",
-    # A copy, and a merge with its dry run: `widget_merge-detail` is the preview
-    # a person reads before confirming, so an agent reads the same numbers.
-    "widget-duplicate": "duplicate_widget",
-    "widget_merge-detail": "get_widget_merge",
-    "widget-merge": "merge_widget",
-}
 
-
-# --- A tool call, without a transport ----------------------------------------
-
-
-@dataclass
-class _FakeRequest:
-    """Just enough of a Starlette request: the ASGI scope, and nothing else."""
-
-    scope: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class _FakeRequestContext:
-    request: _FakeRequest
-
-
-def context_for(user: User, tenant: Tenant | None, org: Organization | None = None) -> Context[Any]:
-    """The context a tool sees, with the principal the middleware would have left.
-
-    The hat defaults to the tenant's root, which is what `config.mcp` resolves
-    for a token whose user holds the ordinary flat membership. A test that means
-    to prove a narrower hat names it.
-    """
-    resolved = org if org is not None else (root_organization(tenant=tenant) if tenant else None)
-    scope = {SCOPE_KEY: Principal(user=user, tenant=tenant, org=resolved)}
-    return Context(
-        request_context=cast(Any, _FakeRequestContext(request=_FakeRequest(scope=scope)))
-    )
-
-
+# golden: noun begin
 def example_server() -> MCPServer[Any]:
     """A server holding this app's tools and nothing else."""
     server: MCPServer[Any] = MCPServer(name="test", version="1")
     register(server)
     return server
-
-
-def tool(name: str) -> Callable[..., Any]:
-    """The function behind a registered tool.
-
-    The manager is private API, and reaching into it is still better than the
-    alternative: keeping a second reference to every tool function just so a test
-    can call it would be a copy of the registry that can disagree with the
-    registry.
-    """
-    registered = example_server()._tool_manager.get_tool(name)
-    assert registered is not None, f"{name} is not registered"
-    return registered.fn
 
 
 def introspected() -> dict[str, Any]:
@@ -176,36 +63,114 @@ def introspected() -> dict[str, Any]:
     return payload
 
 
+# golden: noun end
+
+
 # --- Door parity -------------------------------------------------------------
 
 
-def test_every_rest_capability_is_on_the_machine_door_too() -> None:
-    """House rule 17, read out of the two registries rather than asserted by hand."""
-    payload = introspected()
-    routes = {
+# golden: noun begin
+def example_routes() -> set[str]:
+    """This app's mounted `url_name`s, read off `introspect`'s route registry."""
+    return {
         str(route["name"]).removeprefix("api:")
-        for route in payload["routes"]
+        for route in introspected()["routes"]
         if str(route["view"]).startswith("apps.example.api.")
     }
-    assert routes == set(TOOL_FOR_ROUTE), (
-        "A widget route has no entry in TOOL_FOR_ROUTE: either the machine door "
-        "is missing a capability the human door has, or this table is stale."
-    )
 
-    tools = {str(one["name"]) for one in payload["tools"]}
-    assert set(TOOL_FOR_ROUTE.values()) <= tools
+
+def test_every_rest_capability_is_on_the_machine_door_too() -> None:
+    """Rule 17 off the two registries: every route's derived tool name is a registered tool."""
+    routes = example_routes()
+    assert routes, "introspect listed no example route"
+    tools = {str(one["name"]) for one in introspected()["tools"]}
+    missing = sorted(
+        derive_tool_name(name) for name in routes if derive_tool_name(name) not in tools
+    )
+    assert missing == [], missing
 
 
 def test_the_app_registers_those_tools_and_no_others() -> None:
     """The reverse direction: a tool with no route is a door disagreement too."""
     registered = {one.name for one in example_server()._tool_manager.list_tools()}
-    assert registered == set(TOOL_FOR_ROUTE.values())
+    assert registered == {derive_tool_name(name) for name in example_routes()}
 
 
 def test_every_tool_describes_itself() -> None:
     """A tool with no description is one an agent has to guess at."""
     for one in example_server()._tool_manager.list_tools():
         assert one.description, f"{one.name} has no description"
+
+
+# golden: ordering due_at begin
+def test_due_at_orders_alike_on_both_doors(
+    api: Client, tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    for name in ("Left", "Right"):
+        create_widget(tenant=tenant, actor=owner_actor, name=name)
+    api.force_login(owner)
+    listing = tool("list_widgets", register=register)
+    ctx = context_for(owner, tenant, root_organization(tenant=tenant))
+    for ordering in ("due_at", "-due_at"):
+        over_http = api.get("/api/v1/widgets/", {"ordering": ordering})
+        assert over_http.status_code == 200, over_http.content
+        ids = [item["id"] for item in json.loads(over_http.content)["items"]]
+        assert ids == [str(item.id) for item in listing(ctx=ctx, ordering=ordering).items]
+
+
+# golden: ordering due_at end
+
+# golden: filter name begin
+NAME_FINDS: dict[str, Any] = {"name": "Left bench"}
+NAME_MISSES: dict[str, Any] = {"name": "Other"}
+NAME_ASKS: dict[str, Any] = {"name": "bench"}
+
+
+def test_the_name_filter_narrows_alike_on_both_doors(
+    api: Client, tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    found = create_widget(tenant=tenant, actor=owner_actor, **{"name": "Found", **NAME_FINDS})
+    create_widget(tenant=tenant, actor=owner_actor, **{"name": "Missed", **NAME_MISSES})
+    api.force_login(owner)
+    over_http = api.get("/api/v1/widgets/", NAME_ASKS)
+    over_mcp = tool("list_widgets", register=register)(
+        ctx=context_for(owner, tenant, root_organization(tenant=tenant)), **NAME_ASKS
+    )
+    assert over_http.status_code == 200, over_http.content
+    assert [item["id"] for item in json.loads(over_http.content)["items"]] == [str(found.pk)]
+    assert [str(item.id) for item in over_mcp.items] == [str(found.pk)]
+
+
+# golden: filter name end
+# golden: noun end
+# golden: verb touch begin
+def test_the_touch_tool_answers_the_widget_seen_now(
+    tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Seen")
+    touch = tool("touch_widget", register=register)
+    touched = touch(
+        ctx=context_for(owner, tenant, root_organization(tenant=tenant)), widget_id=widget.pk
+    )
+    assert touched.id == widget.pk
+    assert touched.updated_at > widget.updated_at
+
+
+# golden: verb touch end
+# golden: enum status begin
+def test_the_transition_tool_moves_the_status_one_step(
+    tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Staged")
+    transition = tool("transition_widget", register=register)
+    ctx = context_for(owner, tenant, root_organization(tenant=tenant))
+    assert transition(ctx=ctx, widget_id=widget.pk, status="active").status == "active"
+    with pytest.raises(ToolError):
+        transition(ctx=ctx, widget_id=widget.pk, status="draft")
+
+
+# golden: enum status end
+# golden: noun begin
 
 
 def test_a_tool_and_its_route_answer_with_the_same_row(
@@ -218,16 +183,22 @@ def test_a_tool_and_its_route_answer_with_the_same_row(
     over_http = api.get(f"/api/v1/widgets/{widget.pk}/")
     assert over_http.status_code == 200
 
-    over_mcp = tool("get_widget")(ctx=context_for(owner, tenant), widget_id=widget.pk)
+    over_mcp = tool("get_widget", register=register)(
+        ctx=context_for(owner, tenant, root_organization(tenant=tenant)), widget_id=widget.pk
+    )
     assert isinstance(over_mcp, WidgetOut)
     assert as_the_door_renders(over_mcp.model_dump(mode="json")) == as_the_door_renders(
         json.loads(over_http.content)
     )
 
 
+# golden: noun end
+
+
 # --- What the tools do -------------------------------------------------------
 
 
+# golden: noun begin
 def test_list_widgets_is_scoped_to_the_tokens_tenant(
     tenant: Tenant,
     other_tenant: Tenant,
@@ -238,7 +209,9 @@ def test_list_widgets_is_scoped_to_the_tokens_tenant(
     mine = create_widget(tenant=tenant, actor=owner_actor, name="Mine")
     create_widget(tenant=other_tenant, actor=stranger_actor, name="Theirs")
 
-    page = tool("list_widgets")(ctx=context_for(owner, tenant))
+    page = tool("list_widgets", register=register)(
+        ctx=context_for(owner, tenant, root_organization(tenant=tenant))
+    )
     assert len(page.items) == 1
     assert [item.id for item in page.items] == [mine.pk]
 
@@ -250,8 +223,8 @@ def test_list_widgets_paginates_searches_and_orders(
         create_widget(tenant=tenant, actor=owner_actor, name=f"Widget {index}", notes="prose")
     create_widget(tenant=tenant, actor=owner_actor, name="Other", notes="nothing")
 
-    listing = tool("list_widgets")
-    ctx = context_for(owner, tenant)
+    listing = tool("list_widgets", register=register)
+    ctx = context_for(owner, tenant, root_organization(tenant=tenant))
 
     page = listing(ctx=ctx, limit=2, include_count=True)
     assert page.count == 4
@@ -268,8 +241,37 @@ def test_list_widgets_paginates_searches_and_orders(
     named = listing(ctx=ctx, name="Other")
     assert [item.name for item in named.items] == ["Other"]
 
-    ordered = listing(ctx=ctx, ordering="name")
-    assert [item.name for item in ordered.items][0] == "Other"
+    names = [item.name for item in listing(ctx=ctx, ordering="name").items]
+    assert names == sorted(names) and len(names) == 4
+    descending = [item.name for item in listing(ctx=ctx, ordering="-name").items]
+    assert descending == names[::-1]
+
+
+def test_list_widgets_orders_by_due_date_with_the_undated_last(
+    tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    """`list_widgets(ordering="due_at" | "-due_at")` sorts as the list route does."""
+    from datetime import UTC, datetime
+
+    create_widget(tenant=tenant, actor=owner_actor, name="Undated")
+    for name, month in (("Middle", 11), ("Soonest", 10), ("Latest", 12)):
+        create_widget(
+            tenant=tenant,
+            actor=owner_actor,
+            name=name,
+            due_at=datetime(2026, month, 15, tzinfo=UTC),
+        )
+    listing = tool("list_widgets", register=register)
+    ctx = context_for(owner, tenant, root_organization(tenant=tenant))
+
+    soonest = listing(ctx=ctx, ordering="due_at")
+    assert [item.name for item in soonest.items] == ["Soonest", "Middle", "Latest", "Undated"]
+    latest = listing(ctx=ctx, ordering="-due_at")
+    assert [item.name for item in latest.items] == ["Latest", "Middle", "Soonest", "Undated"]
+
+    with pytest.raises(ToolError) as refused:
+        listing(ctx=ctx, ordering="due")
+    assert "invalid" in str(refused.value)
 
 
 def test_an_ordering_the_route_did_not_offer_is_refused(
@@ -277,7 +279,10 @@ def test_an_ordering_the_route_did_not_offer_is_refused(
 ) -> None:
     """The same allow-list as the HTTP list, because it is literally the same one."""
     with pytest.raises(ToolError) as refused:
-        tool("list_widgets")(ctx=context_for(owner, tenant), ordering="owner__password")
+        tool("list_widgets", register=register)(
+            ctx=context_for(owner, tenant, root_organization(tenant=tenant)),
+            ordering="owner__password",
+        )
     assert "invalid" in str(refused.value)
 
 
@@ -286,13 +291,19 @@ def test_a_widget_in_another_tenant_is_not_found(
 ) -> None:
     theirs = create_widget(tenant=other_tenant, actor=stranger_actor, name="Theirs")
     with pytest.raises(ToolError) as refused:
-        tool("get_widget")(ctx=context_for(owner, tenant), widget_id=theirs.pk)
+        tool("get_widget", register=register)(
+            ctx=context_for(owner, tenant, root_organization(tenant=tenant)), widget_id=theirs.pk
+        )
     # `not_found`, never `forbidden`: a 403 here would confirm the row exists.
     assert "not_found" in str(refused.value)
 
 
 def test_create_widget_writes_the_row_and_owns_it(tenant: Tenant, owner: User) -> None:
-    out = tool("create_widget")(ctx=context_for(owner, tenant), name="From a machine", notes="n")
+    out = tool("create_widget", register=register)(
+        ctx=context_for(owner, tenant, root_organization(tenant=tenant)),
+        name="From a machine",
+        notes="n",
+    )
 
     widget = Widget.objects.for_tenant(tenant).get(pk=out.id)
     assert widget.name == "From a machine"
@@ -300,25 +311,34 @@ def test_create_widget_writes_the_row_and_owns_it(tenant: Tenant, owner: User) -
     assert widget.tenant_id == tenant.pk
 
 
+# golden: noun end
+
+
 def test_create_widget_is_recorded_as_an_agent(tenant: Tenant, owner: User) -> None:
     """A token is a machine acting as a person, and the audit row says so."""
-    from apps.core.audit import AuditEntry
+    from pilecap import AuditEntry
 
     AuditEntry.objects.all().delete()
-    tool("create_widget")(ctx=context_for(owner, tenant), name="Machine made")
+    tool("create_widget", register=register)(
+        ctx=context_for(owner, tenant, root_organization(tenant=tenant)), name="Machine made"
+    )
 
     entry = AuditEntry.objects.for_tenant(tenant).get(action="example.create_widget")
     assert entry.actor_kind == "agent"
     assert entry.actor_user_id == owner.pk
 
 
+# golden: noun begin
 def test_update_widget_changes_only_what_it_was_given(
     tenant: Tenant, owner: User, owner_actor: Actor
 ) -> None:
     widget = create_widget(tenant=tenant, actor=owner_actor, name="Before", notes="keep")
 
-    out = tool("update_widget")(
-        ctx=context_for(owner, tenant), widget_id=widget.pk, version=widget.version, name="After"
+    out = tool("update_widget", register=register)(
+        ctx=context_for(owner, tenant, root_organization(tenant=tenant)),
+        widget_id=widget.pk,
+        version=widget.version,
+        name="After",
     )
     assert out.name == "After"
     assert out.notes == "keep"
@@ -329,9 +349,14 @@ def test_delete_widget_removes_the_row_and_says_which(
 ) -> None:
     widget = create_widget(tenant=tenant, actor=owner_actor, name="Doomed")
 
-    out = tool("delete_widget")(ctx=context_for(owner, tenant), widget_id=widget.pk)
+    out = tool("delete_widget", register=register)(
+        ctx=context_for(owner, tenant, root_organization(tenant=tenant)), widget_id=widget.pk
+    )
     assert out.id == widget.pk
     assert Widget.objects.for_tenant(tenant).count() == 0
+
+
+# golden: noun end
 
 
 def test_a_tool_authorizes_through_the_service_not_the_door(
@@ -341,8 +366,8 @@ def test_a_tool_authorizes_through_the_service_not_the_door(
     widget = create_widget(tenant=tenant, actor=owner_actor, name="Not yours")
 
     with pytest.raises(ToolError) as refused:
-        tool("update_widget")(
-            ctx=context_for(member, tenant),
+        tool("update_widget", register=register)(
+            ctx=context_for(member, tenant, root_organization(tenant=tenant)),
             widget_id=widget.pk,
             version=widget.version,
             name="Mine now",
@@ -350,32 +375,26 @@ def test_a_tool_authorizes_through_the_service_not_the_door(
     assert "forbidden" in str(refused.value)
 
 
+# golden: noun begin
 def test_a_token_with_no_tenant_cannot_write(nomad: User) -> None:
     """Fails closed, exactly as the HTTP door does with no tenant."""
     with pytest.raises(ToolError) as refused:
-        tool("create_widget")(ctx=context_for(nomad, None), name="Nowhere")
-    assert "no_tenant" in str(refused.value)
+        tool("create_widget", register=register)(ctx=context_for(nomad, None, None), name="Nowhere")
+    assert "no_acting_scope" in str(refused.value)
 
 
 def test_a_token_with_no_tenant_reads_nothing(nomad: User) -> None:
-    """Fails closed — and since Phase R it says so instead of answering blank.
-
-    **The refusal got stronger; the property did not move.** A token resolving
-    no tenant used to get an empty page; it now gets `forbidden`, because
-    `list_widgets` asks `widget.read` and a principal with no membership holds
-    nothing anywhere (ADR core-27). Reading nothing is still what happens, and
-    the assertion is what stops the day it becomes a page of somebody's rows.
-    """
+    """A token resolving no tenant is refused `no_acting_scope`, as the HTTP door refuses it."""
     with pytest.raises(ToolError) as refused:
-        tool("list_widgets")(ctx=context_for(nomad, None))
-    assert "forbidden" in str(refused.value)
+        tool("list_widgets", register=register)(ctx=context_for(nomad, None, None))
+    assert "no_acting_scope" in str(refused.value)
 
 
 def test_a_call_with_no_principal_is_refused(tenant: Tenant) -> None:
     """There is no unauthenticated tool call to forget to check."""
-    empty = Context(request_context=cast(Any, _FakeRequestContext(request=_FakeRequest())))
+    empty = Context(request_context=cast(Any, FakeRequestContext(request=FakeRequest())))
     with pytest.raises(Exception) as refused:
-        tool("list_widgets")(ctx=empty)
+        tool("list_widgets", register=register)(ctx=empty)
     assert "principal" in str(refused.value)
 
 
@@ -391,20 +410,18 @@ def test_the_id_a_tool_takes_is_a_uuid(tenant: Tenant, owner: User, owner_actor:
 def test_the_list_tool_has_a_query_budget(
     tenant: Tenant, owner: User, owner_actor: Actor, django_assert_num_queries: Any
 ) -> None:
-    """The same pin the HTTP list carries, for the same failure.
-
-    `WidgetOut.owner_email` walks a relation for every row, so without the
-    selector's `select_related` a page of fifty is fifty-one queries. Measured at
-    ten rows: one COUNT and one page.
-    """
+    """The same pin the HTTP list carries, for the same failure."""
     for index in range(10):
         create_widget(tenant=tenant, actor=owner_actor, name=f"Widget {index}")
 
-    listing = tool("list_widgets")
-    ctx = context_for(owner, tenant)
+    listing = tool("list_widgets", register=register)
+    ctx = context_for(owner, tenant, root_organization(tenant=tenant))
     with django_assert_num_queries(LIST_QUERY_BUDGET):
         page = listing(ctx=ctx)
     assert len(page.items) == 10
+
+
+# golden: noun end
 
 
 # --- Approval, on the machine door -------------------------------------------
@@ -413,17 +430,12 @@ def test_the_list_tool_has_a_query_budget(
 def test_approve_widget_ends_the_wait_and_answers_with_the_row(
     tenant: Tenant, owner: User, owner_actor: Actor
 ) -> None:
-    """The agent's version of the button. Same service, same shape as the route.
-
-    No worker here and no Temporal server: the signal is registered on the
-    transaction's commit, and what this asserts is the tool's half — it
-    authorized, it found the run, and it answered with the widget. That the
-    signal actually reaches a workflow and ends its week-long wait is
-    `test_workflows.py`'s, against a real server.
-    """
+    """The agent's version of the button. Same service, same shape as the route."""
     widget = create_widget(tenant=tenant, actor=owner_actor, name="Waiting")
 
-    out = tool("approve_widget")(ctx=context_for(owner, tenant), widget_id=widget.pk)
+    out = tool("approve_widget", register=register)(
+        ctx=context_for(owner, tenant, root_organization(tenant=tenant)), widget_id=widget.pk
+    )
 
     assert isinstance(out, WidgetOut)
     assert out.id == widget.pk
@@ -434,7 +446,9 @@ def test_approving_a_widget_in_another_tenant_is_not_found(
 ) -> None:
     theirs = create_widget(tenant=other_tenant, actor=stranger_actor, name="Theirs")
     with pytest.raises(ToolError) as refused:
-        tool("approve_widget")(ctx=context_for(owner, tenant), widget_id=theirs.pk)
+        tool("approve_widget", register=register)(
+            ctx=context_for(owner, tenant, root_organization(tenant=tenant)), widget_id=theirs.pk
+        )
     assert "not_found" in str(refused.value)
 
 
@@ -442,7 +456,9 @@ def test_a_member_may_not_approve(tenant: Tenant, member: User, owner_actor: Act
     """The same answer the HTTP door gives, because it is the same policy."""
     widget = create_widget(tenant=tenant, actor=owner_actor, name="Not yours to approve")
     with pytest.raises(ToolError) as refused:
-        tool("approve_widget")(ctx=context_for(member, tenant), widget_id=widget.pk)
+        tool("approve_widget", register=register)(
+            ctx=context_for(member, tenant, root_organization(tenant=tenant)), widget_id=widget.pk
+        )
     assert "forbidden" in str(refused.value)
 
 
@@ -456,20 +472,16 @@ def test_approving_a_run_that_has_already_ended_is_a_conflict(
         status=WorkflowRun.Status.COMPLETED,
     )
     with pytest.raises(ToolError) as refused:
-        tool("approve_widget")(ctx=context_for(owner, tenant), widget_id=widget.pk)
+        tool("approve_widget", register=register)(
+            ctx=context_for(owner, tenant, root_organization(tenant=tenant)), widget_id=widget.pk
+        )
     assert "conflict" in str(refused.value)
 
 
 def test_both_doors_leave_audit_rows_that_differ_only_in_the_door(
     api: Client, tenant: Tenant, owner: User, owner_actor: Actor
 ) -> None:
-    """R5-2's honest form: two doors, one service, one difference.
-
-    Two widgets rather than one, because approving the same run twice would
-    make the second call's audit row a different fact. What is compared is
-    everything the row says about *who did what*, and the field that is allowed
-    to disagree is the door it came in by.
-    """
+    """R5-2's honest form: two doors, one service, one difference."""
     over_http_widget = create_widget(tenant=tenant, actor=owner_actor, name="Through the browser")
     over_mcp_widget = create_widget(tenant=tenant, actor=owner_actor, name="Through the agent")
     AuditEntry.objects.all().delete()
@@ -478,12 +490,12 @@ def test_both_doors_leave_audit_rows_that_differ_only_in_the_door(
     response = api.post(APPROVE_URL.format(over_http_widget.pk), content_type=JSON)
     assert response.status_code == 200, response.content
 
-    # What the transport binds around a tool call (`config.mcp`), bound by hand
-    # because this file calls the tool function rather than driving JSON-RPC.
-    # The middleware that really binds it has its own test in
-    # `apps/core/tests/test_mcp.py`; what is under test here is the row.
-    context.bind(door="mcp", actor_kind="agent")
-    tool("approve_widget")(ctx=context_for(owner, tenant), widget_id=over_mcp_widget.pk)
+    # What the transport binds around a tool call (`config.mcp`), bound by hand.
+    bind(door="mcp", actor_kind="agent")
+    tool("approve_widget", register=register)(
+        ctx=context_for(owner, tenant, root_organization(tenant=tenant)),
+        widget_id=over_mcp_widget.pk,
+    )
 
     rows = {
         entry.object_id: entry
@@ -495,8 +507,7 @@ def test_both_doors_leave_audit_rows_that_differ_only_in_the_door(
     assert rest.outcome == machine.outcome == "ok"
     assert rest.actor_user_id == machine.actor_user_id == owner.pk
     assert rest.action == machine.action == "example.approve_widget"
-    # The one honest difference beyond the door: a token is a machine acting as
-    # a person, and the audit row has always said so.
+    # The one honest difference beyond the door: a token is a machine acting as a person.
     assert (rest.actor_kind, machine.actor_kind) == ("human", "agent")
 
 
@@ -516,3 +527,46 @@ def test_the_signal_and_the_approval_share_a_correlation_id(
     assert approval.outcome == signalled.outcome == "ok"
     assert approval.correlation_id
     assert approval.correlation_id == signalled.correlation_id
+
+
+# --- The due date over the machine door ---------------------------------------
+
+
+# golden: noun begin
+# golden: field due_at begin
+DUE_AT = datetime(2026, 11, 2, 17, 0, tzinfo=UTC)
+LATER_DUE_AT = datetime(2026, 12, 1, 9, 30, tzinfo=UTC)
+
+
+def test_a_tool_creates_changes_and_clears_due_at(tenant: Tenant, owner: User) -> None:
+    ctx = context_for(owner, tenant, root_organization(tenant=tenant))
+    created = tool("create_widget", register=register)(ctx=ctx, name="Due", due_at=DUE_AT)
+    assert created.due_at == DUE_AT
+
+    changed = tool("update_widget", register=register)(
+        ctx=ctx, widget_id=created.id, version=created.version, due_at=LATER_DUE_AT
+    )
+    assert changed.due_at == LATER_DUE_AT
+
+    cleared = tool("update_widget", register=register)(
+        ctx=ctx, widget_id=created.id, version=changed.version, clear_due_at=True
+    )
+    assert cleared.due_at is None
+
+
+# golden: field due_at end
+
+
+def test_a_tool_filters_by_a_due_date(tenant: Tenant, owner: User, owner_actor: Actor) -> None:
+    ctx = context_for(owner, tenant, root_organization(tenant=tenant))
+    create_widget(tenant=tenant, actor=owner_actor, name="Due", due_at=DUE_AT)
+    create_widget(
+        tenant=tenant, actor=owner_actor, name="Early", due_at=datetime(2026, 10, 15, tzinfo=UTC)
+    )
+    listing = tool("list_widgets", register=register)
+    cut = datetime(2026, 11, 1, tzinfo=UTC)
+    assert [item.name for item in listing(ctx=ctx, due_before=cut).items] == ["Early"]
+    assert [item.name for item in listing(ctx=ctx, due_after=cut).items] == ["Due"]
+
+
+# golden: noun end

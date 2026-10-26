@@ -1,0 +1,67 @@
+    // golden: face begin
+    {
+        path: "/example/widgets",
+        job: "Walk every state of the worked widget list, the example a product copies; a 404 in production.",
+        primarySeat: null,
+        operation: "widget-list",
+        devOnly: true,
+        surfaces: ["staff"],
+    },
+    // golden: face end
+    // golden: import begin
+    {
+        path: "/example/widgets/import",
+        job: "Walk every state of the worked widget import page — choose, check, preview, apply — the example a product copies; a 404 in production.",
+        primarySeat: "import-preview",
+        operation: "djb_import-detail",
+        devOnly: true,
+        surfaces: ["staff"],
+    },
+    // golden: import end
+    // golden: face begin
+    {
+        path: "/example/widgets/[id]",
+        job: "Walk every state of the worked widget record, the example a product copies; a 404 in production.",
+        primarySeat: null,
+        operation: "widget-detail",
+        devOnly: true,
+        surfaces: ["staff"],
+    },
+    // golden: face end
+    // golden: portal begin
+    // The worked customer face (`apps/example_portal`): its four pages, drawn
+    // on the customer surface alone — the same four `screens` its declaration
+    // answers (`apps/example_portal/surfaces.py`, held equal by its tests).
+    {
+        path: "/widgets",
+        job: "List the widgets shared with the customer, read-only.",
+        primarySeat: null,
+        operation: "widget-list",
+        devOnly: false,
+        surfaces: ["customer"],
+    },
+    {
+        path: "/widgets/[id]",
+        job: "Read one shared widget and open a request about it.",
+        primarySeat: "record-acts",
+        operation: "widget-detail",
+        devOnly: false,
+        surfaces: ["customer"],
+    },
+    {
+        path: "/requests",
+        job: "Send a request about a widget and list the requests the customer can see.",
+        primarySeat: "request-send",
+        operation: "portal_request-list",
+        devOnly: false,
+        surfaces: ["customer"],
+    },
+    {
+        path: "/requests/[id]",
+        job: "Read one request the customer sent.",
+        primarySeat: null,
+        operation: "portal_request-detail",
+        devOnly: false,
+        surfaces: ["customer"],
+    },
+    // golden: portal end

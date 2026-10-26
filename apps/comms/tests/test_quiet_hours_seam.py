@@ -236,6 +236,48 @@ def test_a_tenant_window_defers_a_marketing_send(
     ), "and the wait it was given is a real one"
 
 
+def test_an_escalation_step_is_held_by_the_tenant_window_too(
+    tenant: Tenant,
+    owner_actor: Actor,
+    recipient: Recipient,
+    newsletter: MessageTemplate,
+) -> None:
+    """A later escalation rung is judged against the tenant's window, as step 1 and the edge are."""
+    make_preference(actor=owner_actor, recipient=recipient, consented=True)
+    anchor = _campaign(tenant=tenant, actor=owner_actor, recipient=recipient)
+    register_quiet_hours(lambda _tenant: _window_around_now())
+
+    step = services.send_step(
+        tenant=tenant,
+        actor=owner_actor,
+        message=anchor,
+        step=2,
+        channel=Channel.EMAIL,
+        template=newsletter.name,
+    )
+
+    assert step.message.status == Message.Status.QUEUED
+    assert step.deferred_seconds > 0, "the step waits the tenant's window out"
+    assert step.message.send_at is not None
+
+
+def test_the_edge_hands_back_the_seconds_it_holds_for(
+    tenant: Tenant,
+    owner_actor: Actor,
+    recipient: Recipient,
+    newsletter: MessageTemplate,
+) -> None:
+    """The service that judged returns the hold; the activity never re-derives it."""
+    make_preference(actor=owner_actor, recipient=recipient, consented=True)
+    message = _campaign(tenant=tenant, actor=owner_actor, recipient=recipient)
+    register_quiet_hours(lambda _tenant: _window_around_now())
+
+    judged = services.mark_message_sending(tenant=tenant, actor=owner_actor, message=message)
+
+    assert judged.message.status == Message.Status.QUEUED
+    assert judged.deferred_seconds > 0
+
+
 def test_a_tenant_window_never_touches_transactional_mail(
     tenant: Tenant,
     owner_actor: Actor,
@@ -299,7 +341,9 @@ def test_the_seam_is_consulted_at_the_transport_edge_too(
     assert message.status == Message.Status.QUEUED
 
     register_quiet_hours(lambda _tenant: _window_around_now())
-    judged = services.mark_message_sending(tenant=tenant, actor=owner_actor, message=message)
+    judged = services.mark_message_sending(
+        tenant=tenant, actor=owner_actor, message=message
+    ).message
 
     # `queued`, not `sending`: the edge wall refused temporally, which is the
     # answer the delivery activity turns into a timer.
@@ -448,7 +492,9 @@ def test_the_two_sides_of_ten_oclock_now_agree(
         tenant=tenant, actor=owner_actor, recipient=recipient, template="late-campaign"
     )
     register_quiet_hours(lambda _tenant: _window_around_now())
-    at_the_edge = services.mark_message_sending(tenant=tenant, actor=owner_actor, message=early)
+    at_the_edge = services.mark_message_sending(
+        tenant=tenant, actor=owner_actor, message=early
+    ).message
 
     # 22:30 — the window was already shut when this one was written.
     late = _campaign(
@@ -538,28 +584,22 @@ def test_the_seam_reads_the_window_in_its_own_timezone(
     assert shifted.is_quiet_at(now) is True
 
 
-def test_the_window_and_the_preference_share_one_implementation() -> None:
-    """One arithmetic, two holders — asserted where a reader will look for it.
+def test_the_window_and_the_preference_answer_alike() -> None:
+    """A tenant window and a person's window with the same ends answer every instant alike."""
+    from apps.comms.models import ChannelPreference
 
-    `apps/comms/models.py` owns `is_quiet_at` and `quiet_opens_in` as functions
-    since T4, and `ChannelPreference` and `QuietWindow` both call them. A second
-    implementation is the drift `SENDABLE` had to come back and fix once
-    already.
-
-    Fails the day somebody re-inlines either one, which is exactly when the two
-    windows start being able to mean different things.
-    """
-    import inspect
-
-    from apps.comms import models
-
-    for holder in (models.ChannelPreference.is_quiet_at, models.ChannelPreference.quiet_opens_in):
-        body = inspect.getsource(holder)
-        assert "models.is_quiet_at" in body or "is_quiet_at(" in body or "quiet_opens_in(" in body
-
-    for method in (QuietWindow.is_quiet_at, QuietWindow.opens_in):
-        body = inspect.getsource(method)
-        assert "is_quiet_at(" in body or "quiet_opens_in(" in body
+    windows = [(time(22, 0), time(7, 0)), (time(9, 0), time(17, 0)), (time(0, 0), time(23, 59))]
+    base = datetime(2026, 3, 28, 0, 0, tzinfo=UTC)
+    instants = [base + timedelta(minutes=37 * step) for step in range(80)]
+    for zone in ("UTC", "Europe/London", "America/Los_Angeles"):
+        for start, end in windows:
+            person = ChannelPreference(
+                quiet_hours_start=start, quiet_hours_end=end, quiet_hours_timezone=zone
+            )
+            house = QuietWindow(start=start, end=end, timezone=zone)
+            for at in instants:
+                assert person.is_quiet_at(at) == house.is_quiet_at(at), (zone, start, end, at)
+                assert person.quiet_opens_in(at) == house.opens_in(at), (zone, start, end, at)
 
 
 def test_a_window_whose_ends_are_equal_is_no_window(tenant: Tenant) -> None:

@@ -32,7 +32,7 @@ def _declared_kinds(schema: dict[str, Any]) -> None:
     schema["example"] = "widget"
 
 
-class ImportIn(StrictIn):
+class DjbImportIn(StrictIn):
     """What a client sends to stage a file. The organization is the acting hat's."""
 
     kind: str = Field(
@@ -52,7 +52,7 @@ class ImportIn(StrictIn):
     )
 
 
-class ImportFilter(FilterSchema):
+class DjbImportFilter(FilterSchema):
     """The narrowings a client may ask the list for. `status` is an exact match."""
 
     status: Annotated[str | None, FilterLookup(q="status__iexact")] = Field(
@@ -63,7 +63,7 @@ class ImportFilter(FilterSchema):
     )
 
 
-class ImportCountsOut(Schema):
+class DjbImportCountsOut(Schema):
     """What the dry run found, and then what the apply did."""
 
     create: int = Field(json_schema_extra=example(4))
@@ -72,7 +72,7 @@ class ImportCountsOut(Schema):
     refused: int = Field(json_schema_extra=example(1))
 
 
-class ImportOut(Schema):
+class DjbImportOut(Schema):
     """One import run."""
 
     model_config = ConfigDict(from_attributes=True)
@@ -94,8 +94,9 @@ class ImportOut(Schema):
     )
     applied_by_id: UUID | None = Field(default=None, json_schema_extra=example(None))
     idempotency_key: str = Field(json_schema_extra=example(""))
-    counts: ImportCountsOut
+    counts: DjbImportCountsOut
     apply_writes: int = Field(json_schema_extra=example(4))
+    #: The refusal a failed run ended with (`import_invalid` or `run_failed`); `{}` for a cancel.
     failure: dict[str, Any] = Field(default_factory=dict, json_schema_extra=example({}))
     applied_at: datetime | None = Field(default=None, json_schema_extra=example(None))
     cancelled_at: datetime | None = Field(default=None, json_schema_extra=example(None))
@@ -104,19 +105,20 @@ class ImportOut(Schema):
     expires_at: datetime = Field(json_schema_extra=example("2026-10-27T09:31:12Z"))
 
 
-class ImportStagedOut(ImportOut):
+class DjbImportStagedOut(DjbImportOut):
     """The answer to staging: the run, and whether this call made it."""
 
+    # does-not-cover: `created` repeats the 201/200 status; dropping it is breaking (rule 17).
     created: bool = Field(json_schema_extra=example(True))
 
 
-class ImportPage(ListPage):
+class DjbImportPage(ListPage):
     """A page of runs — the list envelope, for the machine door."""
 
-    items: list[ImportOut]
+    items: list[DjbImportOut]
 
 
-class ImportRowOut(Schema):
+class DjbImportRowOut(Schema):
     """One line of the file: its values, the preview, and what the apply did."""
 
     model_config = ConfigDict(from_attributes=True)
@@ -135,7 +137,7 @@ class ImportRowOut(Schema):
     object_id: UUID | None = Field(default=None, json_schema_extra=example(None))
 
 
-class ImportRowPage(ListPage):
+class DjbImportRowPage(ListPage):
     """A page of one run's rows, for the machine door."""
 
-    items: list[ImportRowOut]
+    items: list[DjbImportRowOut]

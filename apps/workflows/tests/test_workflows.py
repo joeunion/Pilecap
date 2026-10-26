@@ -26,6 +26,7 @@ from temporalio.testing import WorkflowEnvironment
 
 from apps.accounts.models import User
 from apps.core.asyncdb import run_db
+from apps.core.determinism import run_to_finish
 from apps.core.models import Tenant
 from apps.workflows import workflows as workflow_definitions
 from apps.workflows.client import (
@@ -79,6 +80,29 @@ def test_the_worker_discovers_what_the_apps_declared() -> None:
         for activity in discovered_activities()
     }
     assert "mark_run_finished" in names
+
+
+def test_the_worker_and_introspect_read_one_population() -> None:
+    """The worker's assembly and the schema dump are two callers of one discovery walk.
+
+    `introspect` reports what the worker would register; if the two walked
+    differently (a tuple one accepts and the other skips), the dump would
+    describe a worker that does not exist.
+    """
+    from apps.core.management.commands import introspect
+
+    worker = sorted(
+        getattr(workflow, "__temporal_workflow_definition").name
+        for workflow in discovered_workflows()
+    )
+    dumped = sorted(str(entry["name"]) for entry in introspect._workflows_payload())
+    assert worker, "an empty population would agree with anything"
+    assert worker == dumped
+    activities = sorted(
+        getattr(activity, "__temporal_activity_definition").name
+        for activity in discovered_activities()
+    )
+    assert activities == sorted(str(entry["name"]) for entry in introspect._activities_payload())
 
 
 def test_shutting_the_worker_down_shuts_its_activity_pool_down(
@@ -364,7 +388,7 @@ def test_every_platform_workflow_marks_its_run_last(name: str, run_method: Any) 
     """The mark is the LAST thing before return, never the first.
 
     Read off the source in source order, because that is the property — a
-    workflow whose `_finish` were merely *present* somewhere could still be
+    workflow whose `run_to_finish` were merely *present* somewhere could still be
     `EchoWorkflow` as it was, marking itself complete and then doing the work.
     """
     body = ast.parse(inspect.cleandoc(inspect.getsource(run_method)))
@@ -374,7 +398,7 @@ def test_every_platform_workflow_marks_its_run_last(name: str, run_method: Any) 
     )
     assert awaits, f"{name}.run awaits nothing at all"
     last = awaits[-1].value
-    assert isinstance(last, ast.Call) and getattr(last.func, "id", "") == "_finish", (
+    assert isinstance(last, ast.Call) and getattr(last.func, "id", "") == run_to_finish.__name__, (
         f"{name}.run's last await is {ast.unparse(last)}, not the finish seam"
     )
 

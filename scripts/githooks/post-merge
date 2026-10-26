@@ -70,6 +70,23 @@ if [ "$RC" -eq 0 ]; then
     exit 0
 fi
 
+# A FAST-FORWARD IS NOT A MERGE ANYBODY MADE: ORIG_HEAD is an ancestor of HEAD, and the reflog
+# says `…: Fast-forward` (a lone developer's pull lands on a merge whose first parent IS
+# ORIG_HEAD, a graph a local merge also draws) or, with no reflog, HEAD is not such a merge. Its only red being the db-pin leg (the last
+# banner the gate printed is that leg's) is the checkout's database pin, which one line answers.
+orig="$(git rev-parse -q --verify ORIG_HEAD 2>/dev/null || true)"
+first="$(git rev-parse -q --verify 'HEAD^1' 2>/dev/null || true)"
+second="$(git rev-parse -q --verify 'HEAD^2' 2>/dev/null || true)"
+moved="$(git reflog -1 --format=%gs 2>/dev/null || true)"
+if [ "$RC" -eq 1 ] && [ -n "$orig" ] && git merge-base --is-ancestor "$orig" HEAD 2>/dev/null &&
+    { [ "${moved%: Fast-forward}" != "$moved" ] || [ -z "$second" ] || [ "$first" != "$orig" ]; } &&
+    [ "$(grep -E '^- ' "$LOG" | tail -1)" = "- DATABASE_NAME: this checkout's .env pin vs the derivation" ]; then
+    said="$(grep -E '^RED: ' "$LOG" | tail -1)"
+    echo "post-merge: a fast-forward to $(git rev-parse --short HEAD), not a merge you made — the database pin is the one red: ${said#RED: } ./scripts/setup.sh reconciles it." >&2
+    rm -f "$LOG"
+    exit "$RC"
+fi
+
 # RED (or exit 2, enforcement broken). Surface enough to act on without
 # reprinting a gate run nobody asked to re-read, and say where the whole of it
 # is. The tail is deliberately generous: the gate names its failing leg near the

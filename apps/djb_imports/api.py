@@ -1,34 +1,26 @@
 """The HTTP door onto imports: stage a file, read the preview, apply it.
 
-Every read goes through `selectors.py` (both halves of the scope, every time),
-every write through `services.py`, and no route says a status code of its own
-choosing except the two a stage can answer with — `201` for a new run and `200`
-for the run these bytes already had.
+# why-not `from __future__ import annotations`: ninja reads the route signatures at import.
 """
-
-# NOTE: no `from __future__ import annotations` — ninja builds a Pydantic model
-# out of each route's signature at import time (`apps/exports/api.py` says why).
 
 from uuid import UUID
 
 from django.db.models import QuerySet
 from ninja import Query, Router, Status
-from ninja.errors import HttpError
 from ninja.pagination import paginate
 
 from apps.accounts.auth import API_AUTH
-from apps.core.actor import Actor, actor_from_request
 from apps.core.api import CursorPagination, ordered_by
+from apps.core.api.acting import acting
 from apps.core.api.docs import Tag, refuses
-from apps.core.models import Tenant
 from apps.core.requests import TenantRequest
 from apps.djb_imports.models import Import, ImportRow
 from apps.djb_imports.schemas import (
-    ImportFilter,
-    ImportIn,
-    ImportOut,
-    ImportRowOut,
-    ImportStagedOut,
+    DjbImportFilter,
+    DjbImportIn,
+    DjbImportOut,
+    DjbImportRowOut,
+    DjbImportStagedOut,
 )
 from apps.djb_imports.selectors import get_import, get_import_source, list_import_rows, list_imports
 from apps.djb_imports.services import apply_import, cancel_import, create_import
@@ -58,25 +50,18 @@ TAGS = {
 router = Router(tags=["djb_imports"], auth=API_AUTH)
 
 
-def _acting(request: TenantRequest) -> tuple[Actor, Tenant]:
-    """The actor and tenant a write happens as; no tenant is refused, never guessed."""
-    if request.tenant is None:
-        raise HttpError(403, "No tenant for this request.")
-    return actor_from_request(request), request.tenant
-
-
-def staged_out(run: Import, created: bool) -> ImportStagedOut:
+def staged_out(run: Import, created: bool) -> DjbImportStagedOut:
     """The staging answer — the run, and whether this call made it. Both doors."""
-    return ImportStagedOut.model_validate(
-        {**ImportOut.from_orm(run).model_dump(), "created": created}
+    return DjbImportStagedOut.model_validate(
+        {**DjbImportOut.from_orm(run).model_dump(), "created": created}
     )
 
 
-@router.get("/", response=list[ImportOut], url_name="djb_import-list")
+@router.get("/", response=list[DjbImportOut], url_name="djb_import-list")
 @paginate(CursorPagination)
 def list_imports_route(
     request: TenantRequest,
-    filters: Query[ImportFilter],
+    filters: Query[DjbImportFilter],
     ordering: str = "-created_at",
 ) -> QuerySet[Import]:
     """List imports
@@ -102,17 +87,16 @@ def list_imports_route(
       organization, or your role does not include reading imports here.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    runs: QuerySet[Import] = list_imports(
-        tenant=request.tenant, org=request.org, actor=actor_from_request(request)
-    )
+    actor, tenant = acting(request)
+    runs: QuerySet[Import] = list_imports(tenant=tenant, org=actor.org, actor=actor)
     runs = filters.filter(runs)
     return ordered_by(runs, ordering, allowed=ORDERING, default="-created_at")
 
 
 @router.post(
-    "/", response={200: ImportStagedOut, 201: ImportStagedOut}, url_name="djb_import-create"
+    "/", response={200: DjbImportStagedOut, 201: DjbImportStagedOut}, url_name="djb_import-create"
 )
-def create_import_route(request: TenantRequest, payload: ImportIn) -> Status[ImportStagedOut]:
+def create_import_route(request: TenantRequest, payload: DjbImportIn) -> Status[DjbImportStagedOut]:
     """Stage an import
 
     Stage a CSV file you have already uploaded, as rows of one `kind`.
@@ -144,10 +128,8 @@ def create_import_route(request: TenantRequest, payload: ImportIn) -> Status[Imp
     * `404 not_found` — `file_id` names no document you can see.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
-    version = get_import_source(
-        tenant=tenant, file_id=payload.file_id, org=request.org, actor=actor
-    )
+    actor, tenant = acting(request)
+    version = get_import_source(tenant=tenant, file_id=payload.file_id, org=actor.org, actor=actor)
     run, created = create_import(
         tenant=tenant,
         actor=actor,
@@ -158,7 +140,7 @@ def create_import_route(request: TenantRequest, payload: ImportIn) -> Status[Imp
     return Status(201 if created else 200, staged_out(run, created))
 
 
-@router.get("/{import_id}/", response=ImportOut, url_name="djb_import-detail")
+@router.get("/{import_id}/", response=DjbImportOut, url_name="djb_import-detail")
 def retrieve_import(request: TenantRequest, import_id: UUID) -> Import:
     """Retrieve an import
 
@@ -180,15 +162,16 @@ def retrieve_import(request: TenantRequest, import_id: UUID) -> Import:
     * `404 not_found` — nothing has that id where you can see.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
+    actor, tenant = acting(request)
     return get_import(
-        tenant=request.tenant,
+        tenant=tenant,
         import_id=import_id,
-        org=request.org,
-        actor=actor_from_request(request),
+        org=actor.org,
+        actor=actor,
     )
 
 
-@router.get("/{import_id}/rows/", response=list[ImportRowOut], url_name="djb_import_rows-list")
+@router.get("/{import_id}/rows/", response=list[DjbImportRowOut], url_name="djb_import_rows-list")
 @paginate(CursorPagination)
 def list_import_rows_route(
     request: TenantRequest, import_id: UUID, outcome: str | None = None
@@ -211,16 +194,16 @@ def list_import_rows_route(
     * `404 not_found` — nothing has that id where you can see.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor = actor_from_request(request)
-    run = get_import(tenant=request.tenant, import_id=import_id, org=request.org, actor=actor)
+    actor, tenant = acting(request)
+    run = get_import(tenant=tenant, import_id=import_id, org=actor.org, actor=actor)
     rows: QuerySet[ImportRow] = list_import_rows(
-        tenant=request.tenant, import_=run, org=request.org, actor=actor, outcome=outcome
+        tenant=tenant, import_=run, org=actor.org, actor=actor, outcome=outcome
     )
     return rows
 
 
-@router.post("/{import_id}/apply/", response=ImportOut, url_name="djb_import-apply")
-@refuses("conflict", "forbidden", "import_invalid", "not_found")
+@router.post("/{import_id}/apply/", response=DjbImportOut, url_name="djb_import-apply")
+@refuses("conflict", "forbidden", "import_invalid", "no_acting_scope", "not_found")
 def apply_import_route(request: TenantRequest, import_id: UUID) -> Import:
     """Apply an import
 
@@ -244,13 +227,13 @@ def apply_import_route(request: TenantRequest, import_id: UUID) -> Import:
     * `404 not_found` — nothing has that id where you can see.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
-    run = get_import(tenant=tenant, import_id=import_id, org=request.org, actor=actor)
+    actor, tenant = acting(request)
+    run = get_import(tenant=tenant, import_id=import_id, org=actor.org, actor=actor)
     return apply_import(tenant=tenant, actor=actor, import_=run)
 
 
-@router.post("/{import_id}/cancel/", response=ImportOut, url_name="djb_import-cancel")
-@refuses("conflict", "forbidden", "not_found")
+@router.post("/{import_id}/cancel/", response=DjbImportOut, url_name="djb_import-cancel")
+@refuses("conflict", "forbidden", "no_acting_scope", "not_found")
 def cancel_import_route(request: TenantRequest, import_id: UUID) -> Import:
     """Cancel an import
 
@@ -266,6 +249,6 @@ def cancel_import_route(request: TenantRequest, import_id: UUID) -> Import:
     * `404 not_found` — nothing has that id where you can see.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
-    run = get_import(tenant=tenant, import_id=import_id, org=request.org, actor=actor)
+    actor, tenant = acting(request)
+    run = get_import(tenant=tenant, import_id=import_id, org=actor.org, actor=actor)
     return cancel_import(tenant=tenant, actor=actor, import_=run)

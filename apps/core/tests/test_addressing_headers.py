@@ -57,6 +57,7 @@ import ast
 import json
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -65,10 +66,18 @@ from django.test import Client
 
 from apps.accounts.models import User
 from apps.accounts.services import issue_token
-from apps.core.actor import actor_for
+from apps.core.actor import actor_for, system_actor
+from apps.core.middleware import AmbiguousTenant, resolve_tenant
 from apps.core.models import Membership, Organization, Tenant
 from apps.core.services import create_organization
+from apps.core.surfaces import IMPLICIT_STAFF, Surface, union
 from apps.core.tests.test_mcp import MCP_HEADERS, running
+from apps.core.tests.test_surfaces import (  # noqa: F401 — the surface world's fixtures, by name
+    CUSTOMER_HOST,
+    customer,
+    customer_role,
+    two_faces,
+)
 from apps.core.tests.tree_census import source_tree, vanishing_source_file
 
 pytestmark = pytest.mark.django_db
@@ -107,7 +116,7 @@ UNDRIVEN = {
     # on the tree it runs against.
     #
     # THE MITIGATION, which is why this is a declared gap and not an untested
-    # door: both credential paths converge on ONE call. `config/mcp.py:431`
+    # entrance — both credential paths converge on ONE call. `config/mcp.py:431`
     # asks `addressing_refusal` after the credential has resolved and before
     # the transport is reached, and it asks it for whichever kind resolved —
     # the bearer token rows below and the JWT reach the same function with the
@@ -137,6 +146,10 @@ DOOR_COVERAGE = {
     ),
     "apps/realtime/middleware.py": (
         "socket (bearer) — apps/realtime/tests/test_addressing_headers.py, SOCKET_ROWS"
+    ),
+    "apps/workflows/context.py": (
+        "workflow — the activity boundary; apps/workflows/tests/test_context.py drives "
+        "the revoked, foreign, system and live hats"
     ),
 }
 
@@ -471,11 +484,15 @@ def _resolves_an_addressing_header(path: Path) -> bool:
     Derived off the call, not off a list of file names: a door added tomorrow
     that resolves `X-Tenant` shows up here the moment it is written.
     """
+    return _calls_any(path, {"resolve_tenant", "resolve_org"})
+
+
+def _calls_any(path: Path, wanted: set[str]) -> bool:
+    """True when this module calls — or hands on, uncalled — one of `wanted`."""
     try:
         tree = source_tree(path)
     except SyntaxError:  # pragma: no cover - not a thing in this tree
         return False
-    wanted = {"resolve_tenant", "resolve_org"}
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             func = node.func
@@ -502,6 +519,42 @@ def test_the_header_reading_door_census_is_covered() -> None:
     assert census == covered, {
         "in the tree but not in the table": sorted(census - covered),
         "in the table but not in the tree": sorted(covered - census),
+    }
+
+
+#: Every module that reads the HOST into a surface — the door fact the tenant is
+#: resolved under — and how it is driven. Checked against the derived census in
+#: `test_the_host_reading_door_census_is_covered`; a door that resolves a
+#: surface tomorrow fails that test until it has a row here.
+SURFACE_COVERAGE = {
+    "apps/core/middleware.py": (
+        "rest — the session door; apps/core/tests/test_surfaces.py drives the exact, the "
+        "pattern and the unbound host, and the tenant-rule rows below"
+    ),
+    "apps/core/asgi_middleware.py": (
+        "socket — resolved into scope['surface'] before the tenant; the join's refusal of an "
+        "unexposed family is the socket rung's, driven there"
+    ),
+    "config/mcp.py": (
+        "mcp — resolved from the Host header before the credential; "
+        "apps/core/tests/test_mcp_surfaces.py drives the exposed tool, the refused tool, "
+        "the listing, the unbound host and the membership-surface X-Tenant"
+    ),
+}
+
+
+def test_the_host_reading_door_census_is_covered() -> None:
+    """Every module that resolves a surface has a row in `SURFACE_COVERAGE`."""
+    root = _repository_root()
+    census = {
+        str(path.relative_to(root)) for path in _modules() if _calls_any(path, {"resolve_surface"})
+    }
+    # The declaring module is where the resolver lives, not a door.
+    census.discard("apps/core/surfaces.py")
+
+    assert census == set(SURFACE_COVERAGE), {
+        "in the tree but not in the table": sorted(census - set(SURFACE_COVERAGE)),
+        "in the table but not in the tree": sorted(set(SURFACE_COVERAGE) - census),
     }
 
 
@@ -575,12 +628,7 @@ def test_a_membership_is_what_makes_a_header_honourable(
 
 
 def test_the_header_census_tolerates_a_file_that_vanishes_at_open() -> None:
-    """The falsifier for the tolerant read. RED before RACE-1: `FileNotFoundError`.
-
-    This census already caught `SyntaxError` and NOT `FileNotFoundError`, which
-    is the shape the whole class is about — a guard around the wrong exception
-    reads exactly like a guard.
-    """
+    """A source file deleted between listing and open is skipped, never a `FileNotFoundError`."""
     with vanishing_source_file() as planted:
         for path in _modules():
             _resolves_an_addressing_header(path)
@@ -608,7 +656,7 @@ def _a_dark_tenant(status: Any) -> tuple[Tenant, User, str]:
 
     suffix = uuid.uuid4().hex[:8]
     victim = create_tenant(name=f"Dark {suffix}", slug=f"dark-{suffix}", actor=system_actor())
-    person = create_user(email=f"dark-{suffix}@example.com", password="dark-pass-12345")
+    person = create_user(email=f"dark-{suffix}@example.com", password="dark-pass-12345")  # noqa: S106 — a throwaway password a test user is made with
     add_membership(
         user=person,
         tenant=victim,
@@ -670,9 +718,9 @@ def test_a_suspended_tenant_resolves_nowhere_at_every_door(status: Any) -> None:
     # that cannot be honoured is `addressing_header_not_honoured` wherever it
     # lands, and `/widgets/` says that too — but an OMITTED header leaves the
     # request with no tenant, and a scoped list with no tenant is legitimately
-    # `200 []` (the whole point of failing closed). `_acting` is what turns "no
-    # tenant" into the door's own answer, and core's routes are the ones that
-    # call it.
+    # `200 []` (the whole point of failing closed). `apps.core.api.acting` is
+    # what turns "no tenant" into the door's registered answer, and core's routes
+    # are the ones that call it.
     for kind in (SESSION, UNPINNED):
         sent = _organizations(kind=kind, user=person, plaintext=plaintext, slug=victim.slug)
         assert sent.status_code == REFUSED_STATUS, (status, kind, sent.content)
@@ -680,7 +728,7 @@ def test_a_suspended_tenant_resolves_nowhere_at_every_door(status: Any) -> None:
 
         omitted = _organizations(kind=kind, user=person, plaintext=plaintext, slug=None)
         assert omitted.status_code == REFUSED_STATUS, (status, kind, omitted.content)
-        assert "No tenant for this request." in omitted.content.decode()
+        assert omitted.json()["code"] == "no_acting_scope", omitted.json()
 
     # …and the write the review drove.
     client = Client()
@@ -740,3 +788,175 @@ async def test_a_dark_tenant_resolves_nowhere_at_the_machine_door(status: Any) -
 
     assert sent.status_code == REFUSED_STATUS, sent.text
     assert sent.json()["code"] == CODE, sent.json()
+
+
+# --- the surface decides HOW the tenant is chosen: three rules, three rows each -
+#
+# `resolve_tenant(surface=)` under each of `addressed`, `host` and `membership`,
+# over the scratch customer surface `test_surfaces.py` plants (the `customer`
+# role, declared through `authz`'s own walk; the surface in the union the
+# discovery walk would have produced). Nothing here is a file in the tree.
+
+
+def _customer_in(tenant: Tenant, person: User, owner: User) -> None:
+    root = Organization.objects.for_tenant(tenant).get(parent__isnull=True)
+    from apps.core.services import add_membership
+
+    add_membership(
+        user=person,
+        tenant=tenant,
+        organization=root,
+        role="customer",
+        actor=actor_for(user=owner, tenant=tenant, org=root),
+    )
+
+
+@pytest.fixture
+def by_host(
+    settings: Any, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> Surface:
+    """A customer surface whose tenant is named by its host: `{tenant}.customer.localhost`."""
+    from apps.core import surfaces
+
+    request.getfixturevalue("customer_role")
+
+    surface = Surface(
+        families={"widgets"}, acts={"read"}, roles={"customer"}, tenant_rule="host", screens=set()
+    )
+    declared = union([(SimpleNamespace(label="zzz_probe_portal"), {"customer": surface})])
+    monkeypatch.setattr(surfaces, "_declared", declared)
+    settings.SURFACE_HOSTS = {"staff": "localhost", "customer": "{tenant}.customer.localhost"}
+    settings.ALLOWED_HOSTS = [*settings.ALLOWED_HOSTS, ".customer.localhost"]
+    return declared["customer"]
+
+
+# `addressed` — today's rule, and the role a surface admits
+
+
+def test_addressed_answers_the_default_membership_as_it_always_did(
+    tenant: Tenant, owner: User
+) -> None:
+    assert resolve_tenant(user=owner, requested_slug=None, surface=IMPLICIT_STAFF) == tenant
+
+
+def test_addressed_answers_the_tenant_the_header_names(
+    tenant: Tenant, other_tenant: Tenant, owner: User
+) -> None:
+    assert resolve_tenant(user=owner, requested_slug="acme", surface=IMPLICIT_STAFF) == tenant
+    assert resolve_tenant(user=owner, requested_slug="globex", surface=IMPLICIT_STAFF) is None
+
+
+def test_the_staff_surface_does_not_admit_a_role_another_surface_names(
+    request: pytest.FixtureRequest, tenant: Tenant
+) -> None:
+    request.getfixturevalue("two_faces")
+    person = request.getfixturevalue("customer")
+    from apps.core import surfaces
+
+    staff = surfaces.by_key("staff")
+    assert resolve_tenant(user=person, requested_slug=None, surface=staff) is None
+    assert Client().get("/api/v1/surface/", HTTP_HOST="localhost").json()["surface"] == "staff"
+
+
+# `host` — the host names the tenant
+
+
+def test_host_answers_the_tenant_its_host_names(
+    by_host: Surface, tenant: Tenant, owner: User
+) -> None:
+    person = User.objects.create_user(email="host-customer@example.com")
+    _customer_in(tenant, person, owner)
+
+    resolved = resolve_tenant(
+        user=person, requested_slug=None, surface=by_host, host="acme.customer.localhost"
+    )
+    assert resolved == tenant
+
+
+def test_host_answers_nothing_for_a_tenant_the_person_is_not_in(
+    by_host: Surface, tenant: Tenant, other_tenant: Tenant, owner: User
+) -> None:
+    person = User.objects.create_user(email="host-customer@example.com")
+    _customer_in(tenant, person, owner)
+
+    resolved = resolve_tenant(
+        user=person, requested_slug=None, surface=by_host, host="globex.customer.localhost"
+    )
+    assert resolved is None
+
+
+def test_host_refuses_a_header_that_disagrees_with_the_host(
+    by_host: Surface, tenant: Tenant, other_tenant: Tenant, owner: User
+) -> None:
+    person = User.objects.create_user(email="host-customer@example.com")
+    _customer_in(tenant, person, owner)
+    client = Client()
+    client.force_login(person)
+
+    agreeing = client.get(
+        LIST_URL, HTTP_HOST="acme.customer.localhost", headers={"x-tenant": "acme"}
+    )
+    disagreeing = client.get(
+        LIST_URL, HTTP_HOST="acme.customer.localhost", headers={"x-tenant": "globex"}
+    )
+
+    assert agreeing.status_code == 200, agreeing.content
+    assert disagreeing.status_code == REFUSED_STATUS, disagreeing.content
+    assert disagreeing.json()["code"] == CODE
+
+
+# `membership` — the person's one workspace
+
+
+def test_membership_answers_the_persons_one_workspace(
+    request: pytest.FixtureRequest, tenant: Tenant
+) -> None:
+    surface = request.getfixturevalue("two_faces")
+    person = request.getfixturevalue("customer")
+
+    assert resolve_tenant(user=person, requested_slug=None, surface=surface) == tenant
+    client = Client()
+    client.force_login(person)
+    assert client.get(LIST_URL, HTTP_HOST=CUSTOMER_HOST).status_code == 200
+
+
+def test_membership_refuses_a_person_with_two_workspaces(
+    request: pytest.FixtureRequest, tenant: Tenant, other_tenant: Tenant, owner: User
+) -> None:
+    surface = request.getfixturevalue("two_faces")
+    person = request.getfixturevalue("customer")
+    other_owner = User.objects.create_user(email="globex-owner@example.com")
+    from apps.core.services import add_membership
+
+    root = Organization.objects.for_tenant(other_tenant).get(parent__isnull=True)
+    add_membership(
+        user=other_owner,
+        tenant=other_tenant,
+        organization=root,
+        role="owner",
+        actor=system_actor(tenant=other_tenant),
+    )
+    _customer_in(other_tenant, person, other_owner)
+
+    with pytest.raises(AmbiguousTenant):
+        resolve_tenant(user=person, requested_slug=None, surface=surface)
+    client = Client()
+    client.force_login(person)
+    refused = client.get(LIST_URL, HTTP_HOST=CUSTOMER_HOST)
+    assert refused.status_code == 400, refused.content
+    assert refused.json()["code"] == "ambiguous_tenant"
+    assert refused.json()["remedies"]
+
+
+def test_membership_refuses_a_sent_tenant_header_even_one_that_agrees(
+    request: pytest.FixtureRequest, tenant: Tenant
+) -> None:
+    request.getfixturevalue("two_faces")
+    person = request.getfixturevalue("customer")
+    client = Client()
+    client.force_login(person)
+
+    refused = client.get(LIST_URL, HTTP_HOST=CUSTOMER_HOST, headers={"x-tenant": tenant.slug})
+
+    assert refused.status_code == REFUSED_STATUS, refused.content
+    assert refused.json()["code"] == CODE

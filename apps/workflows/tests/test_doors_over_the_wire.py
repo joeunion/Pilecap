@@ -55,7 +55,7 @@ from apps.core.models import Grant, Membership, Tenant
 # a second thing to keep in step with the MCP protocol version.
 from apps.core.tests.test_mcp import MCP_HEADERS, PROTOCOL_VERSION, running
 from apps.workflows.models import WorkflowRun
-from apps.workflows.services import record_run, workflow_id
+from apps.workflows.services import _starter_actor, record_run, workflow_id
 
 #: House rule 46. The door pair this module answers for `apps/workflows`, read
 #: by the gate off this module-level assignment.
@@ -124,7 +124,7 @@ def run(tenant: Tenant, owner: User) -> WorkflowRun:
         workflow_id=workflow_id(tenant=tenant, app="example", noun="widget", key="parity"),
         workflow_type="WidgetOnboardingWorkflow",
         input_digest="d" * 64,
-        user=owner,
+        actor=_starter_actor(tenant=tenant, user=owner),
     )
     row.status = WorkflowRun.Status.COMPLETED
     row.run_id = "execution-parity"

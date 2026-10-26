@@ -175,7 +175,7 @@ def _drive_oidc_identity_provider(instance: FakeZitadel) -> None:
         name="acme:1",
         issuer="https://idp.acme.example",
         client_id="acme-client",
-        client_secret="acme-secret",  # pragma: allowlist secret
+        client_secret="acme-secret",  # noqa: S106 — a fake IdP client secret the test world configures  # pragma: allowlist secret
     )
     # The second call is the one that PUTs: the first had no provider to update
     # and took the create branch.
@@ -183,7 +183,7 @@ def _drive_oidc_identity_provider(instance: FakeZitadel) -> None:
         name="acme:1",
         issuer="https://idp.acme.example",
         client_id="acme-client",
-        client_secret="acme-secret",  # pragma: allowlist secret
+        client_secret="acme-secret",  # noqa: S106 — a fake IdP client secret the test world configures  # pragma: allowlist secret
         existing_id=made.id,
     )
 
@@ -192,12 +192,12 @@ def _drive_google_identity_provider(instance: FakeZitadel) -> None:
     made = zitadel.ensure_google_identity_provider(
         name="Workforce Google",
         client_id="google-client",
-        client_secret="google-secret",  # pragma: allowlist secret
+        client_secret="google-secret",  # noqa: S106 — a fake IdP client secret the test world configures  # pragma: allowlist secret
     )
     zitadel.ensure_google_identity_provider(
         name="Workforce Google",
         client_id="google-client",
-        client_secret="google-secret",  # pragma: allowlist secret
+        client_secret="google-secret",  # noqa: S106 — a fake IdP client secret the test world configures  # pragma: allowlist secret
         existing_id=made.id,
     )
 
@@ -265,6 +265,12 @@ def _drive_iam_member(instance: FakeZitadel) -> None:
     )
 
 
+def _drive_project(instance: FakeZitadel) -> None:
+    """The deployment's project, its check switched on: the wall a realm's grant opens."""
+    project = zitadel.ensure_project(name="Pilecap")
+    zitadel.set_project_check(project_id=project.id)
+
+
 #: Every declared resource, and the drive that makes its writer send a `PUT`.
 #: The census asserts this covers `zitadel.PUT_FIELD_SETS` exactly, so the
 #: population is discoverable rather than remembered.
@@ -277,6 +283,7 @@ DRIVES: dict[str, Callable[[FakeZitadel], None]] = {
     "/idps/google/{id}": _drive_google_identity_provider,
     "/projects/{id}/apps/{id}/oidc_config": _drive_oidc_app_config,
     "/members/{id}": _drive_iam_member,
+    "/projects/{id}": _drive_project,
 }
 
 

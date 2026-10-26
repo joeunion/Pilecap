@@ -1,7 +1,7 @@
 """The accounts app's authorization matrix, and the census that derives it.
 
 The same shape `apps/files/tests/test_authz_sweep.py` carries, split into its
-own module the way `apps/events/tests/authz_matrix.py` is — because this file
+own module the way `apps/example/tests/authz_matrix.py` is — because this file
 has to be COPIED onto the baseline tree to derive the document, and a module
 that carries no tests copies without dragging a test suite with it.
 
@@ -85,6 +85,7 @@ BASELINE_COMMAND = (
 BASELINE_PATH = "apps/accounts/tests/authz_baseline.json"
 
 
+# does-not-cover: per-actor `own_user`, A/B, cross-kind rows; trigger: core's object axis on a tree.
 def accounts_rows(world: World) -> dict[str, dict[str, Any]]:
     """Row class → actor name → the object the question is asked about.
 

@@ -1,0 +1,96 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "end", "text": ""}
+from __future__ import annotations
+
+import json
+from typing import Any
+
+import pytest
+from django.apps import apps as django_apps
+from django.test import Client
+
+from apps.example.models import WidgetPolicy
+from apps.example.services import (
+    archive_widget,
+    archive_widget_policy,
+    create_widget,
+    create_widget_policy,
+)
+from pilecap import Actor
+from pilecap.accounts import User
+from pilecap.tenancy import Tenant
+
+
+
+pytestmark = pytest.mark.django_db
+
+LIST_URL = "/api/v1/widgets/"
+POLICIES_URL = "/api/v1/widgets/policies/"
+JSON = "application/json"
+
+
+def _body(response: Any) -> Any:
+    return json.loads(response.content)
+
+
+def _ids(response: Any) -> list[str]:
+    assert response.status_code == 200, response.content
+    return [row["id"] for row in _body(response)["items"]]
+
+
+def _events(tenant: Tenant, name: str) -> int:
+    """How many outbox rows carry this event name — the spine's own count."""
+    outbox = django_apps.get_model("events", "Outbox")
+    return int(outbox.objects.filter(event__tenant=tenant, event__name=name).count())
+
+
+
+
+def test_a_policy_a_live_widget_names_is_blocked_and_names_the_widgets(
+    api: Client, tenant: Tenant, admin_member: User, owner_actor: Actor, admin_actor: Actor
+) -> None:
+    policy = create_widget_policy(tenant=tenant, actor=owner_actor, name="Heavy")
+    holder = create_widget(tenant=tenant, actor=owner_actor, name="Governed", policy=policy)
+    create_widget(tenant=tenant, actor=owner_actor, name="Ungoverned")
+    api.force_login(admin_member)
+
+    refused = api.post(f"{POLICIES_URL}{policy.pk}/archive/", content_type=JSON)
+    assert refused.status_code == 409, refused.content
+    body = _body(refused)
+    assert body["code"] == "archive_blocked"
+    assert body["blocking"][0]["noun"] == "widget"
+    door = f"route:widget-list?policy={policy.pk}"
+    assert body["blocking"][0]["door"] == door
+    assert door in [remedy["destination"] for remedy in body["remedies"]]
+    policy.refresh_from_db()
+    assert policy.archived_at is None
+    assert _events(tenant, "example.widget_policy.archived") == 0
+
+    # The door is real: the list narrowed to this policy is exactly the holders.
+    assert _ids(api.get(f"{LIST_URL}?policy={policy.pk}")) == [str(holder.pk)]
+
+    # Take the holder out of the book and the policy is free to follow it.
+    archive_widget(tenant=tenant, actor=admin_actor, widget=holder)
+    archived = api.post(f"{POLICIES_URL}{policy.pk}/archive/", content_type=JSON)
+    assert archived.status_code == 200, archived.content
+    assert _body(archived)["archived_at"] is not None
+    assert _ids(api.get(POLICIES_URL)) == []
+    assert _ids(api.get(f"{POLICIES_URL}?show=archived")) == [str(policy.pk)]
+
+    restored = api.post(f"{POLICIES_URL}{policy.pk}/restore/", content_type=JSON)
+    assert restored.status_code == 200, restored.content
+    assert _ids(api.get(POLICIES_URL)) == [str(policy.pk)]
+
+
+def test_an_archived_policy_governs_nobody_and_cannot_be_named(
+    tenant: Tenant, owner_actor: Actor, admin_actor: Actor, api: Client, owner: User
+) -> None:
+    policy = create_widget_policy(tenant=tenant, actor=owner_actor, name="Retired")
+    archive_widget_policy(tenant=tenant, actor=admin_actor, policy=policy)
+    assert not WidgetPolicy.objects.for_tenant(tenant).filter(pk=policy.pk).exists()
+    api.force_login(owner)
+
+    assert api.get(f"{POLICIES_URL}governing/").status_code == 404
+    named = api.post(LIST_URL, {"name": "New", "policy_id": str(policy.pk)}, content_type=JSON)
+    assert named.status_code == 404, named.content
+
+

@@ -69,6 +69,7 @@ import pytest
 from temporalio.testing import WorkflowEnvironment
 
 from apps import conftest
+from apps.testing import teardown
 
 # The instrument, not the bound. On the baseline the named-port branch never
 # returns, and something has to end the test: this is the test's OWN outer
@@ -147,7 +148,7 @@ def _test_server_children_of(pid: int) -> set[int]:
     process proves nothing in either direction.
     """
     listing = subprocess.run(
-        ["ps", "-Ao", "pid=,ppid=,args="],
+        ["ps", "-Ao", "pid=,ppid=,args="],  # noqa: S607 — `ps` resolved on PATH, as the gate's own legs run it
         capture_output=True,
         text=True,
         check=False,
@@ -173,7 +174,7 @@ def _a_sibling_serving(port: int) -> Iterator[int]:
     teardown would orphan its own server, and this module refuses to be the
     reason `scripts/temporal_sweep.sh` reports one.
     """
-    sibling = subprocess.Popen(
+    sibling = subprocess.Popen(  # noqa: S603 — argv list built here from constants and paths; `python`, no shell
         [sys.executable, "-c", _SIBLING_PROGRAM, str(port)],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -230,8 +231,8 @@ async def test_a_named_port_that_nothing_answers_on_is_refused_within_the_budget
     say which port, say what budget it spent, and say that NOTHING ANSWERED,
     which is a different fact from a collision and gets a different sentence.
     """
-    monkeypatch.setattr(conftest, "_FIRST_START_SECONDS", _TEST_BUDGET_SECONDS)
-    monkeypatch.setattr(conftest, "_LATER_START_SECONDS", _TEST_BUDGET_SECONDS)
+    monkeypatch.setattr(teardown, "_FIRST_START_SECONDS", _TEST_BUDGET_SECONDS)
+    monkeypatch.setattr(teardown, "_LATER_START_SECONDS", _TEST_BUDGET_SECONDS)
 
     with _a_plain_listener() as port:
         started = time.monotonic()
@@ -353,8 +354,8 @@ async def test_cancelling_a_named_port_start_reaps_the_child(
     SDK already spawned is its own, and a child whose process is about to go is
     the reparented stray counts.
     """
-    monkeypatch.setattr(conftest, "_FIRST_START_SECONDS", _RED_INSTRUMENT_SECONDS)
-    monkeypatch.setattr(conftest, "_LATER_START_SECONDS", _RED_INSTRUMENT_SECONDS)
+    monkeypatch.setattr(teardown, "_FIRST_START_SECONDS", _RED_INSTRUMENT_SECONDS)
+    monkeypatch.setattr(teardown, "_LATER_START_SECONDS", _RED_INSTRUMENT_SECONDS)
 
     with _a_plain_listener() as port:
         start = asyncio.ensure_future(WorkflowEnvironment.start_time_skipping(port=port))
@@ -479,7 +480,7 @@ def test_the_bounded_start_seam_is_the_only_one() -> None:
     — is invisible here. This proves the seam is one, not that a seam is the
     only way to write one.
     """
-    source = Path(conftest.__file__).read_text(encoding="utf-8")
+    source = Path(teardown.__file__).read_text(encoding="utf-8")
 
     assert source.count(_ONE_AND_ONLY) == 1
     assert _seam_complaints(source) == [], "the live guard has grown a second seam"

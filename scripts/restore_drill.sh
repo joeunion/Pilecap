@@ -1,36 +1,5 @@
 #!/usr/bin/env bash
-# THIS FILE IS EXECUTED, AND IT IS BASH — not POSIX sh, and not zsh. The
-# shebang above is honoured by `./this`; `sh this` and `zsh this` IGNORE it,
-# and neither of them fails where the mistake was made. Measured on this tree:
-#
-#   zsh scripts/queue_cited.sh   exit 2 blaming the TREE ("this is not a
-#                                checkout root") for zsh's word-splitting
-#   zsh scripts/kill_mine.sh     an ordinary-looking census of nothing
-#   sh  scripts/sweep.sh         "lifecycle.sh: line 152: syntax error"
-#
-# A wrong shell here does not crash. It ANSWERS, and the answer looks like the
-# tree's fault.
-#
-# TWO TESTS, because on macOS `/bin/sh` IS bash: BASH_VERSION is set under
-# `sh x.sh` and only POSIX MODE tells the two apart (SHELLOPTS carries
-# `posix`). On Linux `/bin/sh` is dash and the first test is the one that
-# fires. Neither test alone covers both machines.
-#
-# A SOURCED library must never carry this. There the interpreter is the
-# caller's ON PURPOSE and an `exit` would kill the caller's shell — the
-# argument is scripts/db.sh's, at scripts/db.sh:50-57, and it is why db.sh is
-# the one executable in this tree deliberately without a belt.
-[ -n "${BASH_VERSION:-}" ] || {
-    echo "${0##*/}: must run under bash — not sh, not zsh. Try \`bash ${0}\`." >&2
-    exit 2
-}
-case ":${SHELLOPTS:-}:" in
-*:posix:*)
-    echo "${0##*/}: bash is in POSIX mode — which is what \`sh ${0}\` does on a" >&2
-    echo "  machine whose /bin/sh is bash. Try \`bash ${0}\`." >&2
-    exit 2
-    ;;
-esac
+. "$(dirname -- "${BASH_SOURCE:-$0}")/bash_only.sh" || exit 2
 # Restore a backup, prove it is real, and never become the hazard.
 #
 #   ./scripts/restore_drill.sh                     # the newest dump in backups/
@@ -92,19 +61,17 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # Exit 2 is "I could not look"; exit 1 is "I looked and it is wrong"
-# (docs/product/instruments.md). A refused restore is a 1: the script looked at
-# the origin, at the target, and said no.
-cannot_look() {
-    echo "$*" >&2
-    exit 2
-}
+# (docs/product/instruments.md). Every exit 2 below is the seam's `gate_die`,
+# the target-is-the-source refusal included: it is a `!!` refusal, and `!!` is
+# exit 2 — the drill never got as far as restoring.
+. "$(dirname -- "${BASH_SOURCE[0]}")/gate_refuse.sh" || exit 2
 
 DUMP=""
 INTO_PROJECT=""
 ENV_FILE="deploy/.env"
 
 need_value() {
-    [ -n "${2:-}" ] || cannot_look "$1 needs a value"
+    [ -n "${2:-}" ] || gate_die "" "$1 needs a value"
 }
 
 while [ $# -gt 0 ]; do
@@ -124,10 +91,10 @@ while [ $# -gt 0 ]; do
         exit 0
         ;;
     -*)
-        cannot_look "unknown flag ${1}. Run $0 --help."
+        gate_die "" "unknown flag ${1}. Run $0 --help."
         ;;
     *)
-        [ -z "$DUMP" ] || cannot_look "two dumps given: ${DUMP} and ${1}"
+        [ -z "$DUMP" ] || gate_die "" "two dumps given: ${DUMP} and ${1}"
         DUMP="$1"
         shift
         ;;
@@ -169,7 +136,7 @@ env_value() {
 if [ -n "$INTO_PROJECT" ]; then
     ORIGIN="${DUMP}.origin"
     if [ ! -f "$ORIGIN" ]; then
-        cannot_look "$(
+        gate_die "" "$(
             printf 'refusing to restore into a LIVE stack from a dump with no origin.\n'
             printf '   %s has no %s beside it, so this script cannot prove the target\n' "$DUMP" "$(basename "$ORIGIN")"
             printf '   stack %s is not the stack the dump came from. Take the dump with\n' "$INTO_PROJECT"
@@ -177,24 +144,24 @@ if [ -n "$INTO_PROJECT" ]; then
         )"
     fi
     SOURCE_PROJECT="$(env_value project "$ORIGIN")" ||
-        cannot_look "no project= line in ${ORIGIN}: the origin is unreadable, so the target cannot be cleared"
+        gate_die "" "no project= line in ${ORIGIN}: the origin is unreadable, so the target cannot be cleared"
     SOURCE_DATABASE="$(env_value database "$ORIGIN" || true)"
     if [ "$SOURCE_PROJECT" = "$INTO_PROJECT" ]; then
-        printf '!! REFUSED: the restore target is the source.\n' >&2
-        printf '   dump      %s\n' "$DUMP" >&2
-        printf '   origin    project %s (database %s)\n' "$SOURCE_PROJECT" "${SOURCE_DATABASE:-?}" >&2
-        printf '   target    project %s\n' "$INTO_PROJECT" >&2
-        printf '   A restore drill that can overwrite the thing it is protecting is a\n' >&2
-        printf '   worse risk than not drilling. Bring up a second stack\n' >&2
-        printf '   (deploy/compose.second.yaml) and aim at that instead.\n' >&2
-        exit 1
+        gate_die "Nothing was restored." \
+            "REFUSED: the restore target is the source." \
+            "dump      ${DUMP}" \
+            "origin    project ${SOURCE_PROJECT} (database ${SOURCE_DATABASE:-?})" \
+            "target    project ${INTO_PROJECT}" \
+            "A restore drill that can overwrite the thing it is protecting is a" \
+            "worse risk than not drilling. Bring up a second stack" \
+            "(deploy/compose.second.yaml) and aim at that instead."
     fi
 
-    [ -f "$ENV_FILE" ] || cannot_look "no environment file at ${ENV_FILE}: --into-project needs the target stack's own env (--env-file <path>)"
+    [ -f "$ENV_FILE" ] || gate_die "" "no environment file at ${ENV_FILE}: --into-project needs the target stack's own env (--env-file <path>)"
     DATABASE_NAME="$(env_value DATABASE_NAME "$ENV_FILE")" ||
-        cannot_look "no DATABASE_NAME in ${ENV_FILE}"
+        gate_die "" "no DATABASE_NAME in ${ENV_FILE}"
     POSTGRES_USER="$(env_value POSTGRES_USER "$ENV_FILE")" ||
-        cannot_look "no POSTGRES_USER in ${ENV_FILE}"
+        gate_die "" "no POSTGRES_USER in ${ENV_FILE}"
     export DATABASE_NAME POSTGRES_USER
     # Every `docker compose` below — this file's and `db.sh`'s — now reaches the
     # target stack rather than the development one.
@@ -313,7 +280,7 @@ if [ -n "$INTO_PROJECT" ]; then
     # genuinely absent, psql says so by name and the operator runs the release
     # step — a loud, correct failure rather than a secret in a process.
     APP_ROLE="$(env_value DATABASE_USER "$ENV_FILE")" ||
-        cannot_look "no DATABASE_USER in ${ENV_FILE}: cannot re-grant the restored database"
+        gate_die "" "no DATABASE_USER in ${ENV_FILE}: cannot re-grant the restored database"
     echo "Re-granting the restored database to the application role ${APP_ROLE}..."
     docker compose run --rm -T web python /deploy/grants.sql.py --role "$APP_ROLE" \
         > /tmp/djb-restore-grants.sql

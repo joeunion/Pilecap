@@ -44,7 +44,6 @@ from apps.comms.providers import (
     DROP_NON_TERMINAL,
     DROP_UNTRANSLATABLE,
     STATUS_PROVIDER,
-    ConnectionChannel,
     EmailChannel,
     ExplainsStatusDrops,
     FakeSmsChannel,
@@ -73,7 +72,7 @@ JSON = "application/json"
 #: and is used rather than a `.secrets.baseline` entry deliberately: the
 #: baseline is a shared file at the root of the tree and this app owns neither
 #: it nor the right to make four other lanes conflict on it.
-STATUS_SECRET = "the-esp-shares-this-and-nobody-else-does"  # pragma: allowlist secret
+STATUS_SECRET = "the-esp-shares-this-and-nobody-else-does"  # noqa: S105 — a signing secret the test both signs and verifies with  # pragma: allowlist secret
 
 
 # --- the door ------------------------------------------------------------------
@@ -127,6 +126,7 @@ def esp(tenant: Tenant, owner_actor: Actor) -> Connection:
         provider=STATUS_PROVIDER,
         name="Transactional email",
         credentials={"webhook_secret": STATUS_SECRET, "access_token": "an-esp-key"},
+        is_signature_v2_required=False,
     )
 
 
@@ -219,6 +219,9 @@ def test_a_delivered_webhook_moves_the_row_and_says_so_on_the_spine(
 
     payload = dict(published[0].payload)
     assert payload.pop("v") == 1
+    # `recipient_email` is the doors' alone: `MessageOut` marks it personal.
+    assert body.pop("recipient_email")
+    assert "recipient_email" not in payload
     assert sorted(payload) == sorted(body), "one row, one key set, both doors"
     assert payload == body, "one row, one rendering, both doors"
     # The timestamps are the half that used to differ, so they are named rather
@@ -514,7 +517,7 @@ def test_a_wrongly_signed_status_is_refused_and_stores_nothing(
     api: Client, tenant: Tenant, esp: Connection, message: Message
 ) -> None:
     """C2a-7's other half. The credential on this door is the HMAC, and only that."""
-    response = post_status(api, esp, tracking_event(message, "bounced"), secret="not-the-secret")
+    response = post_status(api, esp, tracking_event(message, "bounced"), secret="not-the-secret")  # noqa: S106 — a signing secret the test both signs and verifies with
     assert response.status_code == 401
     assert not InboundWebhook.objects.for_tenant(tenant).exists()
     assert reread(tenant, message).status == Message.Status.SENT
@@ -1110,10 +1113,7 @@ class SilentTransport:
     Written here rather than borrowed from `providers`, for two reasons. It is
     the shape a *product* ships — two members, because two is all this app ever
     asked any transport for — and that is exactly the case the fallback exists
-    for. And the shipped `ConnectionChannel` is a frozen dataclass, so its `slug`
-    is read-only and it does not structurally satisfy the protocol's settable
-    one; the test below still names it, because whether the adapter this
-    template ships explains itself is a fact worth pinning either way.
+    for.
     """
 
     slug = "a-product-channel"
@@ -1139,7 +1139,6 @@ def test_a_transport_that_explains_nothing_still_gets_a_named_drop() -> None:
     """
     silent = SilentTransport()
     assert not isinstance(silent, ExplainsStatusDrops)
-    assert not isinstance(ConnectionChannel(slug="sms", provider="a-vendor"), ExplainsStatusDrops)
 
     assert status_drop(silent, payload={"event_type": "opened"}) == StatusDrop(
         reason=DROP_NON_TERMINAL, event_type="opened"
@@ -1148,8 +1147,35 @@ def test_a_transport_that_explains_nothing_still_gets_a_named_drop() -> None:
         reason=DROP_UNTRANSLATABLE, event_type=""
     )
 
-    # And the fake SMS transport, which does delegate, answers like the email one.
+    # And the fake SMS transport, which delegates, answers in the shipped SMS vocabulary.
     assert isinstance(FakeSmsChannel(), ExplainsStatusDrops)
-    assert status_drop(FakeSmsChannel(), payload={"event_type": "delivered"}) == StatusDrop(
+    assert status_drop(FakeSmsChannel(), payload={"MessageStatus": "delivered"}) == StatusDrop(
         reason=DROP_NO_MESSAGE_ID, event_type="delivered"
     )
+
+
+def test_a_status_provider_registered_after_ready_reaches_every_registry() -> None:
+    """One call writes the slug's channel, its handler and its verifier — at any moment."""
+    from apps.comms.providers import (
+        STATUS_PROVIDERS,
+        handle_status_webhook,
+        register_status_provider,
+        verify_sms_webhook,
+    )
+    from apps.connections.providers import (
+        inbound_handler,
+        unregister_inbound_handler,
+        unregister_webhook_verifier,
+        webhook_verifier,
+    )
+
+    try:
+        register_status_provider("a-product-sms", "sms", verify_sms_webhook)
+
+        assert STATUS_PROVIDERS["a-product-sms"] == "sms"
+        assert inbound_handler("a-product-sms") is handle_status_webhook
+        assert webhook_verifier("a-product-sms") is verify_sms_webhook
+    finally:
+        STATUS_PROVIDERS.pop("a-product-sms", None)
+        unregister_inbound_handler("a-product-sms")
+        unregister_webhook_verifier("a-product-sms")

@@ -53,7 +53,7 @@ from apps.core.services import add_membership, create_tenant
 
 # Published here and therefore worth nothing, exactly like the keys in
 # `.env.example`. `--force` and the DEBUG check are what keep them on a laptop.
-SEED_PASSWORD = "seeded-development-password"  # pragma: allowlist secret
+SEED_PASSWORD = "seeded-development-password"  # noqa: S105 — a published dev password; the DEBUG check refuses it off a laptop  # pragma: allowlist secret
 SEED_TENANT_NAME = "Acme"
 SEED_TENANT_SLUG = "acme"
 SEED_OWNER_EMAIL = "owner@example.com"

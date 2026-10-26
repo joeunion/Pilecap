@@ -1,10 +1,5 @@
-"""A widget whose policy is archived stays out of the book until the policy returns.
-
-`restore_blockers.py` is the mirror of `archive_blockers.py`: a live widget
-never names an archived policy, whichever order the presses come in. The
-refusal names the policy's own restore as the door; nothing is written and
-nothing is said.
-"""
+# golden: policy begin
+"""A widget whose policy is archived stays out of the book until the policy returns."""
 
 from __future__ import annotations
 
@@ -14,9 +9,6 @@ from typing import Any
 import pytest
 from django.test import Client
 
-from apps.accounts.models import User
-from apps.core.actor import Actor, actor_for
-from apps.core.models import Organization, Tenant
 from apps.example.models import Widget, WidgetPolicy
 from apps.example.services import (
     archive_widget_policy,
@@ -24,6 +16,10 @@ from apps.example.services import (
     create_widget_policy,
     restore_widget_policy,
 )
+from pilecap import Actor
+from pilecap.accounts import User
+from pilecap.tenancy import Organization, Tenant
+from pilecap.testing import actor_for
 
 pytestmark = pytest.mark.django_db
 
@@ -75,3 +71,6 @@ def test_a_widget_whose_policy_is_archived_is_restore_blocked(
         policy=WidgetPolicy.objects.for_tenant(tenant).including_archived().get(pk=policy.pk),
     )
     assert api.post(f"{WIDGETS}{widget.pk}/restore/").status_code == 200
+
+
+# golden: policy end

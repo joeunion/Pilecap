@@ -1,0 +1,707 @@
+/* golden: face begin */
+
+/* §8 at the desk: the list is the page's width; the name block first, then one
+   column per fact — the noun's own (the copy's `columns`), then the two dates —
+   aligned across rows (each row is a subgrid of the list). */
+.widget-rows {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) repeat(4, auto);
+    column-gap: var(--space-4);
+}
+
+.widget-rows > li {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+    border-block-end: 1px solid var(--faint);
+}
+
+.widget-row {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+    align-items: center;
+    min-block-size: var(--act-min);
+    padding-block: var(--space-2);
+    color: var(--ink);
+    text-decoration: none;
+}
+
+.widget-row:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: var(--focus-ring-offset);
+}
+
+.widget-name {
+    font-weight: 600;
+    overflow-wrap: anywhere;
+}
+
+.widget-fact {
+    font-size: var(--type-facts);
+    color: var(--muted);
+}
+
+/* §16: a pill wraps WITH the name and never splits — the name's
+   `overflow-wrap: anywhere` stops at the pill, which is one unbreakable word. */
+.widget-pill,
+.widget-pill-join {
+    white-space: nowrap;
+    overflow-wrap: normal;
+}
+
+/* §8 on a phone: the name block, then the facts stacked under it. */
+@media (width <= 40rem) {
+    .widget-rows,
+    .widget-rows > li {
+        display: block;
+    }
+
+    .widget-row {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: var(--space-1);
+    }
+}
+
+/* §6: the crumb is the record's one door to the list — a target at the act
+   floor; the word is unchanged, the target grown. */
+.widget-crumb {
+    display: inline-flex;
+    align-items: center;
+    min-block-size: var(--act-min);
+}
+
+.widget-crumb:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: var(--focus-ring-offset);
+}
+
+/* §8: Show more closes the list, SECONDARY weight: a quiet bordered act,
+   left-aligned to the name column at the desk. */
+.widget-more {
+    min-block-size: var(--act-min);
+    margin-block-start: var(--space-3);
+    padding: 0 var(--space-3);
+    font: inherit;
+    color: var(--ink);
+    background: transparent;
+    border: 1px solid var(--faint);
+    border-radius: var(--radius);
+}
+
+.widget-more:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: var(--focus-ring-offset);
+}
+
+@media (width <= 40rem) {
+    .widget-more {
+        inline-size: 100%;
+    }
+}
+
+/* The page: the list is the page's width, not the measure — the measure caps
+   prose, and rows are not prose (§8); the record caps at its grid (§9). */
+.widget-page {
+    padding: var(--space-4) var(--space-3);
+}
+
+.widget-page-record {
+    max-width: calc(var(--measure) * 1.5 + var(--space-4));
+    margin-inline: auto;
+}
+
+/* §5, §6: the page's one title, and the crumb's line above it. */
+.widget-title {
+    margin: 0 0 var(--space-3);
+    font-size: var(--type-title);
+}
+
+.widget-crumb-line {
+    margin: 0 0 var(--space-2);
+    font-size: var(--type-facts);
+}
+
+/* §13: the one line naming what is being read, over the still shapes. */
+.widget-reading {
+    margin: 0 0 var(--space-2);
+    color: var(--muted);
+}
+
+.widget-reading-one {
+    margin-block-end: var(--space-3);
+}
+
+/* §14: the sentence alone. */
+.widget-sentence {
+    margin: 0;
+}
+
+.widget-sentence-gone {
+    margin-block-end: var(--space-2);
+}
+
+/* §6: the record head — the name and its pill on one wrapping line, then the lede. */
+.widget-head-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: var(--space-2);
+}
+
+.widget-record-name {
+    margin: 0;
+    font-size: var(--type-title);
+    overflow-wrap: anywhere;
+}
+
+.widget-lede {
+    margin: var(--space-1) 0 0;
+    font-size: var(--type-facts);
+    color: var(--muted);
+}
+
+/* §10: the About card's notes; an empty description is said quietly. */
+.widget-notes {
+    margin: 0;
+}
+
+.widget-notes-empty {
+    color: var(--muted);
+}
+
+/* §9: main (the work, at most the measure wide) and the rail beside it; the
+   flex wrap is the phone's one column. */
+.widget-grid {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: var(--space-4);
+    margin-block-start: var(--space-4);
+}
+
+.widget-grid-main {
+    flex: 2 1 calc(var(--measure) / 2);
+    max-width: var(--measure);
+    display: grid;
+    gap: var(--space-3);
+}
+
+.widget-grid-rail {
+    flex: 1 1 calc(var(--measure) / 3);
+    display: grid;
+    gap: var(--space-3);
+}
+
+/* §10: the Details card's facts, a label over its value. */
+.widget-facts {
+    margin: 0;
+}
+
+.widget-fact-pair {
+    margin: 0 0 var(--space-1);
+}
+
+.widget-fact-label {
+    font-size: var(--type-facts);
+    color: var(--muted);
+}
+
+.widget-fact-value {
+    margin: 0;
+}
+
+/* golden: face end */
+/* golden: archive begin */
+
+/* §6 · §20: the record's acts row and the family's acts in it — ghost weight
+   (the word in the accent, no border, no fill), each at the act floor; the row
+   wraps in order. */
+.widget-acts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    margin: var(--space-2) 0 0;
+}
+
+.widget-act {
+    min-block-size: var(--act-min);
+    min-inline-size: var(--act-min);
+    padding: 0 var(--space-3);
+    font: inherit;
+    color: var(--accent);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius);
+}
+
+.widget-act:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: var(--focus-ring-offset);
+}
+
+/* §17 · §20: the archived record's band — one sentence and its one act, no
+   fill and no icon, full width between the head and the grid. */
+.widget-band {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    column-gap: var(--space-3);
+    margin: var(--space-3) 0 0;
+    padding-block: var(--space-2);
+    border-block: 1px solid var(--faint);
+    color: var(--ink);
+}
+
+.widget-band > p {
+    margin: 0;
+}
+
+/* The seat under an act's row, where its refusal sits. */
+.widget-refusal-seat {
+    margin: var(--space-2) 0 0;
+}
+
+/* §7: the control row, one row above the rows; the cut chips at its trail. */
+.widget-controls {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: var(--space-2);
+    margin: 0 0 var(--space-3);
+}
+
+/* A chip is a word only: no fill, no glyph; its press is its border. */
+.widget-chip {
+    min-block-size: var(--act-min);
+    padding: 0 var(--space-3);
+    font: inherit;
+    color: var(--muted);
+    background: transparent;
+    border: 1px solid var(--faint);
+    border-radius: var(--radius);
+}
+
+.widget-chip[aria-pressed="true"] {
+    color: var(--ink);
+    border-color: var(--ink);
+}
+
+.widget-chip:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: var(--focus-ring-offset);
+}
+
+/* §8 · §20: the archived cut — the same rows, one column more at the trail for
+   the row's one quiet Restore, beside the door and never inside it. */
+.widget-rows.widget-cut {
+    grid-template-columns: minmax(0, 1fr) auto auto auto;
+}
+
+.widget-cut > li > .widget-row {
+    grid-column: 1 / 4;
+}
+
+.widget-trail {
+    align-self: center;
+}
+
+.widget-cut > li > .widget-refusal-seat {
+    grid-column: 1 / -1;
+    margin: 0 0 var(--space-2);
+}
+
+/* The phone: the band's act stacks under its sentence at full width; the
+   cut row's Restore sits under the row's facts. */
+@media (width <= 40rem) {
+    .widget-band {
+        display: block;
+    }
+
+    .widget-band > .widget-act {
+        inline-size: 100%;
+        margin: var(--space-2) 0 0;
+    }
+
+    .widget-cut > li > .widget-trail {
+        display: block;
+        margin: 0 0 var(--space-2);
+    }
+}
+
+/* golden: archive end */
+/* golden: version begin */
+/* golden: move begin */
+/* golden: bulk begin */
+
+/* §1: a sheet's body — its questions, one under another, and the refusal seat
+   above the foot. The primary in the foot is the sheet's one press: the
+   accent, filled, at the act floor. */
+.widget-sheet {
+    display: grid;
+    gap: var(--space-3);
+    inline-size: min(calc(var(--measure) - var(--space-3) * 2), 80vw);
+}
+
+.widget-primary {
+    min-block-size: var(--act-min);
+    color: var(--surface-raised);
+    background: var(--accent);
+    border-color: var(--accent);
+}
+
+.widget-primary:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: var(--focus-ring-offset);
+}
+
+/* golden: bulk end */
+/* golden: move end */
+/* golden: version end */
+/* golden: version begin */
+
+/* §1 · the edit sheet: a field is its word over its control; the in-place
+   dirty ask sits in the body, its two acts on one line that wraps. */
+.widget-field {
+    display: grid;
+    gap: var(--space-1);
+}
+
+.widget-field > input,
+.widget-field > textarea {
+    min-block-size: var(--act-min);
+    padding: var(--space-1) var(--space-2);
+    font: inherit;
+    color: var(--ink);
+    background: var(--surface);
+    border: 1px solid var(--faint);
+    border-radius: var(--radius);
+}
+
+.widget-field > input:focus-visible,
+.widget-field > textarea:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: var(--focus-ring-offset);
+}
+
+.widget-ask {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+}
+
+.widget-ask > p {
+    flex-basis: 100%;
+    margin: 0;
+}
+
+/* golden: version end */
+/* golden: move begin */
+/* golden: bulk begin */
+
+/* §1 · the move sheet: one choice per node, each at the act floor. */
+.widget-choices {
+    display: grid;
+    gap: var(--space-1);
+    margin: 0;
+    padding: 0;
+    border: 0;
+}
+
+.widget-choice {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-block-size: var(--act-min);
+}
+
+.widget-choice > input:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: var(--focus-ring-offset);
+}
+
+/* golden: bulk end */
+
+/* §1 · the current node is MARKED, never a choice: no radio, the name in the
+   ink at the heavier weight, a rule at its inline start where the others'
+   radios sit — seen without the word a reader's `aria-current` carries. */
+.widget-current {
+    margin: 0;
+    padding-inline-start: var(--space-2);
+    border-inline-start: 2px solid var(--ink);
+    font-weight: 600;
+    color: var(--ink);
+}
+
+/* golden: move end */
+/* golden: bulk begin */
+
+/* §7 · the selection bar takes the control row's seat: the count, the bulk
+   verbs, the × at its trail — one row, the count and the × never wrapping
+   away from the acts. */
+.widget-select {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: var(--space-2);
+    margin: 0 0 var(--space-3);
+}
+
+.widget-count {
+    flex: 1 1 auto;
+    color: var(--ink);
+    white-space: nowrap;
+}
+
+.widget-clear {
+    min-block-size: var(--act-min);
+    color: var(--muted);
+}
+
+.widget-clear:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: var(--focus-ring-offset);
+}
+
+/* §8 · a row the bulk verbs could take is led by its checkbox, in a column
+   of its own before the name, beside the door and never inside it. */
+.widget-rows.widget-selectable {
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+}
+
+.widget-rows.widget-cut.widget-selectable {
+    grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+}
+
+.widget-selectable > li > .widget-row {
+    grid-column: 2 / -1;
+}
+
+.widget-cut.widget-selectable > li > .widget-row {
+    grid-column: 2 / 5;
+}
+
+.widget-check {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-block-size: var(--act-min);
+    min-inline-size: var(--act-min);
+}
+
+.widget-check > input:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: var(--focus-ring-offset);
+}
+
+.widget-selectable > li > .widget-refusal-seat {
+    grid-column: 1 / -1;
+    margin: 0 0 var(--space-2);
+}
+
+@media (width <= 40rem) {
+    .widget-check {
+        justify-content: flex-start;
+    }
+
+    /* §7 on a phone: the bar stays one row — the count never wraps, and the
+       acts give up padding before the count gives up its line. */
+    .widget-select {
+        gap: var(--space-1);
+    }
+
+    .widget-select > .widget-act {
+        padding: 0 var(--space-2);
+    }
+}
+
+/* golden: bulk end */
+/* golden: history begin */
+
+/* §10 · the History card: rows newest first, one line each; a quiet line
+   for its empty and its still read. */
+.widget-history {
+    display: grid;
+    gap: var(--space-1);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.widget-history > li:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: var(--focus-ring-offset);
+}
+
+.widget-quiet {
+    margin: 0 0 var(--space-2);
+    color: var(--muted);
+}
+
+/* golden: history end */
+/* golden: merge begin */
+/* golden: attach begin */
+
+/* §1 · the merge chooser (and the tag chooser): the search over the choices,
+   each choice one quiet press by name at the act floor, the whole row wide. */
+.widget-search {
+    min-block-size: var(--act-min);
+    padding: var(--space-1) var(--space-2);
+    font: inherit;
+    color: var(--ink);
+    background: var(--surface);
+    border: 1px solid var(--faint);
+    border-radius: var(--radius);
+}
+
+.widget-search:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: var(--focus-ring-offset);
+}
+
+.widget-choices > li {
+    list-style: none;
+}
+
+.widget-pick {
+    inline-size: 100%;
+    min-block-size: var(--act-min);
+    min-inline-size: var(--act-min);
+    padding: 0 var(--space-2);
+    font: inherit;
+    text-align: start;
+    color: var(--ink);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius);
+}
+
+.widget-pick:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: var(--focus-ring-offset);
+}
+
+/* golden: attach end */
+/* golden: merge end */
+/* golden: attach begin */
+
+/* §6 · the tag row, directly under the lede: each tag a word and its ×, then
+   the attach act; the row wraps. A tag is a word, never a pill. */
+.widget-tags {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+    margin: var(--space-1) 0 0;
+}
+
+.widget-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    color: var(--ink);
+}
+
+.widget-tag-remove {
+    min-block-size: var(--act-min);
+    min-inline-size: var(--act-min);
+    padding: 0;
+    font: inherit;
+    color: var(--muted);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius);
+}
+
+.widget-tag-remove:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: var(--focus-ring-offset);
+}
+
+/* §10 · a card's foot and its inline field: the field over its one press. */
+.widget-card-foot {
+    margin: var(--space-2) 0 0;
+}
+
+.widget-adding {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+    margin: var(--space-2) 0 0;
+}
+
+.widget-adding > textarea,
+.widget-adding > input[type="file"] {
+    flex: 1 1 100%;
+    min-block-size: var(--act-min);
+    padding: var(--space-1) var(--space-2);
+    font: inherit;
+    color: var(--ink);
+    background: var(--surface);
+    border: 1px solid var(--faint);
+    border-radius: var(--radius);
+}
+
+.widget-adding > textarea:focus-visible,
+.widget-adding > input[type="file"]:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: var(--focus-ring-offset);
+}
+
+/* §10 · a file row: its words, then its own act at the trail. */
+.widget-attached {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+}
+
+.widget-attached:focus-visible,
+.widget-history > li:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: var(--focus-ring-offset);
+}
+
+/* golden: attach end */
+/* golden: import begin */
+
+/* §5: the import page is prose-wide, centred under its crumb. */
+.widget-page-prose {
+    max-width: var(--measure);
+    margin-inline: auto;
+}
+
+/* §5 · the import page's one primary, a step below what it will write. */
+.widget-import-foot {
+    margin: var(--space-3) 0 0;
+}
+
+/* §5 · the list head's acts, under its title and above the control row. */
+.widget-list-head {
+    margin: 0 0 var(--space-3);
+}
+
+/* §5 · the list head's Import is a door to the import page, drawn as a ghost
+   act: the word in the accent at the act floor. */
+.widget-door {
+    display: inline-flex;
+    align-items: center;
+    min-block-size: var(--act-min);
+    min-inline-size: var(--act-min);
+    text-decoration: none;
+}
+
+.widget-door:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: var(--focus-ring-offset);
+}
+
+/* golden: import end */

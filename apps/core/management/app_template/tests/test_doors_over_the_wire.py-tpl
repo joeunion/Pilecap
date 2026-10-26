@@ -1,28 +1,6 @@
 """The two doors of `{{ app_name }}`, answering one question the same way.
 
-House rule 46: an app with a REST door beside an `mcp.py` owes a test that
-drives BOTH over the wire and compares what they answered. Rule 17 diffs the
-two REGISTRIES and proves a capability exists on both sides; it cannot see the
-two doors DISAGREE about it, and both times they did in this tree the finding
-came from a test of exactly this shape and from nothing else — one row rendered
-under two key sets, and one consumer answering two credentials two ways.
-
-`{{ app_name }}` has no door yet, so there is nothing to compare and this module
-SKIPS. **The condition is derived from the app's own files, never from a flag**:
-the day `api.py` or `mcp.py` lands beside it, this stops skipping and fails
-saying what to write. A stub that went on passing after the doors arrived would
-be worse than no stub at all.
-
-THE MARKER SITS UNDER THE `if` ON PURPOSE. Rule 46 reads a module-level
-`DOOR_PAIR` assignment as a CLAIM that the pair is answered, and it fires in
-both directions — a claim for a pair the app does not own retires a debt that
-was never taken on, and would red this app from birth. So the name is written
-here for the always-on census to read in the source (`apps/conftest.py`,
-`DJB_REACH_TOKENS`), and the claim rule 46 reads is the module-level line the
-REAL parity test writes when it replaces this stub. The example to copy then is
-`apps/example/tests/test_doors_over_the_wire.py`: both doors through the one
-real ASGI application, `response.json()` against `result["structuredContent"]`,
-key set exact and then whole.
+rule 17 · rule 46
 """
 
 from __future__ import annotations
@@ -31,8 +9,7 @@ from pathlib import Path
 
 import pytest
 
-#: This app's label and its own package. The doors are read off the directory,
-#: so nothing here has to be kept in step by hand.
+#: This app's label and its own package.
 LABEL = "{{ app_name }}"
 APP_DIR = Path(__file__).resolve().parents[1]
 
@@ -52,6 +29,7 @@ STILL_A_STUB = (
 if not DOORS:
     pytest.skip(NO_DOOR, allow_module_level=True)
 
+# Under the `if`: rule 46 reads a module-level DOOR_PAIR as a claim that the pair is answered.
 if len(DOORS) == 2:
     DOOR_PAIR = ("rest", "mcp")
 

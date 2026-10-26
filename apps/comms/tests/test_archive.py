@@ -37,6 +37,7 @@ import pytest
 from django.test import Client
 
 from apps.accounts.models import User
+from apps.comms.api import RETIRED_QUERY
 from apps.comms.models import Channel, ChannelPreference, Message, MessageTemplate, Recipient
 from apps.comms.selectors import get_recipient, list_recipients
 from apps.comms.services import archive_recipient, send
@@ -44,6 +45,7 @@ from apps.comms.tests.conftest import Branches, make_recipient
 from apps.core.actor import Actor, actor_for, system_actor
 from apps.core.exceptions import Forbidden
 from apps.core.models import Tenant
+from apps.core.tests.test_retired_query import strict_query_seam
 from apps.events.models import Event, Outbox
 
 pytestmark = pytest.mark.django_db
@@ -152,18 +154,27 @@ def test_show_is_the_one_way_to_ask_for_the_archived_cut(
     assert _ids(api.get(f"{RECIPIENTS_URL}?show=all")) == {str(live.pk), str(recipient.pk)}
 
 
+@pytest.mark.parametrize("seam", ["bare", "behind a strict-query seam"])
 @pytest.mark.parametrize("query", ["archived=true", "archived=false", "show=x"])
 def test_the_retired_parameter_and_an_unknown_cut_are_refused_naming_show(
-    api: Client, owner: User, recipient: Recipient, query: str
+    api: Client, owner: User, recipient: Recipient, query: str, seam: str, settings: Any
 ) -> None:
     """`?archived=` answered the live book or the whole table; it is refused now,
-    loudly, naming the parameter to ask with instead — never silently ignored."""
+    loudly, naming the parameter to ask with instead — never silently ignored.
+
+    Driven both ways: bare, and behind a product's strict-query seam that defers
+    to the list's `RETIRED_QUERY` (`retired_query_of`). The retired parameter is
+    answered in the declaration's own sentence either way."""
+    if seam != "bare":
+        strict_query_seam(settings)
     api.force_login(owner)
     response = api.get(f"{RECIPIENTS_URL}?{query}")
     assert response.status_code == 400, response.content
     body = _body(response)
     assert body["code"] == "invalid"
     assert "show" in body["errors"], body
+    if query.startswith("archived="):
+        assert body["errors"] == {"show": [RETIRED_QUERY["archived"].reason]}, body
 
 
 def test_an_archived_contact_reads_read_only(

@@ -46,11 +46,14 @@ from apps.comms.tests.conftest import (
 # The machine door's call harness, imported rather than rebuilt: a second copy
 # of "what a tool call looks like without a transport" is a second thing to keep
 # true, and `test_mcp.py` is where the parity table it belongs to lives.
-from apps.comms.tests.test_mcp import context_for, tool
+from apps.comms.tests.test_mcp import tool
 from apps.core.actor import Actor, actor_for
 from apps.core.audit import AuditEntry
 from apps.core.exceptions import Conflict, Forbidden, NotFound
 from apps.core.models import Tenant
+from apps.core.services import root_organization
+from apps.core.tests.mcp_context import context_for
+from apps.core.tests.wire import REQUEST_FIXED_QUERIES
 
 pytestmark = pytest.mark.django_db
 
@@ -58,32 +61,10 @@ JSON = "application/json"
 TEMPLATES_URL = "/api/v1/templates/"
 RECIPIENTS_URL = "/api/v1/recipients/"
 
-# Measured at ten rows, not guessed. The session row + the user row + the
-# SAVEPOINT (ATOMIC_REQUESTS) + TenantMiddleware's tenant membership + its
-# acting-org membership + COUNT + the page + the RELEASE. `MessageOut`'s
-# `select_related` has no equivalent here — neither `TemplateOut` nor
-# `RecipientOut` walks a relation — so this is the floor a list route costs at
-# this door, and it must not move with the row count.
-# ADR core-18 took one statement OFF this pin: the default list issues no
-# COUNT any more — `has_more` comes from fetching one row more than asked
-# for. `?include_count=true` puts it back, and costs exactly one more.
-# PR4.b (ADR core-27) adds exactly THREE: a read is a permission now, so the
-# selector behind this door calls `require(actor, "<kind>.read", ...)` once,
-# and the first `require` of a request reads the actor's three permission
-# tables — the memberships on the chain, their grants, and the delta rows for
-# the role keys those name. Three and not six because PR0's memo rides on the
-# actor: a second `require` in the same request costs nothing, which is what a
-# route that fetches through a `get_` and then calls a service is standing on.
-TEMPLATE_LIST_BUDGET = 10
-# The contact list is a family noun's page now (`ActsPagination`): every row's
-# `allowed_acts` and the list's own. Measured at ten rows: the ten above, the
-# actor's collection at the rows' node (memberships, grants, role keys — 3),
-# and nothing per row: `recipient.update` and `recipient.create` are answered
-# by `policies.can_send`, whose `_is_member` asks `authz.membership_for`, and
-# `membership_for` reads the memberships the actor already memoizes for
-# `effective_permissions` — so the per-row term that made this 24 at ten rows
-# (34 at twenty) is gone, and the list is 13 statements at 5, 20 and 50 rows.
-RECIPIENT_LIST_BUDGET = 13
+#: The template list at ten rows: the fixed request cost plus the page.
+TEMPLATE_LIST_BUDGET = REQUEST_FIXED_QUERIES + 1
+#: The recipient list at ten rows: the fixed request cost plus the page.
+RECIPIENT_LIST_BUDGET = REQUEST_FIXED_QUERIES + 1
 
 
 def _body(response: Any) -> dict[str, Any]:
@@ -344,10 +325,17 @@ def test_the_machine_door_retires_by_name_too(
     survived five cycles of review. This is the assertion that would not.
     """
     second = make_next_version(actor=owner_actor, subject="v2 for {{ name }}")
-    out = tool("retire_template")(context_for(owner, tenant), name="receipt")
+    out = tool("retire_template")(
+        context_for(owner, tenant, root_organization(tenant=tenant)), name="receipt"
+    )
     assert out.id == second.pk
     assert out.is_active is False
-    assert tool("get_template")(context_for(owner, tenant), name="receipt").version == 1
+    assert (
+        tool("get_template")(
+            context_for(owner, tenant, root_organization(tenant=tenant)), name="receipt"
+        ).version
+        == 1
+    )
 
 
 # --- the crafted body: what a Patch schema does NOT carry ------------------------
@@ -784,7 +772,10 @@ def test_the_machine_door_revises_a_template_and_never_edits_one(
     tenant: Tenant, owner: User, receipt: MessageTemplate
 ) -> None:
     out = tool("revise_template")(
-        context_for(owner, tenant), name="receipt", body="Machine words, {{ name }}.", subject="v2"
+        context_for(owner, tenant, root_organization(tenant=tenant)),
+        name="receipt",
+        body="Machine words, {{ name }}.",
+        subject="v2",
     )
     assert out.version == 2
     assert out.id != receipt.pk
@@ -795,7 +786,9 @@ def test_the_machine_door_revises_a_template_and_never_edits_one(
 def test_the_machine_door_grants_consent_with_the_same_shape(
     tenant: Tenant, owner: User, recipient: Recipient
 ) -> None:
-    out = tool("grant_consent")(context_for(owner, tenant), recipient_id=recipient.pk)
+    out = tool("grant_consent")(
+        context_for(owner, tenant, root_organization(tenant=tenant)), recipient_id=recipient.pk
+    )
     assert out.has_marketing_consent is True
     assert out.recipient_id == recipient.pk
     assert out.suppressed_at is None
@@ -804,11 +797,29 @@ def test_the_machine_door_grants_consent_with_the_same_shape(
 def test_the_machine_door_archives_a_contact_and_the_list_agrees(
     tenant: Tenant, owner: User, recipient: Recipient
 ) -> None:
-    tool("archive_recipient")(context_for(owner, tenant), recipient_id=recipient.pk)
-    assert len(tool("list_recipients")(context_for(owner, tenant)).items) == 0
-    assert len(tool("list_recipients")(context_for(owner, tenant), show="archived").items) == 1
+    tool("archive_recipient")(
+        context_for(owner, tenant, root_organization(tenant=tenant)), recipient_id=recipient.pk
+    )
+    assert (
+        len(
+            tool("list_recipients")(
+                context_for(owner, tenant, root_organization(tenant=tenant))
+            ).items
+        )
+        == 0
+    )
+    assert (
+        len(
+            tool("list_recipients")(
+                context_for(owner, tenant, root_organization(tenant=tenant)), show="archived"
+            ).items
+        )
+        == 1
+    )
     # Still fetchable, exactly as it is over HTTP.
-    assert tool("get_recipient")(context_for(owner, tenant), recipient_id=recipient.pk).archived_at
+    assert tool("get_recipient")(
+        context_for(owner, tenant, root_organization(tenant=tenant)), recipient_id=recipient.pk
+    ).archived_at
 
 
 def test_the_machine_door_cannot_reach_another_tenants_template(
@@ -818,7 +829,9 @@ def test_the_machine_door_cannot_reach_another_tenants_template(
 
     make_template(actor=stranger_actor, name="theirs")
     with pytest.raises(ToolError) as raised:
-        tool("get_template")(context_for(owner, tenant), name="theirs")
+        tool("get_template")(
+            context_for(owner, tenant, root_organization(tenant=tenant)), name="theirs"
+        )
     assert "not_found" in str(raised.value)
 
 
@@ -829,5 +842,7 @@ def test_a_member_is_refused_at_the_machine_door_too(
     from mcp.server.mcpserver.exceptions import ToolError
 
     with pytest.raises(ToolError) as raised:
-        tool("grant_consent")(context_for(member, tenant), recipient_id=recipient.pk)
+        tool("grant_consent")(
+            context_for(member, tenant, root_organization(tenant=tenant)), recipient_id=recipient.pk
+        )
     assert "forbidden" in str(raised.value)

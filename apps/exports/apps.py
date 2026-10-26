@@ -1,3 +1,5 @@
+from typing import ClassVar
+
 from django.apps import AppConfig
 
 
@@ -48,3 +50,9 @@ class ExportsConfig(AppConfig):
     name = "apps.exports"
     verbose_name = "Exports"
     depends_on: tuple[str, ...] = ("core", "accounts", "events", "files", "workflows")
+    ratchet_floors: ClassVar[dict[str, int]] = {
+        "91.block-tail": 480,
+        "91.docstring-tail": 1131,
+        "91.module-tail": 380,
+        "91.narrative": 9,
+    }

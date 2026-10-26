@@ -1,0 +1,155 @@
+/*
+ * EXAMPLE — the worked customer face's paint, all of it (patterns.md §26: one
+ * sheet per face, imported by its screens in `requests/` and `widgets/`;
+ * nothing of the face is inline): the page and its heads, the list rows, and
+ * every pressable class the face draws (a row's door §8, the
+ * crumb §6, the card's one act §10), each carrying the act floor and the one
+ * ring. Tokens only; no token declared here. Every selector is rooted in the
+ * face's `customer-` prefix.
+ */
+
+/* golden: portal begin */
+
+.customer-rows {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.customer-rows > li {
+    border-block-end: 1px solid var(--faint);
+}
+
+.customer-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: var(--space-3);
+    min-block-size: var(--act-min);
+    padding-block: var(--space-2);
+    color: var(--ink);
+    text-decoration: none;
+}
+
+.customer-row:focus-visible,
+.customer-crumb:focus-visible,
+.customer-act:focus-visible,
+.customer-door:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: var(--focus-ring-offset);
+}
+
+.customer-name {
+    font-weight: 600;
+    overflow-wrap: anywhere;
+}
+
+.customer-fact {
+    font-size: var(--type-facts);
+    color: var(--muted);
+}
+
+.customer-crumb,
+.customer-door {
+    display: inline-flex;
+    align-items: center;
+    min-block-size: var(--act-min);
+    color: var(--accent);
+}
+
+.customer-card {
+    margin: 0 0 var(--space-4);
+    padding: var(--space-3);
+    border: 1px solid var(--faint);
+    border-radius: var(--radius);
+    background: var(--surface-raised);
+}
+
+.customer-field {
+    display: grid;
+    gap: var(--space-1);
+    margin: 0 0 var(--space-2);
+}
+
+.customer-act {
+    min-block-size: var(--act-min);
+    min-inline-size: var(--act-min);
+    padding: 0 var(--space-3);
+    font: inherit;
+    color: var(--surface);
+    background: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius);
+    cursor: pointer;
+}
+
+/* The page: prose-wide, centred, its title and its sections' heads. */
+.customer-page {
+    max-width: var(--measure);
+    margin-inline: auto;
+    padding: var(--space-4) var(--space-3);
+}
+
+.customer-title {
+    margin: 0 0 var(--space-3);
+    font-size: var(--type-title);
+}
+
+.customer-record-name {
+    margin: var(--space-2) 0 var(--space-1);
+    font-size: var(--type-title);
+}
+
+.customer-section {
+    margin: 0 0 var(--space-2);
+    font-size: var(--type-section);
+}
+
+/* §13 and the record's not-found: the one quiet sentence. */
+.customer-quiet {
+    color: var(--muted);
+}
+
+/* §14: the empty's proposal, then its detail, quieter. */
+.customer-next {
+    margin: 0 0 var(--space-1);
+}
+
+.customer-next-detail {
+    margin: 0;
+    color: var(--muted);
+}
+
+/* The record's lines: a fact line, the notes, a request's own words. */
+.customer-fact-line,
+.customer-notes {
+    margin: 0 0 var(--space-3);
+}
+
+.customer-note {
+    margin: var(--space-2) 0 var(--space-3);
+    white-space: pre-wrap;
+}
+
+.customer-facts {
+    margin: 0;
+}
+
+.customer-facts > dd {
+    margin: 0 0 var(--space-2);
+}
+
+.customer-facts > dd:last-child {
+    margin-block-end: 0;
+}
+
+/* The send card: what is missing, said before anything is sent; the act's line. */
+.customer-said {
+    margin: 0 0 var(--space-2);
+}
+
+.customer-act-line {
+    margin: var(--space-2) 0 0;
+}
+
+/* golden: portal end */

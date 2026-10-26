@@ -1,7 +1,7 @@
 # Publication manifest — what ships, what trims, what becomes a skeleton
 
-**`scripts/publish.sh` is this file executed**, and `scripts/tests/test_publish.sh`
-drives it. `architecture.md` §"The ADR home" governs where decisions live; this
+**`scripts/publish.sh` is this file executed**, and `quality/tests/test_publish.py`
+drives it. `docs/product/adrs/` is where decisions live, one file per id (ADR docs-1); this
 file governs which of them reach a published artifact.
 
 ## The census discipline (the design's spine)
@@ -30,8 +30,8 @@ Two invariants outrank any per-file preference:
    publish sha — trimming that touches them is a defect, and the diff is
    the evidence.*
 2. **No decision is lost at publish.** Every ADR id cited in any ship-list
-   file resolves inside `architecture.md` or `adrs-ingredients.md` (both
-   ship) — the link-census, run by `publish.sh` against the artifact; a
+   file resolves to its file `docs/product/adrs/<id>.md` (the directory
+   ships) — the link-census, run by `publish.sh` against the artifact; a
    citation resolving only into `cycles/` is exit 1 with the id and the
    citing file named. The same holds for ordinary pointers: a **path or
    link** that resolves into a trimmed location is a violation.
@@ -82,19 +82,21 @@ both of them read is `docs/product/build-contract.md` § Ownership.
 
 | rule | paths | bucket | why |
 |---|---|---|---|
-| R1 | `apps/**` · `config/**` · `manage.py` | SHIP | the system-and-project layers a product grows in; the platform partition's app set is read from THIS rule's export census **once, at the freeze build**, into `quality/partition.yaml` — one census read twice, because a LIVE derivation from R1 is impossible (`partition-closure.md` §2 carries the argument) |
+| R1 | `apps/**` · `config/**` · `manage.py` · `pilecap/**` | SHIP | the system-and-project layers a product grows in, and `pilecap/**`, the SDK facade that re-exports the platform apps to them; the platform partition's app set is read from THIS rule's export census **once, at the freeze build**, into `quality/partition.yaml` — one census read twice, because a LIVE derivation from R1 is impossible (`partition-closure.md` §2 carries the argument) |
 | R2 | `quality/**` · `docs/product/instruments.md` | SHIP (byte-identical clause) | invariant 1 — the learning layer and the gate's own inputs |
 | R3 | `scripts/**` · `deploy/**` · `perf/**` · `compose.yaml` · `compose/**` · `Dockerfile` · `.dockerignore` · `.devcontainer/**` · `.github/**` | SHIP | instruments and posture-as-code; every executable already owes its `instruments.md` row |
 | R4 | `pyproject.toml` · `uv.lock` · `.python-version` · `.env.example` · `.gitignore` · `.editorconfig` · `.gitattributes` · `.secrets.baseline` · `vendor/**` · `templates/**` | SHIP | the pinned environment and vendored assets (the Scalar manifest's checksum posture rides along). `.gitattributes` is here rather than with R3's instruments because it is checkout POSTURE the way `.gitignore` is — git reads it, nothing in this tree executes it — and it ships for the same reason: a consumer whose lanes append to `CHANGELOG.md` has the same seven hand resolutions per cycle without it |
 | R5 | `.claude/skills/**` · `.claude/agents/**` · `CLAUDE.md` · `README.md` · `docs/runbooks/**` · `docs/standards.md` | SHIP | the method, the map, the operator procedures — **`.claude/agents/**` is the method too**: an agent definition pins the model and the tools a dispatched role runs with (`.claude/agents/builder.md` pins the builder's), so a consumer inheriting the skills without the definitions inherits half a team, and the two directories ship together as one glob each — and, at the last path, the portable account of the method written FOR OTHER TEAMS, which is guidance of the same class and belongs where a browsing stranger lands rather than under `docs/product/` (those are the decisions THIS repository is built on) or `docs/runbooks/` (operations). **The path, not a glob:** R5 gains this one file, so the next guidance-class file at `docs/*.md` still fails unplaced and is decided rather than absorbed |
 | R6 | `TEMPLATE_VERSION` · `CHANGELOG.md` | SHIP | the template-updates mechanism: `TEMPLATE_VERSION` names the release a checkout is on and the release TAG is derived from it; `CHANGELOG.md` is what a consumer reads before merging that tag, and release mode refuses to publish a version the file has no section for (§ Release mode) |
-| R7 | `docs/product/<ledger>.md` for the nine ledgers below | SKELETON | ships as a committed skeleton + one marked worked example each |
-| R8 | `docs/product/cycles/**` · `archive/**` · `retro/**` · `drafts/**` · `proposals/**` · the dated `pm-handoff-*.md` handoffs | TRIM | the build's archaeology; the source repository keeps it as the archive of record |
-| R8S | two named files inside `cycles/` (dispositions table below) | SHIP | the format-teaching pair in an otherwise-trimmed directory |
-| R9 | the remaining `docs/product/*.md` (dispositions table below) · `docs/product/design/*` | per-file | the one genuinely mixed directory; its one glob is the design directory, the pattern book's home — the class named, never the instance |
+| R7 | `docs/product/<ledger>.md` for the eleven ledgers below | SKELETON | ships as a committed skeleton + one marked worked example each |
+| R8 | `docs/product/cycles/**` · `briefs/**` · `archive/**` · `retro/**` · `drafts/**` · `proposals/**` · `docs/product/surveys/**` · `docs/product/reports/**` · the dated `pm-handoff-*.md` handoffs | TRIM | the build's archaeology (the consolidation surveys and the agents' rung reports included); the source repository keeps it as the archive of record |
+| R8S | two named files inside `cycles/` and the README inside `briefs/` (dispositions table below) | SHIP | the format-teaching files in two otherwise-trimmed directories |
+| R9 | the remaining `docs/product/*.md` (dispositions table below) · `docs/product/design/*` · `docs/product/adrs/*` | per-file | the one genuinely mixed directory; its two globs are the design directory, the pattern book's home, and the ADR directory, the decision log — the class named, never the instance |
 | R10 | `docs/product/skeletons/**` | SKELETON-SOURCE | the directory holding the committed skeletons; consumed at export and never shipped at its own path, and a skeleton naming no ledger is exit 2 — the export would otherwise ignore it in silence |
 | R11 | `frontend/**` | SHIP | the client layer: the one-journey worked example, its lockfile, the committed OpenAPI document and the generated client the byte-pin compares. It ships for the same reason `apps/example` does — a rule that never fired anywhere is decoration by the engine's own doctrine, and the standing subjects of every frontend rule (the byte-pin, `SurfaceState` in anger, the rendered census's live scan) need a tree to be proven against. **One glob, because the directory is one artefact**; `.gitignore` decides which of its files are build output and the census then never sees them |
-| R12 | `scripts/test_impact.json` · `scripts/pytest_durations.json` · `scripts/gate_member_durations.json` | TRIM | the three MEASURED files — a test-impact map keyed on a tree that exists only here, and two timing files measured on this platform's own boxes over this platform's own suite. They are measurements, not instruments: in a product's tree they are a claim the product never made, cannot check and would have to resolve as a conflict at every fold. **Every reader already treats absence as "measure it yourself", and says so on its own line.** Each is cited by its own SENTENCE with today's line beside it, never by the line alone — these three files move every cycle, and a bare line number is the citation form this repository has already watched go stale: (a) `loop_scope__impact` in `scripts/loop_tier.sh` sets `LOOP_SCOPE_IMPACT_FALLBACK` to `<map> is absent or unreadable — closure scope. A tree whose acceptance box has never written a map is a tree, not a broken read.` (`scripts/loop_tier.sh:1108` today); (b) the always-on leg in `scripts/check.sh` opens its reader with `A MISSING OR UNPARSABLE FILE IS NOT A REFUSAL, and this is the one place in this gate where that is the right answer` and prints `always-on (measured): no durations file — the first --store-durations writes it` (`scripts/check.sh:1343` and `:1675` today); (c) `gate_pytest_split_args` in `scripts/check.sh` resolves the pytest durations path ONLY under `--shard` or `--store-durations`, so an ordinary run never opens it, and a shard run without one prints `durations: none — unbalanced split` (`scripts/check.sh:4974` and `:4985` today). So trimming costs a consumer one measured run of their own and buys them a clean modify/delete at every future merge. Shipping them EMPTY was rejected: an empty durations file is still a claim about a suite, and it still conflicts with the product's copy |
+| R12 | `scripts/test_impact.json` · `scripts/pytest_durations.json` · `scripts/gate_member_durations.json` | TRIM | the three MEASURED files — a test-impact map keyed on a tree that exists only here, and two timing files measured on this platform's own boxes over this platform's own suite. They are measurements, not instruments: in a product's tree they are a claim the product never made, cannot check and would have to resolve as a conflict at every fold. **Every reader already treats absence as "measure it yourself", and says so on its own line.** Each is cited by its own SENTENCE with today's line beside it, never by the line alone — these three files move every cycle, and a bare line number is the citation form this repository has already watched go stale: (a) `impact` in `quality/djb/scope.py` answers `<map> is absent or unreadable — closure scope. A tree whose acceptance box has never written a map is a tree, not a broken read.` (`quality/djb/scope.py:659` today); (b) the always-on leg, `quality/djb/legs/always_on.py::measured`, prints `always-on (measured): no durations file — the first --store-durations writes it` (`quality/djb/legs/always_on.py:173` today); (c) `quality/djb/legs/pytest_x2.py::split_args` resolves the pytest durations path ONLY under `--shard` or `--store-durations`, so an ordinary run never opens it, and a shard run without one prints `durations: none — unbalanced split` (`quality/djb/legs/pytest_x2.py:464` today). So trimming costs a consumer one measured run of their own and buys them a clean modify/delete at every future merge. Shipping them EMPTY was rejected: an empty durations file is still a claim about a suite, and it still conflicts with the product's copy |
+| R13 | `docs/sdk/**` | SHIP | the product developer's reference — generated by `python -m quality.sdk --reference` from the facade and the goldens, and the one place a product developer reads (the owner's reading rule for a product developer is `docs/sdk/**` only). It ships whole for the same reason R5's method does: a consumer inheriting the platform without the map to it inherits half of it. **One glob, because the directory is one artefact**; it collides with no other rule's paths |
+| R14 | three files under the workflows directory: `proof-from-zero.yml` · `nightly-proof.yml` · `mirror-images.yml` | TRIM | the platform proves itself; a product's repository proves the product. The three are the template's own self-proofs (a proof from zero, its nightly, the image mirror), and in a product they fire on every merge, every night and every `compose.yaml` push at the product's cost; `ci.yml` is the product's gate and stays R3. **An arm of R3 before its glob, in R12's one `case`**, for R12's reason |
 
 **R12 is an arm of R3, not a rule beside it**, for R8S's reason exactly: the
 two live in ONE `case` in `archaeology_lib.sh` with R12's arm first, so
@@ -103,11 +105,11 @@ refusal still proves it. Two blocks would make every R12 path match twice and
 exit 2.
 
 **R12 is the one HAND LIST in the bucket rules, and it names what re-derives
-it.** `case_r12_equals_the_readers_defaults` in `scripts/tests/test_publish.sh`
-greps the three readers' own defaults — `DJB_GATE_DURATIONS_PATH:-` and
-`DJB_GATE_MEMBER_DURATIONS:-` in `scripts/check.sh`, `LOOP_SCOPE_MAP_PATH=` in
-`scripts/loop_tier.sh` — and reds when that set and this row's set differ. A
-fourth measured file is therefore a red at the drive, never a silent ship.
+it.** `test_r12_is_the_measured_files_the_readers_default_to` in
+`quality/tests/test_archaeology.py` reads the three readers' own constants —
+`pytest_x2.DURATIONS`, `registry.WALLS_HOMES` and `scope.MAP_PATH` — and reds
+when that set and this row's set differ. A fourth measured file is therefore a
+red at the test, never a silent ship.
 
 **R8S is an arm of R8, not a rule beside it.** It and R8's glob live in ONE
 `case` in `publish.sh`, so first-match separates them and the census's
@@ -123,9 +125,11 @@ the dangling-pointer leg's own class. Name the class, never the instance.
 | file | bucket | note |
 |---|---|---|
 | `docs/product/cycles/README.md` | SHIP (R8S) | the directory's own contract — what a plan holds, what it must NOT hold (status), and that order lives in `queue.md`. Several shipped files send a first PM to `cycles/`, and a home whose contract was trimmed is a pointer at an empty room |
-| `docs/product/cycles/EXAMPLE-cycle-plan.md` | SHIP (R8S) | the plan template as a worked example — invented product (orders, a clerk), marked EXAMPLE in its own second line, and named by the README as the thing to delete when the first real plan lands. Format teaching, not archaeology; it cites no ADR id and no `docs/` pointer, so it adds nothing to either link leg |
-| `architecture.md` | SHIP | the canonical ADR home |
-| `adrs-ingredients.md` | SHIP | ships, so its ids stay resolvable |
+| `docs/product/cycles/EXAMPLE-cycle-plan.md` | SHIP (R8S) | the plan template as a worked example — invented product (orders, a clerk), marked EXAMPLE in its own second line, and named by the README as the thing to delete when the first real plan is written. Format teaching, not archaeology; it cites no ADR id and no `docs/` pointer, so it adds nothing to either link leg |
+| `briefs/README.md` under `docs/product/` | SHIP (R8S) | the briefs directory's own contract — what a dispatch brief holds and that it travels in the rung's branch; the briefs themselves are R8, the build's archaeology |
+| `architecture.md` | SHIP | the current state: the stack, the doors, the gate, the house rules |
+| `adrs-ingredients.md` | SHIP | the ingredients' design record (no ADR home) |
+| `adrs/*` | SHIP | the decision log: one file per ADR id, the census resolves by filename |
 | `api-editorial-standard.md` | SHIP | system layer |
 | `build-contract.md` | SHIP | the ownership map |
 | `operating-protocol.md` | SHIP | the method |
@@ -141,6 +145,7 @@ the dangling-pointer leg's own class. Name the class, never the instance.
 | `design-agreements.md` | SKELETON + one marked ruling | owner-taste rulings are product-layer; the format and one worked example ship |
 | `pilot-readiness.md` | SKELETON + one gate-shaped row | the product-manager skill's mandated state-read names it, so a cloned product must find it present; the dated content a first builder must not inherit does not survive the skeleton |
 | `rep-day.md` | SKELETON + one job-with-cost row | same reason: named by the state-read, dated in substance |
+| `threat-model.md` | SKELETON + the one worked noun row | the platform's door, boundary, noun and HIPAA rows are kept — they describe what the product inherits — and the `Widget` row is the marked worked example a product replaces with its own noun; `scripts/threat_census.py` is green on the skeleton the day the clone is made |
 | `publication-manifest.md` (this file) | SHIP | a product inherits the manifest so it can publish its own derivatives |
 | `partition-closure.md` | SHIP | the platform partition, its input closure, the discovery-digest key and the four always-run nets; the freeze build cites it |
 | `design/*` (today: `design/patterns.md`) | SHIP | the pattern book — the form every element-class entry takes, the floor the house rules hold every face to, and the instrument index; template-owned (`build-contract.md`'s ownership table), so a product reads it and writes its own entries in the drawer beside it, `patterns.local.md`, which the template never tracks. A GLOB for R8's reason: the directory is the class |
@@ -155,7 +160,9 @@ plus its ONE worked example, chosen once and committed, marked
 *Rejected:* deriving skeletons by trimming the live ledgers at export time —
 a parser over prose, non-deterministic as the ledgers churn, and the
 worked example would silently change every publish. A committed skeleton is
-reviewable, stable, and makes `publish.sh` idempotent by construction.
+reviewable, stable, and makes `publish.sh` idempotent by construction. A
+generated ledger's skeleton is produced by its generator, never typed, and
+pinned by the generator's check (`quality/tests/test_queue_index.py`).
 
 **The substitution set is DERIVED, not listed.** A ledger with a committed
 `docs/product/skeletons/<name>.md` is substituted from it; a ledger without
@@ -248,6 +255,10 @@ carry a `## [<version>]` section for the version being released. A tag with no
 entry behind it asks a consumer to merge a tree on trust — a diff answers
 "what changed" and never "would I want this, and what does it change under
 me", which is the question `CHANGELOG.md`'s own header says an entry answers.
+
+**Leg `changelog-flags` (release mode, exit 1):** every `<script> --flag` the
+section claims must be a literal in the script it names, and a thin wrapper
+(an `exec … -m <module> "$@"` line) is read through to the module it execs.
 
 **THE ROOT RE-CUT DOOR IS CLOSED.** A target carrying release tags is refused
 with the door-closed sentence in every mode that exports. Re-cutting the root

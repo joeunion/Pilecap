@@ -10,6 +10,7 @@ that is right until somebody makes a small edit.
 from __future__ import annotations
 
 import os
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -25,42 +26,59 @@ from apps.search.engine import (
 from apps.search.types import ScopeFilter
 
 
-def test_two_checkouts_get_disjoint_index_prefixes(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_two_checkouts_get_disjoint_index_prefixes(settings: Any) -> None:
     """Criterion 7's derivation half. The invariant in one line.
 
     Two checkouts that cannot share a Postgres database cannot share a
-    Meilisearch namespace, because both are derived from the same name. This is
-    what makes a parallel gate safe in Meili exactly as it already is in
-    Postgres — and it is why there is deliberately no `MEILI_INDEX_PREFIX` to
-    pin.
+    Meilisearch namespace, because both are derived from the same name —
+    `settings.MEILI_INDEX_PREFIX`, the cache prefix's and the task queue's
+    sibling. This is what makes a parallel gate safe in Meili exactly as it
+    already is in Postgres.
     """
-    monkeypatch.setenv("DATABASE_NAME", "djb_worktree_alpha_11112222")
+    settings.MEILI_INDEX_PREFIX = "djb_worktree_alpha_11112222"
     alpha = index_prefix()
-    monkeypatch.setenv("DATABASE_NAME", "djb_worktree_beta_33334444")
+    settings.MEILI_INDEX_PREFIX = "djb_worktree_beta_33334444"
     beta = index_prefix()
 
+    assert alpha == "djb_worktree_alpha_11112222"
     assert alpha != beta
     assert index_name("widgets").startswith(beta)
     assert staging_index_name("widgets").startswith(index_name("widgets"))
 
 
-def test_an_exotic_database_name_still_makes_a_legal_uid(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A product may pin any `DATABASE_NAME`; Meili accepts a narrower alphabet.
+def test_an_exotic_database_name_still_makes_a_legal_uid(settings: Any) -> None:
+    """A product may name its database anything; Meili accepts a narrower alphabet.
 
     Sanitising silently would be the trap: two different names could sanitise to
     one prefix and two deployments would share a namespace without anybody
     seeing it. So the hash of the ORIGINAL is appended whenever sanitising
     changed anything, and the two stay disjoint.
     """
-    monkeypatch.setenv("DATABASE_NAME", "prod.eu-west-1")
+    settings.MEILI_INDEX_PREFIX = "prod.eu-west-1"
     first = index_prefix()
-    monkeypatch.setenv("DATABASE_NAME", "prod_eu-west-1")
+    settings.MEILI_INDEX_PREFIX = "prod_eu-west-1"
     second = index_prefix()
 
     assert first != second
     assert all(character.isalnum() or character in "_-" for character in first)
+
+
+def test_a_url_only_configuration_names_the_index_after_its_database(
+    settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The name that arrived only inside `DATABASE_URL` is the namespace.
+
+    A URL-only deployment has an empty `DATABASE_NAME` and a perfectly good
+    database name; settings parse that name once and hand it to the prefix.
+    The engine reads the setting and nothing else, so an empty or stale
+    `DATABASE_NAME` in the environment cannot pull every such deployment into
+    one shared default namespace.
+    """
+    monkeypatch.setenv("DATABASE_NAME", "")
+    settings.MEILI_INDEX_PREFIX = "only_url"
+
+    assert index_prefix() == "only_url"
+    assert index_name("widgets") == "only_url_widgets"
 
 
 def test_an_org_scoped_filter_names_the_tenant_and_the_ids(
@@ -209,5 +227,5 @@ def test_the_real_engine_round_trips_settings_a_document_and_a_swap(live_label: 
         for uid in (index_name(live_label), staging_index_name(live_label)):
             try:
                 live.drop_index(uid=uid)
-            except Exception:  # noqa: BLE001 - a cleanup that raises hides the real failure
+            except Exception:  # noqa: BLE001, S110 — a cleanup that raises hides the real failure
                 pass

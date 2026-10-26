@@ -1,8 +1,8 @@
 # THE PORTS OVERRIDE — the one file that lets two (or N) deployment stacks
 # co-reside on one machine.
 #
-# `deploy/compose.yaml` is a DEPLOYMENT: `name: djb-deploy`, and Caddy is the
-# only container that publishes anything (80, 443, 443/udp). That is correct on
+# `deploy/compose.yaml` is a DEPLOYMENT: Caddy is the only container that
+# publishes anything (80, 443, 443/udp). That is correct on
 # a box and it is a collision on a laptop, where a builder proving a restore
 # needs a SECOND stack up beside the first, and two builders on one machine need
 # a third and a fourth. This file changes nothing but where those three ports
@@ -17,11 +17,11 @@
 # compose:
 #
 #   1. `-p <project>` — the project name. It namespaces the containers, the
-#      network AND the volumes (`djb-b1b_db_data`, never `djb-deploy_db_data`),
-#      which is what keeps a destructive drill on one stack away from another's
-#      data. `-p` outranks the `name:` in `deploy/compose.yaml`; this file
-#      deliberately declares no `name:` of its own, so nothing here can win an
-#      argument the operator meant to settle with `-p`.
+#      network AND the volumes (`djb-b1b_db_data`), which is what keeps a
+#      destructive drill on one stack away from another's data. Which project a
+#      command lands on WITHOUT `-p` is `deploy/provision.sh::resolved_project_name`'s
+#      answer (never the old shared `djb-deploy`); this file declares no `name:`,
+#      so nothing here can win an argument the operator meant to settle with `-p`.
 #   2. `DJB_HTTP_PORT` / `DJB_HTTPS_PORT` — the host ports. Parametric, not a
 #      fixed alternate: a fixed second set would make a THIRD stack impossible,
 #      and there is no reason for this file to know how many stacks a machine
@@ -48,9 +48,9 @@
 # environments on one box, which is not a thing this repository does (ADR
 # deploy-1: one environment per box).
 #
-# TEARING DOWN A NAMED STACK. `deploy/teardown.sh` shells out to `docker
-# compose` without `-p`, so it would take down `djb-deploy`. Give it the name
-# through the environment, which outranks the file's `name:`:
+# TEARING DOWN A NAMED STACK. `deploy/teardown.sh` resolves the project the
+# way `provision.sh` does, so a second stack is named to it through the
+# environment, which outranks every other answer:
 #
 #   COMPOSE_PROJECT_NAME=djb-b1b ./deploy/teardown.sh local --purge
 #

@@ -1,0 +1,57 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "after", "text": "return str(self.organization.slug)"}
+class WidgetEntry(OrgScopedModel):
+    """A widget's ledger line. **Append-only; it lands where the widget is.**"""
+
+    #: House rule 20, declared rather than named: see `core.models.is_append_only`.
+    append_only = True
+
+    #: The landing gate: this row's organization is the widget's, or it is refused.
+    derive_org_from = "widget"
+
+    #: ADR core-13, kind three of three: append-only like `core.AuditEntry` (rules 20 and 31).
+    lifecycle: ClassVar[Lifecycle] = Lifecycle(
+        kind=LifecycleKind.APPEND_ONLY,
+        reason=(
+            "the widget's ledger, and a ledger with a retention window is a ledger "
+            "whose oldest lines cannot be cited. 'When was this approved, and by "
+            "whom' has to stay answerable for as long as anybody can ask — and the "
+            "line outlives every attempt to remove its subject, because `widget` "
+            "is PROTECT rather than CASCADE."
+        ),
+        trigger=(
+            "2026-08-24 — archival, when it comes, is a DATED RESIDUAL and never a "
+            "DELETE nobody remembers (`core.audit`'s grammar). The first "
+            "of: a product whose entry table outgrows its widget table by orders "
+            "of magnitude, or a stated retention obligation. Either one turns this "
+            "into a `purged` declaration whose callable moves lines to cold "
+            "storage, and that declaration lands in the SAME COMMIT as its "
+            "`ScheduleDeclaration` — a purge with no schedule is the defect, not "
+            "the fix."
+        ),
+    )
+
+    class Kind(models.TextChoices):
+        NOTE = "note", "Note"
+        APPROVED = "approved", "Approved"
+
+    widget = models.ForeignKey(
+        Widget,
+        on_delete=models.PROTECT,
+        related_name="entries",
+        help_text="The widget this line is about. Its organization is this row's.",
+    )
+    kind = models.CharField(max_length=16, choices=Kind.choices, default=Kind.NOTE)
+    note = models.TextField(blank=True)
+
+    class Meta(OrgScopedModel.Meta):
+        verbose_name = "widget entry"
+        verbose_name_plural = "widget entries"
+
+    def __str__(self) -> str:
+        return f"{self.kind} on {self.widget_id}"
+
+    @property
+    def organization_slug(self) -> str:
+        return str(self.organization.slug)
+
+

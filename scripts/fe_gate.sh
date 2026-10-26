@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The `fe` leg's tri-state. Sourced by scripts/check.sh and by
-# scripts/tests/test_fe_leg.sh's harness.
+# The `fe` leg's four states (absent, untouched, suspect, full). Sourced by scripts/check.sh and by
+# quality/tests/test_fe_leg.py's harness.
 # BASH ONLY, for the reason gate_ledger.sh states: sourced into an interactive
 # zsh, `local path` ties to $PATH and every helper dies silently.
 #
@@ -14,7 +14,7 @@
 # no `frontend/` at all — that is the steady state, not a defect — so on the
 # real tree this leg is ALMOST ALWAYS going to report `absent`. A mechanism
 # whose every live run takes the same branch is a mechanism nothing has
-# proven can take the other two, so `scripts/tests/test_fe_leg.sh` drives all
+# proven can take the other two, so `quality/tests/test_fe_leg.py` drives all
 # three states through synthetic fixture directories rather than depending on
 # this checkout ever growing a real one. That is the whole reason this file
 # is a sourced library rather than inline in check.sh: a drive has to be able
@@ -105,18 +105,12 @@ fe_leg_touched_frontend() {
 # That is exactly the sibling product's measured class: a change outside `frontend/` that
 # stales the frontend is invisible to every gate a builder can run, and the
 # blow-up lands on the shared train. It COMPOUNDS with the byte-pin
-# (`frontend/scripts/pin_client.sh`), which is the one instrument that would
-# catch it and is wired into no gate leg at all.
+# (`frontend/scripts/pin_client.sh`), the one instrument that catches it —
+# which this leg now runs (`fe_leg_pin`).
 #
-# THE SPLIT: DISCLOSURE AT RUNG TIME, REGENERATION AT BANK TIME. This leg does
-# NOT regenerate and does not compare bytes — a regeneration needs `npx`, Node
-# and a schema export, which is a minute the per-rung loop does not have and a
-# could-not-look on any machine without Node. It NAMES the suspicion, so the
-# builder is told; `scripts/pm_fold.sh` regenerates at the bank and either
-# commits the shift or refuses, which is where the byte-pin's tooth actually
-# closes. A named suspicion the builder can act on beats a silent UNTOUCHED
-# they cannot.
-#
+# THE SPLIT: the suspect state runs the byte pin when the toolchain and the pin
+# exist (drift is 1 with the `--client` offer, could-not-look 2); otherwise it
+# discloses and `scripts/pm_fold.sh` regenerates at the bank.#
 # THE PREDICATE IS DERIVED FROM WHAT THE GENERATOR READS, not from a guess about
 # what "backend" means. `scripts/gen_client.sh` exports the document with
 # `manage.py export_openapi_schema --api config.api.api` and hands it to
@@ -144,7 +138,7 @@ fe_leg_touched_frontend() {
 #     a docstring in an `api.py` names the client as a suspect and the fold then
 #     finds nothing to do. A false suspicion costs a printed line.
 #   * `apps/*/` MATCHING DEEPER. `case` globbing lets `*` cross `/`, so
-#     `apps/a/b/api.py` matches too. Wider than the convention, never narrower,
+#     `apps/<a>/<b>/api.py` matches too. Wider than the convention, never narrower,
 #     and this tree has no such path.
 FE_CONTRACT_SURFACE='config/api.py
 config/urls.py
@@ -188,9 +182,14 @@ fe_leg_toolchain_present() {
 # this check everywhere pnpm ships: it refuses (nonzero) the moment the
 # lockfile does not resolve every manifest entry exactly, without pnpm ever
 # rewriting it. Exit: 0 clean · 1 the lockfile no longer satisfies the
-# manifest · 2 could-not-look (no manifest, no lockfile to freeze).
+# manifest — a code of pnpm's lockfile-drift family (OUTDATED_LOCKFILE,
+# NO_LOCKFILE, LOCKFILE_*, FROZEN_LOCKFILE_WITH_OUTDATED_LOCKFILE,
+# BROKEN_LOCKFILE), each answered by regenerating the lockfile · 2
+# could-not-look (no manifest, no lockfile to freeze, or pnpm failed for a
+# reason of its own — a fetch, a crash with no code), with pnpm's first
+# error line.
 fe_leg_frozen_lockfile() {
-    local dir=$1
+    local dir=$1 said log rc=0
     [ -f "$dir/package.json" ] || {
         echo "!! fe leg: $dir/package.json is missing — the frozen-lockfile check has no" >&2
         echo "   manifest to read. Could-not-look, not a violation." >&2
@@ -201,28 +200,72 @@ fe_leg_frozen_lockfile() {
         echo "   unfrozen dependency set. Could-not-look, not a violation." >&2
         return 2
     }
-    (cd "$dir" && "${FE_PNPM:-pnpm}" install --frozen-lockfile --reporter=silent)
+    log=$(mktemp "${TMPDIR:-/tmp}/fe-frozen-lockfile.XXXXXX") || {
+        echo "!! fe leg: no scratch file for pnpm's answer — could-not-look." >&2
+        return 2
+    }
+    (cd "$dir" && "${FE_PNPM:-pnpm}" install --frozen-lockfile) >"$log" 2>&1 || rc=$?
+    if [ "$rc" = "0" ]; then
+        rm -f "$log"
+        return 0
+    fi
+    said=$(grep -m1 'ERR_' "$log" || grep -m1 -v '^[[:space:]]*$' "$log" || true)
+    said=${said#"${said%%[![:space:]]*}"}
+    [ -n "$said" ] || said="(nothing)"
+    if grep -qE 'ERR_PNPM_(OUTDATED_LOCKFILE|NO_LOCKFILE|LOCKFILE_[A-Z_]+|FROZEN_LOCKFILE_WITH_OUTDATED_LOCKFILE|BROKEN_LOCKFILE)' "$log"; then
+        echo "!! fe leg: the lockfile no longer satisfies package.json" >&2
+        echo "   (pnpm install --frozen-lockfile exited $rc)." >&2
+        echo "   pnpm said: ${said:0:400}" >&2
+        rm -f "$log"
+        return 1
+    fi
+    echo "!! fe leg: pnpm install --frozen-lockfile exited $rc and named no lockfile drift —" >&2
+    echo "   could-not-look, not a violation; regenerating the lockfile will not fix it." >&2
+    echo "   pnpm said: ${said:0:400}" >&2
+    rm -f "$log"
+    return 2
 }
 
-# fe_leg_tests <frontend-dir>
-#
-# Runs the declared "test" script when package.json has one; prints and
-# returns 0 when it does not, because a frontend/ tree that has not grown a
-# test script yet is the scaffold's own frontier, not this leg's finding.
-fe_leg_tests() {
-    local dir=$1
+# fe_leg_script <frontend-dir> <script> — run a script package.json declares,
+# or print that it is not declared and return 0. Any non-zero is a finding (1):
+# `tsc --noEmit` exits 2 on a type error, so a script's 2 is not this seam's 2.
+fe_leg_script() {
+    local dir=$1 script=$2 rc=0
     if ! python3 -c '
 import json, sys
 try:
     d = json.load(open(sys.argv[1]))
 except (OSError, ValueError):
     sys.exit(1)
-sys.exit(0 if "test" in d.get("scripts", {}) else 1)
-' "$dir/package.json" >/dev/null 2>&1; then
-        echo "  no \"test\" script declared in $dir/package.json — nothing run"
+sys.exit(0 if sys.argv[2] in d.get("scripts", {}) else 1)
+' "$dir/package.json" "$script" >/dev/null 2>&1; then
+        echo "  no \"$script\" script declared in $dir/package.json — nothing run"
         return 0
     fi
-    (cd "$dir" && "${FE_PNPM:-pnpm}" run test)
+    (cd "$dir" && "${FE_PNPM:-pnpm}" run "$script") || rc=$?
+    [ "$rc" = "0" ] || return 1
+}
+
+# fe_leg_tests <frontend-dir> — the declared "test" script (kept by name: three
+# drives call it).
+fe_leg_tests() {
+    fe_leg_script "$1" test
+}
+
+# fe_leg_pin <frontend-dir> — the byte pin (`<dir>/scripts/pin_client.sh`),
+# its 0/1/2 passed through; absent, nothing runs and the line says so.
+fe_leg_pin() {
+    local dir=$1 rc=0
+    if [ ! -x "$dir/scripts/pin_client.sh" ]; then
+        echo "  no executable $dir/scripts/pin_client.sh — the byte pin is not run"
+        return 0
+    fi
+    "$dir/scripts/pin_client.sh" || rc=$?
+    case "$rc" in
+    0) return 0 ;;
+    2) return 2 ;;
+    *) return 1 ;;
+    esac
 }
 
 # ---------------------------------------------------------------------------
@@ -255,8 +298,8 @@ sys.exit(0 if "test" in d.get("scripts", {}) else 1)
 #
 # AN OMITTED MODE IS CHANGE-AWARE, AND THAT IS A CONTRACT, not a default that
 # drifted: three drives call this function with one argument to drive the
-# tri-state itself (`scripts/tests/test_fe_leg.sh`'s nine cases,
-# `scripts/tests/test_rung_tidy.sh`'s client offer, `scripts/tests/test_pm_fold.sh`'s
+# tri-state itself (`quality/tests/test_fe_leg.py`'s nine cases,
+# `quality/tests/test_tidy.py`'s client offer, `quality/tests/test_fold.py`'s
 # suspect/plain pair), and every one of them is about the per-rung states. An
 # ABSENT second argument and an EMPTY one therefore mean different things here
 # — `""` is the full gate's own `$MODE` and must run the leg whole — so this
@@ -283,7 +326,7 @@ sys.exit(0 if "test" in d.get("scripts", {}) else 1)
 # could-not-look (frontend/ present, the toolchain is not, and this mode was
 # going to look at it).
 fe_leg_run() {
-    local changed_list=$1 lockrc mode whole="" t0 lock_secs test_secs
+    local changed_list=$1 lockrc mode whole="" t0 lock_secs
     if [ "$#" -ge 2 ]; then mode=$2; else mode="--loop"; fi
     case "$mode" in
     "" | --leg) whole=1 ;;
@@ -321,8 +364,29 @@ fe_leg_run() {
                 echo "    $f"
             done
             echo "  The committed client and document may now disagree with this checkout, and"
-            echo "  a stale generated client still COMPILES. Nothing is re-run here and this is"
-            echo "  not a finding."
+            echo "  a stale generated client still COMPILES."
+            # The pin decides the suspicion when it can run; otherwise it stays
+            # a disclosure and the fold's regeneration is the tooth.
+            if fe_leg_toolchain_present && [ -x "$FE_FRONTEND_DIR/scripts/pin_client.sh" ]; then
+                local pin_rc=0
+                echo "  -- pin --"
+                fe_leg_pin "$FE_FRONTEND_DIR" || pin_rc=$?
+                if [ "$pin_rc" = "0" ]; then
+                    echo "  the byte pin holds — the suspicion is cleared."
+                    return 0
+                fi
+                if [ "$pin_rc" = "2" ]; then
+                    echo "!! fe leg: the byte pin COULD NOT LOOK — see above." >&2
+                    return 2
+                fi
+                echo "RED: fe leg: the committed client has drifted from this checkout's contract." >&2
+                echo "  offer: ./scripts/rung_tidy.sh --client"
+                echo "    It regenerates both files through ./frontend/scripts/pin_client.sh"
+                echo "    --write, into the working tree, staging nothing."
+                return 1
+            fi
+            echo "  The byte pin was not run (no toolchain on PATH, or no executable"
+            echo "  $FE_FRONTEND_DIR/scripts/pin_client.sh); this is a disclosure, not a finding."
             # ONE COMMAND, AT THE SITE OF THE DISCLOSURE, IN PLACE OF FOUR LINES
             # OF ADVICE. The advice named three different things a builder could
             # do and left them to pick; every builder who met this state then
@@ -362,24 +426,37 @@ fe_leg_run() {
     if [ "$lockrc" = "2" ]; then
         return 2
     elif [ "$lockrc" != "0" ]; then
-        echo "!! fe leg: the lockfile no longer satisfies package.json" >&2
-        echo "   (pnpm install --frozen-lockfile exited $lockrc)." >&2
         return 1
     fi
     echo "  ok — pnpm-lock.yaml satisfies package.json"
 
-    echo "  -- frontend tests --"
-    t0=$(date +%s)
-    fe_leg_tests "$FE_FRONTEND_DIR" || {
-        test_secs=$(($(date +%s) - t0))
-        echo "  fe leg cost: frozen-lockfile ${lock_secs}s + tests ${test_secs}s = $((lock_secs + test_secs))s (two pnpm commands)"
-        return 1
-    }
-    test_secs=$(($(date +%s) - t0))
-    # THE RATIFIED PRICE, MEASURED RATHER THAN ESTIMATED. A3.3's decision names
-    # "two pnpm commands per bank" as the cost of never skipping this leg at
-    # the full gate; this line is what makes that number readable on every run
-    # that pays it, in the leg's own banner, instead of a figure in a plan.
-    echo "  fe leg cost: frozen-lockfile ${lock_secs}s + tests ${test_secs}s = $((lock_secs + test_secs))s (two pnpm commands)"
-    return 0
+    # Every sub-step runs and is timed; 2 outranks 1 in the composed status.
+    local step step_rc worst=0 costs="frozen-lockfile ${lock_secs}s" total=$lock_secs secs failed=""
+    for step in typecheck lint test pin; do
+        echo "  -- ${step} --"
+        t0=$(date +%s)
+        step_rc=0
+        if [ "$step" = "pin" ]; then
+            fe_leg_pin "$FE_FRONTEND_DIR" || step_rc=$?
+        else
+            fe_leg_script "$FE_FRONTEND_DIR" "$step" || step_rc=$?
+        fi
+        secs=$(($(date +%s) - t0))
+        costs="${costs} + ${step} ${secs}s"
+        total=$((total + secs))
+        if [ "$step_rc" = "2" ]; then
+            echo "!! fe leg: the ${step} step COULD NOT LOOK — see above." >&2
+            worst=2
+            failed="${failed} ${step}"
+        elif [ "$step_rc" != "0" ]; then
+            echo "RED: fe leg: the ${step} step failed — see above." >&2
+            [ "$worst" = "2" ] || worst=1
+            failed="${failed} ${step}"
+        fi
+    done
+    echo "  fe leg cost: ${costs} = ${total}s"
+    if [ "$worst" != "0" ]; then
+        echo "  fe leg:${failed} — exit ${worst}"
+    fi
+    return "$worst"
 }

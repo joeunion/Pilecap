@@ -1,0 +1,34 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "before", "text": "def test_a_due_date_with_an_offset_is_answered_in_utc("}
+DUE_AT_WIRE = "2026-11-02T17:00:00Z"
+LATER_DUE_AT_WIRE = "2026-12-01T09:30:00Z"
+
+
+def test_due_at_is_created_patched_and_cleared_over_rest(
+    api: Client, tenant: Tenant, owner: User
+) -> None:
+    api.force_login(owner)
+    created = api.post(
+        LIST_URL, data=json.dumps({"name": "Due", "due_at": DUE_AT_WIRE}), content_type=JSON
+    )
+    assert created.status_code == 201, created.content
+    body = _body(created)
+    assert body["due_at"] == DUE_AT_WIRE
+
+    changed = api.patch(
+        f"{LIST_URL}{body['id']}/",
+        data=json.dumps({"due_at": LATER_DUE_AT_WIRE, "version": body["version"]}),
+        content_type=JSON,
+    )
+    assert changed.status_code == 200, changed.content
+    assert _body(changed)["due_at"] == LATER_DUE_AT_WIRE
+
+    cleared = api.patch(
+        f"{LIST_URL}{body['id']}/",
+        data=json.dumps({"clear_due_at": True, "version": _body(changed)["version"]}),
+        content_type=JSON,
+    )
+    assert cleared.status_code == 200, cleared.content
+    assert _body(cleared)["due_at"] is None
+    assert Widget.objects.for_tenant(tenant).get(pk=body["id"]).due_at is None
+
+

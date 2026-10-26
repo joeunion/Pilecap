@@ -1,7 +1,7 @@
 """M1 — the hierarchy at seeded scale, measured with machine-invariant instruments.
 
 Rung M1 of cycle P3 ("fast at scale").
-Zero production edits: this module and `quality/perf-hierarchy-measurement.md`
+Zero production edits: this module and the retired `perf-hierarchy-measurement.md`
 are the whole rung. What it measures, and with which instrument (ADR perf-1 —
 query counts, EXPLAIN plan shape, flat-under-doubling; **never** wall-clock,
 which `perf/measure.refuse_wall_clock_assertions` refuses structurally):
@@ -116,7 +116,7 @@ DECLARED_QUERY_COUNTS: dict[str, int] = {
 #: rung found and E1 must not pin, with the finding named.
 PLAN_EXPECTATIONS: dict[str, tuple[str, bool, str]] = {
     "prefix_scan_region_subtree": (
-        # F1e (`quality/perf-realtime-measurement.md` §5) added
+        # F1e (the retired `perf-realtime-measurement.md` §5) added
         # `organization_tenant_prefix` — `(tenant_id, path varchar_pattern_ops)`
         # — and this read, which is `for_tenant(t).filter(path__startswith=...)`,
         # is exactly the shape it was built for. The plan improved as well as
@@ -150,7 +150,7 @@ PLAN_EXPECTATIONS: dict[str, tuple[str, bool, str]] = {
     # that: the page still does not use the path index, before or after. No pin
     # flipped; only the names in these comments needed correcting, which is why
     # they are corrected rather than re-cited. The re-measure and its EXPLAIN
-    # are in quality/perf-hierarchy-measurement.md § RE-MEASURE.
+    # are in the retired perf-hierarchy-measurement.md § RE-MEASURE.
     "visible_to_page_root": (
         "organization_path_prefix",
         False,
@@ -263,7 +263,7 @@ HOT_PATH_PROPOSALS: dict[str, dict[str, Any]] = {
         "everywhere. **Do NOT pin a plan shape** — earlier verdicts were "
         "taken on the unsliced queryset and every door reads a `@paginate`d "
         "page plus a COUNT(*) (the CORRECTION block in "
-        "quality/perf-hierarchy-measurement.md). Off-root the page still rides "
+        "the retired perf-hierarchy-measurement.md). Off-root the page still rides "
         "the path index, but the root hat and the wide hat "
         "do not, and no index can make the wide hat.",
     },

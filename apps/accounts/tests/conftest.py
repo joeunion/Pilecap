@@ -20,6 +20,7 @@ from base64 import urlsafe_b64encode
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
+from unittest.mock import patch
 from urllib.parse import quote
 
 import httpx
@@ -31,7 +32,7 @@ from django.http import HttpRequest
 from django.test import RequestFactory
 
 from apps.accounts import zitadel
-from apps.accounts.models import SsoConnection
+from apps.accounts.models import STAFF_REALM, IdentityHome, SsoConnection, SsoIdentity
 from apps.accounts.services import create_sso_connection, verify_sso_domain
 from apps.accounts.tests.stub_issuer import StubIssuer, running_issuer
 from apps.core.actor import Actor, system_actor
@@ -65,6 +66,16 @@ class _NotFoundHere(Exception):
     an org that has none — because the whole value of that refusal is its error
     id, and a client that keys on the id is exactly what a fake answering a
     blank 404 could not test.
+    """
+
+
+class _Taken(Exception):
+    """Zitadel answering "somebody made it first", as the `409` it really is.
+
+    MEASURED on the pinned build for a second organisation of one name, a
+    second grant of one project to one org, a second person of one username in
+    one org and a second link of one IdP to one login policy: a `409` whose
+    message ends in the error id, which is what the client's writers key on.
     """
 
 
@@ -127,12 +138,16 @@ class FakeZitadel:
         self.apps: dict[str, dict[str, Any]] = {}
         self.users: dict[str, dict[str, Any]] = {}
         self.idps: dict[str, dict[str, Any]] = {}
-        # W2-R5's surface: which IdPs and users have been deactivated, and which
+        # The federation surface: which IdPs and users have been deactivated, and which
         # external identities are linked to which Zitadel user. Kept as state
         # rather than as a call log because the properties the federation tests
         # pin are about the *result* — one object, inactive, no links left —
         # which a call log cannot tell apart from six calls that did nothing.
         self.deactivated_idps: set[str] = set()
+        # The legacy IdP configs the old `/idps/{id}/_deactivate` endpoint
+        # still knows. Empty: this tree only ever makes provider TEMPLATES, and
+        # a test that needs a legacy config puts its id here.
+        self.legacy_idps: set[str] = set()
         self.deactivated_users: set[str] = set()
         self.user_links: dict[str, list[dict[str, Any]]] = {}
         self.rotations: list[str] = []
@@ -225,6 +240,20 @@ class FakeZitadel:
         self.orgs: list[dict[str, Any]] = [
             {"id": "1", "name": "TestOrg", "state": "ORG_STATE_ACTIVE"}
         ]
+        # --- a tenant's realm: an organisation of its own (identity option B) -
+        # The credential's own org is `home_org`; a call carrying
+        # `x-zitadel-orgid` acts in the org it names, exactly as the real API
+        # scopes a management call, and a call without it acts at home. Every
+        # shape below is TRANSCRIBED from the live drive of the realm adapter
+        # against the pinned v4.17.1 stack (2026-09-30), not invented: the
+        # realm's OWN login policy (absent while it inherits the instance's),
+        # the IdPs it links to that policy, the project's grants, and which org
+        # each person and each IdP lives in.
+        self.home_org = "1"
+        self.realm_login_policies: dict[str, dict[str, Any]] = {}
+        self.login_policy_idps: dict[str, list[str]] = {}
+        self.grants: dict[str, dict[str, Any]] = {}
+        self._acting = self.home_org
         self._next = 1000
 
     def id(self) -> str:
@@ -238,6 +267,7 @@ class FakeZitadel:
         self.requests.append((method, path))
         body = json.loads(request.content or b"{}")
         self.bodies.append((method, path, body))
+        self._acting = request.headers.get("x-zitadel-orgid", "") or self.home_org
         if method == "GET" and path == "/oauth/v2/authorize":
             # The browser endpoint, answered where the query string is still
             # reachable: `_route` is handed the parsed JSON body, and this is
@@ -251,12 +281,17 @@ class FakeZitadel:
             return httpx.Response(400, json={"message": str(already)})
         except _NotFoundHere as missing:
             return httpx.Response(404, json={"message": str(missing)})
+        except _Taken as taken:
+            return httpx.Response(409, json={"code": 6, "message": str(taken)})
         except KeyError:
             return httpx.Response(404, json={"message": "NotFound"})
 
     def _route(self, method: str, path: str, body: dict[str, Any]) -> dict[str, Any]:
         if method == "GET" and path == "/orgs/me":
-            return {"org": {"id": "1", "name": "TestOrg"}}
+            return {"org": self._org(self._acting)}
+        realm = self._realm_route(method, path, body)
+        if realm is not None:
+            return realm
         if path == "/projects/_search":
             return self._search(self.projects, body)
         if method == "POST" and path == "/projects":
@@ -310,6 +345,7 @@ class FakeZitadel:
                     row
                     for row in self.users.values()
                     if row["userName"] == self._username_query(body)
+                    and self._owner(row) == self._acting
                 ]
             }
         if method == "POST" and path == "/users/human/_import":
@@ -317,13 +353,18 @@ class FakeZitadel:
             self.users[new] = {"id": new, "userName": body["userName"]}
             return {"userId": new}
         if path == "/idps/templates/_search":
-            return {"result": list(self.idps.values())}
+            return {
+                "result": [row for row in self.idps.values() if self._owner(row) == self._acting]
+            }
         if method == "GET" and path.startswith("/idps/templates/"):
-            return {"idp": self.idps[path.rsplit("/", 1)[-1]]}
+            idp = self.idps[path.rsplit("/", 1)[-1]]
+            if self._owner(idp) != self._acting:
+                raise _NotFoundHere("Identity Provider Configuration doesn't exist (QUERY-SAFrt)")
+            return {"idp": idp}
         if method == "POST" and path == "/idps/generic_oidc":
             new = self.id()
             self.idps[new] = self._idp(new, body)
-            return {"id": new}
+            return {"id": new, "details": {"resourceOwner": self._acting}}
         if method == "PUT" and path.startswith("/idps/generic_oidc/"):
             existing = path.rsplit("/", 1)[-1]
             self.idps[existing] = self._idp(existing, body)
@@ -340,6 +381,11 @@ class FakeZitadel:
             idp_id = path.split("/")[2]
             if idp_id not in self.idps:
                 raise KeyError(path)
+            if idp_id not in self.legacy_idps:
+                # MEASURED on the pinned build (2026-09-30): the legacy endpoint
+                # answers a provider TEMPLATE — every provider this tree makes —
+                # with this 400 while it is ACTIVE, and deactivates nothing.
+                return self._already("Errors.Org.IDPConfig.NotActive (Org-BBmd0)")
             if idp_id in self.deactivated_idps:
                 # Zitadel's own answer to "it already is": a 400 naming the
                 # state, not a 200. The client has to read that as success or
@@ -354,8 +400,11 @@ class FakeZitadel:
             user_id = path.split("/")[2]
             if user_id not in self.users:
                 raise KeyError(path)
+            if self._owner(self.users[user_id]) != self._acting:
+                raise _NotFoundHere("User could not be found (COMMAND-3M9ds)")
             if user_id in self.deactivated_users:
-                return self._already("Errors.User.AlreadyInactive")
+                # The pinned build's words, transcribed from the live drive.
+                return self._already("User already inactive (COMMAND-5M0sf)")
             self.deactivated_users.add(user_id)
             return {}
         if method == "DELETE" and "/idps/" in path and path.startswith("/users/"):
@@ -387,9 +436,21 @@ class FakeZitadel:
         # so a test can see which API a call went to. The shapes are the ones
         # the pinned build answered with, recorded in the probe.
         if method == "POST" and path == "/v2/users/human":
+            # The v2 body names the org itself (`organization.orgId`); no
+            # header is involved, and a username is one per org.
+            org = str((body.get("organization") or {}).get("orgId", "")) or self.home_org
+            if any(
+                row["userName"] == body["username"] and self._owner(row) == org
+                for row in self.users.values()
+            ):
+                raise _Taken("User already exists (V3-DKcYh)")
             new = self.id()
-            self.users[new] = {"id": new, "userName": body["username"]}
-            return {"userId": new}
+            self.users[new] = {
+                "id": new,
+                "userName": body["username"],
+                "details": {"resourceOwner": org},
+            }
+            return {"userId": new, "details": {"resourceOwner": org}}
         if method == "POST" and path.startswith("/v2/users/") and path.endswith("/invite_code"):
             user_id = path.split("/")[3]
             if user_id not in self.users:
@@ -410,6 +471,8 @@ class FakeZitadel:
         # bare where the instance's is spelled `/admin/v1/...` below: they are
         # two surfaces of one resource and the paths are how a test tells which
         # one a call went to.
+        if path == "/policies/login" and self._acting != self.home_org:
+            return self._realm_policy(method, body)
         if method == "GET" and path == "/policies/login":
             return {"policy": self.org_login_policy}
         if method == "PUT" and path == "/policies/login":
@@ -495,15 +558,6 @@ class FakeZitadel:
                 str(one) for one in body.get("roles", [])
             ]
             return {}
-        if method == "POST" and path == "/admin/v1/orgs/_search":
-            # Zitadel's own envelope: `details.totalResult` beside the rows. The
-            # audit reads the rows; the total is served anyway because a fake
-            # that carried only what the reader wants cannot catch a reader that
-            # started wanting something else.
-            return {
-                "details": {"totalResult": str(len(self.orgs))},
-                "result": list(self.orgs),
-            }
         if method == "POST" and path == "/admin/v1/secretgenerators/_search":
             return {
                 "result": [
@@ -540,6 +594,163 @@ class FakeZitadel:
             return f"{base_uri}/login?authRequest=V2_{self.id()}"
         return f"/ui/login/login?authRequestID={self.id()}"
 
+    # --- a tenant's realm ---------------------------------------------------
+    def _owner(self, row: dict[str, Any]) -> str:
+        """Which org a person or an IdP lives in: its `resourceOwner`, home when unsaid."""
+        return str((row.get("details") or {}).get("resourceOwner", "")) or self.home_org
+
+    @staticmethod
+    def _listed(rows: list[dict[str, Any]]) -> dict[str, Any]:
+        """A search's envelope: the total beside the rows, and no `result` key for none."""
+        return {"details": {"totalResult": str(len(rows))}, **({"result": rows} if rows else {})}
+
+    def _org(self, org_id: str) -> dict[str, Any]:
+        for row in self.orgs:
+            if row["id"] == org_id:
+                return {key: value for key, value in row.items() if key != "removed"}
+        raise _NotFoundHere("Organisation not found (QUERY-leq5Q)")
+
+    def _realm_route(self, method: str, path: str, body: dict[str, Any]) -> dict[str, Any] | None:
+        """The organisation, project and grant surfaces a realm is made of. `None`: not one."""
+        if method == "POST" and path == "/admin/v1/orgs/_search":
+            # Zitadel's own envelope: `details.totalResult` beside the rows,
+            # and a `nameQuery` narrowing them (MEASURED: an equality match on
+            # the name; no rows is no `result` key at all). The audit reads the
+            # rows; the total is served anyway because a fake that carried only
+            # what the reader wants cannot catch a reader that started wanting
+            # something else.
+            wanted = [
+                str(query["nameQuery"]["name"])
+                for query in body.get("queries") or []
+                if "nameQuery" in query
+            ]
+            rows = [
+                {key: value for key, value in row.items() if key != "removed"}
+                for row in self.orgs
+                if (not wanted or row["name"] in wanted) and not row.get("removed")
+            ]
+            return self._listed(rows)
+        if method == "GET" and path.startswith("/admin/v1/orgs/"):
+            return {"org": self._org(path.rsplit("/", 1)[-1])}
+        if method == "DELETE" and path.startswith("/admin/v1/orgs/"):
+            # MEASURED on the pinned build (2026-09-30): the delete answers 200,
+            # and the org is then read back 200 with its body and NO `state` key
+            # (held at +0/+3/+10 s) while the search no longer lists it.
+            removed = self._org(path.rsplit("/", 1)[-1])
+            for row in self.orgs:
+                if row["id"] == removed["id"]:
+                    row.pop("state", None)
+                    row["removed"] = True
+            return {"details": {"resourceOwner": self.home_org}}
+        if method == "POST" and path == "/orgs":
+            if any(
+                row["name"] == body.get("name", "") and not row.get("removed") for row in self.orgs
+            ):
+                raise _Taken("Organisation's name or id already taken (V3-DKcYh)")
+            new = self.id()
+            self.orgs.append({"id": new, "name": body.get("name", ""), "state": "ORG_STATE_ACTIVE"})
+            return {"id": new, "details": {"resourceOwner": new}}
+        parts = path.split("/")
+        if len(parts) == 3 and parts[1] == "projects" and parts[2] in self.projects:
+            project = self.projects[parts[2]]
+            if method == "GET":
+                return {"project": dict(project)}
+            if method == "PUT":
+                # A REPLACE, and booleans absent when false (MEASURED: a
+                # project with the check off answers no `hasProjectCheck`).
+                kept = {"id": project["id"]}
+                self.projects[parts[2]] = {
+                    **kept,
+                    **{key: value for key, value in body.items() if value not in (False, "")},
+                }
+                return {"details": {"resourceOwner": self.home_org}}
+        if path.startswith("/projects/") and path.endswith("/grants"):
+            return self._grant(parts[2], str(body.get("grantedOrgId", "")))
+        if path.startswith("/projects/") and path.endswith("/grants/_search"):
+            rows = [row for row in self.grants.values() if row["projectId"] == parts[2]]
+            return self._listed(rows)
+        if path == "/granted_projects/_search":
+            rows = [row for row in self.grants.values() if row["grantedOrgId"] == self._acting]
+            return self._listed(rows)
+        if path == "/policies/login/idps/_search":
+            # A provider deleted is off every policy it was linked to, as the
+            # real API removes the link with the object.
+            rows = [
+                {"idpId": idp, "idpName": self.idps[idp]["name"], "idpType": "IDP_TYPE_OIDC"}
+                for idp in self.login_policy_idps.get(self._acting, [])
+                if idp in self.idps
+            ]
+            return self._listed(rows)
+        if path == "/policies/login/idps" and method == "POST":
+            if self._realm_own_policy(self._acting) is None:
+                raise _NotFoundHere("Login Policy not found (Org-Ffgw2)")
+            linked = self.login_policy_idps.setdefault(self._acting, [])
+            if body["idpId"] in linked:
+                raise _Taken("Errors.Org.LoginPolicy.IDP.AlreadyExists (Org-2B0ps)")
+            linked.append(str(body["idpId"]))
+            return {"details": {"resourceOwner": self._acting}}
+        if path.startswith("/policies/login/idps/") and method == "DELETE":
+            linked = self.login_policy_idps.get(self._acting, [])
+            if parts[-1] not in linked:
+                raise _NotFoundHere("Errors.Org.LoginPolicy.IDP.NotExisting (Org-39fjs)")
+            linked.remove(parts[-1])
+            return {"details": {"resourceOwner": self._acting}}
+        return None
+
+    def _grant(self, project_id: str, org_id: str) -> dict[str, Any]:
+        if project_id not in self.projects:
+            raise KeyError(project_id)
+        if any(
+            row["projectId"] == project_id and row["grantedOrgId"] == org_id
+            for row in self.grants.values()
+        ):
+            raise _Taken("Project Grant already exists (V3-DKcYh)")
+        new = self.id()
+        self.grants[new] = {
+            "grantId": new,
+            "grantedOrgId": org_id,
+            "state": "PROJECT_GRANT_STATE_ACTIVE",
+            "projectId": project_id,
+            "projectName": self.projects[project_id].get("name", ""),
+        }
+        return {"grantId": new, "details": {"resourceOwner": self.home_org}}
+
+    def _realm_own_policy(self, org_id: str) -> dict[str, Any] | None:
+        """An org's OWN login policy, or `None` while it inherits the instance's."""
+        if org_id == self.home_org:
+            return None if self.org_login_policy.get("isDefault") else self.org_login_policy
+        return self.realm_login_policies.get(org_id)
+
+    def _realm_policy(self, method: str, body: dict[str, Any]) -> dict[str, Any]:
+        """A realm's login policy: inheriting, then its own — every answer MEASURED on a new org."""
+        org = self._acting
+        own = self.realm_login_policies.get(org)
+        if method == "GET":
+            if own is None:
+                return {"policy": {**self.instance_login_policy, "isDefault": True}}
+            return {"policy": own}
+        if method == "POST":
+            if own is not None:
+                raise _Taken("Login Policy already exists (Org-Dgfb2)")
+            self.realm_login_policies[org] = {
+                **{key: value for key, value in body.items() if value not in (False, "", [])},
+                "details": {"resourceOwner": org},
+            }
+            return {"details": {"resourceOwner": org}}
+        if own is None:
+            raise _NotFoundHere("Login Policy not found (Org-M0sif)")
+        baseline = {
+            key: own.get(key, absent) for key, absent in zitadel.LOGIN_POLICY_ABSENT.items()
+        }
+        if body == baseline:
+            self._already("Errors.Org.LoginPolicy.NotChanged (Org-5M9vdd)")
+        self.realm_login_policies[org] = {
+            **{key: value for key, value in body.items() if value not in (False, "")},
+            "details": own["details"],
+            **{key: own[key] for key in zitadel.LOGIN_POLICY_FACTOR_LISTS if key in own},
+        }
+        return {"details": {"resourceOwner": org}}
+
     @staticmethod
     def _already(code: str) -> dict[str, Any]:
         """Raised out of `handle` as a 400, the way the real API answers."""
@@ -572,6 +783,7 @@ class FakeZitadel:
         return {
             "id": idp_id,
             "name": body["name"],
+            "state": "IDP_STATE_ACTIVE",
             "config": {"google": {"clientId": body["clientId"]}},
         }
 
@@ -583,6 +795,8 @@ class FakeZitadel:
         return {
             "id": idp_id,
             "name": body["name"],
+            "state": "IDP_STATE_ACTIVE",
+            "details": {"resourceOwner": self._acting},
             "config": {
                 "oidc": {
                     "issuer": body["issuer"],
@@ -614,6 +828,7 @@ def instance(
     monkeypatch: pytest.MonkeyPatch,
     settings: Any,
     recorded_workflow_starts: None,
+    request: pytest.FixtureRequest,
 ) -> FakeZitadel:
     """A configured client whose socket is a dictionary.
 
@@ -622,7 +837,7 @@ def instance(
     and everything else in the suite gets `ZitadelNotConfigured` before a socket
     is opened.
 
-    **And no Temporal dial either** (`recorded_workflow_starts`). Since W2-R5,
+    **And no Temporal dial either** (`recorded_workflow_starts`). Under ADR ident-6,
     `create_sso_connection` asks for its own materialisation, so building the
     `sso_connection` fixture inside a `transaction=True` test commits and fires
     the on-commit hook. Every test in this module is about the client or a
@@ -682,12 +897,128 @@ def instance(
             yield client
 
     monkeypatch.setattr(zitadel, "_client", stubbed)
+    _home_every_tenant(fake, monkeypatch, request)
     return fake
+
+
+def _home_every_tenant(
+    fake: FakeZitadel, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    """Every tenant in the test has its realm on the fake, as it would once its run landed.
+
+    **The instance a test gets is a deployment whose worker is up.** Creating a
+    tenant asks for its realm and the worker makes it seconds later; a suite
+    with no worker would leave every tenant `pending`, and every identity test
+    that is about something else — a connection, the audit, an invitation —
+    would be measuring a tenant nobody can sign in to. So the tenants that
+    already exist are homed here, and one created later is homed as it is
+    asked for, through the same activity the run executes. A test whose
+    subject IS a pending home puts its home back to `pending` itself
+    (`test_identity_home.py`).
+    """
+    from apps.core import bridge
+    from apps.core.models import Tenant
+
+    if request.node.get_closest_marker("django_db") is None:
+        return
+    # A module whose subject IS the realm port measures it from nothing, and
+    # says so (`HOMES_ITS_OWN_REALMS = True`, `test_realm.py`).
+    if getattr(request.module, "HOMES_ITS_OWN_REALMS", False):
+        return
+    asked = bridge.find(bridge.ENSURE_IDENTITY_HOME)
+
+    def asked_and_landed(*, tenant: Tenant) -> None:
+        if asked is not None:
+            asked(tenant=tenant)
+        home_tenant(fake, tenant)
+
+    monkeypatch.setitem(bridge._registry, bridge.ENSURE_IDENTITY_HOME, asked_and_landed)
+    for tenant in Tenant.objects.all():
+        home_tenant(fake, tenant)
+
+
+def join(user: Any, subject: str, *, realm: str = STAFF_REALM) -> SsoIdentity:
+    """Set-up: this person holds `subject` in `realm` — a row of the identity join.
+
+    Written directly because it is set-up, the way a test gives a row the state
+    it needs; the one writer the sign-in uses is `services.record_identity`,
+    and the tests about it call it.
+    """
+    home = IdentityHome.objects.filter(realm_id=realm).first()
+    return SsoIdentity.objects.create(
+        tenant=home.tenant if home is not None else None,
+        connection=None,
+        user=user,
+        realm=realm,
+        subject=subject,
+        email=user.email,
+    )
+
+
+def provider_landed(connection: SsoConnection) -> SsoConnection:
+    """Set-up: the connection's provider has reached the identity platform, as its run records.
+
+    `enforced` is refused over a connection whose provider has not landed
+    (`enforced_without_provider`), so a test whose subject is what enforcing DOES
+    starts from the state the configuration run leaves behind.
+    """
+    SsoConnection.objects.filter(pk=connection.pk).update(
+        zitadel_idp_id=connection.zitadel_idp_id or f"idp-{connection.pk.hex[:8]}",
+        sync_state=SsoConnection.SyncState.APPLIED,
+    )
+    connection.refresh_from_db()
+    return connection
+
+
+def subject_of(user: Any, *, realm: str = STAFF_REALM) -> str | None:
+    """The subject this person holds in `realm`, or `None` — the join read back."""
+    row = SsoIdentity.objects.filter(user=user, connection__isnull=True, realm=realm).first()
+    return row.subject if row is not None else None
+
+
+def home_tenant(fake: FakeZitadel, tenant: Tenant) -> str:
+    """The tenant's realm, made the way the worker makes it: the real activity, on the fake.
+
+    The deployment's project is put on the fake first when it has none — the
+    seed makes it on a real instance, and a realm is granted it — and the run is
+    a PLATFORM run, so any tenant headers a test set are cleared around it
+    exactly as the worker would start it. Returns the realm's id.
+    """
+    from io import StringIO
+
+    from django.conf import settings
+    from django.core.management import call_command
+
+    from apps.accounts.activities import ensure_identity_home
+    from apps.accounts.types import IdentityHomeAsk
+    from apps.workflows import context as workflow_context
+
+    name = str(settings.ZITADEL_PROJECT_NAME)
+    if not any(row.get("name") == name for row in fake.projects.values()):
+        # A realm is granted the deployment's project, and the project is the
+        # seed's: seed the fake the way `setup.sh` seeds an instance, so the
+        # audit reads a deployment and not a bare project with no clients.
+        call_command("zitadel_seed", skip_user=True, stdout=StringIO())
+    tokens = workflow_context.set_principal(tenant_id=None, user_id=None, org_id=None)
+    # The activity closes its thread's stale connections at both ends, as a
+    # worker thread must; on the test's own thread, inside the test's atomic
+    # block, that would close the connection the test is standing on.
+    with patch("apps.accounts.activities.close_old_connections", lambda: None):
+        try:
+            return ensure_identity_home(IdentityHomeAsk(tenant_slug=tenant.slug)).realm_id
+        finally:
+            workflow_context.reset_principal(tokens)
+
+
+@pytest.fixture
+def homed(instance: FakeZitadel, tenant: Tenant) -> str:
+    """The tenant with its realm made on the fake — what every tenant has once its run lands."""
+    return home_tenant(instance, tenant)
 
 
 ISSUER = "https://idp.acme.example"
 CLIENT_ID = "acme-client-id"
-CLIENT_SECRET = "acme-client-secret-nobody-should-ever-see"  # pragma: allowlist secret
+CLIENT_SECRET = "acme-client-secret-nobody-should-ever-see"  # noqa: S105 — a fake IdP client secret the test world configures  # pragma: allowlist secret
 
 
 def _verified(connection: SsoConnection) -> SsoConnection:
@@ -767,7 +1098,7 @@ def other_sso_connection(other_tenant: Tenant, stranger_actor: Actor) -> SsoConn
             name="Globex Entra",
             issuer="https://idp.globex.example",
             client_id="globex-client-id",
-            client_secret="globex-client-secret",  # pragma: allowlist secret
+            client_secret="globex-client-secret",  # noqa: S106 — a fake IdP client secret the test world configures  # pragma: allowlist secret
             email_domains=["globex.com"],
             default_role=Membership.Role.MEMBER,
         )
@@ -818,7 +1149,7 @@ def stub_issuer(settings: Any) -> Iterator[StubIssuer]:
     with running_issuer() as issuer:
         settings.ZITADEL_ISSUER = issuer.base_url
         settings.ZITADEL_CLIENT_ID = issuer.client_id
-        settings.ZITADEL_CLIENT_SECRET = "stub-client-secret"  # pragma: allowlist secret
+        settings.ZITADEL_CLIENT_SECRET = "stub-client-secret"  # noqa: S105 — a fake IdP client secret the test world configures  # pragma: allowlist secret
         settings.SOCIALACCOUNT_PROVIDERS = {
             **settings.SOCIALACCOUNT_PROVIDERS,
             "openid_connect": {
@@ -834,6 +1165,15 @@ def stub_issuer(settings: Any) -> Iterator[StubIssuer]:
                 "OAUTH_PKCE_ENABLED": True,
             },
         }
+        # **The workforce door names the issuer's default address's domain.**
+        # A person the stub asserts by default is a NEW person, and the platform
+        # door mints a new person only at a workforce domain or on an invitation
+        # (`adapter.SocialAccountAdapter._may_sign_up`) — with the list empty the
+        # wall fails closed. The protocol tests that ask for this fixture are
+        # about the round trip, not the wall, so the world they run in is one
+        # where their person is staff; `test_workforce_wall.py` is where the wall
+        # itself is judged, with the list set per case.
+        settings.GOOGLE_WORKSPACE_DOMAINS = [issuer.email.rsplit("@", 1)[1]]
         cache.clear()
         yield issuer
         cache.clear()
@@ -1020,7 +1360,6 @@ class FakeMeasuredZitadel(FakeZitadel):
         super().__init__()
         self.created_orgs: list[str] = []
         self.removed_orgs: list[str] = []
-        self.org_own_policies: dict[str, dict[str, Any]] = {}
         self.sessions: dict[str, dict[str, Any]] = {}
         self.session_tokens: dict[str, str] = {}
         self.passworded_users: set[str] = set()
@@ -1061,6 +1400,7 @@ class FakeMeasuredZitadel(FakeZitadel):
             ),
             "ManagementServiceUpdateGoogleProviderBody": zitadel.GOOGLE_IDENTITY_PROVIDER_FIELDS,
             "ManagementServiceUpdateOIDCAppConfigBody": zitadel.OIDC_APP_CONFIG_FIELDS,
+            "ManagementServiceUpdateProjectBody": zitadel.PROJECT_FIELDS,
         }
 
     def _document(self, title: str, document: str) -> dict[str, Any]:
@@ -1093,8 +1433,6 @@ class FakeMeasuredZitadel(FakeZitadel):
         self, method: str, path: str, body: dict[str, Any], request: httpx.Request
     ) -> httpx.Response | None:
         """The measurement surfaces. `None` means "the parent knows this one"."""
-        org = request.headers.get("x-zitadel-orgid", "")
-
         if method == "GET" and path.startswith("/openapi/v2/swagger/"):
             name = path.rsplit("/", 1)[-1].removesuffix(".swagger.json")
             document = self.swagger.get(name)
@@ -1106,10 +1444,13 @@ class FakeMeasuredZitadel(FakeZitadel):
             return httpx.Response(200, text=MEASURED_INVITE_PAGE)
 
         if method == "POST" and path == "/management/v1/orgs":
-            new = self.id()
-            self.created_orgs.append(new)
-            self.orgs.append({"id": new, "name": body.get("name", ""), "state": "ORG_STATE_ACTIVE"})
-            return httpx.Response(200, json={"id": new, "details": {"resourceOwner": new}})
+            # The parent makes the org (one route for the realm adapter and
+            # the kit); this class only remembers which ones this run made, so
+            # its teardown can be told apart from one aimed at somebody else's.
+            made = super().handle(request)
+            if made.status_code == 200:
+                self.created_orgs.append(str(made.json()["id"]))
+            return made
 
         if method == "DELETE" and path.startswith("/admin/v1/orgs/"):
             removed = path.rsplit("/", 1)[-1]
@@ -1122,28 +1463,9 @@ class FakeMeasuredZitadel(FakeZitadel):
             self.orgs = [one for one in self.orgs if one["id"] != removed]
             return httpx.Response(200, json={"details": {}})
 
-        # The ORG's own login policy, which the parent serves from ONE shared
-        # attribute. The measurement walks a specific org and then gives that
-        # org a policy of its own half way through, so it is held per org here.
-        if path == "/management/v1/policies/login" and org:
-            own = self.org_own_policies.get(org)
-            if method == "GET":
-                policy = own or dict(ORG_LOGIN_POLICY_INHERITED)
-                return httpx.Response(200, json={"policy": policy})
-            if method == "PUT" and own is None:
-                return httpx.Response(
-                    404,
-                    json={
-                        "message": "Login Policy not found (Org-M0sif)",
-                        "details": [{"id": "Org-M0sif", "message": "Login Policy not found"}],
-                    },
-                )
-            if method == "POST":
-                self.org_own_policies[org] = {
-                    **{key: value for key, value in body.items() if value not in (False, "")},
-                    "details": {"resourceOwner": org},
-                }
-                return httpx.Response(200, json={"details": {"resourceOwner": org}})
+        # The ORG's own login policy is the parent's now, held per org there
+        # (a tenant's realm is the same surface the measurement walks: an org
+        # that inherits, then one given a policy of its own half way through).
 
         if method == "PUT" and path == "/admin/v1/policies/login":
             baseline = {
@@ -1452,7 +1774,7 @@ def measured_instance(
 #: anywhere holds either — and the password is shaped like a real one because
 #: a complexity policy is one of the things the ceremony reads.
 SIGNIN_LOGIN_NAME = "ada@yourco.test"
-SIGNIN_PASSWORD = "Correct-Horse-Battery-7!"  # pragma: allowlist secret
+SIGNIN_PASSWORD = "Correct-Horse-Battery-7!"  # noqa: S105 — a throwaway password a test user is made with  # pragma: allowlist secret
 SIGNIN_USER_ID = "5001"
 #: The six digits the authenticator in these tests shows.
 SIGNIN_FACTOR_CODE = "123456"
@@ -2139,7 +2461,7 @@ def invited_instance(
 #
 # **And the finalize refuses a session this fake has already closed.** The live
 # build mints the client's code against the named session, so the ordering in
-# `signin._finish` — finalize, THEN close (ADR ident-10) — is the whole of why
+# `signin._finish` — finalize, THEN close (ADR ident-12) — is the whole of why
 # Mode A works; a fake indifferent to it could not tell that ordering from its
 # reverse.
 

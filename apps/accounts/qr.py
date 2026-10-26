@@ -498,7 +498,7 @@ def svg(payload: str, *, pixels: int = 208, quiet: int = 4) -> SafeString:
     # character below is either a literal of this function or a decimal
     # integer derived from a module coordinate. `payload` reaches `encode`
     # and nothing else.
-    return mark_safe(
+    return mark_safe(  # noqa: S308 — only literals and integers from module coordinates, above
         f'<svg viewBox="0 0 {size} {size}" width="{pixels}" height="{pixels}" '
         f'role="img" aria-label="A square code to scan with an authenticator app" '
         f'shape-rendering="crispEdges">'

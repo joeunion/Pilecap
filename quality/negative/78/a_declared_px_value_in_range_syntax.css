@@ -1,0 +1,12 @@
+/* A declared px value in range syntax, both sides: `min-width: 640px` ported exactly is `width >= 640px`. */
+@media (width <= 640px) {
+    .zzz-canary-row {
+        display: block;
+    }
+}
+
+@media (width >= 640px) {
+    .zzz-canary-row {
+        display: grid;
+    }
+}

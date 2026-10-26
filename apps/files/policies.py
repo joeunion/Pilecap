@@ -1,61 +1,8 @@
-"""Who may file, read, replace and archive a document. Policies are code.
+"""Who may file, read, replace and archive a document. Policies are code, found by discovery.
 
-`core.authz.require(actor, "file.replace", file)` finds this by discovery — this
-file is never registered anywhere. The key is `<noun>.<verb>`, the predicate
-takes the acting `Actor` and the object, and it returns a bool.
-
-**The rule for this app is one sentence: anybody in the tenant may put a
-document in and take one out; only an administrator of the document's own node
-may archive one, or restore it.**
-
-**After the sweep this file asks no role, and two of its four predicates are
-gone.** What `admin` and `member` are is `apps/core/roles.py`'s, a tenant's own
-`Role`, `RolePermission` and `Grant` rows compose with it, and the node half of
-every question is `core.authz.where_of`'s — a `file.*` key is a key of the
-registry kind `file` now (`StoredFile.authz_kind`), so it is asked at the row's
-own organization instead of nowhere in particular.
-
-* `can_read` asked "does this actor carry a membership in the tenant" and never
-  looked at the document. `member` holds `*.read` by its declared pattern, so
-  the role layer answers it and no declaration had to move.
-* `can_archive` asked for an owner or an admin. It is now the family's one
-  predicate, `core.policies.may_archive`, for archive AND restore: whoever
-  administers the document's own node (`organization.update` held there,
-  inheriting downward) — and never the system actor, which a person's archive
-  refuses (the sweep's archive of an emptied document is its own service).
-
-**DEFERRED, by the PM's ruling of 2026-09-16, and named here so it is not
-mistaken for an oversight: `can_file` and `can_replace` still admit any
-membership.** The sweep's shape puts that half in `DEFAULT_ROLES` — "a `member`
-may file, and may replace" as data rather than as a predicate — and a
-`DEFAULT_ROLES` entry moves what `defaults_for("member")` answers, which is a
-pin of the flat product that no per-app sweep may move alone. So both keep their
-membership half as transitional residue, `member` goes on holding them through
-the vocabulary's own compat column, and `tests/authz_baseline.json` measures
-that rather than claiming it.
-
-Filing and reading are ordinary product work. Gating them behind a role would
-push a product into writing its own upload path — which is the exact bypass the
-storage seam exists to close, and the same argument `apps/comms/policies.py`
-makes about sending. And a role bar would buy nothing anyway: WHICH documents a
-hat can see is already answered one layer down by rule 24's
-`for_tenant(t).visible_to(actor)` and, for a document named by id, by
-`core.authz.may_be_named` — a branch manager reading their own branch's files
-learns nothing they could not have listed.
-
-**Archive is the exception because it is the nearest thing to a delete this app
-has**, and it is not one: `archived_at` hides the document from every reader in
-the branch while the objects stay in the bucket until purge lands (ADR files-2 §
-exclusions, and `StoredFile.lifecycle` says so). So it is an act that makes a
-tenant's own record less complete without making the liability smaller — which
-is an administrative decision rather than an ordinary one.
-
-**There is no `file.download` and no `file.issue_url`.** Issuing a presigned
-download URL IS the read, and giving it a second action would invite a
-deployment to grant one without the other, which cannot mean anything: a reader
-who may see the metadata and not the bytes is a reader who has been told the
-document exists. The audit row for an issuance names `file.read` for the same
-reason.
+Any member may file and replace; archive and restore take an administrator of the document's node.
+`file.read` comes from `member`'s `*.read`; which documents a hat sees is rule 24's.
+There is no `file.download`: issuing a presigned URL IS the read, audited as `file.read`.
 """
 
 from __future__ import annotations
@@ -89,9 +36,7 @@ def can_replace(actor: Actor, obj: Any = None) -> bool:
 
 
 POLICIES: dict[str, Policy] = {
-    # `file.read` is the role layer's question and it answers it — see the
-    # module docstring. `file.create` and `file.replace` are here only until the
-    # deferred `DEFAULT_ROLES` rung moves their membership half.
+    # `file.read` is the role layer's question; see the module docstring.
     "file.create": can_file,
     "file.replace": can_replace,
     # The archive pair is the family's one predicate (`core.policies.may_archive`,
@@ -102,6 +47,14 @@ POLICIES: dict[str, Policy] = {
     # weaker door onto the same state.
     "file.archive": may_archive,
     "file.restore": may_archive,
+}
+
+
+DEFAULT_ROLES: dict[str, frozenset[str]] = {
+    "file.create": frozenset({"member"}),
+    "file.replace": frozenset({"member"}),
+    "file.archive": frozenset({"member"}),
+    "file.restore": frozenset({"member"}),
 }
 
 

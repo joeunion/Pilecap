@@ -28,9 +28,8 @@ from __future__ import annotations
 import io
 import json
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import Any, cast
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -38,19 +37,18 @@ from django.core.management import call_command
 from django.test import Client
 from django.utils import timezone
 from mcp.server import MCPServer
-from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 
 from apps.accounts.models import User
 from apps.core import context
 from apps.core.audit import AuditEntry
 from apps.core.exceptions import Conflict, NotFound, refusal_message, wire_refusal
-from apps.core.mcp import SCOPE_KEY, Principal
-from apps.core.models import Organization, Tenant
+from apps.core.models import Tenant
 from apps.core.services import root_organization
+from apps.core.tests.mcp_context import context_for
 from apps.workflows.mcp import register
 from apps.workflows.models import WorkflowRun
-from apps.workflows.services import HISTORY_RETENTION, record_run, workflow_id
+from apps.workflows.services import HISTORY_RETENTION, _starter_actor, record_run, workflow_id
 from config.api import as_the_door_renders
 
 pytestmark = pytest.mark.django_db
@@ -77,27 +75,6 @@ NOT_FOUND = wire_refusal(NotFound())
 
 
 # --- A tool call, without a transport ----------------------------------------
-
-
-@dataclass
-class _FakeRequest:
-    """Just enough of a Starlette request: the ASGI scope, and nothing else."""
-
-    scope: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class _FakeRequestContext:
-    request: _FakeRequest
-
-
-def context_for(user: User, tenant: Tenant | None, org: Organization | None = None) -> Context[Any]:
-    """The context a tool sees, with the principal the middleware would have left."""
-    resolved = org if org is not None else (root_organization(tenant=tenant) if tenant else None)
-    scope = {SCOPE_KEY: Principal(user=user, tenant=tenant, org=resolved)}
-    return Context(
-        request_context=cast(Any, _FakeRequestContext(request=_FakeRequest(scope=scope)))
-    )
 
 
 def workflows_server() -> MCPServer[Any]:
@@ -130,7 +107,7 @@ def _failed_run(
         workflow_id=workflow_id(tenant=tenant, app="example", noun="widget", key=key),
         workflow_type="WidgetOnboardingWorkflow",
         input_digest="d" * 64,
-        user=user,
+        actor=_starter_actor(tenant=tenant, user=user),
     )
     run.status = WorkflowRun.Status.FAILED
     run.error = "the activity said no"
@@ -199,7 +176,9 @@ def test_a_tool_and_its_route_answer_with_the_same_row(
     over_http = api.get(f"{RUNS_URL}{run.pk}/")
     assert over_http.status_code == 200, over_http.content
 
-    over_mcp = tool("get_run")(ctx=context_for(owner, tenant), run_id=run.pk)
+    over_mcp = tool("get_run")(
+        ctx=context_for(owner, tenant, root_organization(tenant=tenant)), run_id=run.pk
+    )
     assert as_the_door_renders(over_http.json()) == as_the_door_renders(
         json.loads(over_mcp.model_dump_json())
     )
@@ -213,7 +192,7 @@ def test_the_two_lists_agree_including_the_mine_default(
     theirs = _failed_run(tenant=tenant, user=member, key="list-theirs")
 
     api.force_login(owner)
-    ctx = context_for(owner, tenant)
+    ctx = context_for(owner, tenant, root_organization(tenant=tenant))
 
     assert [row["id"] for row in api.get(RUNS_URL).json()["items"]] == [str(mine.pk)]
     assert [str(row.id) for row in tool("list_runs")(ctx=ctx).items] == [str(mine.pk)]
@@ -230,7 +209,9 @@ def test_another_tenants_runs_are_absent_from_the_machine_door_too(
     _failed_run(tenant=tenant, user=owner, key="ours")
     theirs = _failed_run(tenant=other_tenant, user=stranger, key="theirs")
 
-    page = tool("list_runs")(ctx=context_for(owner, tenant), mine=False)
+    page = tool("list_runs")(
+        ctx=context_for(owner, tenant, root_organization(tenant=tenant)), mine=False
+    )
     assert str(theirs.pk) not in [str(row.id) for row in page.items]
 
 
@@ -253,7 +234,9 @@ def _both_doors_refuse(
     assert over_http.json() == body
 
     with pytest.raises(ToolError) as refused:
-        tool("replay_run")(ctx=context_for(owner, tenant), run_id=run_id)
+        tool("replay_run")(
+            ctx=context_for(owner, tenant, root_organization(tenant=tenant)), run_id=run_id
+        )
     assert str(refused.value) == refusal_message(body), "one composer, two doors"
 
 
@@ -292,7 +275,7 @@ def test_a_running_run_refuses_identically_on_both_doors(
         tenant=tenant,
         workflow_id=workflow_id(tenant=tenant, app="example", noun="widget", key="live"),
         workflow_type="WidgetOnboardingWorkflow",
-        user=owner,
+        actor=_starter_actor(tenant=tenant, user=owner),
     )
     body = wire_refusal(Conflict("That run is still running; there is nothing to replay yet."))
     _both_doors_refuse(api, owner, tenant, run.pk, status=409, body=body)
@@ -347,7 +330,7 @@ def _running_run(*, tenant: Tenant, user: User | None, key: str) -> WorkflowRun:
         workflow_id=workflow_id(tenant=tenant, app="example", noun="widget", key=key),
         workflow_type="WidgetOnboardingWorkflow",
         input_digest="c" * 64,
-        user=user,
+        actor=_starter_actor(tenant=tenant, user=user),
     )
 
 
@@ -367,7 +350,9 @@ def _both_doors_cancel_refuse(
     assert over_http.json() == body
 
     with pytest.raises(ToolError) as refused:
-        tool("cancel_run")(ctx=context_for(owner, tenant), run_id=run_id)
+        tool("cancel_run")(
+            ctx=context_for(owner, tenant, root_organization(tenant=tenant)), run_id=run_id
+        )
     assert str(refused.value) == refusal_message(body), "one composer, two doors"
 
 
@@ -387,7 +372,9 @@ def test_cancel_answers_with_the_same_unchanged_row_at_both_doors(
     api.force_login(owner)
     rest = api.post(f"{RUNS_URL}{over_http.pk}/cancel/", content_type=JSON)
     assert rest.status_code == 200, rest.content
-    machine = tool("cancel_run")(ctx=context_for(owner, tenant), run_id=over_mcp.pk)
+    machine = tool("cancel_run")(
+        ctx=context_for(owner, tenant, root_organization(tenant=tenant)), run_id=over_mcp.pk
+    )
 
     # The row as it is: still running, never finished, nothing stamped.
     assert rest.json()["status"] == WorkflowRun.Status.RUNNING
@@ -472,7 +459,9 @@ def test_both_cancel_doors_leave_audit_rows_that_differ_only_in_the_door(
     assert api.post(f"{RUNS_URL}{over_http.pk}/cancel/", content_type=JSON).status_code == 200
 
     context.bind(door="mcp", actor_kind="agent")
-    tool("cancel_run")(ctx=context_for(owner, tenant), run_id=over_mcp.pk)
+    tool("cancel_run")(
+        ctx=context_for(owner, tenant, root_organization(tenant=tenant)), run_id=over_mcp.pk
+    )
 
     rows = {
         entry.object_id: entry
@@ -524,7 +513,9 @@ def test_both_doors_leave_audit_rows_that_differ_only_in_the_door(
     # What the transport binds around a tool call (`config.mcp`), bound by hand
     # because this file calls the tool function rather than driving JSON-RPC.
     context.bind(door="mcp", actor_kind="agent")
-    tool("replay_run")(ctx=context_for(owner, tenant), run_id=over_mcp.pk)
+    tool("replay_run")(
+        ctx=context_for(owner, tenant, root_organization(tenant=tenant)), run_id=over_mcp.pk
+    )
 
     rows = {
         entry.object_id: entry
@@ -536,3 +527,14 @@ def test_both_doors_leave_audit_rows_that_differ_only_in_the_door(
     assert rest.outcome == machine.outcome == "ok"
     assert rest.actor_user_id == machine.actor_user_id == owner.pk
     assert (rest.actor_kind, machine.actor_kind) == ("human", "agent")
+
+
+def test_a_no_tenant_read_is_the_same_refusal_at_both_doors(api: Client, nomad: User) -> None:
+    """A caller who resolved no tenant reads `no_acting_scope` over REST and over MCP alike."""
+    api.force_login(nomad)
+    response = api.get(RUNS_URL)
+    assert response.status_code == 403, response.content
+    assert response.json()["code"] == "no_acting_scope"
+    with pytest.raises(ToolError) as refused:
+        tool("list_runs")(ctx=context_for(nomad, None, None))
+    assert str(refused.value).startswith("no_acting_scope"), str(refused.value)

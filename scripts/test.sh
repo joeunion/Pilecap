@@ -1,36 +1,5 @@
 #!/usr/bin/env bash
-# THIS FILE IS EXECUTED, AND IT IS BASH — not POSIX sh, and not zsh. The
-# shebang above is honoured by `./this`; `sh this` and `zsh this` IGNORE it,
-# and neither of them fails where the mistake was made. Measured on this tree:
-#
-#   zsh scripts/queue_cited.sh   exit 2 blaming the TREE ("this is not a
-#                                checkout root") for zsh's word-splitting
-#   zsh scripts/kill_mine.sh     an ordinary-looking census of nothing
-#   sh  scripts/sweep.sh         "lifecycle.sh: line 152: syntax error"
-#
-# A wrong shell here does not crash. It ANSWERS, and the answer looks like the
-# tree's fault.
-#
-# TWO TESTS, because on macOS `/bin/sh` IS bash: BASH_VERSION is set under
-# `sh x.sh` and only POSIX MODE tells the two apart (SHELLOPTS carries
-# `posix`). On Linux `/bin/sh` is dash and the first test is the one that
-# fires. Neither test alone covers both machines.
-#
-# A SOURCED library must never carry this. There the interpreter is the
-# caller's ON PURPOSE and an `exit` would kill the caller's shell — the
-# argument is scripts/db.sh's, at scripts/db.sh:50-57, and it is why db.sh is
-# the one executable in this tree deliberately without a belt.
-[ -n "${BASH_VERSION:-}" ] || {
-    echo "${0##*/}: must run under bash — not sh, not zsh. Try \`bash ${0}\`." >&2
-    exit 2
-}
-case ":${SHELLOPTS:-}:" in
-*:posix:*)
-    echo "${0##*/}: bash is in POSIX mode — which is what \`sh ${0}\` does on a" >&2
-    echo "  machine whose /bin/sh is bash. Try \`bash ${0}\`." >&2
-    exit 2
-    ;;
-esac
+. "$(dirname -- "${BASH_SOURCE:-$0}")/bash_only.sh" || exit 2
 # The test suite. Never pipe this: a pipe replaces pytest's exit status with the
 # pipe's, and a green-looking red run is the one failure mode a gate cannot
 # survive. Run it directly and read its exit code.
@@ -41,14 +10,14 @@ esac
 #   ./scripts/test.sh                       serial, RANDOM order, fresh seed
 #   ./scripts/test.sh -n <share>            the slot share — what both gate legs
 #                                           in check.sh run (`-n $GATE_SLOT_WORKERS`,
-#                                           check.sh:48-50); `-n auto` is REFUSED
+#                                           quality/djb/hold.py::worker_count); `-n auto` is REFUSED
 #   ./scripts/test.sh --randomly-seed=N     replay the order a red run printed
 #   ./scripts/test.sh -p no:randomly        declared collection order
 #
 # `-n auto` IS REFUSED HERE, and the sentence it used to carry — "one worker per
 # core, what both gate legs run" — was stale: the gate legs run `-n
 # $GATE_SLOT_WORKERS`, the SHARE of this box's cores that one pytest slot owns
-# (check.sh:48-50, scripts/gate_lease.sh's `gate_slot_workers`). `auto` takes
+# (`quality/djb/hold.py`'s `slot_workers`). `auto` takes
 # every core, beside gates that are each holding a share, and mints one
 # `test_$DATABASE_NAME_gwN` database per worker while it does it — the
 # shared-box contention this refusal exists to stop.
@@ -90,8 +59,8 @@ fi
 # run never asked it anything.
 #
 # ONE DERIVATION, NEVER A SECOND OPINION: `gate_slots_total` and
-# `gate_slot_workers` are `scripts/gate_lease.sh`'s own functions over
-# `scripts/gate_lease.sh`'s own constants, and they are the same two calls
+# `gate_slot_workers` are `quality/djb/hold.py`'s own verbs over its own
+# constants, and they are the same two calls
 # `gate_slot_acquire` makes. An inherited value wins over deriving one, which is
 # what lets a caller that already took a slot hand its share down rather than
 # have this re-answer the question.
@@ -100,12 +69,10 @@ if [ -n "${DJB_GATE_SLOT_WORKERS:-}" ]; then
     DJB_PYTEST_SHARE="$DJB_GATE_SLOT_WORKERS"
 elif [ -n "${DJB_PYTEST_MAX_WORKERS:-}" ]; then
     DJB_PYTEST_SHARE="$DJB_PYTEST_MAX_WORKERS"
-elif [ -f scripts/gate_lease.sh ]; then
-    # shellcheck source=scripts/gate_lease.sh
-    source scripts/gate_lease.sh
-    DJB_PYTEST_SLOTS=$(gate_slots_total 2>/dev/null || true)
+else
+    DJB_PYTEST_SLOTS=$(python3 -E -S -m quality.djb.hold gate_slots_total 2>/dev/null || true)
     if [ -n "$DJB_PYTEST_SLOTS" ]; then
-        DJB_PYTEST_SHARE=$(gate_slot_workers "$DJB_PYTEST_SLOTS" 2>/dev/null || true)
+        DJB_PYTEST_SHARE=$(python3 -E -S -m quality.djb.hold gate_slot_workers "$DJB_PYTEST_SLOTS" 2>/dev/null || true)
     fi
     unset DJB_PYTEST_SLOTS
 fi
@@ -137,7 +104,7 @@ done
 if [ -n "$DJB_REFUSE_AUTO" ]; then
     echo "!! REFUSING '-n auto': this box's cores are already shared." >&2
     echo "   The gate splits them into pytest SLOTS and each slot holder runs its share:" >&2
-    echo "   gate_slot_workers (scripts/gate_lease.sh) says ${DJB_PYTEST_SHARE:-(underivable: scripts/gate_lease.sh could not be read)} on this box." >&2
+    echo "   gate_slot_workers (quality/djb/hold.py) says ${DJB_PYTEST_SHARE:-(underivable: python3 -m quality.djb.hold did not answer)} on this box." >&2
     echo "   'auto' takes every core beside them and mints one" >&2
     echo "   test_\$DATABASE_NAME_gwN database per worker." >&2
     echo "   Run it with the share:  ./scripts/test.sh -n ${DJB_PYTEST_SHARE:-<share>} \"\$@\"" >&2
@@ -160,7 +127,7 @@ unset DJB_ARG DJB_PREV_ARG DJB_REFUSE_AUTO
 #
 # WHY HERE AND NOT IN `scripts/db.sh`. Knowing whether a template EXISTS costs a
 # `docker compose exec … psql` round trip (`db_psql`), and db.sh is sourced by
-# things that have no server at all — `scripts/tests/test_db_pin.sh` and
+# things that have no server at all — `quality/tests/test_db.py` and
 # `test_pm_merge.sh` build scratch checkouts under `mktemp -d` and source it
 # there. Paying a docker round trip at SOURCE time would put a slow failure into
 # every one of those cases. This script is the one place that is about to run
@@ -182,7 +149,7 @@ unset DJB_ARG DJB_PREV_ARG DJB_REFUSE_AUTO
 # Django REFUSES OUTRIGHT if `TEST["TEMPLATE"]` names a database that is not
 # there. So the variable is exported only when the template really exists, and
 # its absence means each worker migrates exactly as it always did. Both
-# directions are driven in `scripts/tests/test_db_template.sh`.
+# directions are driven in `quality/tests/test_db.py`.
 #
 # `DJB_DB_TEMPLATE=off` turns it off, the same escape db.sh already honours for
 # `db_create`; an already-exported `DJB_TEST_DB_TEMPLATE` wins, which is what

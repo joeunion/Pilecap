@@ -4,7 +4,6 @@ Fast password hashing and no HTTPS. The test database is Django's default
 `test_` + DATABASE_NAME, so each worktree tests against its own database.
 """
 
-import os
 from typing import Any
 
 from .base import *  # noqa: F403
@@ -13,6 +12,8 @@ from .base import (
     MACHINERY_PROCESS,
     SOCIALACCOUNT_PROVIDERS,
     STORAGES,
+    _database_name_in_use,
+    env,
     machinery_lifetime,
 )
 from .guards import DEV_CONNECTIONS_ENCRYPTION_KEY, TEST_SECRET_KEY
@@ -22,6 +23,9 @@ SECRET_KEY = TEST_SECRET_KEY
 ALLOWED_HOSTS = ["testserver", "localhost", "127.0.0.1"]
 
 PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
+
+# An absent bridge registration refuses here as in production; a test of the no-op opts out.
+BRIDGE_STRICT = True
 
 # No persistent connections under pytest, AND NO POOL. `base` pools by default
 # (ADR config-1) and, before that, reused connections for 60 seconds; both are
@@ -70,8 +74,8 @@ PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
 #
 # So a bare `uv run pytest` (no `scripts/test.sh`) simply migrates, exactly as it
 # did before this line existed. Both directions are driven in
-# `scripts/tests/test_db_template.sh`.
-_TEST_DB_TEMPLATE = os.environ.get("DJB_TEST_DB_TEMPLATE", "").strip()
+# `quality/tests/test_db.py`.
+_TEST_DB_TEMPLATE = env.str("DJB_TEST_DB_TEMPLATE", default="").strip()
 
 # --- THE TEST DATABASE DOES NOT PAY FOR DURABILITY -------------------
 #
@@ -218,7 +222,7 @@ STORAGES = {**STORAGES, "default": {"BACKEND": "django.core.files.storage.FileSy
 AWS_S3_ENDPOINT_URL = "http://127.0.0.1:9000"
 AWS_S3_REGION_NAME = "us-east-1"
 AWS_ACCESS_KEY_ID = "minioadmin"  # pragma: allowlist secret — the published compose credential
-AWS_SECRET_ACCESS_KEY = "minioadmin"  # pragma: allowlist secret — the published compose credential
+AWS_SECRET_ACCESS_KEY = "minioadmin"  # noqa: S105 — the published compose MinIO credential, test settings only  # pragma: allowlist secret — the published compose credential
 AWS_SESSION_TOKEN: str | None = None
 
 # Nothing has run `collectstatic` in a test tree, and WhiteNoise warns once per
@@ -321,6 +325,11 @@ ZITADEL_PAT = ""
 # `apps/files/tests/conftest.py::bucket` uses for MinIO.
 MEILI_URL = "http://127.0.0.1:1"
 MEILI_MASTER_KEY = ""  # pragma: allowlist secret
+# And the index namespace is the checkout's own, from the parsed database name
+# and never from a `MEILI_INDEX_PREFIX` a developer's `.env` carries: the live
+# tests above write into the compose Meilisearch, which every checkout on the
+# machine shares, so the suite's prefix is the derivation and nothing else.
+MEILI_INDEX_PREFIX = _database_name_in_use
 
 # --- Zitadel and Google: the login doors are OFF under pytest ---------------
 # The block above closes the *management* door, and closes it against dialling.
@@ -394,3 +403,6 @@ LOGGING = {
 # is what the harness tests assert about this settings module rather than about
 # a mock.
 TEMPORAL_MACHINERY_LIFETIME = machinery_lifetime(MACHINERY_PROCESS)
+
+# An outbound webhook's host resolves through a stand-in under pytest, never DNS (SF-WEBHOOK-1).
+WEBHOOK_TARGET_RESOLVER = "apps.events.tests.stand_in.resolve_public"

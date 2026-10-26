@@ -25,8 +25,12 @@ export const LEXICON = [
     "The server did not answer",
     "Couldn't connect",
     "Your access here ended",
+    // The surface seats (`@/app/surface-gate`): an address that could not say
+    // which face it is, and a page the named face does not draw.
+    "This address could not say what it offers",
+    "Not offered at this address",
     "Close",
-    // The noun-verb family (the verb table, `@/screens/verbs`): each verb's
+    // The noun-verb family (the verb table, `@pilecap/ui/verbs`): each verb's
     // pressed word, busy form, state word and refused label. A product renames
     // a verb once, here, product-wide, and never per noun.
     "Edit",
@@ -86,12 +90,26 @@ export const LEXICON = [
     "Widgets",
     "Added",
     "Last changed",
+    "Due at",
+    "Status",
     "Onboarded",
     "Onboarding",
     "About",
     "Details",
     "Show more",
     "Showing more…",
+    // The worked customer face (EXAMPLE, `apps/example_portal`): the requests
+    // a customer sends about a widget — the noun's plural, the card that sends
+    // one, its two fields, its one act with its busy, state and refused words.
+    "Requests",
+    "Send a request",
+    "Widget",
+    "Your question",
+    "Send",
+    "Sending…",
+    "Sent",
+    "Couldn't send",
+    "Asked by",
 ] as const;
 
 export type LexiconWord = (typeof LEXICON)[number];

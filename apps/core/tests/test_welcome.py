@@ -9,7 +9,7 @@ and there are four separate claims about it worth a test:
 * it demands a credential, and an anonymous request is a redirect rather than a
   thinner render;
 * it reports what the request actually RESOLVED to — the person, the tenant, the
-  acting hat and the role that hat carries — which is the only reason a
+  hat and the role that hat carries — which is the only reason a
   placeholder is worth shipping at all: the four facts it prints are the four
   that go wrong invisibly, and `X-Org` changing the answer is the property that
   proves it is reading the request rather than the user;
@@ -36,8 +36,8 @@ from apps.core.actor import actor_for, system_actor
 from apps.core.models import Membership, Organization, Tenant
 from apps.core.services import create_organization, create_tenant
 from apps.core.tests import shadowed_welcome_urls
-from apps.core.tests.template_shape import template_shape
-from apps.core.tests.test_settings import _settings_module
+from apps.core.tests.settings_env import _settings_module
+from apps.core.tests.template_shape import IDENTITY_SHAPE, template_shape
 
 pytestmark = pytest.mark.django_db
 
@@ -127,7 +127,7 @@ def test_it_names_the_person(client: Client, owner: User) -> None:
 def test_it_names_the_tenant_and_the_hat(
     client: Client, owner: User, tenant: Tenant, root_org: Organization
 ) -> None:
-    """The acting hat, resolved by the one function all four doors call."""
+    """The hat, resolved by the one function all four doors call."""
     client.force_login(owner)
     body = client.get(WELCOME).content.decode()
     assert tenant.name in body
@@ -191,7 +191,7 @@ def test_a_fresh_deployment_names_the_next_act(client: Client, nomad: User) -> N
 
     **The `iff` is the whole test, and both halves are here on purpose.** The
     predicate is `Tenant.objects.exists()` — the same one `create_first_tenant`
-    refuses on (`apps/core/services.py`), which is what makes the page's advice
+    refuses on (`apps/core/services/tenants.py`), which is what makes the page's advice
     and the command's own refusal impossible to disagree. Told only to the
     first half, this is a helpful landing page; told to the second, it is a
     page telling a member of a live installation to go and run a shell command
@@ -241,7 +241,7 @@ def test_it_extends_the_entrance_shell(client: Client, owner: User) -> None:
     """
     client.force_login(owner)
     body = client.get(WELCOME).content.decode()
-    assert settings.IDENTITY_SHAPE["entrance_marker"] in body
+    assert IDENTITY_SHAPE["entrance_marker"] in body
     assert "<link" not in body
 
 

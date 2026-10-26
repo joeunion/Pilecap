@@ -36,7 +36,7 @@ same effect on the row, and six months later the ledger is the only place that
 difference still exists.
 
 **`--all` prints the count before it does anything and refuses without `--yes`.**
-The population is everybody holding a non-null `zitadel_sub` — on a live
+The population is everybody holding a subject in the identity join — on a live
 deployment that is every person who has ever signed in, and the next thing each
 of them does is sign in again. An operator should see that number before it
 happens, not after.
@@ -52,8 +52,9 @@ from __future__ import annotations
 from typing import Any
 
 from django.core.management.base import CommandError
+from django.db.models import Exists, OuterRef
 
-from apps.accounts.models import User
+from apps.accounts.models import SsoIdentity, User
 from apps.accounts.services import unlink_zitadel_identity
 from apps.core.actor import system_actor
 from apps.core.management import BaseCommand
@@ -95,7 +96,10 @@ class Command(BaseCommand):
         actor = system_actor(tenant=None)
 
         if every:
-            people = list(User.objects.exclude(zitadel_sub=None).order_by("email"))
+            # An EXISTS, never a join filter: `connection__isnull` across the
+            # reverse relation also matches a person with no row at all.
+            joined = SsoIdentity.objects.filter(user=OuterRef("pk"), connection__isnull=True)
+            people = list(User.objects.filter(Exists(joined)).order_by("email"))
             # THE COUNT FIRST, ALWAYS — printed whether or not `--yes` was
             # passed, because the refusal is only useful if it tells the
             # operator what they were about to do.
@@ -119,7 +123,7 @@ class Command(BaseCommand):
             # a mistyped address and a person who was found and left alone are
             # different answers, and 1 says "refused", not "I never looked".
             raise CommandError(f"No account here has the address {email}.", returncode=2)
-        if target.zitadel_sub is None:
+        if not target.sso_identities.filter(connection__isnull=True).exists():
             # NOT a refusal and not an act: the join is already cut. Calling the
             # service would file an audit row about an unlink that did not
             # happen and close the sockets of somebody nobody touched.

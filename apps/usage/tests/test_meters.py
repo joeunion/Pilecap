@@ -95,7 +95,7 @@ def test_a_well_formed_name_has_no_complaint() -> None:
 def test_a_name_claiming_another_apps_label_is_refused() -> None:
     """The first segment is the DECLARING app, which is what makes it a check.
 
-    Without this, `apps/example/meters.py` could declare `files.storage.bytes`
+    Without this, a `meters.py` in `apps/example/` could declare `files.storage.bytes`
     and two apps would own one published contract — with no way to tell, from the
     name, which of them a rename has to go through.
     """

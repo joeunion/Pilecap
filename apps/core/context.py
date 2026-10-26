@@ -12,8 +12,10 @@ later, across process restarts (`architecture.md`, "Traceability"):
 
 Plus **`door`** (`rest | mcp | socket | workflow | webhook | admin | shell`),
 because "the same service, called from the admin" is the question that keeps
-coming up, and `tenant_id` / `org_id` (the acting hat — which part of the
-tenant's tree this work is being done as) / `user_id` / `actor_kind`.
+coming up, and `tenant_id` / `org_id` (the hat — which part of the
+tenant's tree this work is being done as) / `user_id` / `actor_kind`, and
+**`surface`** — which audience's address the work came in at
+(`apps.core.surfaces`), bound by the doors that resolve it beside the tenant.
 
 **Bound per door, never below one** (house rule 20). A service does not mint a
 `correlation_id`: if it did, one business chain would get a fresh id at every
@@ -35,11 +37,18 @@ import hashlib
 import uuid
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
 
+from apps.core.headers import USER_HEADER
+from apps.core.roads import road
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from apps.core.actor import Actor
+
 Door = Literal["rest", "mcp", "socket", "workflow", "webhook", "admin", "shell"]
+
 
 # The keys a door binds. Anything else a caller binds rides along too — this is
 # the documented set, not a filter.
@@ -53,6 +62,7 @@ KEYS: tuple[str, ...] = (
     "correlation_id",
     "causation_id",
     "door",
+    "surface",
 )
 
 
@@ -61,6 +71,7 @@ def new_id() -> str:
     return uuid.uuid4().hex
 
 
+@road("correlation", example="apps/core/asgi_middleware.py::TenantMiddlewareASGI.__call__")
 def new_correlation_id() -> str:
     """Mint a correlation id. **Called at a door and nowhere else.**
 
@@ -126,16 +137,38 @@ def bound(**values: Any) -> Iterator[None]:
         bind(**previous)
 
 
+class ContextUnbound(RuntimeError):
+    """Work below a door was reached with no correlation chain bound.
+
+    Not a refusal a caller can act on — no wire ever carries it — but a fact
+    about the code: something called a service, or started work on its
+    behalf, from a place no door stands above. The doors that bind are named in
+    this module's docstring; a test binds through the conftest the way a door
+    would.
+    """
+
+
+@road("correlation_child", example="apps/events/services.py::emit")
 def child_of_current() -> dict[str, Any]:
-    """The correlation pair for work caused by the work in hand.
+    """The correlation pair for work caused by the work in hand; `ContextUnbound` with none.
 
     The current `correlation_id` continues (that is the chain), and the current
     `correlation_id` becomes the new `causation_id` (that is the parent). This
-    is what an outbound webhook header and a started workflow carry.
+    is what an outbound webhook header, an event and a started workflow carry.
+
+    **It never mints** (house rule 20): a chain with no parent here has no door
+    above it, and a fresh id would restart the business chain the join key
+    exists to join — one chain getting a new id at every hop joins nothing. So
+    it refuses, and the fix is the door that should have bound.
     """
-    current = get()
-    correlation_id = current.get("correlation_id") or new_correlation_id()
-    return {"correlation_id": correlation_id, "causation_id": current.get("correlation_id")}
+    correlation_id = get().get("correlation_id")
+    if not correlation_id:
+        raise ContextUnbound(
+            "no correlation chain is bound: this work was reached below no door. A door "
+            "binds one (core.middleware, config.mcp, core.asgi_middleware, the Temporal "
+            "interceptor, core.management.BaseCommand) before any service runs."
+        )
+    return {"correlation_id": correlation_id, "causation_id": correlation_id}
 
 
 def from_headers(headers: Mapping[str, str]) -> dict[str, Any]:
@@ -151,3 +184,32 @@ def from_headers(headers: Mapping[str, str]) -> dict[str, Any]:
         "correlation_id": lowered.get("x-correlation-id") or new_correlation_id(),
         "causation_id": lowered.get("x-causation-id"),
     }
+
+
+@road(
+    "workflow_actor",
+    example="apps/core/tests/test_workflow_actor.py::test_an_agent_actor_is_the_person_with_the_persons_permissions",
+)
+def current_actor(*, kind: Literal["system", "agent"] = "system") -> Actor:
+    """The actor an activity acts as, restored off the run's headers. **Activities only.**
+
+    `system` is the product's own work under the run's hat; `agent` is the person who pressed.
+    Both revalidate the hat at the activity boundary: a hat no longer held is `HatRevoked`.
+    The run's principal arrives through `bridge.WORKFLOW_CONTEXT`: core imports nothing above it.
+    """
+    from django.contrib.auth import get_user_model
+
+    from apps.core import bridge
+    from apps.core.actor import actor_for, system_actor
+
+    tenant, user_id, org = bridge.get(bridge.WORKFLOW_CONTEXT)()
+    if kind == "system":
+        return system_actor(tenant, org)
+    user = get_user_model().objects.filter(pk=user_id, is_active=True).first() if user_id else None
+    if user is None:
+        raise RuntimeError(
+            f"This activity acts as the person who started its run, and the run carries no "
+            f"active person on its {USER_HEADER!r} header. It is refused rather than acting "
+            "as nobody; a run nobody asked for acts as current_actor(kind='system')."
+        )
+    return actor_for(user=user, tenant=tenant, kind="agent", org=org)

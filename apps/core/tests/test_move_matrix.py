@@ -1,54 +1,9 @@
-"""The move matrix, driven the way a caller drives it. **Cycle P1, rung W2.**
+"""`move_organization` asked twice: same or different parent, against a live or a completed run.
 
-`apps/workflows/tests/test_services.py` proves the 2x2 at the layer that
-implements it — `record_run`, over `EchoWorkflow`, with the digest handed in by
-the starter. This module asks the question one floor up, where it was actually
-found: **what does `core.services.move_organization` do when a caller asks
-again?** Nothing here passes a digest, names a workflow id or touches
-`record_run`; the service is called exactly as `apps/core/admin.py` and any
-product's door calls it, and the four quadrants are read off the tree and the
-run ledger afterwards.
-
-The four, and the criterion each answers (rung W2 of cycle P1):
-
-* **W2-2** — the same node to the same parent, twice, while the run is live:
-  one row, one execution. The heal that made deterministic ids worth having is
-  unchanged by the digest.
-* **W2-1** — the same node to a *different* parent while the run is live:
-  `Conflict`, and 409 `conflict` with remedies through the door's own mapper.
-  This is F1's worst case, and it is the one behaviour in this file that
-  **changed when W1 merged**: before the digest, the second intent was
-  answered with the first one's run and silently dropped — the subtree went
-  where nobody asked. The test is therefore a pin on the new wire shape, not a
-  red-then-green (A11 stated, as the dispatch requires).
-* **W2-3** — a different parent once the first move has *completed*: the row
-  supersedes, a fresh execution runs, and the subtree lands under the new
-  parent. Without it, ADR workflows-5 (the run closes its own row) would have
-  made every moved node unmovable forever.
-* **the fourth quadrant** — the *same* move once it has completed: `Conflict`,
-  per ADR workflows-4, which W2's brief asked be verified rather than assumed.
-  It is the caller-appropriate answer here: the subtree is already under that
-  parent, so the ask is not work to be done but a decision about a spent key,
-  and the layer that would have to invent an answer is the one that knows
-  least about why it was asked twice. Nothing is adapted at this layer to
-  soften it and nothing is weakened in `record_run` to avoid it.
-
-Plus the fence the platform ledger needs: **`create_tenant` refuses the slug
-`platform`** (ADR workflows-3), because `check_workflow_id` tells the two run
-populations apart by that one word.
-
-Paths are asserted **relationally** — a child's path starts with its parent's
-— never against a guessed literal, because the segment encoding is the
-model's business and a test that hard-codes it is a test that breaks when the
-encoding is right.
-
-DOES NOT COVER — declared: true concurrency. Every ask here is sequential, so
-what is proved is that a *second* ask is answered honestly, not how two
-simultaneous supersedes of one finished row race; that is arbitrated by the
-per-tenant unique constraint and proved at the constraint tier in
-`apps/workflows/tests/test_services.py`. The move is also the only workflow
-driven end to end — email inherits the identical starter path and is proved at
-W1's unit tier.
+Once completed, a different parent supersedes (ADR workflows-5); the same one is `conflict` (-4).
+`create_tenant` refuses the slug `platform`, reserved by ADR workflows-3.
+Paths are asserted relationally; the segment encoding is the model's.
+# does-not-cover: true concurrency — the race is `apps/workflows/tests/test_services.py`'s.
 """
 
 from __future__ import annotations
@@ -189,19 +144,16 @@ async def _ledger_row(tree: Tree) -> WorkflowRun:
     return row
 
 
-# --- W2-2: the retry is still free ------------------------------------------
+# --- the same move while live: the retry is still free ----------------------
 
 
 @pytest.mark.asyncio
 async def test_asking_for_the_same_move_twice_while_it_runs_is_one_run(
     tree: Tree, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """W2-2: the digest did not break the heal.
+    """A repeat of a live move answers the run already there: one row, one start event.
 
-    No worker: the execution starts and stays live, which is the state the
-    second ask has to be answered in. One row and one `workflow_execution_
-    started` event is the whole claim — the second ask reached Temporal, was
-    told the id was already live, and was answered with the run that is there.
+    No worker, so the execution stays live — the state the second ask must be answered in.
     """
     async with await WorkflowEnvironment.start_time_skipping() as env:
         _point_the_client_at(env, monkeypatch)
@@ -227,18 +179,16 @@ async def test_asking_for_the_same_move_twice_while_it_runs_is_one_run(
         assert row.run_id == again.run_id
 
 
-# --- W2-1: a second destination is a second job -----------------------------
+# --- a different move while live: a second destination is a second job ------
 
 
 @pytest.mark.asyncio
 async def test_a_different_parent_while_the_move_is_live_is_an_honest_conflict(
     tree: Tree, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """W2-1 / A11: F1's worst case, refused where it used to be swallowed.
+    """A second destination while the first move runs is `conflict`, with nothing started or moved.
 
-    The wire half goes through `config.api`'s own exception mapper — the same
-    lookup a live request goes through when a route raises — so what is
-    asserted is the body a caller receives, not the class a service raised.
+    The wire half goes through `config.api`'s own exception mapper: the body a caller receives.
     """
     async with await WorkflowEnvironment.start_time_skipping() as env:
         _point_the_client_at(env, monkeypatch)
@@ -279,7 +229,7 @@ async def test_a_different_parent_while_the_move_is_live_is_an_honest_conflict(
     assert all({"label", "destination"} <= set(remedy) for remedy in body["remedies"])
 
 
-# --- W2-3 and the fourth quadrant: what a finished move allows --------------
+# --- a completed move: what a finished move allows --------------------------
 
 
 @pytest.mark.asyncio
@@ -319,7 +269,7 @@ async def test_a_completed_move_supersedes_but_the_same_move_does_not(
             assert unchanged.status == WorkflowRun.Status.COMPLETED
             assert unchanged.run_id == first_run_id
 
-            # W2-3: a different destination re-opens the key and runs again.
+            # A different destination re-opens the key and runs again.
             await ask(tree, tree.p2)
             second_path: str = await env.client.get_workflow_handle(
                 tree.run_id_wanted, result_type=str
@@ -344,14 +294,7 @@ async def test_a_completed_move_supersedes_but_the_same_move_does_not(
 
 
 def test_the_docstring_states_the_matrix_it_now_has() -> None:
-    """The line that said the old thing is gone, and says the new one.
-
-    `move_organization`'s contract sentence used to read "two moves of the same
-    node cannot be in flight at once", which was true about ids and false about
-    intents — the exact belief F1 hid behind. A docstring is the only place
-    most callers ever read the contract, so the correction is a deliverable and
-    not a comment.
-    """
+    """`move_organization`'s contract says one intent at a time, not "cannot be in flight"."""
     # Collapsed, because the sentence is wrapped and asterisked in the source
     # and what is being pinned is the claim, not the line breaks.
     doc = " ".join((inspect.getdoc(move_organization) or "").split())
@@ -361,11 +304,11 @@ def test_the_docstring_states_the_matrix_it_now_has() -> None:
     assert "Conflict" in doc
 
 
-# --- W2-4: the reserved slug ------------------------------------------------
+# --- the reserved slug ------------------------------------------------------
 
 
 def test_creating_a_tenant_called_platform_is_refused() -> None:
-    """W2-4: the segment ADR workflows-3 reserved cannot be minted."""
+    """The segment ADR workflows-3 reserved cannot be minted."""
     with pytest.raises(Invalid) as refused:
         create_tenant(name="Platform", slug=PLATFORM_SEGMENT, actor=system_actor())
     assert "slug" in refused.value.errors
@@ -388,7 +331,7 @@ def test_a_slug_that_merely_contains_the_word_is_still_a_tenant() -> None:
 
 
 def test_no_tenant_holds_a_reserved_slug(tenant: Tenant) -> None:
-    """The existing-population half of W2-4: nothing already minted one.
+    """The existing-population half of the reserved-slug fence: nothing already minted one.
 
     A fence at creation only closes the question if the population it protects
     is empty, and the fixtures are the only tenants this suite ever makes.

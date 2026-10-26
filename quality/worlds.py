@@ -48,9 +48,17 @@ fall while the verdict does not — and it is at the foot of this file under
 
 from __future__ import annotations
 
+import ast
 import os
 import re
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
+
+from apps.core.roads import road
+from quality.reason_floor import MIN_REASON
+from quality.sdk.reexports import reexports
 
 # The plant-path shape every fixture entry uses: `apps/<label>/<file>`.
 _APPS_DIR = "apps"
@@ -336,6 +344,21 @@ def scope_kind(rule: dict, kinds: dict) -> dict:
     declared = rule.get("kind") or DEFAULT_KIND
     if isinstance(declared, dict):
         return declared
+    if isinstance(declared, list):
+        # A RULE ABOUT MORE THAN ONE LANGUAGE names each kind, and runs in their
+        # UNION: every root and suffix either names, the skip-dirs of both. The
+        # comment token stays per FILE (`kind_of_path`), which is why a union
+        # needs no token of its own — a valve is read in the syntax of the
+        # line it is written on, and the first kind's token is only the default.
+        merged: dict = {"roots": [], "suffixes": [], "skip_dirs": []}
+        for name in declared:
+            one = dict(kinds.get(str(name)) or {})
+            for key in ("roots", "suffixes", "skip_dirs"):
+                for item in one.get(key) or []:
+                    if item not in merged[key]:
+                        merged[key].append(item)
+            merged.setdefault("comment", one.get("comment"))
+        return merged
     return dict(kinds.get(str(declared)) or {})
 
 
@@ -365,11 +388,126 @@ def comment_token(kind: dict) -> str:
     return str(kind.get("comment") or "#")
 
 
+def decorator_names(node: ast.AST) -> set[str]:
+    """The last name of every decorator on a definition: `@service`, `@x.service()` → `service`."""
+    names: set[str] = set()
+    for decorator in getattr(node, "decorator_list", []):
+        target = decorator.func if isinstance(decorator, ast.Call) else decorator
+        if isinstance(target, ast.Name):
+            names.add(target.id)
+        elif isinstance(target, ast.Attribute):
+            names.add(target.attr)
+    return names
+
+
+class Valve(NamedTuple):
+    """A valve marker found where a reader looks: its reason, whether it holds, its trigger."""
+
+    reason: str
+    holds: bool
+    until: str = ""
+
+
+#: The trigger tail every valve token shares: `<reason> — until <date or sentence>`.
+_UNTIL = re.compile(r"\s—\s+until\s+(?P<trigger>\S.*?)\s*$")
+_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def valve_trigger(reason: str) -> str:
+    """The `— until <trigger>` tail of a valve's reason, or `""`; the one parser, every token."""
+    found = _UNTIL.search(reason)
+    return found.group("trigger") if found else ""
+
+
+def trigger_is_past(trigger: str, today: str) -> bool:
+    """Whether a trigger is a `YYYY-MM-DD` date before `today` (also `YYYY-MM-DD`)."""
+    return bool(_DATE.fullmatch(trigger)) and trigger < today
+
+
+def opens_comment(text: str, start: int, comment: str) -> bool:
+    """Whether the marker at `start` sits in this line's comment, not inside a string.
+
+    The line either IS a comment (nothing but space before the token), or the
+    token trails code with every quote before it closed — a `"# reach: …"`
+    inside a string literal is prose spelling a marker, never the marker.
+    """
+    before = text[:start]
+    if not before.strip():
+        return True
+    quote: str | None = None
+    index = 0
+    while index < len(before):
+        char = before[index]
+        if char == "\\":
+            index += 2
+            continue
+        if quote is None and char in "\"'`":
+            quote = char
+        elif char == quote:
+            quote = None
+        index += 1
+    return quote is None
+
+
+@road("valve_reason", example="quality/checks/rule_54.py::_function_valve")
+def comment_reason(
+    lines: list[str],
+    line: int,
+    pattern: re.Pattern[str],
+    *,
+    comment: str = "#",
+    floor: int = MIN_REASON,
+) -> Valve | None:
+    """The valve a marker claims at this line, or None: one reader, one floor.
+
+    The marker counts on the flagged line itself or in the CONTIGUOUS comment
+    block directly above it — never further away, so a valve cannot drift onto
+    code nobody thought about — and only where it OPENS A COMMENT: prose that
+    spells a marker (a docstring, a string literal) is a phantom registration,
+    the class `checks.py::_function_valve` was the first reader to refuse.
+    `pattern`'s first group is the reason; `comment` is the file's line-comment
+    token (`comment_token` of its kind); `floor` is `quality.reason_floor`'s
+    one number, and a reason under it is a valve that does not hold — its own
+    finding wherever a reader reports one.
+    """
+    if not lines or line < 1 or line > len(lines):
+        return None
+    index = line - 1
+    while index >= 0:
+        text = lines[index]
+        if index < line - 1 and not text.strip().startswith(comment):
+            return None
+        found = valve_on_line(text, pattern, comment=comment, floor=floor)
+        if found is not None:
+            return found
+        index -= 1
+    return None
+
+
+def valve_on_line(
+    text: str, pattern: re.Pattern[str], *, comment: str = "#", floor: int = MIN_REASON
+) -> Valve | None:
+    """The valve this one line writes, or None: a marker that opens a comment on it.
+
+    `comment_reason`'s per-line half, and the census's whole question — the
+    standing section counts the lines this answers for, so a line the reader
+    would not honour is never counted as standing.
+    """
+    at = text.find(comment)
+    while at >= 0:
+        match = pattern.match(text, at)
+        if match and opens_comment(text, at, comment):
+            reason = (match.group(1) or "").strip()
+            return Valve(reason, len(reason) >= floor, valve_trigger(reason))
+        at = text.find(comment, at + 1)
+    return None
+
+
 def kind_skip_dirs(kind: dict) -> frozenset[str]:
     """Directory names this kind's walk skips — never descended, by either half.
 
     ONE declaration read by BOTH the engine's override walk (`quality/gate.py`'s
-    `_kind_walk`/`all_overrides`) and every kind's runner subprocess
+    `kind_files`/`all_overrides`) and every kind's runner subprocess
     (`quality/runners/_kindscope.py` mirrors this over the identical six lines
     of `quality/rules.yaml`, for a process that must not import Django's world
     just to learn a skip-dir list). The defect this closes: the `js` kind's own
@@ -440,3 +578,407 @@ def tree_verdict(root: Path, rule: dict, kinds: dict) -> tuple[str, str]:
             "a subject and no instrument is could-not-look, never a clean scan",
         )
     return "run", ""
+
+
+# --- the one fixed point ------------------------------------------------------
+
+
+def fixed_point(grow: Callable[[], bool]) -> None:
+    """Call `grow` until a pass adds nothing — the engine's one fixed-point loop.
+
+    Every derivation that feeds itself (a class whose base is a model is a
+    model; a helper that returns a bound name binds a name; a function that
+    calls the finish seam is the finish seam) walks to the same stop: a pass
+    that changed nothing. `grow` answers whether its pass added anything.
+    """
+    while grow():
+        pass
+
+
+def reaching(edges: Mapping[str, Iterable[str]], seeds: Iterable[str]) -> set[str]:
+    """The seeds, and every name whose edges reach one of them, transitively.
+
+    `edges` maps a name to the names it points at (a class to its bases, a
+    function to the names it calls); a name joins once any of its edges is
+    already in the answer. The seeds stay in the answer — a caller that wants
+    only what reached them discards them.
+    """
+    reached = set(seeds)
+    pending = {name: set(targets) for name, targets in edges.items()}
+
+    def grow() -> bool:
+        joined = {name for name, targets in pending.items() if targets & reached}
+        for name in joined:
+            del pending[name]
+        reached.update(joined)
+        return bool(joined)
+
+    fixed_point(grow)
+    return reached
+
+
+# --- the one one-way number ---------------------------------------------------
+#
+# ADR gate-6, written once. A ratchet, a floor, a budget ceiling, a self-test
+# population, the residence backlog, the drawers leg's ceiling and the memo's
+# keep are the same object: a number somebody RECORDED, a number this run
+# MEASURED, the file the recorded one is written in, and the direction it may
+# move by itself — none. Past it is the caller's verdict (a ratchet's findings
+# fail, a floor is unbound, a population is short); short of it is ROOM, and
+# room is one sentence in one grammar, ending in the line a human pastes.
+
+
+@dataclass(frozen=True)
+class Bound:
+    """One one-way number: what was recorded, what this run measured, where it is written.
+
+    `direction` is `ceiling` (the measurement may not rise past the record —
+    ratchets, budgets, the residence backlog, the drawers leg's seconds) or
+    `floor` (it may not fall under it — scope floors, self-test populations,
+    the seam's and the engine legs' own). `home` is the file and the key the
+    number is written under; `klass` is its name there, the key of the paste
+    line; `subject` is how a line names it.
+    """
+
+    direction: str
+    recorded: int
+    measured: int
+    home: str
+    klass: str
+    subject: str = ""
+    word: str = ""
+
+    def __post_init__(self) -> None:
+        if self.direction not in ("ceiling", "floor"):
+            raise ValueError(f"a Bound is a ceiling or a floor, not {self.direction!r}")
+
+    @property
+    def breached(self) -> bool:
+        """Past the record in the direction the number may not move."""
+        if self.direction == "ceiling":
+            return self.measured > self.recorded
+        return self.measured < self.recorded
+
+    @property
+    def room(self) -> bool:
+        """Short of the record in the direction a human may move it."""
+        if self.direction == "ceiling":
+            return self.measured < self.recorded
+        return self.measured > self.recorded
+
+    @property
+    def name(self) -> str:
+        return self.subject or self.klass
+
+    @property
+    def called(self) -> str:
+        return self.word or self.direction
+
+    def breach_clause(self) -> str:
+        """The one sentence for a number past its record; the caller says what it costs."""
+        where = "past" if self.direction == "ceiling" else "under"
+        moves = (
+            "may shrink and never grow"
+            if self.direction == "ceiling"
+            else "may rise and never fall"
+        )
+        return (
+            f"{self.name} is at {self.measured}, {where} its recorded {self.called} "
+            f"{self.recorded} in {self.home} — a one-way number {moves} by itself"
+        )
+
+
+def room_note(bound: Bound) -> str | None:
+    """THE ONE NOTE: a number short of its record says so, and hands over the line to paste.
+
+    `None` when there is no room. The sentence ends at the colon and the paste
+    line follows on its own line, two spaces in — the shape
+    `scripts/budget_notes.sh` reads, which is why there is one shape.
+    """
+    if not bound.room:
+        return None
+    relation = "below" if bound.direction == "ceiling" else "above"
+    number = "lower" if bound.direction == "ceiling" else "higher"
+    return (
+        f"{bound.name} measured {bound.measured}, {relation} its {bound.called} "
+        f"{bound.recorded} ({bound.home}) — a human may commit the {number} number:\n"
+        f"  {bound.klass}: {bound.measured}"
+    )
+
+
+def unmeasured_note(*, rid: str, klass: str, app: str, count: int, stamp: str) -> str:
+    """A class with NO record is not a class at zero (ADR gate-6) — and the line says so once.
+
+    The one place the engine writes the unmeasured sentence: an app outside the
+    partition has a ceiling of nothing, which is unreadable rather than clean;
+    the finding IS the recording, made once, in the product's drawer, and after
+    it the class is an ordinary `Bound` that moves down only.
+    """
+    return (
+        f"class {klass!r} has NEVER BEEN MEASURED — apps/{app} is outside the partition "
+        f"(quality/partition.yaml `platform_apps`), so it is an app this template did not "
+        f"ship, and no `ratchets:` entry on rule {rid} names this class. An absent entry is "
+        f"a ceiling of zero, which is the right answer for a template app and an unreadable "
+        f"one for yours: green-because-unrecorded is not a pass (quality/budgets.yaml), so "
+        f"this is a violation and not a note. RECORD IT — in quality/local/rules.yaml, YOUR "
+        f'drawer, under its top-level `ratchets:`, under `"{rid}":`, paste:  '
+        f"{klass}: {count}  # recorded-at {stamp} [fold]  — the drawer is where a "
+        f"product's counts live, because quality/rules.yaml is template-owned and a fold "
+        f"overwrites it; the recording is the "
+        f"ONE time a number here may arrive from nothing, it belongs to the fold that "
+        f"brought the app in, and after it the class moves DOWN only, by a person's hand, "
+        f"in a diff a reviewer reads (ADR gate-6). The whole class follows:"
+    )
+
+
+#: Where every budget ceiling is written.
+BUDGETS_FILE = "quality/budgets.yaml"
+
+
+def read_budgets(root: Path) -> dict:
+    """`quality/budgets.yaml`, parsed — the one reader of the budget ceilings."""
+    import yaml
+
+    path = root / BUDGETS_FILE
+    if not path.is_file():
+        return {}
+    return yaml.safe_load(path.read_text()) or {}
+
+
+def budget_ceiling(root: Path, section: str, key: str) -> int | None:
+    """One recorded ceiling, or None when nobody recorded it."""
+    value = (read_budgets(root).get(section) or {}).get(key)
+    return None if value is None else int(value)
+
+
+# --- the tree, the files and the classes, read once ---------------------------
+
+#: Directory parts never walked. Tests are proof, not product; migrations are
+#: rule 22's own subject and get their own walker; fixtures are planted wrongness.
+SKIP_PARTS: frozenset[str] = frozenset({"__pycache__", "migrations", "tests", "canary", "negative"})
+
+
+def read_text(path: Path) -> str:
+    """A file's text, or '' when it cannot be read — the engine's one reader of a file."""
+    try:
+        return path.read_text()
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
+_AST_CACHE: dict[tuple[str, float], ast.Module | None] = {}
+
+
+def parse_python(path: Path) -> ast.Module | None:
+    """A module's AST, parsed once per (path, mtime); None when it will not parse."""
+    try:
+        key = (str(path), path.stat().st_mtime)
+    except OSError:
+        return None
+    if key in _AST_CACHE:
+        return _AST_CACHE[key]
+    try:
+        tree: ast.Module | None = ast.parse(read_text(path))
+    except SyntaxError:
+        tree = None
+    _AST_CACHE[key] = tree
+    return tree
+
+
+def py_files(
+    root: Path,
+    *subtrees: str,
+    named: set[str] | None = None,
+    suffixes: tuple[str, ...] = (".py",),
+) -> list[Path]:
+    """Every file of the suffixes under the subtrees, minus `SKIP_PARTS`; optionally only
+    files with the given basenames. DERIVED from the tree, never typed.
+
+    `suffixes` widens the walk to another language with the SAME skip law —
+    the road census reads `.sh` through here rather than owning a second walk.
+    `SKIP_PARTS` is judged relative to each subtree, so naming `scripts/tests`
+    as a subtree reads the drives that `scripts` alone would skip.
+    """
+    out: list[Path] = []
+    for sub in subtrees:
+        base = root / sub
+        if not base.exists():
+            continue
+        found: set[Path] = set()
+        for suffix in suffixes:
+            found.update(base.rglob(f"*{suffix}"))
+        for path in sorted(found):
+            if SKIP_PARTS & set(path.relative_to(base).parts):
+                continue
+            if named is not None and path.name not in named:
+                if not (SERVICE_MODULE in named and is_service_module(path.relative_to(root))):
+                    continue
+            out.append(path)
+    return out
+
+
+#: An app's service module by file name; a `services/` package re-exported whole is its other form.
+SERVICE_MODULE = "services.py"
+_SERVICE_PACKAGE = SERVICE_MODULE.removesuffix(".py")
+
+
+def is_service_module(rel: str | Path) -> bool:
+    """Whether a root-relative path is `…/services.py` or `apps/<x>/services/*.py`."""
+    parts = Path(rel).parts
+    if not parts:
+        return False
+    if parts[-1] == SERVICE_MODULE:
+        return True
+    return (
+        len(parts) == 4
+        and parts[0] == _APPS_DIR
+        and parts[2] == _SERVICE_PACKAGE
+        and parts[3].endswith(".py")
+    )
+
+
+@road("service_modules", example="quality/checks/rule_42.py::door_reachability")
+def service_modules(root: Path, *, app: str | None = None) -> list[Path]:
+    """Every app's service modules (or `app`'s), in path order — the file and the package form."""
+    return py_files(root, f"{_APPS_DIR}/{app}" if app else _APPS_DIR, named={SERVICE_MODULE})
+
+
+def base_names(node: ast.ClassDef) -> list[str]:
+    """The last segment of each base's dotted name — `models.Model` -> `Model`.
+
+    A subscripted base (`ScopedManager["Connection"]`) resolves to the
+    generic's own name, which is what tells a manager from a model.
+    """
+    out: list[str] = []
+    for base in node.bases:
+        cur: ast.expr = base
+        while isinstance(cur, ast.Subscript):
+            cur = cur.value
+        parts: list[str] = []
+        while isinstance(cur, ast.Attribute):
+            parts.append(cur.attr)
+            cur = cur.value
+        if isinstance(cur, ast.Name):
+            parts.append(cur.id)
+        if parts:
+            out.append(parts[0])
+    return out
+
+
+_GRAPH_CACHE: dict[tuple[str, tuple[tuple[str, float], ...]], dict[str, frozenset[str]]] = {}
+
+
+def class_graph(root: Path) -> dict[str, frozenset[str]]:
+    """{class name: its base names} for every class under `apps/` — the classes, read once.
+
+    One reading of "which class inherits which", cached on every file's mtime
+    like the AST cache under it, so the half-dozen populations that walk the
+    inheritance (scoped models, model classes, append-only, archivable, the
+    marker mixins, inherited-downward) resolve against ONE graph through
+    `reaching` — the one fixed point. Two modules defining one class name are
+    the union of both (the loud direction).
+    """
+    files = py_files(root, "apps")
+    facade = sorted((root / "pilecap").glob("*.py")) if (root / "pilecap").is_dir() else []
+    stamps: list[tuple[str, float]] = []
+    for path in [*files, *facade]:
+        try:
+            stamps.append((str(path), path.stat().st_mtime))
+        except OSError:
+            continue
+    key = (str(root), tuple(stamps))
+    cached = _GRAPH_CACHE.get(key)
+    if cached is not None:
+        return cached
+    aliases: dict[str, str] = {}
+    for path in facade:
+        tree = parse_python(path)
+        module = "pilecap" if path.stem == "__init__" else f"pilecap.{path.stem}"
+        for local, (_source, name) in (reexports(tree, module) if tree else {}).items():
+            if local != name:
+                aliases[local] = name
+    graph: dict[str, set[str]] = {}
+    for path in files:
+        tree = parse_python(path)
+        if tree is None:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                bases = base_names(node)
+                graph.setdefault(node.name, set()).update(
+                    {*bases, *(aliases[b] for b in bases if b in aliases)}
+                )
+    frozen = {name: frozenset(bases) for name, bases in graph.items()}
+    _GRAPH_CACHE.clear()
+    _GRAPH_CACHE[key] = frozen
+    return frozen
+
+
+def descendants(root: Path, *seeds: str) -> set[str]:
+    """Every class under `apps/` reaching one of `seeds` through its bases, the seeds excluded."""
+    return reaching(class_graph(root), set(seeds)) - set(seeds)
+
+
+# --- the files each kind's walk reads --------------------------------------------
+#
+# The tree git holds is read once in `quality/tree.py` (standard library only, so
+# the partition and a typed test import it without the engine's world).
+
+
+def _walk_suffixed(
+    root: Path, base: Path, suffixes: tuple[str, ...], skip: frozenset[str]
+) -> Iterator[str]:
+    """Every file under `base` with one of `suffixes`, never descending into a `skip` directory."""
+    for here, dirs, files in os.walk(base):
+        dirs[:] = [name for name in dirs if name not in skip]
+        for name in files:
+            if name.endswith(suffixes):
+                yield str((Path(here) / name).relative_to(root))
+
+
+def kind_files(
+    root: Path,
+    kinds: Mapping[str, dict],
+    population: str,
+    *,
+    measured: Iterable[str] = (),
+) -> dict[str, list[str]]:
+    """{declared root: the files every kind's walk reads under it} — one loop, two populations.
+
+    `population` is `fs` (the files on the disk, what a live scan and the
+    override walk read) or `measured` (the paths of the measured tree — HEAD
+    plus the working tree, `.gitignore` honoured — which is also what
+    "tracked" means everywhere in this engine since `measured_tree` became the
+    one read; hand those paths in as `measured`). A directory root yields its
+    files of the kind's suffixes outside the kind's skip dirs; a FILE root is
+    its own member whatever its suffix (a suffix filter over one named path is
+    a second opinion about a file somebody declared). A root not on this tree
+    contributes nothing and says nothing.
+    """
+    if population not in ("fs", "measured"):
+        raise ValueError(f"kind_files reads `fs` or `measured`, not {population!r}")
+    present = frozenset(measured) if population == "measured" else frozenset()
+    out: dict[str, list[str]] = {}
+    for kind in kinds.values():
+        skip = kind_skip_dirs(kind)
+        suffixes = tuple(str(s) for s in (kind.get("suffixes") or []))
+        for declared in (str(r) for r in (kind.get("roots") or [])):
+            base = root / declared
+            if not base.exists():
+                continue
+            found = out.setdefault(declared, [])
+            if base.is_file():
+                if population == "fs" or declared in present:
+                    found.append(declared)
+                continue
+            if population == "fs":
+                candidates = _walk_suffixed(root, base, suffixes, skip)
+            else:
+                candidates = (
+                    p for p in present if p.startswith(declared + "/") and p.endswith(suffixes)
+                )
+            for rel in candidates:
+                if skip & set(Path(rel).parts):
+                    continue
+                found.append(rel)
+    return {declared: sorted(set(rels)) for declared, rels in out.items()}

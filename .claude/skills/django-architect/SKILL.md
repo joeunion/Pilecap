@@ -58,9 +58,9 @@ worked snippets, the long rationales and the formats you copy live in
 **A1 — An app is one domain noun and its aggregate.** *Why:* app boundaries
 are agent boundaries; a rung names its app, and two rungs in one app produce
 the merge migration that is forbidden. *Enforced:* review (the app map); house
-rule **6** catches the symptom. *Wrong:* `apps/billing` holding `Invoice`,
-`Payment`, `Subscription`, `Plan`. *Right:* `apps/invoices` (Invoice +
-InvoiceLine), `apps/payments` (Payment + Refund), each with one aggregate root.
+rule **6** catches the symptom. *Wrong:* `apps/<billing>` holding `Invoice`,
+`Payment`, `Subscription`, `Plan`. *Right:* `apps/<invoices>` (Invoice +
+InvoiceLine), `apps/<payments>` (Payment + Refund), each with one aggregate root.
 
 **A2 — Dependency direction is a DAG, declared on the app itself.** `core` ←
 `accounts` ← platform (`workflows`, `events`, `connections`, `realtime`) ←
@@ -81,7 +81,7 @@ class ExampleConfig(AppConfig):
 declares a dependency — and a declared domain→domain dependency is an ADR line
 (§I), not a default. *Why:* a sideways import is the second agent inside the
 first agent's app. *Enforced:* house rule **7**; review of the ADR. *Wrong:*
-`apps/invoices/services.py` importing `apps.orders.models.Order` to read the
+`apps/<invoices>/services.py` importing `apps.orders.models.Order` to read the
 lines. *Right:* `invoices` declares `depends_on = ("core", "accounts",
 "events", "orders")` and calls `apps.orders.selectors.get_order(...)`; or
 `orders` emits `orders.order.placed` and `invoices` reacts in a workflow.
@@ -330,6 +330,20 @@ declared shadow: `references/client-layer.md`. A rung touching the client layer 
 briefed from there, and points the builder at
 `.claude/skills/fe-conventions/SKILL.md` for the how.
 
+**§E+ — a surface is a host, not a sixth door** (ADR surfaces-1, house rule
+85). Staff at one host and customers at another are one product with one set
+of doors: a surface narrows which families the doors answer at its host, which
+acts a face is offered there, which roles may enter and how the tenant is
+chosen — and adds no route, no tool and no `Out`. So the lead never decomposes
+a surface as a door: it is a declaration in the app that owns the audience
+(`apps/<x>/surfaces.py`, read by `manage.py roads resolve_surface`'s seam), a
+role in that app's `roles.py` (a role belongs to one surface — `roads
+surface_for_role`), and the face's folder pair. The parity laws (E1, E2) hold
+per surface; a surface narrows acts, never fields (two `Out`s for one noun is
+ADR surfaces-1's trigger to revisit, not a design move); a write's wall is the
+role's permission set, never the surface's acts. The worked instance is
+`apps/example_portal` — its app-map row is the shape to copy.
+
 **§E+ — a face is drawn from its pattern-book entry, never from the criteria's
 prose.** **The DESIGN stage is required before a product's first frontend rung,
 and the lead's DECOMPOSE refuses a frontend rung whose element class has no
@@ -394,7 +408,11 @@ template updates: applied and cited when a rung touches the area, never re-argue
 
 Every rung brief the lead returns carries, in this order:
 
-1. **App map delta** — the row(s) changed in the §A table, or "none".
+1. **App map delta** — the row(s) changed in the §A table, or "none". An
+   app that declares a surface names it in its row's "doors exposed" with the
+   declaration's fields (families, acts, roles, tenant rule, screens) and its
+   face's folder pair; an app whose family a surface merely exposes names
+   nothing (`architecture.md` § "App map — surfaces and identity option B").
 2. **ADR lines** — one per cross-app decision, in the format below; "none" is
    a valid answer and a claim.
 3. **App and baseline tree** — one app; `git rev-parse HEAD^{tree}` at the
@@ -409,11 +427,14 @@ Every rung brief the lead returns carries, in this order:
    column without a default in the same migration as its add; no column or
    table drop in the same deploy as the code that stops using it — the drop
    is a later rung, named; migrations run as a release step.
-8. **Criteria**, each citing the rules applied by id, each answering *what
+8. **Roads reused** — from `manage.py roads --json` on the baseline tree, one
+   line per job the rung touches, cited as `job · import` (`roads <job>`
+   prints one); "none" is a valid answer and a claim.
+9. **Criteria**, each citing the rules applied by id, each answering *what
    observable thing differs if this is false* and *what the instrument
    returns when the thing is absent* (dispatch-briefs, "Engineering lead —
    stage 4").
-9. **The blind-spot list** — what could go wrong that these criteria would
+10. **The blind-spot list** — what could go wrong that these criteria would
    not catch.
 
 **The ADR line format** — and why an ADR without a rejected alternative is a
@@ -438,6 +459,10 @@ note, and one without a trigger is a decision nobody can reopen honestly:
       multi-step transition its `select_for_update` (E8).
 - [ ] MCP parity: each REST capability has its tool, or its recorded
       exemption (E2; rule **17**).
+- [ ] Every helper the criteria ask the builder to write is checked against
+      `roads` first: a job with a road is cited, never re-implemented; a job
+      with no road is either marked in the same rung (the marker site is a
+      criterion) or left as a counted shape with the class named.
 - [ ] Every FK-target kwarg of a service writing an `OrgScopedModel` passes
       `may_be_named` or carries its `# reach: <reason>` line (C8; rule
       **26**); a row that inherits its organization declares
@@ -482,6 +507,7 @@ note, and one without a trigger is a decision nobody can reopen honestly:
       legal only where the rung names what re-derives it. (The repo's
       most-recurrent miss shape, seen repeatedly: an erasure hand-list once
       left PII in several tables its enumeration missed.)
+- [ ] **No typed population is shared by parallel lanes.** A file two lanes of one wave both edit because it TYPES rows each lane must delete — a census heredoc, a ratchets block, a cited-line table — is a serializer wearing a concurrency map (W4's ratchets block, W5's census rows: `in-flight.md`, § 8 2026-10-02 05:18). The lead either derives the population before the fan-out (one rung, first) or serializes the lanes and says so; a map that claims independence across such a file is returned.
 - [ ] Every new declared population or retry/lifecycle column names its
       production reader — or a dated trigger for the reader — in the rung's
       ADR line. A schema built for a reader that never arrives strands data

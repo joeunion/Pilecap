@@ -1,0 +1,135 @@
+// golden: move begin
+// golden: bulk begin
+// patterns: §1, §13, §14, §15
+"use client";
+// golden: bulk end
+// golden: move end
+// golden: move begin
+// golden: bulk begin
+import { useEffect, useId, useRef, useState } from "react";
+
+import { WIDGET_COPY as C } from "@pilecap/copy/widget";
+import { Dialog } from "@pilecap/ui/dialog";
+import { RefusalPanel } from "@pilecap/ui/refusal-panel";
+import { STAFF_SURFACE } from "@pilecap/ui/routes";
+import type { Refusal, SurfaceState } from "@pilecap/ui/state";
+import type { Act } from "@pilecap/ui/verbs";
+import { StillLine } from "@pilecap/ui/still-line";
+import { type Destination } from "@/screens/widget/parts";
+
+/** What the route hands the sheet: the destinations it read, and the move (answering whether it moved). */
+export type MovePress = {
+    readonly destinations: SurfaceState<readonly Destination[]>;
+    readonly onMove: (organizationId: string) => Promise<boolean>;
+    /** The sheet opened: the route reads the destinations now, and not before. */
+    readonly onOpen?: () => void;
+    /** The node a refused move was sent to, when the route opens the sheet again on it. */
+    readonly chosen?: string | null;
+};
+
+export function MoveSheet({
+    title,
+    currentId,
+    move,
+    busy,
+    refused,
+    press,
+    onClose,
+}: {
+    readonly title: string;
+    /** The node the row sits at now (one row), or `null` over a selection. */
+    readonly currentId: string | null;
+    readonly move: Act;
+    readonly busy: boolean;
+    readonly refused: Refusal | null;
+    readonly press: MovePress;
+    /** Called when the sheet goes down: `true` after its press was answered, `false` when it was dismissed. */
+    readonly onClose: (done: boolean) => void;
+}) {
+    // THE CURRENT NODE IS MARKED, NEVER CHOSEN: a move to where the row already
+    // is moves nothing, so the current node is drawn marked and offers no
+    // radio, the sheet opens with no choice, and its foot's *Move* is drawn
+    // only once another node is chosen — absent, never dead, and never a press
+    // that sends the current node.
+    const [chosen, setChosen] = useState<string | null>(press.chosen ?? null);
+    const moving = chosen !== null && chosen !== currentId ? chosen : null;
+    const first = useRef<HTMLInputElement>(null);
+    const name = useId();
+    const state = press.destinations;
+    const firstChoice = state.kind === "ready" ? (state.data.find((node) => node.id !== currentId)?.id ?? null) : null;
+
+    // Opening lands on the first chooser, once the destinations are read.
+    const ready = state.kind === "ready";
+    useEffect(() => {
+        if (ready) first.current?.focus();
+    }, [ready]);
+
+    return (
+        <Dialog
+            open
+            title={title}
+            onDismiss={() => onClose(false)}
+            foot={
+                moving === null ? undefined : (
+                    <button
+                        type="button"
+                        className="widget-act widget-primary"
+                        {...move.attrs}
+                        aria-busy={busy ? "true" : undefined}
+                        onClick={async () => {
+                            if (await press.onMove(moving)) onClose(true);
+                        }}
+                    >
+                        {busy ? move.busy : move.label}
+                    </button>
+                )
+            }
+        >
+            <div className="widget-sheet">
+                {state.kind === "loading" ? (
+                    <div aria-busy="true" aria-live="polite">
+                        <p>{C.loadingDestinations}</p>
+                        <StillLine tall />
+                        <StillLine tall />
+                    </div>
+                ) : null}
+                {state.kind === "empty" ? <p>{C.moveNowhere}</p> : null}
+                {state.kind === "error" ? (
+                    <RefusalPanel surface={STAFF_SURFACE} refusal={state.refusal} refused={move.words.refused} />
+                ) : null}
+                {state.kind === "ready" ? (
+                    <fieldset className="widget-choices" aria-label={title}>
+                        {state.data.map((node) =>
+                            node.id === currentId ? (
+                                // The current node is marked and never a choice: it is where the
+                                // row is, so it carries no radio, only the mark (the face
+                                // stylesheet's) and `aria-current` for a reader that cannot see it.
+                                <p key={node.id} className="widget-choice widget-current" aria-current="true">
+                                    {node.name}
+                                </p>
+                            ) : (
+                                <label key={node.id} className="widget-choice">
+                                    <input
+                                        type="radio"
+                                        name={name}
+                                        ref={node.id === firstChoice ? first : undefined}
+                                        checked={chosen === node.id}
+                                        onChange={() => setChosen(node.id)}
+                                    />
+                                    <span>{node.name}</span>
+                                </label>
+                            ),
+                        )}
+                    </fieldset>
+                ) : null}
+                {refused === null ? null : (
+                    <div className="widget-refusal-seat">
+                        <RefusalPanel surface={STAFF_SURFACE} refusal={refused} seat="sheet-foot" refused={move.words.refused} />
+                    </div>
+                )}
+            </div>
+        </Dialog>
+    );
+}
+// golden: bulk end
+// golden: move end

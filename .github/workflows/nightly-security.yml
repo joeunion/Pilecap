@@ -1,0 +1,77 @@
+# Every image the deploy pins by digest, scanned for known vulnerabilities every night (the template's own; never shipped).
+#
+# The population is derived from `deploy/compose.yaml`'s digest pins, never typed; a red night is a pin bump (queue row N2231's shape),
+# and the reports are published whatever happened. The scanner and its judgment are `deploy/image_scan.sh`'s.
+# does-not-cover: the images CI builds — the `images` job in ci.yml scans those before they can be pushed.
+# does-not-cover: a vulnerability with no fixed version — reported, never red.
+
+name: nightly-security
+
+on:
+  schedule:
+    # 07:41 UTC — off the hour, and after nightly-proof's start.
+    - cron: "41 7 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: nightly-security-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  images:
+    name: pinned images
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: the images deploy/compose.yaml pins by digest
+        id: derive
+        run: |
+          set -euo pipefail
+          images="$(grep -oE 'image: \S+@sha256:[0-9a-f]+' deploy/compose.yaml | sed 's/^image: //' | LC_ALL=C sort -u)"
+          [ -n "$images" ] || { echo "::error::deploy/compose.yaml pins no image by digest — nothing to scan"; exit 2; }
+          echo "$images"
+          echo "images=$(echo $images)" >>"$GITHUB_OUTPUT"
+
+      - name: log in to Docker Hub, when the repository holds a credential
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -n "${DOCKERHUB_USERNAME:-}" ] && [ -n "${DOCKERHUB_TOKEN:-}" ]; then
+            printf '%s' "${DOCKERHUB_TOKEN}" | docker login docker.io --username "${DOCKERHUB_USERNAME}" --password-stdin
+          else
+            echo "::warning::Docker Hub is read anonymously — its per-IP rate limit can refuse a pull, which is a could-not-look (exit 2)"
+          fi
+
+      - name: scan every pinned image
+        env:
+          IMAGES: ${{ steps.derive.outputs.images }}
+        run: |
+          set -uo pipefail
+          ./deploy/image_scan.sh --install "${RUNNER_TEMP}/trivy" || exit 2
+          export PATH="${RUNNER_TEMP}/trivy:${PATH}"
+          out="${RUNNER_TEMP}/reports"
+          mkdir -p "$out"
+          worst=0
+          for ref in $IMAGES; do
+            name="$(printf '%s' "${ref%%@*}" | tr '/:' '__')"
+            rc=0
+            ./deploy/image_scan.sh "$ref" --report "${out}/${name}.json" || rc=$?
+            echo "$ref scan exit $rc"
+            [ "$rc" -le "$worst" ] || worst=$rc
+          done
+          exit "$worst"
+
+      - name: the reports, whatever the night found
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-scan-reports
+          path: ${{ runner.temp }}/reports/
+          if-no-files-found: warn
+          overwrite: true

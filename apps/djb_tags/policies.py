@@ -15,10 +15,7 @@ tenant-scoped row at the root too and refuses the system actor
 work, so `djb_tag_link.create` and `djb_tag_link.delete` ask only that the actor belongs
 to the tenant — the subject has already been resolved through the acting hat's
 `visible_to` and `may_be_named` (`core.verbs.resolve_subject`) before this runs,
-so a row the actor cannot reach is `not_found` long before this question. It is
-a predicate rather than a `DEFAULT_ROLES` entry for the reason every swept app
-gives: a `DEFAULT_ROLES` write entry moves what `defaults_for("member")`
-answers, which core's vocabulary pins read directly.
+so a row the actor cannot reach is `not_found` long before this question.
 
 `djb_tag_link.update` (moving links when two subjects merge) has no predicate, so it
 is an administrator's, which is who may merge at all.
@@ -43,6 +40,14 @@ POLICIES: dict[str, Policy] = {
     "djb_tag.restore": may_archive,
     "djb_tag_link.create": may_tag,
     "djb_tag_link.delete": may_tag,
+}
+
+#: The keys `member` holds by declaration; each predicate above still narrows its key.
+DEFAULT_ROLES: dict[str, frozenset[str]] = {
+    "djb_tag.archive": frozenset({"member"}),
+    "djb_tag.restore": frozenset({"member"}),
+    "djb_tag_link.create": frozenset({"member"}),
+    "djb_tag_link.delete": frozenset({"member"}),
 }
 
 ACTION_PROSE: dict[str, str] = {

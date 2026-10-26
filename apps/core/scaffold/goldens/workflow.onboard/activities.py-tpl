@@ -1,0 +1,77 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "end", "text": ""}
+"""Where the example's workflows touch the world: restore the actor, read, call a service."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from datetime import UTC, date, datetime, time
+from typing import Any
+from uuid import UUID
+
+from django.db import close_old_connections
+from temporalio import activity
+from temporalio.exceptions import ApplicationError
+
+from apps.example import services
+from apps.example.selectors import get_widget
+from apps.example.types import WidgetAnnouncement, WidgetMoment, WidgetOnboarding, WidgetReminder
+from pilecap import Archived, current_actor
+
+
+
+@activity.defn(name="mark_widget_onboarded", no_thread_cancel_exception=True)
+def mark_widget_onboarded(payload: WidgetOnboarding) -> str:
+    """Mark the widget onboarded and answer when, as an ISO string; the first mark is kept."""
+    close_old_connections()
+    try:
+        # Nobody clicked this: the system actor, under the hat the run was started with.
+        actor = current_actor(kind="system")
+        widget = get_widget(
+            tenant=actor.tenant, widget_id=UUID(payload.widget_id), org=actor.org, actor=actor
+        )
+        try:
+            marked = services.mark_widget_onboarded(
+                tenant=widget.tenant, actor=actor, widget=widget
+            )
+        except Archived as refused:
+            raise ApplicationError(
+                refused.detail, type=refused.code, non_retryable=True
+            ) from refused
+        return marked.onboarded_at.isoformat() if marked.onboarded_at is not None else ""
+    finally:
+        close_old_connections()
+
+
+@activity.defn(name="announce_widget_onboarded", no_thread_cancel_exception=True)
+def announce_widget_onboarded(payload: WidgetAnnouncement) -> str:
+    """Emit `example.widget.onboarded` through the service that owns it; answers the widget id."""
+    close_old_connections()
+    try:
+        actor = current_actor(kind="system")
+        widget = get_widget(
+            tenant=actor.tenant, widget_id=UUID(payload.widget_id), org=actor.org, actor=actor
+        )
+        try:
+            announced = services.announce_widget_onboarded(
+                tenant=widget.tenant,
+                actor=actor,
+                widget=widget,
+                approved=payload.approved,
+            )
+        except Archived as refused:
+            raise ApplicationError(
+                refused.detail, type=refused.code, non_retryable=True
+            ) from refused
+        return str(announced.pk)
+    finally:
+        close_old_connections()
+
+
+
+
+ACTIVITIES: list[Callable[..., Any]] = [
+    mark_widget_onboarded,
+    announce_widget_onboarded,
+
+
+]

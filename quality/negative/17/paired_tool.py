@@ -18,21 +18,15 @@ from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
 
 from apps.core.api.docs import contract_of
-from apps.core.checks import _VERB_TOOLS
+from apps.core.verbs import derive_tool_name
 from apps.zzz_canary.api import router
-
-
-def _tool_name(url_name: str) -> str:
-    """The name house rule 17's check will look for, by its own convention."""
-    noun, _, verb = url_name.rpartition("-")
-    forms = _VERB_TOOLS.get(verb)
-    return forms[0].format(noun=noun) if forms else f"{verb}_{noun}"
 
 
 def register(server: MCPServer[Any]) -> None:
     for path_view in router.path_operations.values():
         for operation in path_view.operations:
-            name = _tool_name(str(operation.url_name or ""))
+            # The name house rule 17 looks for, from the one derivation.
+            name = derive_tool_name(str(operation.url_name or ""))
 
             def twin(ctx: Context[Any], row_id: str = "") -> dict:
                 return {"id": row_id}

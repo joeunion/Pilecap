@@ -75,12 +75,12 @@ def register(server: MCPServer[Any]) -> None:
             # from `ScopedQuerySet` to `QuerySet` because filtering returns the
             # plain one, and narrowing a queryset cannot widen its tenant.
             runs: QuerySet[WorkflowRun] = WorkflowRunFilter(status=status, type=type).filter(
-                list_runs(tenant=acting.tenant, actor=acting.actor(), mine=mine)
+                list_runs(tenant=acting_tenant(acting), actor=acting.actor(), mine=mine)
             )
             runs = ordered_by(runs, ordering, allowed=ORDERING, default="-started_at")
             page = cursor_page(
                 runs,
-                tenant=acting.tenant,
+                tenant=acting_tenant(acting),
                 cursor=cursor,
                 limit=limit,
                 include_count=include_count,
@@ -99,7 +99,7 @@ def register(server: MCPServer[Any]) -> None:
             # HTTP: a refusal that distinguished the two would tell the caller
             # the row exists, which is the fact the scoping was hiding.
             return WorkflowRunOut.from_orm(
-                get_run(tenant=acting.tenant, actor=acting.actor(), run_id=run_id)
+                get_run(tenant=acting_tenant(acting), actor=acting.actor(), run_id=run_id)
             )
 
     @server.tool(name="replay_run", description=contract_of(replay_run_route))

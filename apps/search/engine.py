@@ -35,9 +35,10 @@ filters on `tenant_id`, so the sentinel is unreachable through the chokepoint by
 construction rather than by being remembered — the same argument the fence
 itself rests on. `state()` reads it; `apply_settings()` writes it.
 
-**Index names are checkout-derived** (`DATABASE_NAME`, the B2 precedent, and
-deliberately not `PRODUCT_NAME` — this is infrastructure identity, per ADR
-platform-1's compose clause). Two worktrees, and every xdist worker, therefore
+**Index names are checkout-derived** (`settings.MEILI_INDEX_PREFIX`, derived
+from the database name in use exactly as the cache prefix and the task queue
+are, and deliberately not `PRODUCT_NAME` — this is infrastructure identity, per
+ADR platform-1's compose clause). Two worktrees, and every xdist worker, therefore
 write into disjoint index namespaces and parallel gates never meet in Meili any
 more than they do in Postgres.
 """
@@ -45,7 +46,6 @@ more than they do in Postgres.
 from __future__ import annotations
 
 import hashlib
-import os
 import re
 from collections.abc import Sequence
 from typing import Any
@@ -113,8 +113,8 @@ STAGING_SUFFIX = "_staging"
 def meili_url() -> str:
     """Where the index is. **Read from settings**, in this module only.
 
-    `settings.MEILI_URL` and not `os.environ`, and the difference matters:
-    reading the environment here made this the one
+    `settings.MEILI_URL` and not the process environment, and the difference
+    matters: reading the environment here made this the one
     external service in the product outside `config/settings/test.py`'s pin, so
     the suite dialled whatever the developer's `.env` happened to say — and a
     checkout pointed at an unreachable Meilisearch ran a different suite from
@@ -148,23 +148,24 @@ def meili_master_key() -> str:
 
 
 def index_prefix() -> str:
-    """The per-CHECKOUT index namespace, derived and never pinned.
+    """The per-CHECKOUT index namespace: `settings.MEILI_INDEX_PREFIX`.
 
-    Derived from `DATABASE_NAME` — the same derivation that gives this checkout
-    its own Postgres database (`scripts/db.sh`) — so the invariant is one line:
-    **two checkouts that cannot share a database cannot share an index.** A
-    pinned `MEILI_INDEX_PREFIX` variable is deliberately not offered; it would be
-    exactly the collision the derivation exists to prevent, and `.env.example`
-    says so.
+    Settings derive it from the database name in use — the name parsed out of
+    the assembled database URL, the one `CACHE_KEY_PREFIX` and
+    `TEMPORAL_TASK_QUEUE` ride — so the invariant is one line: **two checkouts
+    that cannot share a database cannot share an index**, whether the name
+    arrived as `DATABASE_NAME` or only inside `DATABASE_URL`. A pinned
+    `MEILI_INDEX_PREFIX` wins outright, as the other two pins do, and carries
+    their hazard: a stale pin is two checkouts sharing a namespace again.
 
     A database name is already uid-safe in every case this repository produces
-    (`djb_<branch>_<8 hex>`), and it is sanitised anyway: a product that pins an
-    exotic `DATABASE_NAME` gets a legal uid rather than a 400 from Meili on the
-    first write. When sanitising would have changed the name, a short hash of
-    the original is appended, so two names that sanitise to the same string
+    (`djb_<branch>_<8 hex>`), and it is sanitised anyway: a product with an
+    exotic database name or pin gets a legal uid rather than a 400 from Meili on
+    the first write. When sanitising would have changed the name, a short hash
+    of the original is appended, so two names that sanitise to the same string
     still get different prefixes.
     """
-    raw = os.environ.get("DATABASE_NAME", "djb").strip() or "djb"
+    raw = str(settings.MEILI_INDEX_PREFIX).strip()
     safe = _UID_SAFE.sub("_", raw)
     if safe == raw:
         return safe

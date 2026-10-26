@@ -41,7 +41,7 @@ from apps.core.services import add_membership, create_organization, root_organiz
 
 pytestmark = pytest.mark.django_db
 
-PASSWORD = "a-long-enough-password"  # pragma: allowlist secret
+PASSWORD = "a-long-enough-password"  # noqa: S105 — a throwaway password a test user is made with  # pragma: allowlist secret
 ADD_URL = "/admin/core/membership/add/"
 LIST_URL = "/admin/core/membership/"
 
@@ -346,8 +346,9 @@ def test_an_append_only_models_admin_offers_no_change_and_no_delete(root: User) 
 
 
 def test_a_model_that_is_not_append_only_keeps_its_permissions(root: User) -> None:
-    """The sibling that makes the assertion above able to fail."""
+    """The sibling that makes the assertion above able to fail, with the read granted."""
     plain = ServiceModelAdmin(Tenant, admin.site)
+    plain.has_view_permission = lambda request, obj=None: True  # type: ignore[method-assign]
     request = _request(root)
 
     assert plain.has_change_permission(request) is True

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { listOrganizations } from "@/api/client";
+import { getWidget, listOrganizations, mintIntent, readPageToken, submitPortalRequest } from "@/api/client";
 import { TRANSPORT_COPY } from "@/copy/refusals";
 
 type FetchArgs = Parameters<typeof fetch>;
@@ -39,6 +39,34 @@ describe("the one seam catches a thrown fetch", () => {
         expect(answer.kind === "refused" && answer.refusal.kind === "transport" && answer.refusal.code).toBe(
             "request_timeout",
         );
+    });
+});
+
+describe("a gateway answer with no registry body is the unreachable case", () => {
+    it.each([
+        ["502 with the proxy's HTML page", () => new Response("<html><body>502 Bad Gateway</body></html>", { status: 502, headers: { "Content-Type": "text/html" } })],
+        ["503 with no body", () => new Response(null, { status: 503 })],
+        ["504 with no body", () => new Response(null, { status: 504 })],
+    ])("%s", async (_shape, answer) => {
+        stubFetch(() => Promise.resolve(answer()));
+        expect(await listOrganizations(null)).toEqual({
+            kind: "refused",
+            refusal: { kind: "transport", code: "network_unreachable", detail: TRANSPORT_COPY.network_unreachable },
+        });
+    });
+
+    it("a 503 that carries the registry's envelope is the server's refusal, verbatim", async () => {
+        const wire = { code: "database_unavailable", detail: "The database did not answer.", remedies: [] };
+        stubFetch(() => Promise.resolve(Response.json(wire, { status: 503 })));
+        expect(await listOrganizations(null)).toEqual({ kind: "refused", refusal: { kind: "registry", refusal: wire } });
+    });
+
+    it("a non-gateway answer with an unreadable body says the reason did not arrive readably", async () => {
+        stubFetch(() => Promise.resolve(new Response("<html>500</html>", { status: 500 })));
+        expect(await listOrganizations(null)).toEqual({
+            kind: "refused",
+            refusal: { kind: "transport", code: "network_unreachable", detail: TRANSPORT_COPY.unreadable_refusal },
+        });
     });
 });
 
@@ -91,5 +119,51 @@ describe("a refusal comes back as the server's own words", () => {
         stubFetch(() => Promise.resolve(new Response("not json", { status: 200 })));
         const answer = await listOrganizations(null);
         expect(answer.kind).toBe("refused");
+    });
+});
+
+describe("the one mutation wrapper carries the token, the intent and the hat", () => {
+    const BODY = { widget_id: "0196a000-0000-7000-8000-000000000001", note: "Send another?" };
+
+    it("posts the body with the page token, the intent's key, and no hat header on the default hat", async () => {
+        const spy = stubFetch(() => Promise.resolve(Response.json({ id: "x" }, { status: 201 })));
+        vi.stubGlobal("document", { cookie: "sessionid=s; csrftoken=tok-1" });
+        const intent = mintIntent();
+        await submitPortalRequest(BODY, null, readPageToken(), intent);
+        const [path, init] = spy.mock.calls[0] ?? [];
+        expect(path).toBe("/api/v1/portal-requests/");
+        expect(init?.method).toBe("POST");
+        expect(init?.body).toBe(JSON.stringify(BODY));
+        expect(init?.headers).toMatchObject({ "X-CSRFToken": "tok-1", "Idempotency-Key": intent });
+        expect(init?.headers).not.toHaveProperty("X-Org");
+    });
+
+    it("one intent is one key on every retry; a new intent is a new key", async () => {
+        const spy = stubFetch(() => Promise.resolve(Response.json({ id: "x" }, { status: 201 })));
+        const intent = mintIntent();
+        await submitPortalRequest(BODY, "org-1", readPageToken(), intent);
+        await submitPortalRequest(BODY, "org-1", readPageToken(), intent);
+        const keys = spy.mock.calls.map(([, init]) => (init?.headers as Record<string, string>)["Idempotency-Key"]);
+        expect(keys[0]).toBe(keys[1]);
+        expect(mintIntent()).not.toBe(intent);
+        expect((spy.mock.calls[0]?.[1]?.headers as Record<string, string>)["X-Org"]).toBe("org-1");
+    });
+
+    it("sends no token header when the host carries no page token, so the server's own refusal answers", async () => {
+        const spy = stubFetch(() =>
+            Promise.resolve(Response.json({ detail: "No page token.", code: "page_token_missing", remedies: [] }, { status: 403 })),
+        );
+        vi.stubGlobal("document", { cookie: "" });
+        const answer = await submitPortalRequest(BODY, null, readPageToken(), mintIntent());
+        expect(spy.mock.calls[0]?.[1]?.headers).not.toHaveProperty("X-CSRFToken");
+        expect(answer.kind).toBe("refused");
+    });
+});
+
+describe("the reads fill the document's path, never compose their own", () => {
+    it("a widget's record is its document path with the id filled in", async () => {
+        const spy = stubFetch(() => Promise.resolve(Response.json({})));
+        await getWidget("a b", null);
+        expect(spy.mock.calls[0]?.[0]).toBe("/api/v1/widgets/a%20b/");
     });
 });

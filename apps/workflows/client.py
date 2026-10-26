@@ -2,25 +2,24 @@
 
 This lives in `apps.workflows` rather than in `config/` because of the one-way
 rule: **`config` may import `apps`; an app never imports `config`.** A service
-that had to reach up into `config.temporal` to start a workflow was a cycle
-waiting to happen and an import-linter contract that could not be written.
-`config/temporal.py` is now a thin re-export of this module, so the mount is
-still where the build contract says it is and nothing below it points upward.
+that had to reach up into `config/` to start a workflow was a cycle waiting to
+happen and an import-linter contract that could not be written, so the worker
+assembly is here and `scripts/worker.sh` runs it.
 
 Settings are read directly (`settings.TEMPORAL_*`), which is what every other
 app does with its own configuration.
 
 Discovery: an app joins durable work by exposing `WORKFLOWS: list[type]` in
 `workflows.py` and `ACTIVITIES: list[Callable]` in `activities.py`. Nothing here
-is edited when an app is added.
+is edited when an app is added, and the walk is `apps.core.discovery.declared` —
+the same road `introspect` reads the population through, so the worker and the
+schema dump cannot disagree about what is registered.
 """
 
 from __future__ import annotations
 
 import ast
 import asyncio
-import importlib
-import importlib.util
 import inspect
 import sys
 from collections.abc import Callable
@@ -29,7 +28,6 @@ from datetime import timedelta
 from types import ModuleType
 from typing import Any
 
-from django.apps import apps as django_apps
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from temporalio.client import (
@@ -44,7 +42,9 @@ from temporalio.common import WorkflowIDConflictPolicy
 from temporalio.contrib.opentelemetry import TracingInterceptor
 from temporalio.service import RPCError, RPCStatusCode
 from temporalio.worker import Worker
+from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxRestrictions
 
+from apps.core.discovery import declared
 from apps.core.log import get_logger
 from apps.core.schedules import ScheduleDeclaration
 from apps.workflows.context import TenantContextInterceptor
@@ -63,6 +63,12 @@ INTERCEPTORS: tuple[type, ...] = (TenantContextInterceptor, TracingInterceptor)
 # and refuses a pool smaller than the concurrency it is allowed to schedule, so
 # the two numbers are declared together, here, once.
 MAX_CONCURRENT_ACTIVITIES = 20
+
+#: Modules the workflow sandbox takes from the worker process instead of importing fresh per run.
+SANDBOX_PASSTHROUGH: tuple[str, ...] = (
+    #: A finalizer's import, not a workflow's: a leaked pool's `__del__` run by GC in an activation.
+    "redis",
+)
 
 
 def task_queue() -> str:
@@ -100,17 +106,23 @@ def attach_interceptors(client: Client) -> Client:
 
 
 def _discover(module_suffix: str, attribute: str) -> list[Any]:
-    """Collect one exported list from every installed `apps.*` that has it."""
-    found: list[Any] = []
-    for config in django_apps.get_app_configs():
-        if not config.name.startswith("apps."):
-            continue
-        module_name = f"{config.name}.{module_suffix}"
-        if importlib.util.find_spec(module_name) is None:
-            continue
-        module = importlib.import_module(module_name)
-        found.extend(getattr(module, attribute, []) or [])
-    return found
+    """Collect one exported list from every installed `apps.*` that has it.
+
+    A caller of the one discovery walk (`apps.core.discovery.declared`), never
+    a second walk: `introspect` reads `WORKFLOWS` and `ACTIVITIES` through the
+    same road with the same list shape, so what the worker registers and what
+    the schema dump reports are one answer.
+    """
+    return [
+        entry
+        for _config, declared_list in declared(module_suffix, attribute, predicate=_is_list)
+        for entry in declared_list
+    ]
+
+
+def _is_list(value: Any) -> bool:
+    """The shape a discovered `WORKFLOWS`, `ACTIVITIES` or `SCHEDULES` takes."""
+    return isinstance(value, list)
 
 
 def discovered_workflows() -> list[type]:
@@ -504,6 +516,20 @@ def worker_graceful_shutdown() -> timedelta:
     return max(declared_activity_timeouts().values(), default=timedelta())
 
 
+def activity_slots() -> int:
+    """How many activities run at once: the pool less one, for the main loop's record_run_id."""
+    if not settings.DATABASE_POOL_ENABLED:
+        return MAX_CONCURRENT_ACTIVITIES
+    return max(1, min(MAX_CONCURRENT_ACTIVITIES, int(settings.DATABASE_POOL_MAX_SIZE) - 1))
+
+
+def workflow_runner() -> SandboxedWorkflowRunner:
+    """Temporal's default sandbox, with `SANDBOX_PASSTHROUGH` taken from the worker process."""
+    return SandboxedWorkflowRunner(
+        restrictions=SandboxRestrictions.default.with_passthrough_modules(*SANDBOX_PASSTHROUGH)
+    )
+
+
 class _PoolClosingWorker(Worker):
     """A `Worker` that shuts down the executor it was handed. **Temporal does not.**
 
@@ -542,10 +568,11 @@ def build_worker(client: Client, *, queue: str | None = None) -> Worker:
         task_queue=queue or task_queue(),
         workflows=discovered_workflows(),
         activities=discovered_activities(),
+        workflow_runner=workflow_runner(),
         activity_executor=ThreadPoolExecutor(
-            max_workers=MAX_CONCURRENT_ACTIVITIES,
+            max_workers=activity_slots(),
             thread_name_prefix="temporal-activity-",
         ),
-        max_concurrent_activities=MAX_CONCURRENT_ACTIVITIES,
+        max_concurrent_activities=activity_slots(),
         graceful_shutdown_timeout=worker_graceful_shutdown(),
     )

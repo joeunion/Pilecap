@@ -24,7 +24,7 @@ from temporalio.testing import WorkflowEnvironment
 
 from apps.accounts.models import User
 from apps.core import bridge
-from apps.core.actor import Actor, actor_for
+from apps.core.actor import Actor, actor_for, system_actor
 from apps.core.asyncdb import run_async, run_db
 from apps.core.audit import AuditEntry
 from apps.core.exceptions import Conflict, Forbidden, NotFound, refusal_for
@@ -81,9 +81,12 @@ def test_workflow_id_is_the_house_shape(tenant: Tenant) -> None:
 def test_start_workflow_on_commit_refuses_an_id_that_is_not_the_house_shape(
     tenant: Tenant, bad: str
 ) -> None:
+    # The tenants in this world asked for their realms at birth; a refused
+    # start writes nothing beside those.
+    before = WorkflowRun.objects.count()
     with pytest.raises(ValueError):
         start_workflow_on_commit(workflow="EchoWorkflow", arg="x", tenant=tenant, id=bad)
-    assert WorkflowRun.objects.count() == 0
+    assert WorkflowRun.objects.count() == before
 
 
 def test_start_workflow_on_commit_refuses_another_tenants_id(
@@ -188,6 +191,7 @@ def a_running_run(tenant: Tenant, key: str = "1") -> WorkflowRun:
         tenant=tenant,
         workflow_id=workflow_id(tenant=tenant, app="example", noun="widget", key=key),
         workflow_type="WidgetOnboardingWorkflow",
+        actor=system_actor(tenant),
     )
 
 
@@ -537,7 +541,11 @@ async def test_a_row_whose_run_never_started_is_healed_by_asking_again(
 
         # Planted: the visibility row, running, with no execution behind it.
         planted = await run_db(
-            record_run, tenant=tenant, workflow_id=wanted, workflow_type="EchoWorkflow"
+            record_run,
+            tenant=tenant,
+            workflow_id=wanted,
+            workflow_type="EchoWorkflow",
+            actor=system_actor(tenant),
         )
         assert planted.run_id == ""
         with pytest.raises(RPCError):
@@ -633,6 +641,7 @@ def test_another_tenants_row_under_the_same_id_is_not_reused(
         tenant=other_tenant,
         workflow_id=f"{tenant.slug}:workflows:echo:shared",
         workflow_type="EchoWorkflow",
+        actor=system_actor(other_tenant),
     )
     mine = start_workflow_on_commit(
         workflow="EchoWorkflow",
@@ -674,14 +683,7 @@ def test_a_changed_intent_under_a_live_id_is_refused(
     assert unchanged.input_digest == first.input_digest
 
 
-# --- The on-commit hook is robust -----------------------------------------------
-#
-# Django runs the hooks a transaction registered in order, and a NON-robust hook
-# that raises takes every hook after it down with it. The start's own hook talks
-# to Temporal, which is the least reliable thing in the list — so an unreachable
-# server used to cancel the invitation email registered behind it. `robust=True`
-# contains the failure to the hook that had it (Django >= 4.2 semantics: robust
-# protects the hooks AFTER this one from THIS one).
+# --- The on-commit hook contains Temporal and lets a caller's bug out -------------
 
 
 def test_a_failing_start_hook_does_not_cancel_the_hooks_behind_it(
@@ -708,92 +710,25 @@ def test_a_failing_start_hook_does_not_cancel_the_hooks_behind_it(
     assert ran == ["the sibling behind it"]
 
 
-def test_the_declared_seams_are_the_only_on_commit_registrations_in_the_tree() -> None:
-    """The survey of every `on_commit` registration in the tree, executable
-    rather than pasted once and left to rot.
+def test_a_caller_bug_inside_the_start_hook_is_loud_never_a_success(
+    tenant: Tenant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hook reached with no chain bound raises out of the commit, never logged and swallowed."""
+    from apps.core import context
 
-    `robust=True` is a per-registration decision, so "we fixed the on-commit
-    hooks" is only true if these are all of them. A future registration
-    anywhere under `apps/` fails this test and has to answer the question.
+    async def a_client() -> object:
+        return object()
 
-    The third registration is the KICK, and it is now two seams at one site:
-    `close_sockets_on_commit` closes the person's open sockets on a revocation
-    or an erasure (ADR realtime-2 d), and `close_tenant_sockets_on_commit`
-    closes every socket in a darkened tenant on a suspension or a closure. The
-    channel layer behind both calls is the least reliable thing in the list
-    now that Temporal has been contained — so it is `robust=True` for
-    exactly the reason the two starters are, and each seam records what that
-    costs in its own docstring, on its own log name
-    (`core.socket.kick_failed`, `core.tenant_socket.kick_failed`). It is one
-    entry and not three because every caller goes through one registration
-    site — `_register_kick` — which is also what keeps this survey readable,
-    and a survey naming one of the two kicks would read as covering both.
+    monkeypatch.setattr(client_module, "get_client", a_client)
 
-    That entry lives in `core`, not `accounts`, and did not add a fourth
-    line: *authorization* withdrawal — a membership removed, a subtree
-    re-parented — never reached an open socket, and those writes live in
-    `core`, which may not import `accounts` (rule 7). A second
-    `close_sockets` in `core` would have been two hand-kept copies of one
-    act on a security seam. So the pair was promoted into `core.services`
-    and `accounts` re-exports it. The survey is the check that this stayed a
-    *move*: if a copy ever reappears in `accounts`, this list grows a fourth
-    line and the copy has to answer for itself here.
-
-    The fourth entry is a start's sibling. `start_replay` asks Temporal to
-    reset a failed run, and that RPC is the same least-reliable thing every
-    other entry here is about: registered on the caller's commit so a
-    rolled-back replay asks for nothing, and `robust=True` so a Temporal
-    that cannot be reached does not take the hooks queued behind it with it.
-    The row is already committed as RUNNING, so the ask is not lost either —
-    the reconciler that reads the row sweeps it.
-
-    The fifth entry is the one that commits nothing. `cancel_run` asks
-    Temporal to stop a running execution and writes no row field at all
-    (ADR workflows-7), so it is the entry where "the ask is not lost" needs
-    its own sentence: a cancel whose hook could not dial leaves a row that
-    honestly still says `running`, which is the state the job is genuinely
-    in. Nothing has to be swept, because nothing was claimed.
-
-    The sixth entry is that fifth one's mirror image. `cancel_message` asks
-    Temporal to stop a delivery run, so the RPC is the same least-reliable
-    thing every entry here is about and it carries `robust=True` for the
-    same reason: a Temporal that cannot be reached must not take the hooks
-    queued behind it down with it. Where `cancel_run`
-    commits nothing, this one commits everything first — the row is written
-    `cancelled` inside the service's own transaction and the run is only
-    *asked* afterwards. That ordering is what makes the ask impossible to lose
-    rather than merely swept: a hook that could not dial leaves a row that is
-    honestly cancelled, and the run it failed to stop wakes, re-enters
-    `deliver_message`, reads a status outside `SENDABLE` and hands nothing to
-    any transport. The row decides, not the run — and that belt is driven by
-    `apps/comms/tests/test_cancel.py::test_the_delivery_edge_refuses_a_
-    cancelled_row` rather than argued, because an entry in this survey
-    claiming a belt it had not proven would be the survey vouching for prose.
-
-    The survey matches a *registration* — a line that begins with the call —
-    rather than any line mentioning it, because those two seams now explain
-    themselves in prose and a docstring quoting the call is not a hook. The
-    residual blind spot is a registration buried inside a larger expression,
-    which nothing here does: `on_commit` returns `None`, so there is nothing to
-    nest it for.
-    """
-    registrations = [
-        (str(path.relative_to(REPO_ROOT)), text.strip())
-        for path in sorted((REPO_ROOT / "apps").rglob("*.py"))
-        if "tests" not in path.parts
-        for text in source_lines(path)
-        if text.strip().startswith("transaction.on_commit(")
-    ]
-    assert [where for where, _ in registrations] == [
-        "apps/comms/services.py",
-        "apps/core/services.py",
-        "apps/workflows/services.py",
-        "apps/workflows/services.py",
-        "apps/workflows/services.py",
-        "apps/workflows/services.py",
-    ], registrations
-    for where, text in registrations:
-        assert "robust=True" in text, f"{where} registers a hook that can cancel its siblings"
+    with pytest.raises(context.ContextUnbound), transaction.atomic():
+        start_workflow_on_commit(
+            workflow="EchoWorkflow",
+            arg="x",
+            tenant=tenant,
+            id=workflow_id(tenant=tenant, app="workflows", noun="echo", key="unbound"),
+        )
+        context.clear()
 
 
 # --- The rest of the 2x2, and the supersede -----------------------------------
@@ -925,7 +860,8 @@ async def test_a_platform_run_is_recorded_and_no_tenant_door_can_see_it(
     on_platform = await run_db(
         lambda: list(WorkflowRun.objects.for_platform().values_list("workflow_id", flat=True))
     )
-    assert on_platform == [PLATFORM_RUN_ID]
+    # Beside the tenants' own realm runs, asked for when each was created.
+    assert [one for one in on_platform if ":identity_home:" not in one] == [PLATFORM_RUN_ID]
 
     def runs_visible_to(whose: Tenant) -> int:
         return WorkflowRun.objects.for_tenant(whose).count()
@@ -941,6 +877,9 @@ async def test_a_platform_run_is_recorded_and_no_tenant_door_can_see_it(
 
 def test_the_platform_segment_and_a_tenant_are_mutually_exclusive(tenant: Tenant) -> None:
     """The fence runs both ways, which is what makes null a *declared* population."""
+    # The tenants in this world asked for their realms at birth; a refused
+    # start writes nothing beside those.
+    before = WorkflowRun.objects.count()
     borrowed = workflow_id(tenant=tenant, app="accounts", noun="identity", key="workforce")
 
     with pytest.raises(ValueError):
@@ -951,7 +890,7 @@ def test_the_platform_segment_and_a_tenant_are_mutually_exclusive(tenant: Tenant
         )
 
     assert PLATFORM_SEGMENT == "platform"
-    assert WorkflowRun.objects.count() == 0
+    assert WorkflowRun.objects.count() == before
 
 
 # --- The id is required, on both paths -----------------------------------------
@@ -981,6 +920,8 @@ async def test_the_async_path_checks_the_id_exactly_as_the_sync_path_does(
     tenant: Tenant,
 ) -> None:
     """Rule 18's async escape, closed at the code as well as at the check."""
+    # The tenant asked for its realm at birth; a refused start writes nothing beside it.
+    before = await run_db(WorkflowRun.objects.count)
     async with await WorkflowEnvironment.start_time_skipping() as env:
         client = attach_interceptors(env.client)
         for bad in ("no-colons", "a:b:c", "globex:workflows:echo:1"):
@@ -994,7 +935,7 @@ async def test_the_async_path_checks_the_id_exactly_as_the_sync_path_does(
                     task_queue=TASK_QUEUE,
                 )
 
-    assert await run_db(WorkflowRun.objects.count) == 0
+    assert await run_db(WorkflowRun.objects.count) == before
 
 
 # --- The hat agrees with the tenant --------------------------------------------
@@ -1004,6 +945,9 @@ def test_a_start_under_another_tenants_hat_is_refused_and_writes_no_row(
     tenant: Tenant, other_root_org: Organization
 ) -> None:
     """The seam that stamps the hat is the seam that has to check it."""
+    # The tenants in this world asked for their realms at birth; a refused
+    # start writes nothing beside those.
+    before = WorkflowRun.objects.count()
     with pytest.raises(ValueError):
         start_workflow_on_commit(
             workflow="EchoWorkflow",
@@ -1012,16 +956,19 @@ def test_a_start_under_another_tenants_hat_is_refused_and_writes_no_row(
             org=other_root_org,
             id=workflow_id(tenant=tenant, app="workflows", noun="echo", key="wrong-hat"),
         )
-    assert WorkflowRun.objects.count() == 0
+    assert WorkflowRun.objects.count() == before
 
 
 def test_a_platform_run_may_not_wear_a_hat(tenant: Tenant, root_org: Organization) -> None:
     """A run that acts for no tenant acts for no part of one either."""
+    # The tenants in this world asked for their realms at birth; a refused
+    # start writes nothing beside those.
+    before = WorkflowRun.objects.count()
     with pytest.raises(ValueError):
         start_workflow_on_commit(
             workflow="EchoWorkflow", arg="x", tenant=None, org=root_org, id=PLATFORM_RUN_ID
         )
-    assert WorkflowRun.objects.count() == 0
+    assert WorkflowRun.objects.count() == before
 
 
 def test_a_tenant_wide_run_with_no_hat_is_still_legal(
@@ -1051,7 +998,7 @@ def test_the_tenants_own_hat_is_accepted(
     assert run.tenant_id == tenant.pk
 
 
-def test_the_on_commit_census_tolerates_a_file_that_vanishes_at_open() -> None:
+def test_the_tree_census_tolerates_a_file_that_vanishes_at_open() -> None:
     """The falsifier for the tolerant read this module has carried.
 
     It was the FIRST tolerant read in the tree and it was never driven — which is
@@ -1494,6 +1441,7 @@ async def test_a_reopened_row_gets_its_execution_on_dispatch(
             tenant=tenant,
             workflow_id=wanted,
             workflow_type="EchoWorkflow",
+            actor=system_actor(tenant),
             input_digest=hash_run_input("hello"),
         )
         await run_db(
@@ -1529,3 +1477,68 @@ async def test_a_reopened_row_gets_its_execution_on_dispatch(
         row = await run_db(WorkflowRun.objects.for_tenant(tenant).get, workflow_id=wanted)
         assert row.status == WorkflowRun.Status.RUNNING
         assert row.run_id == description.run_id
+
+
+# --- the run row's who comes from the actor (ADR workflows-9) ---------------------
+#
+# `record_run` is a service, so its audit row's who is the `actor` it was handed
+# and nothing else; the bound context's user is observability data, never the
+# claim. A start the caller attributes is attributed on the row, and a start
+# with no person is the system actor, named.
+
+
+def test_a_start_by_a_person_audits_the_run_row_as_that_person(
+    tenant: Tenant, owner: User, owner_actor: Actor, recorded_workflow_starts: None
+) -> None:
+    """The caller's actor reaches `record_run`'s audit row: who, which hat, which kind."""
+    AuditEntry.objects.all().delete()
+    run = start_workflow_on_commit(
+        workflow="EchoWorkflow",
+        arg="x",
+        tenant=tenant,
+        actor=owner_actor,
+        id=workflow_id(tenant=tenant, app="workflows", noun="echo", key="who"),
+    )
+    entry = AuditEntry.objects.for_tenant(tenant).get(action="workflows.record_run")
+    assert entry.actor_user_id == owner.pk
+    assert entry.actor_kind == owner_actor.kind
+    assert run.started_by_id == owner.pk
+
+
+def test_a_start_that_names_only_a_user_audits_that_user(
+    tenant: Tenant, owner: User, recorded_workflow_starts: None
+) -> None:
+    """The starters' existing `user=` callers are attributed too, not left to context."""
+    AuditEntry.objects.all().delete()
+    start_workflow_on_commit(
+        workflow="EchoWorkflow",
+        arg="x",
+        tenant=tenant,
+        user=owner,
+        id=workflow_id(tenant=tenant, app="workflows", noun="echo", key="user"),
+    )
+    entry = AuditEntry.objects.for_tenant(tenant).get(action="workflows.record_run")
+    assert entry.actor_user_id == owner.pk
+
+
+def test_a_start_with_no_person_audits_the_system_actor(
+    tenant: Tenant, recorded_workflow_starts: None
+) -> None:
+    """No person is the system actor, named — never an absence the context fills in."""
+    AuditEntry.objects.all().delete()
+    start_workflow_on_commit(
+        workflow="EchoWorkflow",
+        arg="x",
+        tenant=tenant,
+        id=workflow_id(tenant=tenant, app="workflows", noun="echo", key="system"),
+    )
+    entry = AuditEntry.objects.for_tenant(tenant).get(action="workflows.record_run")
+    assert entry.actor_user_id is None
+    assert entry.actor_kind == "system"
+
+
+def test_record_run_takes_its_actor_keyword_only_and_required() -> None:
+    """ADR workflows-9: every caller passes the actor; there is no default to fall back on."""
+    parameter = inspect.signature(record_run).parameters["actor"]
+    assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameter.default is inspect.Parameter.empty

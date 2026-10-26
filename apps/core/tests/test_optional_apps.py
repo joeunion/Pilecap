@@ -29,9 +29,8 @@ database existing, and that is an unstated precondition the gate does not
 promise: `--loop` in a worktree that had run `db.sh` passed, and the same tree's
 full gate in a checkout that never created `djb_main_<hash>` went red with
 `FATAL: database "..." does not exist`. Nothing in the nested run wants the base
-database — `ATOMIC_REQUESTS = True` (`config/settings/base.py`) opens a
-transaction for `GET /`, so merely serving a page that queries nothing still
-opens a connection. The fixture below therefore hands the child the connection
+database, yet the middleware serving `GET /` may still open a connection. The
+fixture below therefore hands the child the connection
 parameters of the database the OUTER test is already on, which is the one
 pytest-django created; `DATABASE_URL` is cleared so the parts win, which is the
 escape hatch `scripts/db.sh` documents (a name in the environment beats the
@@ -46,6 +45,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Callable
+from importlib import import_module
 from pathlib import Path
 from typing import Any
 
@@ -54,8 +54,7 @@ from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.db import connection
 
-from apps.core.tests.tree_census import TRANSIENT_APP_MODULES, without_transient_apps
-from config.settings.discovery import discover_apps, discover_local_apps
+from config.settings.discovery import discover_apps, discover_local_apps, switched_off
 
 APPS_DIR = Path(settings.BASE_DIR) / "apps"
 
@@ -78,37 +77,6 @@ print(connection.settings_dict["NAME"])
 """
 
 InAProcess = Callable[..., "subprocess.CompletedProcess[str]"]
-
-
-def died_on_a_vanished_plant(stderr: str) -> bool:
-    """True when a child process was killed by a transient app, by name.
-
-    **The other half of the scan-vs-plant race, measured.**
-    `test_settings.py`'s `probe_app` fixture holds a real `apps/zzz_probe/` for a
-    few milliseconds; a child booted in that window reads it into
-    `INSTALLED_APPS` and then imports it — and if the fixture's teardown lands
-    between those two moments, `django.setup()` dies with
-    `ModuleNotFoundError: No module named 'apps.zzz_probe'`. Reproduced live on
-    2026-08-25 under `-n 10`, seed 1631073414, in
-    `test_the_nested_run_rides_this_tests_database`.
-
-    **Why a retry here and not tolerance in discovery.** An app that disappears
-    between being discovered and being imported IS a real failure — for a real
-    app it is exactly the failure a deployment wants to die on — so production
-    code must keep dying on it. What is not real is the *probe*: it is a test
-    artifact with a known name, and the second run happens against a tree that
-    no longer holds one. The predicate is deliberately narrow — it matches the
-    named transient modules and the import failure, nothing else — so a child
-    that died of anything at all is still reported, with its own stderr, by the
-    assertion that was going to read it. There is exactly one retry.
-
-    The read half of the same race is `apps/core/tests/tree_census.py`; this is
-    the half no tolerant read could have closed, because nothing here is reading
-    a file.
-    """
-    return "No module named" in stderr and any(
-        f"'{module}'" in stderr for module in TRANSIENT_APP_MODULES
-    )
 
 
 @pytest.fixture
@@ -147,8 +115,8 @@ def in_a_process(db: None) -> InAProcess:
         "DJB_DISABLED_APPS": "",
     }
 
-    def once(script: str, **environment: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
+    def run(script: str, **environment: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(  # noqa: S603 — argv list built here from constants and paths; `python`, no shell
             [sys.executable, "-c", script],
             cwd=str(settings.BASE_DIR),
             env={
@@ -162,15 +130,6 @@ def in_a_process(db: None) -> InAProcess:
             check=False,
         )
 
-    def run(script: str, **environment: str) -> subprocess.CompletedProcess[str]:
-        ran = once(script, **environment)
-        if died_on_a_vanished_plant(ran.stderr):
-            # Not a flake swallowed: the child was killed by a test artifact,
-            # by name, and the second run is against a tree that no longer has
-            # one. See `died_on_a_vanished_plant` for the whole argument.
-            ran = once(script, **environment)
-        return ran
-
     return run
 
 
@@ -182,6 +141,15 @@ def test_the_worked_example_is_the_only_app_that_declares_itself_optional() -> N
     optional = {app.label for app in discover_apps(APPS_DIR) if app.optional}
 
     assert optional == {"example"}
+
+
+def test_switching_the_example_off_takes_what_depends_on_it_and_nothing_else() -> None:
+    """The dependents go with it, read off their own `depends_on` — never a list here."""
+    found = discover_apps(APPS_DIR)
+    dependents = {app.label for app in found if "example" in app.depends_on}
+
+    assert dependents, "the worked example has a dependent in the tree (its customer face)"
+    assert switched_off(found, ["example"]) == {"example"} | dependents
 
 
 def test_this_environment_installs_every_app_it_did_not_disable() -> None:
@@ -198,20 +166,16 @@ def test_this_environment_installs_every_app_it_did_not_disable() -> None:
     Where the dev DEFAULT is pinned instead: `.env.example`, by
     `test_the_flag_ships_empty_in_env_example` below. That is the right home for
     it — a file on disk cannot be changed by how you invoked the suite.
-
-    `without_transient_apps` because `test_settings.py` creates a real directory
-    under `apps/` and, under `-n auto`, runs while this one counts it — see
-    `apps/core/tests/tree_census.py` for why filtering is the honest form of
-    these assertions rather than a dodge.
     """
     disabled = list(settings.DJB_DISABLED_APPS)
-    everything = without_transient_apps(discover_local_apps(APPS_DIR))
-    installed = without_transient_apps(discover_local_apps(APPS_DIR, disabled))
+    everything = discover_local_apps(APPS_DIR)
+    installed = discover_local_apps(APPS_DIR, disabled)
 
-    assert without_transient_apps(discover_local_apps(APPS_DIR, [])) == everything
+    assert discover_local_apps(APPS_DIR, []) == everything
     assert "apps.example" in everything, "the worked example is in the tree in every world"
     assert set(installed) <= set(settings.INSTALLED_APPS)
-    assert set(everything) - set(installed) == {f"apps.{label}" for label in disabled}
+    off = switched_off(discover_apps(APPS_DIR), [label.strip() for label in disabled])
+    assert set(everything) - set(installed) == {f"apps.{label}" for label in off}
 
 
 def test_the_settings_flag_is_what_the_environment_said() -> None:
@@ -238,11 +202,12 @@ def test_the_settings_flag_is_what_the_environment_said() -> None:
 
 
 def test_disabling_the_example_takes_it_out_and_leaves_the_rest() -> None:
-    everything = without_transient_apps(discover_local_apps(APPS_DIR))
-    without = without_transient_apps(discover_local_apps(APPS_DIR, ["example"]))
+    everything = discover_local_apps(APPS_DIR)
+    without = discover_local_apps(APPS_DIR, ["example"])
 
     assert "apps.example" not in without
-    assert set(everything) - set(without) == {"apps.example"}
+    off = switched_off(discover_apps(APPS_DIR), ["example"])
+    assert set(everything) - set(without) == {f"apps.{label}" for label in off}
 
 
 @pytest.mark.parametrize("spelling", ["example", " example ", "example,"])
@@ -336,8 +301,14 @@ def test_the_root_index_omits_a_disabled_apps_door(in_a_process: InAProcess) -> 
     with_example: list[str] = json.loads(on.stdout)
     without: list[str] = json.loads(off.stdout)
 
+    # The apps that went out are the example and whatever depends on it; each
+    # takes its own door, named by its router's mount (`PREFIX`, else the label).
+    gone = {
+        f"/api/v1/{getattr(import_module(f'apps.{label}.api'), 'PREFIX', label)}/"
+        for label in switched_off(discover_apps(APPS_DIR), ["example"])
+    }
     assert "/api/v1/widgets/" in with_example
-    assert set(with_example) - set(without) == {"/api/v1/widgets/"}
+    assert set(with_example) - set(without) == gone
     # The five doors are untouched: an app going away is not a door going away.
     for href in ("/api/v1/docs", "/mcp", "/accounts/login/", "/healthz", "/readyz"):
         assert href in without
@@ -350,28 +321,3 @@ def test_a_process_asked_to_disable_core_does_not_start(in_a_process: InAProcess
     assert ran.returncode != 0
     assert "ImproperlyConfigured" in ran.stderr
     assert "'core'" in ran.stderr
-
-
-def test_a_child_killed_by_the_probe_is_told_apart_from_a_child_that_failed() -> None:
-    """The predicate, driven against the stderr that was actually measured.
-
-    The retry above is only honest if it cannot swallow a real failure, so the
-    interesting half is the negatives: a child that died of anything else — even
-    another `ModuleNotFoundError` — is reported, not re-run.
-    """
-    measured = (
-        "Traceback (most recent call last):\n"
-        '  File "<string>", line 3, in <module>\n'
-        "    apps.populate(settings.INSTALLED_APPS)\n"
-        "ModuleNotFoundError: No module named 'apps.zzz_probe'\n"
-    )
-    assert died_on_a_vanished_plant(measured)
-
-    for other in (
-        "",
-        "ModuleNotFoundError: No module named 'apps.example'",
-        "ModuleNotFoundError: No module named 'httpx'",
-        "ImproperlyConfigured: DJB_DISABLED_APPS names 'core'",
-        "AssertionError: apps.zzz_probe",  # names it, but nothing failed to import
-    ):
-        assert not died_on_a_vanished_plant(other), other

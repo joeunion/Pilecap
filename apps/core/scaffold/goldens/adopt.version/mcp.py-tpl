@@ -1,0 +1,150 @@
+# golden: noun begin
+from typing import Any
+from uuid import UUID
+
+from mcp.server import MCPServer
+from mcp.server.mcpserver import Context
+
+from apps.example.api import (
+    archive_widget_route,
+    list_widgets_route,
+    restore_widget_route,
+    retrieve_widget,
+    widget_archive,
+    widget_detail,
+    widget_list,
+    widget_restore,
+)
+from apps.example.schemas import WidgetDetailOut, WidgetFilter, WidgetOut, WidgetPage
+from pilecap import Show
+from pilecap.api import contract_of, cursor_page
+from pilecap.mcp import acting_tenant, tool_call
+
+
+from apps.example.api import (
+    list_widget_history_route,
+    update_widget_route,
+    widget_history_list,
+    widget_update,
+)
+from pilecap import HistoryPage
+
+# golden: noun end
+
+
+# golden: noun begin
+def register(server: MCPServer[Any]) -> None:
+    """Contribute this app's tools. `config.mcp` discovers and calls this."""
+
+    @server.tool(name="list_widgets", description=contract_of(list_widgets_route))
+    def list_widgets_tool(
+        ctx: Context[Any],
+        # golden: filter name begin
+        name: str | None = None,
+        # golden: filter name end
+        q: str | None = None,
+        ordering: str = "-created_at",
+        show: Show = "live",
+        cursor: str | None = None,
+        limit: int | None = None,
+        include_count: bool = False,
+        # golden: noun end
+    ) -> WidgetPage:
+        with tool_call(ctx) as acting:
+            tenant, actor = acting_tenant(acting), acting.actor()
+            filters = WidgetFilter()
+            # golden: filter name begin
+            filters.name = name
+            # golden: filter name end
+            # golden: noun end
+
+            widgets = widget_list(
+                tenant=tenant, actor=actor, filters=filters, q=q, ordering=ordering, show=show
+            )
+            # `actor=` puts every row's acts and the page's own on, as `ActsPagination` does.
+            page = cursor_page(
+                widgets,
+                tenant=tenant,
+                cursor=cursor,
+                limit=limit,
+                include_count=include_count,
+                actor=actor,
+            )
+            return WidgetPage(
+                items=[WidgetOut.from_orm(widget) for widget in page.items],
+                has_more=page.has_more,
+                next_cursor=page.next_cursor,
+                count=page.count,
+                allowed_acts=list(page.allowed_acts or ()),
+            )
+
+    @server.tool(name="get_widget", description=contract_of(retrieve_widget))
+    def get_widget_tool(ctx: Context[Any], widget_id: UUID) -> WidgetDetailOut:
+        with tool_call(ctx) as acting:
+            return widget_detail(
+                tenant=acting_tenant(acting), actor=acting.actor(), widget_id=widget_id
+            )
+
+    @server.tool(name="update_widget", description=contract_of(update_widget_route))
+    def update_widget_tool(
+        ctx: Context[Any],
+        widget_id: UUID,
+        version: int,
+        name: str | None = None,
+        notes: str | None = None,
+        # golden: noun end
+    ) -> WidgetOut:
+        with tool_call(ctx) as acting:
+            return widget_update(
+                tenant=acting_tenant(acting),
+                actor=acting.actor(),
+                widget_id=widget_id,
+                version=version,
+                name=name,
+                notes=notes,
+                # golden: noun end
+            )
+
+    @server.tool(name="list_widget_history", description=contract_of(list_widget_history_route))
+    def list_widget_history_tool(
+        ctx: Context[Any],
+        widget_id: UUID,
+        cursor: str | None = None,
+        limit: int | None = None,
+        include_count: bool = False,
+    ) -> HistoryPage:
+        with tool_call(ctx) as acting:
+            tenant = acting_tenant(acting)
+            page = cursor_page(
+                widget_history_list(tenant=tenant, actor=acting.actor(), widget_id=widget_id),
+                tenant=tenant,
+                cursor=cursor,
+                limit=limit,
+                include_count=include_count,
+            )
+            return HistoryPage.model_validate(
+                {
+                    "items": list(page.items),
+                    "has_more": page.has_more,
+                    "next_cursor": page.next_cursor,
+                    "count": page.count,
+                }
+            )
+            # golden: noun end
+
+    # golden: noun begin
+    @server.tool(name="archive_widget", description=contract_of(archive_widget_route))
+    def archive_widget_tool(ctx: Context[Any], widget_id: UUID) -> WidgetOut:
+        with tool_call(ctx) as acting:
+            return widget_archive(
+                tenant=acting_tenant(acting), actor=acting.actor(), widget_id=widget_id
+            )
+
+    @server.tool(name="restore_widget", description=contract_of(restore_widget_route))
+    def restore_widget_tool(ctx: Context[Any], widget_id: UUID) -> WidgetOut:
+        with tool_call(ctx) as acting:
+            return widget_restore(
+                tenant=acting_tenant(acting), actor=acting.actor(), widget_id=widget_id
+            )
+
+    # golden: noun end

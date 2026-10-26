@@ -28,23 +28,21 @@ import shutil
 import sys
 import tempfile
 from collections.abc import Iterator
-from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
 from apps.accounts.models import User
-from apps.accounts.services import create_user
 from apps.core.actor import Actor, actor_for
-from apps.core.models import Membership, Organization, Tenant
-from apps.core.services import add_membership, create_organization
+from apps.core.models import Organization
+from apps.core.tests.permissions_world import World as World
+from apps.core.tests.permissions_world import build_world
 from apps.example.models import Widget
 from apps.example.services import create_widget
 from apps.usage import meters as meters_module
 
-#: A literal a fixture hands to `create_user`, long enough to clear Django's
-#: validators and nothing else.
-PASSWORD = "a-long-enough-password-for-validators"  # pragma: allowlist secret
+#: A literal handed to `create_user`, long enough for Django's validators.
+PASSWORD = "a-long-enough-password-for-validators"  # noqa: S105 — a throwaway password a test user is made with  # pragma: allowlist secret
 
 #: The meter these tests spend. It belongs to `example`, which is the app the
 #: plant below lives in — the first segment of a meter name is the declaring
@@ -148,56 +146,29 @@ def a_declared_meter(monkeypatch: pytest.MonkeyPatch) -> str:
     return METER
 
 
-@dataclass(frozen=True)
-class World:
-    """One tenant with a two-branch tree, plus the row usage points at.
-
-    `north` and `south` are siblings under the root, which is the smallest tree
-    in which the anti-oracle can fail: a report taken at `north` must not tally
-    `south`'s consumption, and the root's must tally both.
-    """
-
-    tenant: Tenant
-    root: Organization
-    north: Organization
-    south: Organization
-    owner: User
-    north_admin: User
-    root_actor: Actor
-    north_actor: Actor
-    south_actor: Actor
-    widget: Widget
+#: The name of the one row usage points at in a world.
+METERED = "The thing being metered"
 
 
 @pytest.fixture
-def world(tenant: Tenant, owner: User, root_org: Organization) -> World:
-    """A tenant, two branches and somebody who can only see one of them."""
-    acting = actor_for(user=owner, tenant=tenant, org=root_org)
-    north = create_organization(
-        tenant=tenant, parent=root_org, name="North", slug="north", actor=acting
-    )
-    south = create_organization(
-        tenant=tenant, parent=root_org, name="South", slug="south", actor=acting
-    )
-    north_admin = create_user(email="north-admin@acme.com", password=PASSWORD)
-    add_membership(
-        user=north_admin,
-        tenant=tenant,
-        organization=north,
-        is_default=True,
-        role=Membership.Role.ADMIN,
-        actor=acting,
-    )
-    widget = create_widget(tenant=tenant, actor=acting, name="The thing being metered")
-    return World(
-        tenant=tenant,
-        root=root_org,
-        north=north,
-        south=south,
-        owner=owner,
-        north_admin=north_admin,
-        root_actor=acting,
-        north_actor=actor_for(user=north_admin, tenant=tenant, org=north),
-        south_actor=actor_for(user=owner, tenant=tenant, org=south),
-        widget=widget,
-    )
+def world() -> World:
+    """Core's world (`root → A → A1 → A1X`, sibling `B`) and the widget usage points at."""
+    built = build_world()
+    create_widget(tenant=built.tenant, actor=built.owner, name=METERED)
+    return built
+
+
+def metered(world: World) -> Widget:
+    """The row a world's usage points at."""
+    return Widget.objects.filter(tenant=world.tenant).get(name=METERED)
+
+
+def owner_at(world: World, org: Organization) -> Actor:
+    """The world's owner wearing `org` as the hat."""
+    return actor_for(user=user_of(world.owner), tenant=world.tenant, org=org)
+
+
+def user_of(actor: Actor) -> User:
+    """The person an actor of the world is."""
+    assert isinstance(actor.user, User)
+    return actor.user

@@ -1,0 +1,487 @@
+# golden: noun begin
+from uuid import UUID
+
+from django.db.models import QuerySet
+from ninja import Query, Router
+from ninja.pagination import paginate
+
+from apps.example.models import Widget
+from apps.example.schemas import WidgetDetailOut, WidgetFilter, WidgetOut
+from apps.example.selectors import get_widget, list_widgets
+from apps.example.services import archive_widget, restore_widget
+from pilecap import Actor, NotFound, Show, may_be_named, road, with_allowed_acts
+from pilecap.api import (
+    API_AUTH,
+    ActsPagination,
+    Tag,
+    TenantRequest,
+    acting,
+    also_refuses,
+    ordered_by,
+    searched,
+)
+from pilecap.tenancy import Tenant
+
+
+from typing import Any
+
+from apps.example.schemas import WidgetPatch
+from apps.example.services import update_widget
+from pilecap import AuditEntry, HistoryEntryOut
+from pilecap.api import CursorPagination
+from pilecap.tenancy import list_history
+
+# golden: noun end
+
+
+from apps.example.services import move_widget
+from pilecap import VersionedMoveIn
+from pilecap.tenancy import Organization, get_organization
+
+
+from collections.abc import Callable
+from typing import cast
+
+from apps.example.schemas import WidgetBulkIn, WidgetBulkOut, WidgetBulkResultOut
+from pilecap import ROADS, BulkRefusalOut, Invalid, resolve_subject, run_bulk
+
+
+# golden: noun begin
+from ninja import Status
+
+# golden: noun end
+# isort: split
+from apps.example.services import duplicate_widget
+from pilecap import IDEMPOTENCY_KEY_HEADER
+
+
+#: The path segment `config.api` mounts this router under.
+PREFIX = "widgets"
+
+#: What `?ordering=` may name — a column allow-list, never a relation.
+ORDERING: tuple[str, ...] = ("created_at", "updated_at", "name")
+
+
+#: What `?q=` searches: this row's text columns, never a related table's.
+SEARCH_FIELDS = ("name", "notes")
+
+#: This app's tag, collected into the OpenAPI document's `tags` section (ADR api-1).
+TAGS = {
+    "widgets": Tag(
+        "Widgets",
+        "The worked example: one org-scoped resource end to end. Widgets show the "
+        "house shapes a product copies — a filtered, searched, ordered, paginated "
+        "list; a create that names a policy it must be able to reach; a verb on a "
+        "sub-path rather than a settable column; an append-only ledger; and a "
+        "measured count that travels with the arithmetic that produced it.",
+        plane="everyday",
+        plane_note=(
+            "the worked example resource, and the shape every product resource follows: list it, "
+            "filter it, create one, follow an id."
+        ),
+    ),
+}
+
+router = Router(tags=["widgets"], auth=API_AUTH)
+
+
+@road(
+    "widget_list",
+    example="apps/example/tests/test_doors_over_the_wire.py::test_both_doors_refuse_the_same_withheld_read_with_the_same_words",
+)
+def widget_list(
+    *,
+    tenant: Tenant,
+    actor: Actor,
+    filters: WidgetFilter,
+    q: str | None = None,
+    ordering: str = "-created_at",
+    show: Show = "live",
+) -> QuerySet[Widget]:
+    """The widgets this hat may see, narrowed, searched and ordered as allowed."""
+    # authz: `list_widgets` asks `widget.read` at the hat.
+    widgets: QuerySet[Widget] = filters.filter(
+        list_widgets(tenant=tenant, org=actor.org, actor=actor, show=show)
+    )
+    widgets = searched(widgets, q, fields=SEARCH_FIELDS)
+    widgets = ordered_by(widgets, ordering, allowed=ORDERING, default="-created_at")
+
+    return widgets
+
+
+@router.get("/", response=list[WidgetOut], url_name="widget-list")
+@paginate(ActsPagination)
+def list_widgets_route(
+    request: TenantRequest,
+    filters: Query[WidgetFilter],
+    q: str | None = None,
+    ordering: str = "-created_at",
+    show: Show = "live",
+) -> QuerySet[Widget]:
+    """List widgets
+
+    List widgets, newest first; without the read, `403 forbidden`: ask an administrator.
+    """
+    actor, tenant = acting(request)
+    return widget_list(
+        tenant=tenant, actor=actor, filters=filters, q=q, ordering=ordering, show=show
+    )
+
+
+@road(
+    "bulk_widgets",
+    example="apps/example/tests/test_doors_over_the_wire.py::test_a_partial_bulk_answers_the_same_three_outcomes_on_the_machine_door",
+)
+def bulk_widgets(
+    *,
+    tenant: Tenant,
+    actor: Actor,
+    verb: str,
+    ids: list[UUID],
+    organization_id: UUID | None = None,
+    owner_id: UUID | None = None,
+) -> WidgetBulkOut:
+    """One verb over a selection, each id through the widget's service (`run_bulk`)."""
+    if verb != "move" and (organization_id is not None or owner_id is not None):
+        raise Invalid({"organization_id": ["Only a move names where the widgets go."]})
+
+    def resolve(pk: UUID) -> Widget:
+        return cast(Widget, resolve_subject(actor, "widget", pk))
+
+    act: Callable[[Widget], Widget]
+    settled: Callable[..., bool]
+    if verb == "move":
+        # A destination outside the hat's subtree refuses the whole batch before any item runs.
+        to = (
+            None
+            if organization_id is None
+            else get_organization(
+                tenant=tenant, org=actor.org, organization_id=organization_id, actor=actor
+            )
+        )
+
+        def move_one(row: Widget) -> Widget:
+            return move_widget(
+                tenant=tenant,
+                actor=actor,
+                widget=row,
+                organization=to or row.organization,
+                owner_id=owner_id,
+            )
+
+        def already_there(row: Widget) -> bool:
+            return (to is None or row.organization_id == to.pk) and (
+                owner_id is None or row.owner_id == owner_id
+            )
+
+        act, settled = move_one, already_there
+    elif verb == "archive":
+
+        def archive_one(row: Widget) -> Widget:
+            return archive_widget(tenant=tenant, actor=actor, widget=row)
+
+        act, settled = archive_one, ROADS["archive"].settled["archive"]
+    else:
+
+        def restore_one(row: Widget) -> Widget:
+            return restore_widget(tenant=tenant, actor=actor, widget=row)
+
+        act, settled = restore_one, ROADS["archive"].settled["restore"]
+
+    report = run_bulk(
+        tenant=tenant, actor=actor, verb=verb, ids=ids, resolve=resolve, act=act, is_settled=settled
+    )
+    return WidgetBulkOut(
+        verb=report.verb,
+        results=[
+            WidgetBulkResultOut(
+                id=result.id,
+                outcome=result.outcome,
+                item=(
+                    None
+                    if result.item is None
+                    else WidgetOut.from_orm(with_allowed_acts([result.item], actor)[0])
+                ),
+                refusal=(
+                    None
+                    if result.refusal is None
+                    else BulkRefusalOut.model_validate(result.refusal)
+                ),
+            )
+            for result in report.results
+        ],
+        done=report.done,
+        unchanged=report.unchanged,
+        refused=report.refused,
+    )
+
+
+@router.post("/bulk/", response=WidgetBulkOut, url_name="widget-bulk")
+def bulk_widgets_route(request: TenantRequest, payload: WidgetBulkIn) -> WidgetBulkOut:
+    """Archive, restore or move many widgets
+
+    Run one verb — `archive`, `restore` or `move` — over up to 200 widgets.
+    """
+    actor, tenant = acting(request)
+    return bulk_widgets(
+        tenant=tenant,
+        actor=actor,
+        verb=payload.verb,
+        ids=payload.ids,
+        organization_id=getattr(payload, "organization_id", None),
+        owner_id=getattr(payload, "owner_id", None),
+    )
+
+
+# golden: archive version move begin
+# golden: noun begin
+@road(
+    "widget_detail",
+    example="apps/example/tests/test_doors_over_the_wire.py::test_the_two_doors_put_the_same_key_set_on_the_wire",
+)
+def widget_detail(*, tenant: Tenant, actor: Actor, widget_id: UUID) -> WidgetDetailOut:
+    """One widget this hat reaches, archived or not, with what this viewer may press."""
+    # authz: `get_widget` asks `widget.read` at the row.
+    widget = get_widget(tenant=tenant, widget_id=widget_id, org=actor.org, actor=actor)
+    # golden: noun end
+
+    # golden: noun begin
+    return WidgetDetailOut.from_orm(with_allowed_acts([widget], actor)[0])
+
+
+@router.get("/{widget_id}/", response=WidgetDetailOut, url_name="widget-detail")
+def retrieve_widget(request: TenantRequest, widget_id: UUID) -> WidgetDetailOut:
+    """Retrieve a widget
+
+    One widget and its `tags`; without the read, `403 forbidden`: ask an administrator.
+    """
+    actor, tenant = acting(request)
+    return widget_detail(tenant=tenant, actor=actor, widget_id=widget_id)
+
+
+@road(
+    "widget_archive",
+    example="apps/example/tests/test_doors_over_the_wire.py::test_one_press_is_one_body_on_rest_mcp_and_the_outbox",
+)
+def widget_archive(*, tenant: Tenant, actor: Actor, widget_id: UUID) -> WidgetOut:
+    """Take one widget this hat reaches out of the book."""
+    # authz: `archive_widget` asks `widget.archive` at the row's node.
+    widget = get_widget(tenant=tenant, widget_id=widget_id, org=actor.org, actor=actor)
+    if not may_be_named(actor, widget):
+        raise NotFound()
+    archived = archive_widget(tenant=tenant, actor=actor, widget=widget)
+    return WidgetOut.from_orm(with_allowed_acts([archived], actor)[0])
+
+
+@router.post("/{widget_id}/archive/", response=WidgetOut, url_name="widget-archive")
+@also_refuses("archive_blocked")
+def archive_widget_route(request: TenantRequest, widget_id: UUID) -> WidgetOut:
+    """Archive a widget
+
+    Archive one widget; `403 forbidden` unless you administer its organization.
+    """
+    actor, tenant = acting(request)
+    return widget_archive(tenant=tenant, actor=actor, widget_id=widget_id)
+
+
+@road(
+    "widget_restore",
+    example="apps/example/tests/test_doors_over_the_wire.py::test_one_press_is_one_body_on_rest_mcp_and_the_outbox",
+)
+def widget_restore(*, tenant: Tenant, actor: Actor, widget_id: UUID) -> WidgetOut:
+    """Put one archived widget this hat reaches back in the book."""
+    # authz: `restore_widget` asks `widget.restore` at the row's node.
+    widget = get_widget(tenant=tenant, widget_id=widget_id, org=actor.org, actor=actor)
+    if not may_be_named(actor, widget):
+        raise NotFound()
+    restored = restore_widget(tenant=tenant, actor=actor, widget=widget)
+    return WidgetOut.from_orm(with_allowed_acts([restored], actor)[0])
+
+
+@router.post("/{widget_id}/restore/", response=WidgetOut, url_name="widget-restore")
+@also_refuses("restore_blocked")
+# golden: noun end
+
+
+# golden: noun begin
+def restore_widget_route(request: TenantRequest, widget_id: UUID) -> WidgetOut:
+    """Restore a widget
+
+    Put one archived widget back; `403 forbidden` unless you administer its organization.
+    """
+    actor, tenant = acting(request)
+    return widget_restore(tenant=tenant, actor=actor, widget_id=widget_id)
+
+
+# golden: archive end
+@road(
+    "widget_update",
+    example="apps/example/tests/test_doors_over_the_wire.py::test_each_family_verb_is_one_body_on_rest_mcp_and_the_outbox",
+)
+def widget_update(
+    *,
+    tenant: Tenant,
+    actor: Actor,
+    widget_id: UUID,
+    version: int,
+    name: str | None = None,
+    notes: str | None = None,
+    # golden: noun end
+) -> WidgetOut:
+    """Change what was sent of one widget, at the version the caller read."""
+    # authz: `update_widget` asks `widget.update` at the row's node.
+    widget = get_widget(tenant=tenant, widget_id=widget_id, org=actor.org, actor=actor)
+    # Only what was sent reaches the service, so the history names what this edit changed.
+    changes: dict[str, Any] = {
+        field: value for field, value in {"name": name, "notes": notes}.items() if value is not None
+    }
+    # golden: noun end
+
+    updated = update_widget(tenant=tenant, actor=actor, widget=widget, version=version, **changes)
+    return WidgetOut.from_orm(with_allowed_acts([updated], actor)[0])
+
+
+@router.patch("/{widget_id}/", response=WidgetOut, url_name="widget-update")
+@also_refuses("archived", "stale_version")
+# golden: noun end
+
+
+# golden: noun begin
+def update_widget_route(request: TenantRequest, widget_id: UUID, payload: WidgetPatch) -> WidgetOut:
+    """Update a widget
+
+    Change a widget; `403 forbidden` unless it is yours or you administer its node.
+    """
+    actor, tenant = acting(request)
+    return widget_update(
+        tenant=tenant,
+        actor=actor,
+        widget_id=widget_id,
+        version=payload.version,
+        name=payload.name,
+        notes=payload.notes,
+        # golden: noun end
+    )
+    # golden: noun end
+
+
+# golden: version end
+@road(
+    "widget_move",
+    example="apps/example/tests/test_doors_over_the_wire.py::test_each_family_verb_is_one_body_on_rest_mcp_and_the_outbox",
+)
+def widget_move(
+    *,
+    tenant: Tenant,
+    actor: Actor,
+    widget_id: UUID,
+    version: int,
+    organization_id: UUID | None = None,
+    owner_id: UUID | None = None,
+) -> WidgetOut:
+    """Re-home one widget inside the hat's subtree; hand it over if an owner is named."""
+    # authz: `move_widget` asks `widget.move` at both ends.
+    widget = get_widget(tenant=tenant, widget_id=widget_id, org=actor.org, actor=actor)
+    if not may_be_named(actor, widget):
+        raise NotFound()
+    moved = move_widget(
+        tenant=tenant,
+        actor=actor,
+        widget=widget,
+        organization=move_destination(
+            tenant=tenant, actor=actor, widget=widget, to=organization_id
+        ),
+        owner_id=owner_id,
+        version=version,
+    )
+    return WidgetOut.from_orm(with_allowed_acts([moved], actor)[0])
+
+
+@router.post("/{widget_id}/move/", response=WidgetOut, url_name="widget-move")
+@also_refuses("archived", "move_blocked", "stale_version")
+def move_widget_route(
+    request: TenantRequest, widget_id: UUID, payload: VersionedMoveIn
+) -> WidgetOut:
+    """Move a widget
+
+    Re-home a widget (and maybe its owner); `403 forbidden` unless you administer both.
+    """
+    actor, tenant = acting(request)
+    return widget_move(
+        tenant=tenant,
+        actor=actor,
+        widget_id=widget_id,
+        version=payload.version,
+        organization_id=payload.organization_id,
+        owner_id=payload.owner_id,
+    )
+
+
+def move_destination(
+    *, tenant: Tenant, actor: Actor, widget: Widget, to: UUID | None
+) -> Organization:
+    """Where a move is going: the named node inside the hat's subtree, or where it is."""
+    if to is None:
+        return widget.organization
+    return get_organization(tenant=tenant, org=actor.org, organization_id=to, actor=actor)
+
+
+# golden: version begin
+# golden: noun begin
+@road(
+    "widget_history_list",
+    example="apps/example/tests/test_doors_over_the_wire.py::test_each_family_verb_is_one_body_on_rest_mcp_and_the_outbox",
+)
+def widget_history_list(*, tenant: Tenant, actor: Actor, widget_id: UUID) -> QuerySet[AuditEntry]:
+    """What was done to one widget this hat reaches, newest first."""
+    widget = get_widget(tenant=tenant, widget_id=widget_id, org=actor.org, actor=actor)
+    return list_history(tenant=tenant, actor=actor, row=widget)
+
+
+@router.get("/{widget_id}/history/", response=list[HistoryEntryOut], url_name="widget_history-list")
+@paginate(CursorPagination)
+def list_widget_history_route(request: TenantRequest, widget_id: UUID) -> QuerySet[AuditEntry]:
+    """List a widget's history
+
+    What happened to one widget, newest first.
+    """
+    actor, tenant = acting(request)
+    return widget_history_list(tenant=tenant, actor=actor, widget_id=widget_id)
+
+
+# golden: noun end
+
+
+# golden: version move bulk history end
+@road(
+    "widget_duplicate",
+    example="apps/example/tests/test_doors_over_the_wire.py::test_duplicate_and_merge_are_one_row_on_four_doors_for_two_viewers",
+)
+def widget_duplicate(
+    *, tenant: Tenant, actor: Actor, widget_id: UUID, idempotency_key: str = ""
+) -> WidgetOut:
+    """A copy of one widget this hat reaches, made at the hat and owned by the presser."""
+    widget = get_widget(tenant=tenant, widget_id=widget_id, org=actor.org, actor=actor)
+    if not may_be_named(actor, widget):
+        raise NotFound()
+    copy = duplicate_widget(
+        tenant=tenant, actor=actor, widget=widget, idempotency_key=idempotency_key
+    )
+    return WidgetOut.from_orm(with_allowed_acts([copy], actor)[0])
+
+
+@router.post("/{widget_id}/duplicate/", response={201: WidgetOut}, url_name="widget-duplicate")
+@also_refuses("archived", "merged", "invalid")
+def duplicate_widget_route(request: TenantRequest, widget_id: UUID) -> Status[WidgetOut]:
+    """Duplicate a widget
+
+    Make a new widget from this one. Takes no body.
+    """
+    actor, tenant = acting(request)
+    copy = widget_duplicate(
+        tenant=tenant,
+        actor=actor,
+        widget_id=widget_id,
+        idempotency_key=request.headers.get(IDEMPOTENCY_KEY_HEADER, ""),
+    )
+    return Status(201, copy)

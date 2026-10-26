@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { ENTRY_STORY_EXTRAS, REQUIRED_STORY_EXPORTS, SURFACE_STATES, type SurfaceState } from "@/screens/state";
+import { ENTRY_STORY_EXTRAS, REQUIRED_STORY_EXPORTS, SURFACE_STATES, type SurfaceState, walkOf } from "@pilecap/ui/state";
 import * as welcomeStories from "@/screens/welcome/welcome-screen.stories";
 
 declare global {
@@ -42,7 +42,7 @@ describe("SurfaceState is the four-state total function", () => {
     });
 
     it("has no fifth state", () => {
-        // P16 ruling 2. Transport failure is a member of `error`'s input
+        // Transport failure is a member of `error`'s input
         // vocabulary, not a state — asserted here because a fifth member would
         // otherwise arrive quietly, one screen at a time.
         expect(SURFACE_STATES).toHaveLength(4);
@@ -91,5 +91,29 @@ describe("SurfaceState's empty", () => {
         const proposing: SurfaceState<number> = { kind: "empty", nextAct: { label: "Sign in" } };
         expect(alone.kind === "empty" && alone.nextAct).toBeUndefined();
         expect(proposing.kind === "empty" && proposing.nextAct?.label).toBe("Sign in");
+    });
+});
+
+describe("walkOf reads a stories module's exports, and a walk page carries no list", () => {
+    it.each(Object.keys(STORY_MODULES))("%s: every story it exports is walked, the four first", (path) => {
+        const stories = STORY_MODULES[path] ?? {};
+        const walked = walkOf(stories).map((story) => story.name);
+        expect([...walked].sort()).toEqual(storyNames(stories).sort());
+        expect(walked.slice(0, REQUIRED_STORY_EXPORTS.length)).toEqual([...REQUIRED_STORY_EXPORTS]);
+    });
+
+    it("a story says it is walked alone on itself, and nothing else is", () => {
+        function Loading() {
+            return null;
+        }
+        function Stale() {
+            return null;
+        }
+        Stale.alone = true;
+        const walked = walkOf({ Loading, Stale, BENCH: {}, archivedOf: () => null });
+        expect(walked.map(({ name, alone }) => [name, alone])).toEqual([
+            ["Loading", false],
+            ["Stale", true],
+        ]);
     });
 });

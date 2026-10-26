@@ -34,7 +34,7 @@ BRANCH_SLUG = "gate-branch"
 LEAF_SLUG = "gate-leaf"
 USER_EMAIL = "gate-hotpaths@example.invalid"
 BRANCH_USER_EMAIL = "gate-hotpaths-branch@example.invalid"
-RAW_TOKEN = "gate-hotpaths-probe-token"  # noqa: S105 # probe credential, probe DB only
+RAW_TOKEN = "gate-hotpaths-probe-token"  # noqa: S105 — the probe credential, minted in the probe database only
 
 # --- why the world is no longer three organizations (P3 F2, P-1) --------------
 #
@@ -461,9 +461,9 @@ def probe_list_stranded_outbox(world: World) -> ProbeResult:
 
 def probe_endpoints_for(world: World) -> ProbeResult:
     """The fan-out's subscriber read — 1 statement (M2 measure 4)."""
-    from apps.events.selectors import endpoints_for
+    from apps.events.selectors import list_endpoints_for
 
-    endpoints_for(tenant=world.tenant, name="gate.probe.ran")
+    list_endpoints_for(tenant=world.tenant, name="gate.probe.ran")
     return ProbeResult()
 
 
@@ -529,7 +529,7 @@ PROBES: dict[str, Callable[[World], ProbeResult]] = {
     "apps.core.audit.AuditEntry.objects.for_tenant": probe_audit_for_tenant,
     "apps.core.audit.AuditEntry.objects.for_platform": probe_audit_for_platform,
     "apps.events.selectors.list_stranded_outbox": probe_list_stranded_outbox,
-    "apps.events.selectors.endpoints_for": probe_endpoints_for,
+    "apps.events.selectors.list_endpoints_for": probe_endpoints_for,
     "apps.accounts.services.authenticate_token": probe_authenticate_token,
     "apps.realtime.selectors.list_subtree_org_ids": probe_list_subtree_org_ids,
     "apps.realtime.bridge.push_event": probe_push_event,

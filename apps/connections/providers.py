@@ -37,10 +37,10 @@ handler the owning app registered from its own `AppConfig.ready()` —
 a function it knows nothing about; the other app never writes a route. Neither
 imports the other's door.
 
-A handler is **not** where a slow job goes. It runs inside the receiver's
-request, after the store, and everything it does is on the clock a sender's
-timeout is watching. The one in `apps/comms` is a row update, an event and a
-signal registered on commit — anything heavier is what a workflow is for.
+A handler never runs in the receiver's request: the receiver starts
+`InboundWebhookWorkflow` on the receipt's commit and its activity calls the
+handler in one transaction (`services.apply_inbound_webhook`); a raise is a
+failed run and `handler_failed` on the receipt.
 """
 
 from __future__ import annotations

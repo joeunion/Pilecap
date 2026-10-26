@@ -1,0 +1,27 @@
+# The family map for `quality/tools/split_module.py quality/gate.py quality/engine --door --prefix "# --- " --families quality/gate.families`.
+# The drawer, the scope kinds, the world and the id namespace are one module: they are computed at import, each from the others.
+world: # --- THE PRODUCT'S DRAWER
+rules: # --- frozen
+world: # --- the scope kinds
+world: # --- the world this run holds
+world: # --- TWO NAMESPACES
+run: # --- overrides
+run: # --- running one rule
+run: # --- the Django system-check leg
+run: # --- budgets
+rules: # --- consistency
+rules: # --- the declaration's own census
+plants: # --- the plant namespace census
+plants: # --- THE PLANT-COLLISION CENSUS
+plants: # --- planting
+plants: # --- plant placeholders
+selftest: # --- selftest
+selftest: # --- RULE 60's THIRD CLASS
+selftest: # --- the seam's own canaries
+explain: # --- main
+explain: # --- the trailer
+explain: # --- the two readers
+readers: # --- the third reader
+fold_map: # --- the fourth reader
+memo: # --- THE PER-RULE MEMO
+cli: # --- the command line

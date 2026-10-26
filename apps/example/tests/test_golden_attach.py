@@ -1,10 +1,4 @@
-"""The attach adoption's own test — copied with the adoption, and green on the copy.
-
-Every line is fenced `golden: attach`: a widget that declares its attachments
-takes a note and a tag through the owning apps' own services, its detail
-answers the tag, and the notes app answers `?subject=` for it. The rows live in
-the owning apps; the noun declared one tuple.
-"""
+"""The attach adoption's own test — copied with the adoption, and green on the copy."""
 
 # golden: attach begin
 import json
@@ -13,12 +7,11 @@ from typing import Any
 import pytest
 from django.test import Client
 
-from apps.accounts.models import User
-from apps.core.actor import Actor
-from apps.core.models import Organization, Tenant
-from apps.djb_notes.services import create_note
-from apps.djb_tags.services import create_tag, create_tag_link
 from apps.example.models import Widget
+from pilecap import Actor
+from pilecap.accounts import User
+from pilecap.attach import create_note, create_tag, create_tag_link
+from pilecap.tenancy import Organization, Tenant
 
 pytestmark = pytest.mark.django_db
 

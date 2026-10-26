@@ -1,15 +1,7 @@
 """The permission surface at the doors: eleven routes, eleven tools, one answer.
 
-P5 of P20. P4 built the mechanism and deliberately shipped it doorless — a wall
-one rung before the door it guards — and this is the door rung. What it has to
-prove is not that the services work (that is `test_handing_out.py`'s) but that a
-credential-holding caller outside this tree reaches them, that both doors say
-the same thing, and that the four new reads ask before they answer.
-
-**The wire matrix is the centre of the file.** Every route × the credential
-kinds it accepts × the five outcomes — present, absent, forbidden, invalid,
-conflict — because a door that answers correctly for a session and wrongly for a
-bearer token is a door that has never been driven twice.
+The services are `test_handing_out.py`'s; this proves a caller reaches them and both doors agree.
+The wire matrix: every route × its credential kinds × present, absent, forbidden, invalid, conflict.
 
 DOOR_PAIR = ("rest", "mcp")
 """
@@ -69,10 +61,10 @@ NEW_TOOLS = (
     "get_role",
     "create_role",
     "update_role",
-    "set_role_permissions",
+    "update_role_permissions",
     "delete_role",
     "list_grants",
-    "set_grant",
+    "update_grant",
     "delete_grant",
     "get_membership_permissions",
     "list_permissions",
@@ -581,6 +573,16 @@ def test_a_reserved_key_says_reserved_and_an_undeclared_one_says_undeclared(
     missing = " ".join(undeclared.json()["errors"]["permissions"])
     assert "not a permission this deployment has" in missing, missing
     assert "GET /permissions/" in missing, missing
+
+
+@pytest.mark.parametrize("key", ["owner", "member"])
+def test_deleting_a_role_the_tenant_did_not_make_is_not_found(
+    tenant: Tenant, owner: User, key: str
+) -> None:
+    """A key that lives in code answers `404 not_found`, the refusal the route's contract lists."""
+    response = _session(owner).delete(_url("role-delete", key=key))
+    assert response.status_code == 404, response.content
+    assert response.json()["code"] == "not_found"
 
 
 @pytest.mark.parametrize("credential", CREDENTIALS)

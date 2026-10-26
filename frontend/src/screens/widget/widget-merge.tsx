@@ -32,17 +32,19 @@
 // golden: merge begin
 import { useEffect, useRef, useState } from "react";
 
-import { WIDGET_COPY as C, mergeMovesSentence, mergeQuestion, mergeSheetTitle } from "@/copy/widget";
+import { WIDGET_COPY as C, mergeMovesSentence, mergeQuestion, mergeSheetTitle } from "@pilecap/copy/widget";
 // golden: merge end
 // golden: bulk+merge begin
-import { mergePairTitle } from "@/copy/widget";
+import { mergePairTitle } from "@pilecap/copy/widget";
 // golden: bulk+merge end
 // golden: merge begin
-import { Dialog } from "@/primitives/dialog";
-import { RefusalPanel } from "@/screens/refusal-panel";
-import type { Refusal, SurfaceState } from "@/screens/state";
-import { type Act, footAct, type Road } from "@/screens/verbs";
-import { StillLine, type Widget, type WidgetMergePreview } from "@/screens/widget/parts";
+import { Dialog } from "@pilecap/ui/dialog";
+import { RefusalPanel } from "@pilecap/ui/refusal-panel";
+import { STAFF_SURFACE } from "@pilecap/ui/routes";
+import type { Refusal, SurfaceState } from "@pilecap/ui/state";
+import { type Act, footAct, type Road } from "@pilecap/ui/verbs";
+import { StillLine } from "@pilecap/ui/still-line";
+import { type Widget, type WidgetMergePreview } from "@/screens/widget/parts";
 
 /** What the route hands the merge: the candidates it read, the dry run for the pick, and the merge. */
 export type MergePress = {
@@ -230,7 +232,7 @@ function Chooser({
                     </div>
                 ) : null}
                 {state.kind === "empty" || (state.kind === "ready" && survivors.length === 0) ? <p>{C.mergeNoneMatch}</p> : null}
-                {state.kind === "error" ? <RefusalPanel refusal={state.refusal} words={{ label: C.errorLabel, remedies: C.remedies }} /> : null}
+                {state.kind === "error" ? <RefusalPanel surface={STAFF_SURFACE} refusal={state.refusal} /> : null}
                 {survivors.length === 0 ? null : (
                     <ul className="widget-choices">
                         {survivors.map((row) => (
@@ -301,11 +303,11 @@ function Confirm({
                 {preview?.kind === "ready" ? <p>{mergeMovesSentence(preview.data.repoints, into.name)}</p> : null}
                 {preview?.kind === "empty" ? <p>{mergeMovesSentence([], into.name)}</p> : null}
                 {preview?.kind === "error" ? (
-                    <RefusalPanel refusal={preview.refusal} words={{ label: merge.words.refused, remedies: C.remedies }} />
+                    <RefusalPanel surface={STAFF_SURFACE} refusal={preview.refusal} refused={merge.words.refused} />
                 ) : null}
                 {refused === null ? null : (
                     <div className="widget-refusal-seat">
-                        <RefusalPanel refusal={refused} seat="sheet-foot" words={{ label: merge.words.refused, remedies: C.remedies }} />
+                        <RefusalPanel surface={STAFF_SURFACE} refusal={refused} seat="sheet-foot" refused={merge.words.refused} />
                     </div>
                 )}
             </div>

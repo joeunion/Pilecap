@@ -24,11 +24,8 @@ Read as the mechanism says, not as a first reading would guess:
   the live note's author is the least privileged member;
 * **the reader on the wire is the tenant's owner** — another member of the
   tenant, not the author;
-* **the author's original address survives in one place**: the note's events
-  carry `NoteOut`, `author_email` included, and `events.Event.payload` is a
-  declared retention (`RETAINED` in `accounts/tests/test_erasure_residue.py`:
-  the witnessed record of what was emitted is not rewritten). The sweep allows
-  that survivor by name and nothing else.
+* **the author's original address survives nowhere**: `DjbNoteOut` marks
+  `author_email` personal, so the note's events never carried it.
 """
 
 from __future__ import annotations
@@ -138,12 +135,10 @@ def test_erasing_a_notes_author_completes_and_the_note_survives_anonymised(
     assert item["author_email"] == erased.email
     assert TARGET_EMAIL not in response.content.decode()
 
-    # Nothing in the schema still holds the person outside the declared
-    # retentions, with the note in the world — and the one that does is the
-    # witnessed record of the note's events, named rather than counted.
+    # Nothing in the schema still holds the person, the note's events included.
     survivors = set(residue(TARGET_EMAIL, TARGET_SUBJECT))
     assert survivors - set(RETAINED) == set()
-    assert survivors == {("events.Event", "payload")}
+    assert survivors == set()
 
     # The machine that acted as the author stops at the door.
     assert bearer.get(NOTES_URL, show).status_code == 401

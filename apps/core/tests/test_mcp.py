@@ -8,9 +8,6 @@ and `ping` answers with the slug it was actually acting for.
 
 from __future__ import annotations
 
-import asyncio
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
@@ -20,46 +17,15 @@ from apps.accounts.models import User
 from apps.accounts.services import issue_token
 from apps.core.actor import actor_for
 from apps.core.models import Tenant
+from apps.core.tests.wire import MCP_HEADERS as MCP_HEADERS
+from apps.core.tests.wire import PROTOCOL_VERSION as PROTOCOL_VERSION
+from apps.core.tests.wire import running as running
 
 pytestmark = [pytest.mark.django_db(transaction=True), pytest.mark.asyncio]
 
-PROTOCOL_VERSION = "2025-06-18"
-MCP_HEADERS = {
-    "accept": "application/json, text/event-stream",
-    "content-type": "application/json",
-}
 
-
-@asynccontextmanager
-async def running(app: Any) -> AsyncIterator[None]:
-    """Run an ASGI app's lifespan.
-
-    `httpx.ASGITransport` speaks only HTTP, and the MCP transport starts its
-    session manager in the lifespan — so the test runs the lifespan itself,
-    exactly as a server would.
-    """
-    to_app: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-    from_app: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-
-    async def receive() -> dict[str, Any]:
-        return await to_app.get()
-
-    async def send(message: dict[str, Any]) -> None:
-        await from_app.put(message)
-
-    scope = {"type": "lifespan", "asgi": {"version": "3.0", "spec_version": "2.0"}}
-    task = asyncio.create_task(app(scope, receive, send))
-    await to_app.put({"type": "lifespan.startup"})
-    started = await from_app.get()
-    assert started["type"] == "lifespan.startup.complete", started
-    try:
-        yield
-    finally:
-        await to_app.put({"type": "lifespan.shutdown"})
-        await from_app.get()
-        await task
-
-
+# The wire's pieces live in `apps.core.tests.wire`; the names stay importable
+# from here for the door tests that already import them.
 def _rpc(method: str, params: dict[str, Any] | None = None, request_id: int = 1) -> dict[str, Any]:
     body: dict[str, Any] = {"jsonrpc": "2.0", "id": request_id, "method": method}
     if params is not None:

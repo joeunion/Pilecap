@@ -1,0 +1,869 @@
+39157394522	proof from zero (three features, three refusals)	ubuntu-latest	2026-10-18T19:08:37Z	2026-10-18T22:23:58Z	success
+39157331864	derive	ubuntu-latest	2026-10-18T19:07:48Z	2026-10-18T19:08:12Z	success
+39157331864	gate-verdict	ubuntu-latest	2026-10-18T19:08:14Z	2026-10-18T19:08:31Z	success
+39157331864	verdict	ubuntu-latest	2026-10-18T19:08:14Z	2026-10-18T19:08:17Z	success
+39155064290	derive	ubuntu-latest	2026-10-18T18:38:19Z	2026-10-18T18:38:36Z	success
+39155064290	images	ubuntu-latest	2026-10-18T18:38:38Z	2026-10-18T18:44:42Z	success
+39155064290	legs (selftest, 6/6)	ubuntu-latest	2026-10-18T18:38:38Z	2026-10-18T18:52:52Z	success
+39155064290	legs (selftest, 2/6)	ubuntu-latest	2026-10-18T18:38:39Z	2026-10-18T19:01:15Z	success
+39155064290	legs (static)	ubuntu-latest	2026-10-18T18:38:39Z	2026-10-18T18:45:18Z	success
+39155064290	legs (selftest, 5/6)	ubuntu-latest	2026-10-18T18:38:38Z	2026-10-18T19:00:26Z	success
+39155064290	legs (full-house-rules)	ubuntu-latest	2026-10-18T18:38:39Z	2026-10-18T18:43:01Z	success
+39155064290	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-18T18:38:39Z	2026-10-18T18:46:40Z	success
+39155064290	legs (selftest, 1/6)	ubuntu-latest	2026-10-18T18:38:39Z	2026-10-18T19:09:54Z	success
+39155064290	legs (selftest, 3/6)	ubuntu-latest	2026-10-18T18:38:39Z	2026-10-18T19:05:43Z	success
+39155064290	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-18T18:38:38Z	2026-10-18T18:48:41Z	success
+39155064290	legs (selftest, 4/6)	ubuntu-latest	2026-10-18T18:38:39Z	2026-10-18T19:00:19Z	success
+39155064290	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-18T18:38:38Z	2026-10-18T18:52:33Z	success
+39155064290	legs (supply-chain)	ubuntu-latest	2026-10-18T18:38:39Z	2026-10-18T18:44:38Z	success
+39155064290	gate-verdict	ubuntu-latest	2026-10-18T19:09:57Z	2026-10-18T19:10:17Z	success
+39155064290	verdict	ubuntu-latest	2026-10-18T19:09:56Z	2026-10-18T19:10:00Z	success
+39155064290	local	ubuntu-latest	2026-10-18T19:10:02Z	2026-10-18T19:10:10Z	success
+39155064290	images-push	ubuntu-latest	2026-10-18T19:10:02Z	2026-10-18T19:11:14Z	success
+39150380269	derive	ubuntu-latest	2026-10-18T17:37:27Z	2026-10-18T17:37:52Z	success
+39150380269	images	ubuntu-latest	2026-10-18T17:37:54Z	2026-10-18T17:41:58Z	success
+39150380269	legs (supply-chain)	ubuntu-latest	2026-10-18T17:37:54Z	2026-10-18T17:43:54Z	success
+39150380269	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-18T17:37:54Z	2026-10-18T17:44:36Z	success
+39150380269	legs (selftest, 2/6)	ubuntu-latest	2026-10-18T17:37:55Z	2026-10-18T18:01:12Z	success
+39150380269	legs (static)	ubuntu-latest	2026-10-18T17:37:54Z	2026-10-18T17:44:47Z	success
+39150380269	legs (selftest, 3/6)	ubuntu-latest	2026-10-18T17:37:54Z	2026-10-18T18:04:43Z	success
+39150380269	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-18T17:37:54Z	2026-10-18T17:44:04Z	success
+39150380269	legs (selftest, 5/6)	ubuntu-latest	2026-10-18T17:37:54Z	2026-10-18T17:50:30Z	success
+39150380269	legs (selftest, 6/6)	ubuntu-latest	2026-10-18T17:37:54Z	2026-10-18T17:57:42Z	success
+39150380269	legs (selftest, 1/6)	ubuntu-latest	2026-10-18T17:37:54Z	2026-10-18T18:10:43Z	success
+39150380269	legs (selftest, 4/6)	ubuntu-latest	2026-10-18T17:37:55Z	2026-10-18T17:59:30Z	success
+39150380269	legs (full-house-rules)	ubuntu-latest	2026-10-18T17:37:55Z	2026-10-18T17:42:18Z	success
+39150380269	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-18T17:37:55Z	2026-10-18T17:52:24Z	success
+39150380269	gate-verdict	ubuntu-latest	2026-10-18T18:10:46Z	2026-10-18T18:11:05Z	success
+39150380269	verdict	ubuntu-latest	2026-10-18T18:10:46Z	2026-10-18T18:10:51Z	success
+39150380269	images-push	ubuntu-latest	2026-10-18T18:10:54Z	2026-10-18T18:11:43Z	success
+39150380269	local	ubuntu-latest	2026-10-18T18:10:54Z	2026-10-18T18:11:04Z	success
+39153644270	derive	ubuntu-latest	2026-10-18T18:19:39Z	2026-10-18T18:20:03Z	success
+39153644270	images	ubuntu-latest	2026-10-18T18:20:06Z	2026-10-18T18:26:37Z	success
+39153644270	legs (selftest, 1/6)	ubuntu-latest	2026-10-18T18:20:06Z	2026-10-18T18:41:01Z	cancelled
+39153644270	legs (static)	ubuntu-latest	2026-10-18T18:20:06Z	2026-10-18T18:26:50Z	success
+39153644270	legs (supply-chain)	ubuntu-latest	2026-10-18T18:20:06Z	2026-10-18T18:25:18Z	success
+39153644270	legs (selftest, 3/6)	ubuntu-latest	2026-10-18T18:20:06Z	2026-10-18T18:41:00Z	cancelled
+39153644270	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-18T18:20:06Z	2026-10-18T18:30:17Z	success
+39153644270	legs (selftest, 6/6)	ubuntu-latest	2026-10-18T18:20:06Z	2026-10-18T18:32:49Z	success
+39153644270	legs (full-house-rules)	ubuntu-latest	2026-10-18T18:20:06Z	2026-10-18T18:23:46Z	success
+39153644270	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-18T18:20:06Z	2026-10-18T18:33:12Z	success
+39153644270	legs (selftest, 5/6)	ubuntu-latest	2026-10-18T18:20:06Z	2026-10-18T18:41:02Z	cancelled
+39153644270	legs (selftest, 4/6)	ubuntu-latest	2026-10-18T18:20:06Z	2026-10-18T18:33:44Z	success
+39153644270	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-18T18:20:06Z	2026-10-18T18:27:55Z	success
+39153644270	legs (selftest, 2/6)	ubuntu-latest	2026-10-18T18:20:06Z	2026-10-18T18:41:02Z	cancelled
+39153644270	gate-verdict	ubuntu-latest	2026-10-18T18:41:05Z	2026-10-18T18:41:23Z	success
+39153644270	verdict	ubuntu-latest	2026-10-18T18:41:04Z	2026-10-18T18:41:08Z	failure
+39148363811	proof from zero (three features, three refusals)	ubuntu-latest	2026-10-18T17:10:42Z	2026-10-18T20:20:31Z	success
+39155247625	derive	ubuntu-latest	2026-10-18T18:41:25Z	2026-10-18T18:41:47Z	success
+39155247625	images	ubuntu-latest	2026-10-18T18:41:50Z	2026-10-18T18:46:16Z	success
+39155247625	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-18T18:41:50Z	2026-10-18T18:51:02Z	success
+39155247625	legs (selftest, 1/6)	ubuntu-latest	2026-10-18T18:41:50Z	2026-10-18T19:13:40Z	success
+39155247625	legs (supply-chain)	ubuntu-latest	2026-10-18T18:41:50Z	2026-10-18T18:47:46Z	success
+39155247625	legs (selftest, 2/6)	ubuntu-latest	2026-10-18T18:41:50Z	2026-10-18T19:05:45Z	success
+39155247625	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-18T18:41:50Z	2026-10-18T18:49:34Z	success
+39155247625	legs (full-house-rules)	ubuntu-latest	2026-10-18T18:41:50Z	2026-10-18T18:46:05Z	success
+39155247625	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-18T18:41:51Z	2026-10-18T18:55:03Z	success
+39155247625	legs (selftest, 3/6)	ubuntu-latest	2026-10-18T18:41:51Z	2026-10-18T19:03:18Z	success
+39155247625	legs (selftest, 5/6)	ubuntu-latest	2026-10-18T18:41:50Z	2026-10-18T18:54:32Z	success
+39155247625	legs (selftest, 4/6)	ubuntu-latest	2026-10-18T18:41:50Z	2026-10-18T18:58:02Z	success
+39155247625	legs (static)	ubuntu-latest	2026-10-18T18:41:50Z	2026-10-18T18:48:11Z	success
+39155247625	legs (selftest, 6/6)	ubuntu-latest	2026-10-18T18:41:50Z	2026-10-18T19:03:57Z	success
+39155247625	verdict	ubuntu-latest	2026-10-18T19:13:42Z	2026-10-18T19:13:46Z	success
+39155247625	gate-verdict	ubuntu-latest	2026-10-18T19:13:43Z	2026-10-18T19:14:02Z	success
+39155247625	images-push	ubuntu-latest	2026-10-18T19:13:49Z	2026-10-18T19:15:45Z	success
+39155247625	local	ubuntu-latest	2026-10-18T19:13:48Z	2026-10-18T19:13:55Z	success
+39149024071	derive	ubuntu-latest	2026-10-18T17:19:56Z	2026-10-18T17:20:17Z	success
+39149024071	images	ubuntu-latest	2026-10-18T17:20:19Z	2026-10-18T17:25:18Z	success
+39149024071	legs (static)	ubuntu-latest	2026-10-18T17:20:20Z	2026-10-18T17:27:02Z	success
+39149024071	legs (selftest, 1/6)	ubuntu-latest	2026-10-18T17:20:19Z	2026-10-18T17:51:49Z	success
+39149024071	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-18T17:20:19Z	2026-10-18T17:29:21Z	success
+39149024071	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-18T17:20:20Z	2026-10-18T17:31:44Z	success
+39149024071	legs (selftest, 6/6)	ubuntu-latest	2026-10-18T17:20:20Z	2026-10-18T17:37:12Z	success
+39149024071	legs (supply-chain)	ubuntu-latest	2026-10-18T17:20:20Z	2026-10-18T17:25:26Z	success
+39149024071	legs (selftest, 5/6)	ubuntu-latest	2026-10-18T17:20:20Z	2026-10-18T17:42:27Z	success
+39149024071	legs (full-house-rules)	ubuntu-latest	2026-10-18T17:20:20Z	2026-10-18T17:24:52Z	success
+39149024071	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-18T17:20:19Z	2026-10-18T17:26:38Z	success
+39149024071	legs (selftest, 2/6)	ubuntu-latest	2026-10-18T17:20:19Z	2026-10-18T17:35:19Z	success
+39149024071	legs (selftest, 4/6)	ubuntu-latest	2026-10-18T17:20:20Z	2026-10-18T17:42:40Z	success
+39149024071	legs (selftest, 3/6)	ubuntu-latest	2026-10-18T17:20:20Z	2026-10-18T17:46:17Z	success
+39149024071	gate-verdict	ubuntu-latest	2026-10-18T17:51:51Z	2026-10-18T17:52:09Z	success
+39149024071	verdict	ubuntu-latest	2026-10-18T17:51:51Z	2026-10-18T17:51:57Z	success
+39149024071	images-push	ubuntu-latest	2026-10-18T17:52:00Z	2026-10-18T17:53:06Z	success
+39149024071	local	ubuntu-latest	2026-10-18T17:52:00Z	2026-10-18T17:52:10Z	success
+39148307574	derive	ubuntu-latest	2026-10-18T17:10:01Z	2026-10-18T17:10:20Z	success
+39148307574	verdict	ubuntu-latest	2026-10-18T17:10:22Z	2026-10-18T17:10:25Z	success
+39148307574	gate-verdict	ubuntu-latest	2026-10-18T17:10:22Z	2026-10-18T17:10:37Z	success
+39125749038	supply chain (the gate's unit)	ubuntu-latest	2026-10-18T12:03:56Z	2026-10-18T12:03:58Z	failure
+39125749038	leak proof (two passes, one seed)	ubuntu-latest	2026-10-18T12:03:56Z	2026-10-18T12:03:59Z	failure
+39148493594	derive	ubuntu-latest	2026-10-18T17:12:23Z	2026-10-18T17:12:45Z	success
+39148493594	images	ubuntu-latest	2026-10-18T17:12:47Z	2026-10-18T17:18:49Z	success
+39148493594	legs (static)	ubuntu-latest	2026-10-18T17:12:47Z	2026-10-18T17:19:23Z	success
+39148493594	legs (full-house-rules)	ubuntu-latest	2026-10-18T17:12:47Z	2026-10-18T17:15:53Z	success
+39148493594	legs (selftest, 2/6)	ubuntu-latest	2026-10-18T17:12:47Z	2026-10-18T17:36:58Z	cancelled
+39148493594	legs (selftest, 5/6)	ubuntu-latest	2026-10-18T17:12:47Z	2026-10-18T17:29:20Z	success
+39148493594	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-18T17:12:47Z	2026-10-18T17:23:03Z	success
+39148493594	legs (supply-chain)	ubuntu-latest	2026-10-18T17:12:47Z	2026-10-18T17:17:47Z	success
+39148493594	legs (selftest, 4/6)	ubuntu-latest	2026-10-18T17:12:47Z	2026-10-18T17:34:17Z	success
+39148493594	legs (selftest, 1/6)	ubuntu-latest	2026-10-18T17:12:47Z	2026-10-18T17:37:00Z	cancelled
+39148493594	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-18T17:12:47Z	2026-10-18T17:23:02Z	success
+39148493594	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-18T17:12:47Z	2026-10-18T17:22:10Z	success
+39148493594	legs (selftest, 3/6)	ubuntu-latest	2026-10-18T17:12:47Z	2026-10-18T17:36:56Z	cancelled
+39148493594	legs (selftest, 6/6)	ubuntu-latest	2026-10-18T17:12:47Z	2026-10-18T17:32:40Z	success
+39148493594	gate-verdict	ubuntu-latest	2026-10-18T17:37:03Z	2026-10-18T17:37:24Z	success
+39148493594	verdict	ubuntu-latest	2026-10-18T17:37:03Z	2026-10-18T17:37:07Z	failure
+39029450657	leak proof (two passes, one seed)	ubuntu-latest	2026-10-17T11:38:10Z	2026-10-17T11:38:13Z	failure
+39029450657	supply chain (the gate's unit)	ubuntu-latest	2026-10-17T11:38:10Z	2026-10-17T11:38:12Z	failure
+39153478632	legs (selftest, 1/6)	ubuntu-latest	2026-10-18T18:44:49Z	2026-10-18T19:06:59Z	success
+39153478632	legs (static)	ubuntu-latest	2026-10-18T18:17:55Z	2026-10-18T18:22:25Z	success
+39153478632	legs (selftest, 2/6)	ubuntu-latest	2026-10-18T18:17:55Z	2026-10-18T18:40:49Z	success
+39153478632	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-18T18:17:55Z	2026-10-18T18:26:21Z	success
+39153478632	legs (selftest, 3/6)	ubuntu-latest	2026-10-18T18:17:55Z	2026-10-18T18:43:43Z	success
+39153478632	legs (selftest, 4/6)	ubuntu-latest	2026-10-18T18:17:55Z	2026-10-18T18:30:34Z	success
+39153478632	legs (selftest, 5/6)	ubuntu-latest	2026-10-18T18:17:55Z	2026-10-18T18:29:54Z	success
+39153478632	legs (full-house-rules)	ubuntu-latest	2026-10-18T18:17:55Z	2026-10-18T18:22:07Z	success
+39153478632	legs (supply-chain)	ubuntu-latest	2026-10-18T18:17:55Z	2026-10-18T18:23:47Z	success
+39153478632	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-18T18:17:55Z	2026-10-18T18:30:43Z	success
+39153478632	legs (selftest, 6/6)	ubuntu-latest	2026-10-18T18:17:55Z	2026-10-18T18:34:16Z	success
+39153478632	derive	ubuntu-latest	2026-10-18T18:17:29Z	2026-10-18T18:17:52Z	success
+39153478632	images	ubuntu-latest	2026-10-18T18:17:55Z	2026-10-18T18:18:19Z	success
+39153478632	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-18T18:17:55Z	2026-10-18T18:24:26Z	success
+39153478632	verdict	ubuntu-latest	2026-10-18T19:07:01Z	2026-10-18T19:07:08Z	success
+39153478632	gate-verdict	ubuntu-latest	2026-10-18T19:07:01Z	2026-10-18T19:07:21Z	success
+39153478632	images-push	ubuntu-latest	2026-10-18T19:07:11Z	2026-10-18T19:07:16Z	success
+39153478632	local	ubuntu-latest	2026-10-18T19:07:11Z	2026-10-18T19:07:20Z	success
+38991706218	proof from zero (three features, three refusals)	ubuntu-latest	2026-10-17T01:38:17Z	2026-10-17T04:53:01Z	success
+39148235240	derive	ubuntu-latest	2026-10-18T17:09:04Z	2026-10-18T17:09:25Z	success
+39148235240	images	ubuntu-latest	2026-10-18T17:09:28Z	2026-10-18T17:14:36Z	success
+39148235240	legs (supply-chain)	ubuntu-latest	2026-10-18T17:09:28Z	2026-10-18T17:14:41Z	success
+39148235240	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-18T17:09:28Z	2026-10-18T17:17:14Z	success
+39148235240	legs (static)	ubuntu-latest	2026-10-18T17:09:27Z	2026-10-18T17:13:51Z	success
+39148235240	legs (selftest, 1/4)	ubuntu-latest	2026-10-18T17:09:28Z	2026-10-18T17:40:41Z	success
+39148235240	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-18T17:09:28Z	2026-10-18T17:18:14Z	success
+39148235240	legs (selftest, 3/4)	ubuntu-latest	2026-10-18T17:09:28Z	2026-10-18T17:37:07Z	success
+39148235240	legs (selftest, 2/4)	ubuntu-latest	2026-10-18T17:09:28Z	2026-10-18T17:48:46Z	success
+39148235240	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-18T17:09:28Z	2026-10-18T17:22:06Z	success
+39148235240	legs (selftest, 4/4)	ubuntu-latest	2026-10-18T17:09:28Z	2026-10-18T17:45:05Z	success
+39148235240	legs (full-house-rules)	ubuntu-latest	2026-10-18T17:09:28Z	2026-10-18T17:13:51Z	success
+39148235240	verdict	ubuntu-latest	2026-10-18T17:48:48Z	2026-10-18T17:48:54Z	success
+39148235240	gate-verdict	ubuntu-latest	2026-10-18T17:48:48Z	2026-10-18T17:49:02Z	success
+39148235240	local	ubuntu-latest	2026-10-18T17:48:56Z	2026-10-18T17:49:04Z	success
+39148235240	images-push	ubuntu-latest	2026-10-18T17:48:56Z	2026-10-18T17:50:21Z	success
+38975908917	proof from zero (three features, three refusals)	ubuntu-latest	2026-10-16T22:28:03Z	2026-10-17T00:33:56Z	success
+38975847949	derive	ubuntu-latest	2026-10-16T22:27:24Z	2026-10-16T22:27:44Z	success
+38975847949	verdict	ubuntu-latest	2026-10-16T22:27:46Z	2026-10-16T22:27:51Z	success
+38975847949	gate-verdict	ubuntu-latest	2026-10-16T22:27:46Z	2026-10-16T22:27:58Z	success
+39148021491	derive	ubuntu-latest	2026-10-18T17:06:12Z	2026-10-18T17:06:36Z	success
+39148021491	images	ubuntu-latest	2026-10-18T17:06:38Z	2026-10-18T17:12:42Z	success
+39148021491	legs (supply-chain)	ubuntu-latest	2026-10-18T17:06:39Z	2026-10-18T17:12:49Z	success
+39148021491	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-18T17:06:38Z	2026-10-18T17:15:06Z	success
+39148021491	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-18T17:06:38Z	2026-10-18T17:17:17Z	success
+39148021491	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-18T17:06:38Z	2026-10-18T17:17:15Z	success
+39148021491	legs (selftest, 6/6)	ubuntu-latest	2026-10-18T17:06:39Z	2026-10-18T17:19:35Z	cancelled
+39148021491	legs (selftest, 5/6)	ubuntu-latest	2026-10-18T17:06:38Z	2026-10-18T17:19:35Z	cancelled
+39148021491	legs (selftest, 4/6)	ubuntu-latest	2026-10-18T17:06:38Z	2026-10-18T17:19:13Z	cancelled
+39148021491	legs (selftest, 1/6)	ubuntu-latest	2026-10-18T17:06:38Z	2026-10-18T17:19:34Z	cancelled
+39148021491	legs (full-house-rules)	ubuntu-latest	2026-10-18T17:06:39Z	2026-10-18T17:10:29Z	success
+39148021491	legs (selftest, 3/6)	ubuntu-latest	2026-10-18T17:06:39Z	2026-10-18T17:19:34Z	cancelled
+39148021491	legs (static)	ubuntu-latest	2026-10-18T17:06:39Z	2026-10-18T17:13:22Z	success
+39148021491	legs (selftest, 2/6)	ubuntu-latest	2026-10-18T17:06:39Z	2026-10-18T17:19:34Z	cancelled
+39148021491	gate-verdict	ubuntu-latest	2026-10-18T17:19:37Z	2026-10-18T17:19:54Z	success
+39148021491	verdict	ubuntu-latest	2026-10-18T17:19:37Z	2026-10-18T17:19:43Z	failure
+38987692184	derive	ubuntu-latest	2026-10-17T00:44:43Z	2026-10-17T00:45:10Z	success
+38987692184	legs (full-house-rules)	ubuntu-latest	2026-10-17T00:45:13Z	2026-10-17T00:48:46Z	success
+38987692184	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-17T00:45:13Z	2026-10-17T00:56:41Z	success
+38987692184	images	ubuntu-latest	2026-10-17T00:45:13Z	2026-10-17T00:51:13Z	success
+38987692184	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-17T00:45:13Z	2026-10-17T00:50:28Z	success
+38987692184	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-17T00:45:13Z	2026-10-17T00:49:50Z	success
+38987692184	legs (selftest)	ubuntu-latest	2026-10-17T00:45:13Z	2026-10-17T00:50:38Z	success
+38987692184	legs (static)	ubuntu-latest	2026-10-17T00:45:13Z	2026-10-17T00:52:03Z	success
+38987692184	verdict	ubuntu-latest	2026-10-17T00:56:44Z	2026-10-17T00:56:48Z	success
+38987692184	gate-verdict	ubuntu-latest	2026-10-17T00:56:43Z	2026-10-17T00:56:59Z	success
+38987692184	images-push	ubuntu-latest	2026-10-17T00:56:50Z	2026-10-17T00:57:50Z	success
+38987692184	local	ubuntu-latest	2026-10-17T00:56:50Z	2026-10-17T00:56:57Z	success
+38988712974	derive	ubuntu-latest	2026-10-17T00:57:14Z	2026-10-17T00:57:32Z	success
+38988712974	images	ubuntu-latest	2026-10-17T00:57:34Z	2026-10-17T00:58:10Z	success
+38988712974	legs (selftest, 1/4)	ubuntu-latest	2026-10-17T00:57:35Z	2026-10-17T01:29:25Z	success
+38988712974	legs (static)	ubuntu-latest	2026-10-17T00:57:34Z	2026-10-17T01:02:20Z	success
+38988712974	legs (selftest, 2/4)	ubuntu-latest	2026-10-17T00:57:34Z	2026-10-17T01:35:42Z	success
+38988712974	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-17T00:57:35Z	2026-10-17T01:12:08Z	success
+38988712974	legs (selftest, 4/4)	ubuntu-latest	2026-10-17T00:57:35Z	2026-10-17T01:37:53Z	success
+38988712974	legs (supply-chain)	ubuntu-latest	2026-10-17T00:57:34Z	2026-10-17T01:01:44Z	success
+38988712974	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-17T00:57:35Z	2026-10-17T01:05:53Z	success
+38988712974	legs (selftest, 3/4)	ubuntu-latest	2026-10-17T00:57:34Z	2026-10-17T01:25:54Z	success
+38988712974	legs (full-house-rules)	ubuntu-latest	2026-10-17T00:57:35Z	2026-10-17T01:01:57Z	success
+38988712974	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-17T00:57:35Z	2026-10-17T01:06:47Z	success
+38988712974	verdict	ubuntu-latest	2026-10-17T01:37:55Z	2026-10-17T01:37:59Z	success
+38988712974	gate-verdict	ubuntu-latest	2026-10-17T01:37:55Z	2026-10-17T01:38:12Z	success
+38988712974	local	ubuntu-latest	2026-10-17T01:38:01Z	2026-10-17T01:38:09Z	success
+38988712974	images-push	ubuntu-latest	2026-10-17T01:38:01Z	2026-10-17T01:38:06Z	success
+38988712974	deploy-staging	ubuntu-latest	2026-10-17T01:38:08Z	2026-10-17T01:38:12Z	success
+38991996774	derive	ubuntu-latest	2026-10-17T01:42:36Z	2026-10-17T01:43:02Z	success
+38991996774	images	ubuntu-latest	2026-10-17T01:43:04Z	2026-10-17T01:45:14Z	cancelled
+38991996774	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-17T01:43:04Z	2026-10-17T01:44:44Z	cancelled
+38991996774	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-17T01:43:04Z	2026-10-17T01:44:55Z	cancelled
+38991996774	legs (static)	ubuntu-latest	2026-10-17T01:43:04Z	2026-10-17T01:44:57Z	cancelled
+38991996774	legs (full-house-rules)	ubuntu-latest	2026-10-17T01:43:04Z	2026-10-17T01:45:03Z	cancelled
+38991996774	legs (supply-chain)	ubuntu-latest	2026-10-17T01:43:04Z	2026-10-17T01:44:44Z	cancelled
+38991996774	legs (selftest, 2/6)	ubuntu-latest	2026-10-17T01:43:04Z	2026-10-17T01:44:52Z	cancelled
+38991996774	legs (selftest, 4/6)	ubuntu-latest	2026-10-17T01:43:04Z	2026-10-17T01:44:43Z	cancelled
+38991996774	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-17T01:43:04Z	2026-10-17T01:44:56Z	cancelled
+38991996774	legs (selftest, 5/6)	ubuntu-latest	2026-10-17T01:43:04Z	2026-10-17T01:44:43Z	cancelled
+38991996774	legs (selftest, 3/6)	ubuntu-latest	2026-10-17T01:43:04Z	2026-10-17T01:44:44Z	cancelled
+38991996774	legs (selftest, 1/6)	ubuntu-latest	2026-10-17T01:43:04Z	2026-10-17T01:44:44Z	cancelled
+38991996774	legs (selftest, 6/6)	ubuntu-latest	2026-10-17T01:43:04Z	2026-10-17T01:44:54Z	cancelled
+38991996774	verdict	ubuntu-latest	2026-10-17T01:45:05Z	2026-10-17T01:45:08Z	failure
+38991996774	gate-verdict	ubuntu-latest	2026-10-17T01:45:17Z	2026-10-17T01:45:38Z	success
+38972197710	proof from zero (three features, three refusals)	ubuntu-latest	2026-10-16T21:52:04Z	2026-10-16T23:55:38Z	failure
+38972117636	derive	ubuntu-latest	2026-10-16T21:51:19Z	2026-10-16T21:51:41Z	success
+38972117636	verdict	ubuntu-latest	2026-10-16T21:51:43Z	2026-10-16T21:51:48Z	success
+38972117636	gate-verdict	ubuntu-latest	2026-10-16T21:51:43Z	2026-10-16T21:51:59Z	success
+38968291356	proof from zero (three features, three refusals)	ubuntu-latest	2026-10-16T21:17:09Z	2026-10-17T00:24:36Z	failure
+38987558947	derive	ubuntu-latest	2026-10-17T00:41:57Z	2026-10-17T00:42:32Z	success
+38987558947	images	ubuntu-latest	2026-10-17T00:42:34Z	2026-10-17T00:44:21Z	cancelled
+38987558947	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-17T00:42:35Z	2026-10-17T00:43:50Z	cancelled
+38987558947	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-17T00:42:35Z	2026-10-17T00:43:48Z	cancelled
+38987558947	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-17T00:42:34Z	2026-10-17T00:43:48Z	cancelled
+38987558947	legs (static)	ubuntu-latest	2026-10-17T00:42:34Z	2026-10-17T00:43:47Z	cancelled
+38987558947	legs (selftest)	ubuntu-latest	2026-10-17T00:42:34Z	2026-10-17T00:43:47Z	cancelled
+38987558947	legs (full-house-rules)	ubuntu-latest	2026-10-17T00:42:35Z	2026-10-17T00:43:49Z	cancelled
+38987558947	verdict	ubuntu-latest	2026-10-17T00:43:53Z	2026-10-17T00:43:58Z	failure
+38987558947	gate-verdict	ubuntu-latest	2026-10-17T00:44:24Z	2026-10-17T00:44:40Z	success
+38968201609	derive	ubuntu-latest	2026-10-16T21:16:23Z	2026-10-16T21:16:45Z	success
+38968201609	gate-verdict	ubuntu-latest	2026-10-16T21:16:48Z	2026-10-16T21:17:03Z	success
+38968201609	verdict	ubuntu-latest	2026-10-16T21:16:48Z	2026-10-16T21:16:50Z	success
+38962783515	proof from zero (three features, three refusals)	ubuntu-latest	2026-10-16T20:30:55Z	2026-10-16T23:28:24Z	failure
+38992135051	derive	ubuntu-latest	2026-10-17T01:45:41Z	2026-10-17T01:46:03Z	success
+38992135051	verdict	ubuntu-latest	2026-10-18T17:09:25Z	2026-10-18T17:09:30Z	success
+38992135051	gate-verdict	ubuntu-latest	2026-10-18T17:09:25Z	2026-10-18T17:09:43Z	success
+38992135051	legs (supply-chain)	ubuntu-latest	2026-10-17T01:46:05Z	2026-10-17T01:51:08Z	success
+38992135051	images	ubuntu-latest	2026-10-17T01:46:05Z	2026-10-17T01:52:15Z	success
+38992135051	legs (static)	ubuntu-latest	2026-10-17T01:46:05Z	2026-10-17T01:52:47Z	success
+38992135051	legs (selftest, 5/6)	ubuntu-latest	2026-10-17T01:46:05Z	2026-10-17T02:02:16Z	success
+38992135051	legs (selftest, 1/6)	ubuntu-latest	2026-10-17T01:46:05Z	2026-10-17T02:08:21Z	success
+38962681913	derive	ubuntu-latest	2026-10-16T20:30:09Z	2026-10-16T20:30:33Z	success
+38992135051	legs (selftest, 3/6)	ubuntu-latest	2026-10-17T01:46:05Z	2026-10-17T02:11:58Z	success
+38962681913	verdict	ubuntu-latest	2026-10-16T20:30:36Z	2026-10-16T20:30:40Z	success
+38992135051	legs (selftest, 6/6)	ubuntu-latest	2026-10-17T01:46:05Z	2026-10-17T02:09:28Z	success
+38962681913	gate-verdict	ubuntu-latest	2026-10-16T20:30:36Z	2026-10-16T20:30:49Z	success
+38992135051	legs (full-house-rules)	ubuntu-latest	2026-10-17T01:46:05Z	2026-10-17T01:50:24Z	success
+38992135051	legs (selftest, 4/6)	ubuntu-latest	2026-10-17T01:46:05Z	2026-10-17T02:07:29Z	success
+38992135051	legs (selftest, 2/6)	ubuntu-latest	2026-10-17T01:46:05Z	2026-10-17T02:09:11Z	success
+38992135051	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-17T01:46:05Z	2026-10-17T01:54:59Z	success
+38992135051	local	ubuntu-latest	2026-10-18T17:09:33Z	2026-10-18T17:09:40Z	success
+38992135051	images-push	ubuntu-latest	2026-10-18T17:09:33Z	2026-10-18T17:09:42Z	failure
+38992135051	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-17T01:46:05Z	2026-10-17T02:00:06Z	success
+38992135051	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-17T01:46:05Z	2026-10-17T01:56:21Z	success
+38972502687	derive	ubuntu-latest	2026-10-16T21:54:57Z	2026-10-16T21:55:24Z	success
+38972502687	images	ubuntu-latest	2026-10-16T21:55:27Z	2026-10-16T22:01:38Z	success
+38972502687	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-16T21:55:27Z	2026-10-16T22:03:06Z	success
+38972502687	legs (full-house-rules)	ubuntu-latest	2026-10-16T21:55:27Z	2026-10-16T21:59:33Z	success
+38972502687	legs (selftest, 6/6)	ubuntu-latest	2026-10-16T21:55:27Z	2026-10-16T22:06:00Z	success
+38972502687	legs (selftest, 4/6)	ubuntu-latest	2026-10-16T21:55:27Z	2026-10-16T22:09:28Z	success
+38972502687	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-16T21:55:27Z	2026-10-16T22:05:21Z	success
+38972502687	legs (selftest, 1/6)	ubuntu-latest	2026-10-16T21:55:28Z	2026-10-16T22:26:51Z	success
+38972502687	legs (supply-chain)	ubuntu-latest	2026-10-16T21:55:27Z	2026-10-16T21:59:35Z	success
+38972502687	legs (static)	ubuntu-latest	2026-10-16T21:55:27Z	2026-10-16T22:02:26Z	success
+38972502687	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-16T21:55:27Z	2026-10-16T22:10:23Z	success
+38972502687	legs (selftest, 3/6)	ubuntu-latest	2026-10-16T21:55:27Z	2026-10-16T22:14:17Z	success
+38972502687	legs (selftest, 5/6)	ubuntu-latest	2026-10-16T21:55:27Z	2026-10-16T22:05:21Z	success
+38972502687	legs (selftest, 2/6)	ubuntu-latest	2026-10-16T21:55:27Z	2026-10-16T22:20:53Z	success
+38972502687	gate-verdict	ubuntu-latest	2026-10-16T22:26:53Z	2026-10-16T22:27:11Z	success
+38972502687	verdict	ubuntu-latest	2026-10-16T22:26:53Z	2026-10-16T22:27:00Z	success
+38972502687	images-push	ubuntu-latest	2026-10-16T22:27:02Z	2026-10-16T22:27:58Z	success
+38972502687	local	ubuntu-latest	2026-10-16T22:27:02Z	2026-10-16T22:27:11Z	success
+38955670472	proof from zero (three features, three refusals)	ubuntu-latest	2026-10-16T19:32:32Z	2026-10-16T22:39:31Z	failure
+38950088999	proof from zero (three features, three refusals)	ubuntu-latest	2026-10-16T18:48:00Z	2026-10-16T22:01:14Z	failure
+38968723198	derive	ubuntu-latest	2026-10-16T21:20:51Z	2026-10-16T21:21:16Z	success
+38968723198	images	ubuntu-latest	2026-10-16T21:21:19Z	2026-10-16T21:27:43Z	success
+38968723198	legs (static)	ubuntu-latest	2026-10-16T21:21:19Z	2026-10-16T21:28:15Z	success
+38968723198	legs (selftest, 2/5)	ubuntu-latest	2026-10-16T21:21:18Z	2026-10-16T21:38:38Z	success
+38968723198	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-16T21:21:19Z	2026-10-16T21:30:00Z	success
+38968723198	legs (full-house-rules)	ubuntu-latest	2026-10-16T21:21:18Z	2026-10-16T21:25:06Z	success
+38968723198	legs (selftest, 3/5)	ubuntu-latest	2026-10-16T21:21:18Z	2026-10-16T21:50:40Z	success
+38968723198	legs (supply-chain)	ubuntu-latest	2026-10-16T21:21:18Z	2026-10-16T21:27:12Z	success
+38968723198	legs (selftest, 4/5)	ubuntu-latest	2026-10-16T21:21:19Z	2026-10-16T21:46:55Z	success
+38968723198	legs (selftest, 1/5)	ubuntu-latest	2026-10-16T21:21:19Z	2026-10-16T21:48:48Z	success
+38968723198	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-16T21:21:19Z	2026-10-16T21:36:01Z	success
+38968723198	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-16T21:21:19Z	2026-10-16T21:30:41Z	success
+38968723198	legs (selftest, 5/5)	ubuntu-latest	2026-10-16T21:21:19Z	2026-10-16T21:43:06Z	success
+38968723198	verdict	ubuntu-latest	2026-10-16T21:50:42Z	2026-10-16T21:50:49Z	success
+38968723198	gate-verdict	ubuntu-latest	2026-10-16T21:50:42Z	2026-10-16T21:51:00Z	success
+38968723198	images-push	ubuntu-latest	2026-10-16T21:50:51Z	2026-10-16T21:51:52Z	success
+38968723198	local	ubuntu-latest	2026-10-16T21:50:51Z	2026-10-16T21:51:00Z	success
+38955574926	derive	ubuntu-latest	2026-10-16T19:31:44Z	2026-10-16T19:32:07Z	success
+38955574926	verdict	ubuntu-latest	2026-10-16T19:32:10Z	2026-10-16T19:32:14Z	success
+38955574926	gate-verdict	ubuntu-latest	2026-10-16T19:32:09Z	2026-10-16T19:32:25Z	success
+38963369331	derive	ubuntu-latest	2026-10-16T20:35:44Z	2026-10-16T20:36:08Z	success
+38963369331	legs (selftest, 4/4)	ubuntu-latest	2026-10-16T20:36:10Z	2026-10-16T21:15:35Z	success
+38963369331	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-16T20:36:11Z	2026-10-16T20:43:08Z	success
+38963369331	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-16T20:36:11Z	2026-10-16T20:49:09Z	success
+38963369331	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-16T20:36:11Z	2026-10-16T20:46:30Z	success
+38963369331	legs (supply-chain)	ubuntu-latest	2026-10-16T20:36:10Z	2026-10-16T20:41:22Z	success
+38963369331	legs (static)	ubuntu-latest	2026-10-16T20:36:11Z	2026-10-16T20:43:04Z	success
+38963369331	legs (selftest, 2/4)	ubuntu-latest	2026-10-16T20:36:11Z	2026-10-16T20:59:09Z	success
+38963369331	legs (full-house-rules)	ubuntu-latest	2026-10-16T20:36:11Z	2026-10-16T20:40:46Z	success
+38963369331	legs (selftest, 1/4)	ubuntu-latest	2026-10-16T20:36:10Z	2026-10-16T21:07:32Z	success
+38963369331	legs (selftest, 3/4)	ubuntu-latest	2026-10-16T20:36:11Z	2026-10-16T21:05:19Z	success
+38963369331	images	ubuntu-latest	2026-10-16T20:36:10Z	2026-10-16T20:42:23Z	success
+38963369331	gate-verdict	ubuntu-latest	2026-10-16T21:15:38Z	2026-10-16T21:15:58Z	success
+38963369331	verdict	ubuntu-latest	2026-10-16T21:15:38Z	2026-10-16T21:15:45Z	success
+38963369331	images-push	ubuntu-latest	2026-10-16T21:15:47Z	2026-10-16T21:17:00Z	success
+38963369331	local	ubuntu-latest	2026-10-16T21:15:47Z	2026-10-16T21:15:57Z	success
+38949999883	derive	ubuntu-latest	2026-10-16T18:47:16Z	2026-10-16T18:47:35Z	success
+38949999883	gate-verdict	ubuntu-latest	2026-10-16T18:47:37Z	2026-10-16T18:47:55Z	success
+38949999883	verdict	ubuntu-latest	2026-10-16T18:47:37Z	2026-10-16T18:47:41Z	success
+38943491396	proof from zero (three features, three refusals)	ubuntu-latest	2026-10-16T17:56:16Z	2026-10-16T19:40:49Z	failure
+38958417594	derive	ubuntu-latest	2026-10-16T19:56:32Z	2026-10-16T19:56:59Z	success
+38958417594	legs (static)	ubuntu-latest	2026-10-16T19:57:01Z	2026-10-16T20:03:47Z	success
+38958417594	images	ubuntu-latest	2026-10-16T19:57:01Z	2026-10-16T20:01:00Z	success
+38958417594	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-16T19:57:01Z	2026-10-16T20:03:39Z	success
+38958417594	legs (selftest, 2/5)	ubuntu-latest	2026-10-16T19:57:01Z	2026-10-16T20:26:59Z	success
+38958417594	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-16T19:57:01Z	2026-10-16T20:11:22Z	success
+38958417594	legs (selftest, 5/5)	ubuntu-latest	2026-10-16T19:57:01Z	2026-10-16T20:13:54Z	success
+38958417594	legs (selftest, 4/5)	ubuntu-latest	2026-10-16T19:57:01Z	2026-10-16T20:19:44Z	success
+38958417594	legs (supply-chain)	ubuntu-latest	2026-10-16T19:57:02Z	2026-10-16T20:02:55Z	success
+38958417594	legs (selftest, 1/5)	ubuntu-latest	2026-10-16T19:57:02Z	2026-10-16T20:29:38Z	success
+38958417594	legs (full-house-rules)	ubuntu-latest	2026-10-16T19:57:01Z	2026-10-16T20:01:25Z	success
+38958417594	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-16T19:57:01Z	2026-10-16T20:05:45Z	success
+38958417594	legs (selftest, 3/5)	ubuntu-latest	2026-10-16T19:57:01Z	2026-10-16T20:15:59Z	success
+38958417594	gate-verdict	ubuntu-latest	2026-10-16T20:29:41Z	2026-10-16T20:29:59Z	success
+38958417594	verdict	ubuntu-latest	2026-10-16T20:29:41Z	2026-10-16T20:29:45Z	success
+38958417594	local	ubuntu-latest	2026-10-16T20:29:48Z	2026-10-16T20:29:55Z	success
+38958417594	images-push	ubuntu-latest	2026-10-16T20:29:48Z	2026-10-16T20:30:27Z	success
+38956914327	derive	ubuntu-latest	2026-10-16T19:42:42Z	2026-10-16T19:43:06Z	success
+38956914327	images	ubuntu-latest	2026-10-16T19:43:09Z	2026-10-16T19:48:17Z	success
+38956914327	legs (selftest, 4/5)	ubuntu-latest	2026-10-16T19:43:09Z	2026-10-16T19:56:01Z	cancelled
+38956914327	legs (selftest, 2/5)	ubuntu-latest	2026-10-16T19:43:09Z	2026-10-16T19:56:06Z	cancelled
+38956914327	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-16T19:43:09Z	2026-10-16T19:45:29Z	failure
+38956914327	legs (selftest, 5/5)	ubuntu-latest	2026-10-16T19:43:09Z	2026-10-16T19:56:04Z	cancelled
+38956914327	legs (full-house-rules)	ubuntu-latest	2026-10-16T19:43:09Z	2026-10-16T19:46:28Z	success
+38956914327	legs (selftest, 3/5)	ubuntu-latest	2026-10-16T19:43:08Z	2026-10-16T19:55:59Z	cancelled
+38956914327	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-16T19:43:09Z	2026-10-16T19:45:57Z	failure
+38956914327	legs (supply-chain)	ubuntu-latest	2026-10-16T19:43:09Z	2026-10-16T19:49:16Z	success
+38956914327	legs (static)	ubuntu-latest	2026-10-16T19:43:09Z	2026-10-16T19:48:03Z	success
+38956914327	legs (selftest, 1/5)	ubuntu-latest	2026-10-16T19:43:09Z	2026-10-16T19:56:03Z	cancelled
+38956914327	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-16T19:43:09Z	2026-10-16T19:45:23Z	failure
+38956914327	gate-verdict	ubuntu-latest	2026-10-16T19:56:09Z	2026-10-16T19:56:29Z	success
+38956914327	verdict	ubuntu-latest	2026-10-16T19:56:09Z	2026-10-16T19:56:15Z	failure
+38924088493	proof from zero (three features, three refusals)	ubuntu-latest	2026-10-16T15:27:33Z	2026-10-16T17:47:59Z	failure
+38951558295	derive	ubuntu-latest	2026-10-16T18:59:36Z	2026-10-16T18:59:57Z	success
+38951558295	images	ubuntu-latest	2026-10-16T19:00:00Z	2026-10-16T19:04:47Z	success
+38951558295	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-16T19:00:00Z	2026-10-16T19:09:13Z	success
+38951558295	legs (selftest, 6/7)	ubuntu-latest	2026-10-16T19:00:00Z	2026-10-16T19:09:23Z	success
+38951558295	legs (selftest, 7/7)	ubuntu-latest	2026-10-16T19:00:00Z	2026-10-16T19:17:24Z	success
+38951558295	legs (selftest, 3/7)	ubuntu-latest	2026-10-16T19:00:00Z	2026-10-16T19:14:40Z	success
+38951558295	legs (static)	ubuntu-latest	2026-10-16T19:00:00Z	2026-10-16T19:04:31Z	success
+38951558295	legs (selftest, 1/7)	ubuntu-latest	2026-10-16T19:00:00Z	2026-10-16T19:17:33Z	success
+38951558295	legs (selftest, 2/7)	ubuntu-latest	2026-10-16T19:00:00Z	2026-10-16T19:31:06Z	success
+38951558295	legs (selftest, 5/7)	ubuntu-latest	2026-10-16T19:00:00Z	2026-10-16T19:23:22Z	success
+38951558295	legs (selftest, 4/7)	ubuntu-latest	2026-10-16T19:00:00Z	2026-10-16T19:21:57Z	success
+38951558295	legs (supply-chain)	ubuntu-latest	2026-10-16T19:00:00Z	2026-10-16T19:04:32Z	success
+38951558295	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-16T19:00:00Z	2026-10-16T19:08:56Z	success
+38951558295	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-16T19:00:00Z	2026-10-16T19:14:08Z	success
+38951558295	legs (full-house-rules)	ubuntu-latest	2026-10-16T19:00:00Z	2026-10-16T19:04:37Z	success
+38951558295	verdict	ubuntu-latest	2026-10-16T19:31:09Z	2026-10-16T19:31:13Z	success
+38951558295	gate-verdict	ubuntu-latest	2026-10-16T19:31:09Z	2026-10-16T19:31:30Z	success
+38951558295	local	ubuntu-latest	2026-10-16T19:31:21Z	2026-10-16T19:31:30Z	success
+38951558295	images-push	ubuntu-latest	2026-10-16T19:31:16Z	2026-10-16T19:32:29Z	success
+38923973958	derive	ubuntu-latest	2026-10-16T15:26:40Z	2026-10-16T15:27:05Z	success
+38923973958	verdict	ubuntu-latest	2026-10-16T15:27:08Z	2026-10-16T15:27:11Z	success
+38923973958	gate-verdict	ubuntu-latest	2026-10-16T15:27:08Z	2026-10-16T15:27:27Z	success
+38918708662	proof from zero (three features, three refusals)	ubuntu-latest	2026-10-16T14:48:11Z	2026-10-16T16:18:43Z	cancelled
+38940472779	derive	ubuntu-latest	2026-10-16T17:32:35Z	2026-10-16T17:32:56Z	success
+38940472779	images	ubuntu-latest	2026-10-16T17:32:59Z	2026-10-16T17:38:59Z	success
+38940472779	legs (static)	ubuntu-latest	2026-10-16T17:32:59Z	2026-10-16T17:40:03Z	success
+38940472779	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-16T17:32:59Z	2026-10-16T17:45:48Z	success
+38940472779	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-16T17:32:59Z	2026-10-16T17:39:50Z	success
+38940472779	legs (selftest, 5/5)	ubuntu-latest	2026-10-16T17:32:59Z	2026-10-16T18:02:54Z	success
+38940472779	legs (supply-chain)	ubuntu-latest	2026-10-16T17:32:59Z	2026-10-16T17:38:59Z	success
+38940472779	legs (selftest, 2/5)	ubuntu-latest	2026-10-16T17:32:59Z	2026-10-16T17:52:16Z	success
+38940472779	legs (full-house-rules)	ubuntu-latest	2026-10-16T17:32:59Z	2026-10-16T17:37:12Z	success
+38940472779	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-16T17:32:59Z	2026-10-16T17:41:56Z	success
+38940472779	legs (selftest, 3/5)	ubuntu-latest	2026-10-16T17:32:59Z	2026-10-16T18:02:25Z	failure
+38940472779	legs (selftest, 4/5)	ubuntu-latest	2026-10-16T17:33:00Z	2026-10-16T18:00:05Z	success
+38940472779	legs (selftest, 1/5)	ubuntu-latest	2026-10-16T17:32:59Z	2026-10-16T18:04:10Z	success
+38940472779	gate-verdict	ubuntu-latest	2026-10-16T18:04:12Z	2026-10-16T18:04:30Z	success
+38940472779	verdict	ubuntu-latest	2026-10-16T18:04:13Z	2026-10-16T18:04:18Z	failure
+38946069046	derive	ubuntu-latest	2026-10-16T18:16:37Z	2026-10-16T18:17:00Z	success
+38946069046	images	ubuntu-latest	2026-10-16T18:17:03Z	2026-10-16T18:23:13Z	success
+38946069046	legs (selftest, 1/5)	ubuntu-latest	2026-10-16T18:17:03Z	2026-10-16T18:34:56Z	success
+38946069046	legs (selftest, 5/5)	ubuntu-latest	2026-10-16T18:17:03Z	2026-10-16T18:35:53Z	success
+38946069046	legs (selftest, 3/5)	ubuntu-latest	2026-10-16T18:17:03Z	2026-10-16T18:44:10Z	success
+38946069046	legs (selftest, 4/5)	ubuntu-latest	2026-10-16T18:17:03Z	2026-10-16T18:46:12Z	success
+38946069046	legs (supply-chain)	ubuntu-latest	2026-10-16T18:17:03Z	2026-10-16T18:22:20Z	success
+38946069046	legs (full-house-rules)	ubuntu-latest	2026-10-16T18:17:03Z	2026-10-16T18:20:18Z	success
+38946069046	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-16T18:17:03Z	2026-10-16T18:24:23Z	success
+38946069046	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-16T18:17:08Z	2026-10-16T18:32:35Z	success
+38946069046	legs (static)	ubuntu-latest	2026-10-16T18:17:03Z	2026-10-16T18:24:05Z	success
+38946069046	legs (selftest, 2/5)	ubuntu-latest	2026-10-16T18:17:04Z	2026-10-16T18:35:48Z	success
+38946069046	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-16T18:17:03Z	2026-10-16T18:27:38Z	success
+38946069046	gate-verdict	ubuntu-latest	2026-10-16T18:46:14Z	2026-10-16T18:46:30Z	success
+38946069046	verdict	ubuntu-latest	2026-10-16T18:46:14Z	2026-10-16T18:46:18Z	success
+38946069046	images-push	ubuntu-latest	2026-10-16T18:46:21Z	2026-10-16T18:47:51Z	success
+38946069046	local	ubuntu-latest	2026-10-16T18:46:21Z	2026-10-16T18:46:28Z	success
+38918606776	derive	ubuntu-latest	2026-10-16T14:47:24Z	2026-10-16T14:47:42Z	success
+38918606776	verdict	ubuntu-latest	2026-10-16T14:47:45Z	2026-10-16T14:47:50Z	success
+38918606776	gate-verdict	ubuntu-latest	2026-10-16T14:47:45Z	2026-10-16T14:48:03Z	success
+38913427745	proof from zero (three features, three refusals)	ubuntu-latest	2026-10-16T14:09:00Z	2026-10-16T15:39:34Z	cancelled
+38939579498	derive	ubuntu-latest	2026-10-16T17:25:32Z	2026-10-16T17:25:57Z	success
+38939579498	images	ubuntu-latest	2026-10-16T17:26:00Z	2026-10-16T17:26:34Z	success
+38939579498	legs (selftest, 3/5)	ubuntu-latest	2026-10-16T17:25:59Z	2026-10-16T17:54:20Z	success
+38939579498	legs (selftest, 5/5)	ubuntu-latest	2026-10-16T17:26:00Z	2026-10-16T17:55:34Z	success
+38939579498	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-16T17:26:00Z	2026-10-16T17:32:40Z	success
+38939579498	legs (selftest, 4/5)	ubuntu-latest	2026-10-16T17:26:00Z	2026-10-16T17:40:53Z	success
+38939579498	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-16T17:26:00Z	2026-10-16T17:33:13Z	success
+38939579498	legs (selftest, 1/5)	ubuntu-latest	2026-10-16T17:26:00Z	2026-10-16T17:54:29Z	success
+38939579498	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-16T17:26:00Z	2026-10-16T17:35:06Z	success
+38939579498	legs (static)	ubuntu-latest	2026-10-16T17:26:00Z	2026-10-16T17:32:43Z	success
+38939579498	legs (supply-chain)	ubuntu-latest	2026-10-16T17:26:00Z	2026-10-16T17:31:10Z	success
+38939579498	legs (full-house-rules)	ubuntu-latest	2026-10-16T17:26:00Z	2026-10-16T17:30:17Z	success
+38939579498	legs (selftest, 2/5)	ubuntu-latest	2026-10-16T17:26:00Z	2026-10-16T17:55:49Z	success
+38939579498	verdict	ubuntu-latest	2026-10-16T17:55:51Z	2026-10-16T17:55:56Z	success
+38939579498	gate-verdict	ubuntu-latest	2026-10-16T17:55:51Z	2026-10-16T17:56:11Z	success
+38939579498	images-push	ubuntu-latest	2026-10-16T17:55:59Z	2026-10-16T17:56:02Z	success
+38939579498	local	ubuntu-latest	2026-10-16T17:55:59Z	2026-10-16T17:56:07Z	success
+38939579498	deploy-staging	ubuntu-latest	2026-10-16T17:56:05Z	2026-10-16T17:56:10Z	success
+38930909364	derive	ubuntu-latest	2026-10-16T16:18:33Z	2026-10-16T16:19:01Z	success
+38930909364	legs (selftest)	ubuntu-latest	2026-10-16T16:53:55Z	2026-10-16T17:24:44Z	success
+38930909364	legs (static)	ubuntu-latest	2026-10-16T16:19:04Z	2026-10-16T16:25:54Z	success
+38930909364	images	ubuntu-latest	2026-10-16T16:19:04Z	2026-10-16T16:25:20Z	success
+38930909364	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-16T16:19:03Z	2026-10-16T16:25:13Z	success
+38930909364	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-16T16:19:04Z	2026-10-16T16:28:20Z	success
+38930909364	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-16T16:19:04Z	2026-10-16T16:25:46Z	success
+38930909364	legs (full-house-rules)	ubuntu-latest	2026-10-16T16:19:03Z	2026-10-16T16:23:24Z	success
+38930909364	gate-verdict	ubuntu-latest	2026-10-16T17:24:47Z	2026-10-16T17:25:02Z	success
+38930909364	verdict	ubuntu-latest	2026-10-16T17:24:47Z	2026-10-16T17:24:53Z	success
+38930909364	local	ubuntu-latest	2026-10-16T17:24:55Z	2026-10-16T17:25:04Z	success
+38930909364	images-push	ubuntu-latest	2026-10-16T17:24:55Z	2026-10-16T17:25:40Z	success
+38913338114	derive	ubuntu-latest	2026-10-16T14:08:18Z	2026-10-16T14:08:36Z	success
+38913338114	gate-verdict	ubuntu-latest	2026-10-16T14:08:39Z	2026-10-16T14:08:54Z	success
+38913338114	verdict	ubuntu-latest	2026-10-16T14:08:39Z	2026-10-16T14:08:42Z	success
+38908174512	proof from zero (three features, three refusals)	ubuntu-latest	2026-10-16T13:29:03Z	2026-10-16T14:59:35Z	cancelled
+38903232459	proof from zero (three features, three refusals)	ubuntu-latest	2026-10-16T12:49:21Z	2026-10-16T14:19:49Z	cancelled
+38919300681	derive	ubuntu-latest	2026-10-16T14:52:36Z	2026-10-16T14:52:57Z	success
+38919300681	images	ubuntu-latest	2026-10-16T14:53:00Z	2026-10-16T14:58:54Z	success
+38919300681	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-16T14:53:00Z	2026-10-16T15:01:36Z	success
+38919300681	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-16T14:53:00Z	2026-10-16T15:03:49Z	success
+38919300681	legs (selftest, 2/6)	ubuntu-latest	2026-10-16T14:53:00Z	2026-10-16T15:09:56Z	success
+38919300681	legs (selftest, 4/6)	ubuntu-latest	2026-10-16T14:52:59Z	2026-10-16T15:06:01Z	success
+38919300681	legs (selftest, 6/6)	ubuntu-latest	2026-10-16T14:53:00Z	2026-10-16T15:12:47Z	success
+38919300681	legs (selftest, 1/6)	ubuntu-latest	2026-10-16T14:52:59Z	2026-10-16T15:25:16Z	success
+38919300681	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-16T14:53:00Z	2026-10-16T15:00:50Z	success
+38919300681	legs (full-house-rules)	ubuntu-latest	2026-10-16T14:53:00Z	2026-10-16T14:57:16Z	success
+38919300681	legs (selftest, 3/6)	ubuntu-latest	2026-10-16T14:53:00Z	2026-10-16T15:21:24Z	success
+38919300681	legs (supply-chain)	ubuntu-latest	2026-10-16T14:53:00Z	2026-10-16T14:59:12Z	success
+38919300681	legs (selftest, 5/6)	ubuntu-latest	2026-10-16T14:53:00Z	2026-10-16T15:15:26Z	success
+38919300681	legs (static)	ubuntu-latest	2026-10-16T14:53:00Z	2026-10-16T14:59:19Z	success
+38919300681	verdict	ubuntu-latest	2026-10-16T15:25:19Z	2026-10-16T15:25:23Z	success
+38919300681	gate-verdict	ubuntu-latest	2026-10-16T15:25:19Z	2026-10-16T15:25:39Z	success
+38919300681	images-push	ubuntu-latest	2026-10-16T15:25:26Z	2026-10-16T15:26:38Z	success
+38919300681	local	ubuntu-latest	2026-10-16T15:25:25Z	2026-10-16T15:25:33Z	success
+38908076022	derive	ubuntu-latest	2026-10-16T13:28:16Z	2026-10-16T13:28:35Z	success
+38908076022	verdict	ubuntu-latest	2026-10-16T13:28:38Z	2026-10-16T13:28:42Z	success
+38908076022	gate-verdict	ubuntu-latest	2026-10-16T13:28:37Z	2026-10-16T13:28:56Z	success
+38900591787	supply chain (the gate's unit)	ubuntu-latest	2026-10-16T12:27:09Z	2026-10-16T12:31:30Z	success
+38900591787	leak proof (two passes, one seed)	ubuntu-latest	2026-10-16T12:27:08Z	2026-10-16T13:34:16Z	success
+38897138708	proof from zero (three features, three refusals)	ubuntu-latest	2026-10-16T11:56:45Z	2026-10-16T13:27:20Z	cancelled
+38913851961	derive	ubuntu-latest	2026-10-16T14:12:11Z	2026-10-16T14:12:41Z	success
+38913851961	images	ubuntu-latest	2026-10-16T14:12:44Z	2026-10-16T14:19:03Z	success
+38913851961	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-16T14:12:44Z	2026-10-16T14:23:28Z	success
+38913851961	legs (selftest, 3/5)	ubuntu-latest	2026-10-16T14:12:44Z	2026-10-16T14:44:50Z	success
+38913851961	legs (selftest, 5/5)	ubuntu-latest	2026-10-16T14:12:44Z	2026-10-16T14:35:33Z	success
+38913851961	legs (full-house-rules)	ubuntu-latest	2026-10-16T14:12:44Z	2026-10-16T14:17:09Z	success
+38913851961	legs (selftest, 2/5)	ubuntu-latest	2026-10-16T14:12:44Z	2026-10-16T14:41:42Z	success
+38913851961	legs (selftest, 1/5)	ubuntu-latest	2026-10-16T14:12:44Z	2026-10-16T14:40:11Z	success
+38913851961	legs (static)	ubuntu-latest	2026-10-16T14:12:44Z	2026-10-16T14:18:40Z	success
+38913851961	legs (supply-chain)	ubuntu-latest	2026-10-16T14:12:44Z	2026-10-16T14:18:09Z	success
+38913851961	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-16T14:12:44Z	2026-10-16T14:22:09Z	success
+38913851961	legs (selftest, 4/5)	ubuntu-latest	2026-10-16T14:12:44Z	2026-10-16T14:41:33Z	success
+38913851961	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-16T14:12:44Z	2026-10-16T14:21:34Z	success
+38913851961	verdict	ubuntu-latest	2026-10-16T14:44:53Z	2026-10-16T14:44:57Z	success
+38913851961	gate-verdict	ubuntu-latest	2026-10-16T14:44:53Z	2026-10-16T14:45:12Z	success
+38913851961	images-push	ubuntu-latest	2026-10-16T14:45:00Z	2026-10-16T14:45:59Z	success
+38913851961	local	ubuntu-latest	2026-10-16T14:44:59Z	2026-10-16T14:45:07Z	success
+38869471262	proof from zero (three features, three refusals)	ubuntu-latest	2026-10-16T07:47:47Z	2026-10-16T07:50:27Z	failure
+38872572846	proof from zero (three features, three refusals)	ubuntu-latest	2026-10-16T08:16:19Z	2026-10-16T08:18:28Z	failure
+38908720818	derive	ubuntu-latest	2026-10-16T13:33:12Z	2026-10-16T13:33:38Z	success
+38908720818	images	ubuntu-latest	2026-10-16T13:33:40Z	2026-10-16T13:37:51Z	success
+38908720818	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-16T13:33:40Z	2026-10-16T13:46:52Z	success
+38908720818	legs (selftest, 2/5)	ubuntu-latest	2026-10-16T13:33:40Z	2026-10-16T14:04:03Z	success
+38908720818	legs (full-house-rules)	ubuntu-latest	2026-10-16T13:33:40Z	2026-10-16T13:38:16Z	success
+38908720818	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-16T13:33:40Z	2026-10-16T13:42:31Z	success
+38908720818	legs (selftest, 5/5)	ubuntu-latest	2026-10-16T13:33:40Z	2026-10-16T14:04:11Z	success
+38908720818	legs (selftest, 4/5)	ubuntu-latest	2026-10-16T13:33:40Z	2026-10-16T14:00:25Z	success
+38908720818	legs (selftest, 3/5)	ubuntu-latest	2026-10-16T13:33:40Z	2026-10-16T13:48:25Z	success
+38908720818	legs (supply-chain)	ubuntu-latest	2026-10-16T13:33:41Z	2026-10-16T13:38:54Z	success
+38908720818	legs (static)	ubuntu-latest	2026-10-16T13:33:40Z	2026-10-16T13:39:44Z	success
+38908720818	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-16T13:33:41Z	2026-10-16T13:42:28Z	success
+38908720818	legs (selftest, 1/5)	ubuntu-latest	2026-10-16T13:33:41Z	2026-10-16T14:06:32Z	success
+38908720818	verdict	ubuntu-latest	2026-10-16T14:06:34Z	2026-10-16T14:06:37Z	success
+38908720818	gate-verdict	ubuntu-latest	2026-10-16T14:06:34Z	2026-10-16T14:06:52Z	success
+38908720818	local	ubuntu-latest	2026-10-16T14:06:50Z	2026-10-16T14:06:57Z	success
+38908720818	images-push	ubuntu-latest	2026-10-16T14:06:50Z	2026-10-16T14:08:06Z	success
+38857119057	proof from zero (three features, three refusals)	ubuntu-latest	2026-10-16T05:41:55Z	2026-10-16T05:44:10Z	failure
+38898746713	derive	ubuntu-latest	2026-10-16T12:11:02Z	2026-10-16T12:11:20Z	success
+38898746713	images	ubuntu-latest	2026-10-16T12:11:22Z	2026-10-16T12:17:29Z	success
+38898746713	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-16T12:11:23Z	2026-10-16T12:24:53Z	success
+38898746713	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-16T12:11:22Z	2026-10-16T12:20:14Z	success
+38898746713	legs (selftest, 1/5)	ubuntu-latest	2026-10-16T12:11:22Z	2026-10-16T12:43:23Z	success
+38898746713	legs (selftest, 2/5)	ubuntu-latest	2026-10-16T12:11:23Z	2026-10-16T12:35:32Z	success
+38898746713	legs (selftest, 5/5)	ubuntu-latest	2026-10-16T12:11:22Z	2026-10-16T12:27:06Z	success
+38898746713	legs (supply-chain)	ubuntu-latest	2026-10-16T12:11:23Z	2026-10-16T12:16:28Z	success
+38898746713	legs (selftest, 4/5)	ubuntu-latest	2026-10-16T12:11:22Z	2026-10-16T12:31:02Z	success
+38898746713	legs (static)	ubuntu-latest	2026-10-16T12:11:23Z	2026-10-16T12:18:37Z	success
+38898746713	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-16T12:11:22Z	2026-10-16T12:20:23Z	success
+38898746713	legs (selftest, 3/5)	ubuntu-latest	2026-10-16T12:11:23Z	2026-10-16T12:48:39Z	success
+38898746713	legs (full-house-rules)	ubuntu-latest	2026-10-16T12:11:23Z	2026-10-16T12:16:06Z	success
+38898746713	gate-verdict	ubuntu-latest	2026-10-16T12:48:42Z	2026-10-16T12:49:05Z	success
+38898746713	verdict	ubuntu-latest	2026-10-16T12:48:42Z	2026-10-16T12:48:45Z	success
+38898746713	local	ubuntu-latest	2026-10-16T12:48:48Z	2026-10-16T12:48:55Z	success
+38898746713	images-push	ubuntu-latest	2026-10-16T12:48:48Z	2026-10-16T12:49:08Z	success
+38898746713	deploy-staging	ubuntu-latest	2026-10-16T12:49:11Z	2026-10-16T12:49:15Z	success
+38893028453	derive	ubuntu-latest	2026-10-16T11:19:42Z	2026-10-16T11:20:03Z	success
+38893028453	legs (full-house-rules)	ubuntu-latest	2026-10-16T11:20:06Z	2026-10-16T11:24:34Z	success
+38893028453	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-16T11:20:06Z	2026-10-16T11:29:45Z	success
+38893028453	legs (selftest, 2/5)	ubuntu-latest	2026-10-16T11:20:06Z	2026-10-16T11:44:25Z	success
+38893028453	legs (selftest, 5/5)	ubuntu-latest	2026-10-16T11:20:06Z	2026-10-16T11:38:56Z	success
+38893028453	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-16T11:20:06Z	2026-10-16T11:26:09Z	success
+38893028453	images	ubuntu-latest	2026-10-16T11:20:06Z	2026-10-16T11:20:46Z	success
+38893028453	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-16T11:20:06Z	2026-10-16T11:34:15Z	success
+38893028453	legs (selftest, 1/5)	ubuntu-latest	2026-10-16T11:20:06Z	2026-10-16T11:51:37Z	success
+38893028453	legs (static)	ubuntu-latest	2026-10-16T11:20:06Z	2026-10-16T11:24:49Z	success
+38893028453	legs (selftest, 3/5)	ubuntu-latest	2026-10-16T11:20:06Z	2026-10-16T11:56:17Z	success
+38893028453	legs (selftest, 4/5)	ubuntu-latest	2026-10-16T11:20:06Z	2026-10-16T11:46:51Z	success
+38893028453	legs (supply-chain)	ubuntu-latest	2026-10-16T11:20:06Z	2026-10-16T11:25:52Z	success
+38893028453	verdict	ubuntu-latest	2026-10-16T11:56:20Z	2026-10-16T11:56:24Z	success
+38893028453	gate-verdict	ubuntu-latest	2026-10-16T11:56:20Z	2026-10-16T11:56:38Z	success
+38893028453	images-push	ubuntu-latest	2026-10-16T11:56:27Z	2026-10-16T11:56:32Z	success
+38893028453	local	ubuntu-latest	2026-10-16T11:56:26Z	2026-10-16T11:56:33Z	success
+38893028453	deploy-staging	ubuntu-latest	2026-10-16T11:56:34Z	2026-10-16T11:56:38Z	success
+38894494608	derive	ubuntu-latest	2026-10-16T11:32:55Z	2026-10-16T11:33:17Z	success
+38894494608	images	ubuntu-latest	2026-10-16T11:33:19Z	2026-10-16T11:37:25Z	success
+38894494608	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-16T11:33:19Z	2026-10-16T11:42:47Z	success
+38894494608	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-16T11:33:19Z	2026-10-16T11:41:42Z	success
+38894494608	legs (selftest, 3/5)	ubuntu-latest	2026-10-16T11:33:20Z	2026-10-16T12:10:14Z	success
+38894494608	legs (static)	ubuntu-latest	2026-10-16T11:33:19Z	2026-10-16T11:39:06Z	success
+38894494608	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-16T11:33:19Z	2026-10-16T11:43:39Z	success
+38894494608	legs (selftest, 5/5)	ubuntu-latest	2026-10-16T11:33:20Z	2026-10-16T12:00:15Z	success
+38894494608	legs (selftest, 2/5)	ubuntu-latest	2026-10-16T11:33:20Z	2026-10-16T11:59:02Z	success
+38894494608	legs (selftest, 1/5)	ubuntu-latest	2026-10-16T11:33:19Z	2026-10-16T11:52:22Z	success
+38894494608	legs (selftest, 4/5)	ubuntu-latest	2026-10-16T11:33:19Z	2026-10-16T12:00:52Z	success
+38894494608	legs (supply-chain)	ubuntu-latest	2026-10-16T11:33:19Z	2026-10-16T11:39:12Z	success
+38894494608	legs (full-house-rules)	ubuntu-latest	2026-10-16T11:33:19Z	2026-10-16T11:36:37Z	success
+38894494608	verdict	ubuntu-latest	2026-10-16T12:10:16Z	2026-10-16T12:10:20Z	success
+38894494608	gate-verdict	ubuntu-latest	2026-10-16T12:10:16Z	2026-10-16T12:10:34Z	success
+38894494608	images-push	ubuntu-latest	2026-10-16T12:10:24Z	2026-10-16T12:12:03Z	success
+38894494608	local	ubuntu-latest	2026-10-16T12:10:23Z	2026-10-16T12:10:32Z	success
+38853961597	proof from zero (three features, three refusals)	ubuntu-latest	2026-10-16T05:05:29Z	2026-10-16T05:07:44Z	failure
+38888978852	derive	ubuntu-latest	2026-10-16T10:42:22Z	2026-10-16T10:42:53Z	success
+38888978852	images	ubuntu-latest	2026-10-16T10:42:56Z	2026-10-16T10:48:41Z	success
+38888978852	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-16T10:42:56Z	2026-10-16T10:51:28Z	success
+38888978852	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-16T10:42:56Z	2026-10-16T10:52:28Z	success
+38888978852	legs (supply-chain)	ubuntu-latest	2026-10-16T10:42:56Z	2026-10-16T10:48:45Z	success
+38888978852	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-16T10:42:56Z	2026-10-16T10:56:10Z	success
+38888978852	legs (static)	ubuntu-latest	2026-10-16T10:42:56Z	2026-10-16T10:49:40Z	success
+38888978852	legs (selftest, 3/5)	ubuntu-latest	2026-10-16T10:42:56Z	2026-10-16T11:18:59Z	success
+38888978852	legs (full-house-rules)	ubuntu-latest	2026-10-16T10:42:56Z	2026-10-16T10:47:09Z	success
+38888978852	legs (selftest, 2/5)	ubuntu-latest	2026-10-16T10:42:56Z	2026-10-16T11:00:39Z	success
+38888978852	legs (selftest, 1/5)	ubuntu-latest	2026-10-16T10:42:56Z	2026-10-16T11:14:03Z	success
+38888978852	legs (selftest, 4/5)	ubuntu-latest	2026-10-16T10:42:56Z	2026-10-16T10:57:51Z	success
+38888978852	legs (selftest, 5/5)	ubuntu-latest	2026-10-16T10:42:57Z	2026-10-16T11:01:55Z	success
+38888978852	gate-verdict	ubuntu-latest	2026-10-16T11:19:02Z	2026-10-16T11:19:22Z	success
+38888978852	verdict	ubuntu-latest	2026-10-16T11:19:02Z	2026-10-16T11:19:06Z	success
+38888978852	local	ubuntu-latest	2026-10-16T11:19:08Z	2026-10-16T11:19:15Z	success
+38888978852	images-push	ubuntu-latest	2026-10-16T11:19:10Z	2026-10-16T11:20:23Z	success
+38848007314	proof from zero (three features, three refusals)	ubuntu-latest	2026-10-16T03:56:17Z	2026-10-16T03:58:25Z	failure
+38900535282	legs (selftest, 1/6)	ubuntu-latest	2026-10-16T12:56:20Z	2026-10-16T13:27:07Z	success
+38900535282	derive	ubuntu-latest	2026-10-16T12:26:40Z	2026-10-16T12:27:04Z	success
+38900535282	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-16T12:27:08Z	2026-10-16T12:39:55Z	success
+38900535282	legs (selftest, 2/6)	ubuntu-latest	2026-10-16T12:27:07Z	2026-10-16T12:41:25Z	success
+38900535282	legs (selftest, 6/6)	ubuntu-latest	2026-10-16T12:27:08Z	2026-10-16T12:48:59Z	success
+38900535282	legs (selftest, 4/6)	ubuntu-latest	2026-10-16T12:27:07Z	2026-10-16T12:41:34Z	success
+38900535282	legs (selftest, 3/6)	ubuntu-latest	2026-10-16T12:27:07Z	2026-10-16T12:55:31Z	success
+38900535282	legs (selftest, 5/6)	ubuntu-latest	2026-10-16T12:27:07Z	2026-10-16T12:38:20Z	success
+38900535282	legs (full-house-rules)	ubuntu-latest	2026-10-16T12:27:07Z	2026-10-16T12:31:28Z	success
+38900535282	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-16T12:27:07Z	2026-10-16T12:37:56Z	success
+38900535282	legs (supply-chain)	ubuntu-latest	2026-10-16T12:27:07Z	2026-10-16T12:32:18Z	success
+38900535282	images	ubuntu-latest	2026-10-16T12:27:08Z	2026-10-16T12:32:26Z	success
+38900535282	legs (static)	ubuntu-latest	2026-10-16T12:27:07Z	2026-10-16T12:33:55Z	success
+38900535282	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-16T12:27:07Z	2026-10-16T12:36:37Z	success
+38900535282	verdict	ubuntu-latest	2026-10-16T13:27:11Z	2026-10-16T13:27:15Z	success
+38900535282	gate-verdict	ubuntu-latest	2026-10-16T13:27:11Z	2026-10-16T13:27:29Z	success
+38900535282	local	ubuntu-latest	2026-10-16T13:27:18Z	2026-10-16T13:27:26Z	success
+38900535282	images-push	ubuntu-latest	2026-10-16T13:27:18Z	2026-10-16T13:28:21Z	success
+38862562048	derive	ubuntu-latest	2026-10-16T06:40:43Z	2026-10-16T06:41:05Z	success
+38862562048	images	ubuntu-latest	2026-10-16T06:41:07Z	2026-10-16T06:47:14Z	success
+38862562048	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-16T06:41:08Z	2026-10-16T06:55:46Z	success
+38862562048	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-16T06:41:07Z	2026-10-16T06:47:09Z	success
+38862562048	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-16T06:41:07Z	2026-10-16T06:47:23Z	success
+38862562048	legs (selftest, 1/5)	ubuntu-latest	2026-10-16T06:41:08Z	2026-10-16T07:07:52Z	success
+38862562048	legs (selftest, 4/5)	ubuntu-latest	2026-10-16T06:41:08Z	2026-10-16T07:08:12Z	success
+38862562048	legs (selftest, 5/5)	ubuntu-latest	2026-10-16T06:41:07Z	2026-10-16T06:58:33Z	success
+38862562048	legs (selftest, 2/5)	ubuntu-latest	2026-10-16T06:41:07Z	2026-10-16T07:06:27Z	success
+38862562048	legs (supply-chain)	ubuntu-latest	2026-10-16T06:41:07Z	2026-10-16T06:46:48Z	success
+38862562048	legs (selftest, 3/5)	ubuntu-latest	2026-10-16T06:41:08Z	2026-10-16T07:15:16Z	success
+38862562048	legs (full-house-rules)	ubuntu-latest	2026-10-16T06:41:08Z	2026-10-16T06:45:17Z	success
+38862562048	legs (static)	ubuntu-latest	2026-10-16T06:41:07Z	2026-10-16T06:47:54Z	success
+38862562048	gate-verdict	ubuntu-latest	2026-10-16T07:15:18Z	2026-10-16T07:15:34Z	success
+38862562048	verdict	ubuntu-latest	2026-10-16T07:15:19Z	2026-10-16T07:15:23Z	success
+38862562048	images-push	ubuntu-latest	2026-10-16T07:15:31Z	2026-10-16T07:16:51Z	success
+38862562048	local	ubuntu-latest	2026-10-16T07:15:26Z	2026-10-16T07:15:34Z	success
+38854286150	derive	ubuntu-latest	2026-10-16T05:09:14Z	2026-10-16T05:09:32Z	success
+38854286150	images	ubuntu-latest	2026-10-16T05:09:34Z	2026-10-16T05:10:11Z	success
+38854286150	legs (static)	ubuntu-latest	2026-10-16T05:09:34Z	2026-10-16T05:16:22Z	success
+38854286150	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-16T05:09:34Z	2026-10-16T05:19:19Z	success
+38854286150	legs (selftest, 3/5)	ubuntu-latest	2026-10-16T05:09:34Z	2026-10-16T05:41:28Z	success
+38854286150	legs (selftest, 1/5)	ubuntu-latest	2026-10-16T05:09:34Z	2026-10-16T05:41:02Z	success
+38854286150	legs (full-house-rules)	ubuntu-latest	2026-10-16T05:09:34Z	2026-10-16T05:13:48Z	success
+38854286150	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-16T05:09:34Z	2026-10-16T05:18:26Z	success
+38854286150	legs (selftest, 2/5)	ubuntu-latest	2026-10-16T05:09:35Z	2026-10-16T05:33:20Z	success
+38854286150	legs (selftest, 4/5)	ubuntu-latest	2026-10-16T05:09:34Z	2026-10-16T05:33:46Z	success
+38854286150	legs (supply-chain)	ubuntu-latest	2026-10-16T05:09:34Z	2026-10-16T05:15:21Z	success
+38854286150	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-16T05:09:34Z	2026-10-16T05:18:43Z	success
+38854286150	legs (selftest, 5/5)	ubuntu-latest	2026-10-16T05:09:34Z	2026-10-16T05:41:27Z	success
+38854286150	gate-verdict	ubuntu-latest	2026-10-16T05:41:31Z	2026-10-16T05:41:49Z	success
+38854286150	verdict	ubuntu-latest	2026-10-16T05:41:31Z	2026-10-16T05:41:33Z	success
+38854286150	images-push	ubuntu-latest	2026-10-16T05:41:36Z	2026-10-16T05:41:43Z	success
+38854286150	local	ubuntu-latest	2026-10-16T05:41:36Z	2026-10-16T05:41:44Z	success
+38854286150	deploy-staging	ubuntu-latest	2026-10-16T05:41:45Z	2026-10-16T05:41:49Z	success
+38843115103	proof from zero (three features, three refusals)	ubuntu-latest	2026-10-16T02:58:01Z	2026-10-16T02:58:23Z	success
+38851501591	derive	ubuntu-latest	2026-10-16T04:36:37Z	2026-10-16T04:37:00Z	success
+38851501591	images	ubuntu-latest	2026-10-16T04:37:03Z	2026-10-16T04:42:54Z	success
+38851501591	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-16T04:37:02Z	2026-10-16T04:45:15Z	success
+38851501591	legs (supply-chain)	ubuntu-latest	2026-10-16T04:37:02Z	2026-10-16T04:40:46Z	success
+38851501591	legs (selftest, 4/5)	ubuntu-latest	2026-10-16T04:37:03Z	2026-10-16T04:54:01Z	success
+38851501591	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-16T04:37:03Z	2026-10-16T04:47:26Z	success
+38851501591	legs (static)	ubuntu-latest	2026-10-16T04:37:03Z	2026-10-16T04:43:52Z	success
+38851501591	legs (selftest, 1/5)	ubuntu-latest	2026-10-16T04:37:03Z	2026-10-16T05:07:26Z	success
+38851501591	legs (selftest, 5/5)	ubuntu-latest	2026-10-16T04:37:03Z	2026-10-16T05:08:44Z	success
+38851501591	legs (selftest, 2/5)	ubuntu-latest	2026-10-16T04:37:03Z	2026-10-16T04:52:14Z	success
+38851501591	legs (full-house-rules)	ubuntu-latest	2026-10-16T04:37:03Z	2026-10-16T04:41:13Z	success
+38851501591	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-16T04:37:03Z	2026-10-16T04:49:40Z	success
+38851501591	legs (selftest, 3/5)	ubuntu-latest	2026-10-16T04:37:03Z	2026-10-16T05:02:58Z	success
+38851501591	gate-verdict	ubuntu-latest	2026-10-16T05:08:46Z	2026-10-16T05:09:05Z	success
+38851501591	verdict	ubuntu-latest	2026-10-16T05:08:46Z	2026-10-16T05:08:50Z	success
+38851501591	local	ubuntu-latest	2026-10-16T05:08:52Z	2026-10-16T05:09:00Z	success
+38851501591	images-push	ubuntu-latest	2026-10-16T05:08:53Z	2026-10-16T05:09:33Z	success
+38851156821	derive	ubuntu-latest	2026-10-16T04:32:36Z	2026-10-16T04:32:56Z	success
+38851156821	images	ubuntu-latest	2026-10-16T04:32:58Z	2026-10-16T04:33:24Z	success
+38851156821	legs (supply-chain)	ubuntu-latest	2026-10-16T04:32:58Z	2026-10-16T04:38:42Z	success
+38851156821	legs (selftest, 5/6)	ubuntu-latest	2026-10-16T04:32:58Z	2026-10-16T04:55:00Z	success
+38851156821	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-16T04:32:58Z	2026-10-16T04:43:13Z	success
+38851156821	legs (selftest, 4/6)	ubuntu-latest	2026-10-16T04:32:59Z	2026-10-16T04:46:30Z	success
+38851156821	legs (selftest, 2/6)	ubuntu-latest	2026-10-16T04:32:58Z	2026-10-16T04:55:17Z	success
+38851156821	legs (selftest, 6/6)	ubuntu-latest	2026-10-16T04:32:59Z	2026-10-16T05:03:35Z	success
+38851156821	legs (full-house-rules)	ubuntu-latest	2026-10-16T04:32:58Z	2026-10-16T04:36:18Z	success
+38851156821	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-16T04:32:58Z	2026-10-16T04:41:20Z	success
+38851156821	legs (static)	ubuntu-latest	2026-10-16T04:32:59Z	2026-10-16T04:39:45Z	success
+38851156821	legs (selftest, 1/6)	ubuntu-latest	2026-10-16T04:32:58Z	2026-10-16T05:05:03Z	success
+38851156821	legs (selftest, 3/6)	ubuntu-latest	2026-10-16T04:32:58Z	2026-10-16T04:52:15Z	success
+38851156821	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-16T04:32:59Z	2026-10-16T04:44:03Z	success
+38851156821	gate-verdict	ubuntu-latest	2026-10-16T05:05:05Z	2026-10-16T05:05:24Z	success
+38851156821	verdict	ubuntu-latest	2026-10-16T05:05:05Z	2026-10-16T05:05:08Z	success
+38851156821	local	ubuntu-latest	2026-10-16T05:05:11Z	2026-10-16T05:05:20Z	success
+38851156821	images-push	ubuntu-latest	2026-10-16T05:05:10Z	2026-10-16T05:05:14Z	success
+38851156821	deploy-staging	ubuntu-latest	2026-10-16T05:05:17Z	2026-10-16T05:05:21Z	success
+38837534677	proof from zero (three features, three refusals)	ubuntu-latest	2026-10-16T01:53:26Z	2026-10-16T01:55:45Z	failure
+38866091203	derive	ubuntu-latest	2026-10-16T07:15:45Z	2026-10-16T07:16:05Z	success
+38866091203	legs (selftest, 4/5)	ubuntu-latest	2026-10-16T07:49:23Z	2026-10-16T08:15:42Z	success
+38866091203	legs (static)	ubuntu-latest	2026-10-16T07:16:07Z	2026-10-16T07:22:34Z	success
+38866091203	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-16T07:16:07Z	2026-10-16T07:27:53Z	success
+38866091203	images	ubuntu-latest	2026-10-16T07:16:08Z	2026-10-16T07:22:30Z	success
+38866091203	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-16T07:16:08Z	2026-10-16T07:23:54Z	success
+38866091203	legs (selftest, 2/5)	ubuntu-latest	2026-10-16T07:16:07Z	2026-10-16T07:34:13Z	success
+38866091203	legs (selftest, 3/5)	ubuntu-latest	2026-10-16T07:16:07Z	2026-10-16T07:37:20Z	success
+38866091203	legs (full-house-rules)	ubuntu-latest	2026-10-16T07:16:07Z	2026-10-16T07:20:30Z	success
+38866091203	legs (selftest, 5/5)	ubuntu-latest	2026-10-16T07:16:07Z	2026-10-16T07:33:53Z	success
+38866091203	legs (selftest, 1/5)	ubuntu-latest	2026-10-16T07:16:07Z	2026-10-16T07:47:25Z	success
+38866091203	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-16T07:16:08Z	2026-10-16T07:24:27Z	success
+38866091203	legs (supply-chain)	ubuntu-latest	2026-10-16T07:16:08Z	2026-10-16T07:21:08Z	success
+38866091203	verdict	ubuntu-latest	2026-10-16T08:15:45Z	2026-10-16T08:15:48Z	success
+38866091203	gate-verdict	ubuntu-latest	2026-10-16T08:15:45Z	2026-10-16T08:16:03Z	success
+38866091203	local	ubuntu-latest	2026-10-16T08:15:51Z	2026-10-16T08:15:59Z	success
+38866091203	images-push	ubuntu-latest	2026-10-16T08:15:51Z	2026-10-16T08:16:13Z	failure
+38845878260	derive	ubuntu-latest	2026-10-16T03:30:44Z	2026-10-16T03:31:00Z	success
+38845878260	images	ubuntu-latest	2026-10-16T03:31:03Z	2026-10-16T03:31:39Z	success
+38845878260	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-16T03:31:03Z	2026-10-16T03:37:29Z	success
+38845878260	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-16T03:31:03Z	2026-10-16T03:41:16Z	success
+38845878260	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-16T03:31:03Z	2026-10-16T03:38:27Z	success
+38845878260	legs (selftest, 3/5)	ubuntu-latest	2026-10-16T03:31:03Z	2026-10-16T03:54:48Z	success
+38845878260	legs (selftest, 5/5)	ubuntu-latest	2026-10-16T03:31:03Z	2026-10-16T03:55:47Z	success
+38845878260	legs (selftest, 4/5)	ubuntu-latest	2026-10-16T03:31:03Z	2026-10-16T03:53:43Z	success
+38845878260	legs (static)	ubuntu-latest	2026-10-16T03:31:03Z	2026-10-16T03:37:32Z	success
+38845878260	legs (full-house-rules)	ubuntu-latest	2026-10-16T03:31:03Z	2026-10-16T03:35:12Z	success
+38845878260	legs (selftest, 2/5)	ubuntu-latest	2026-10-16T03:31:03Z	2026-10-16T03:54:13Z	success
+38845878260	legs (selftest, 1/5)	ubuntu-latest	2026-10-16T03:31:03Z	2026-10-16T03:55:50Z	success
+38845878260	legs (supply-chain)	ubuntu-latest	2026-10-16T03:31:03Z	2026-10-16T03:35:08Z	success
+38845878260	verdict	ubuntu-latest	2026-10-16T03:55:52Z	2026-10-16T03:55:55Z	success
+38845878260	gate-verdict	ubuntu-latest	2026-10-16T03:55:52Z	2026-10-16T03:56:11Z	success
+38845878260	local	ubuntu-latest	2026-10-16T03:55:58Z	2026-10-16T03:56:05Z	success
+38845878260	images-push	ubuntu-latest	2026-10-16T03:55:57Z	2026-10-16T03:56:02Z	success
+38845878260	deploy-staging	ubuntu-latest	2026-10-16T03:56:04Z	2026-10-16T03:56:07Z	success
+38837824391	derive	ubuntu-latest	2026-10-16T01:56:42Z	2026-10-16T01:57:08Z	success
+38837824391	legs (selftest)	ubuntu-latest	2026-10-16T01:57:10Z	2026-10-16T02:25:48Z	success
+38837824391	images	ubuntu-latest	2026-10-16T01:57:11Z	2026-10-16T02:03:27Z	success
+38837824391	legs (static)	ubuntu-latest	2026-10-16T01:57:11Z	2026-10-16T02:03:03Z	success
+38837824391	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-16T01:57:10Z	2026-10-16T02:06:06Z	success
+38837824391	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-16T01:57:10Z	2026-10-16T02:06:16Z	success
+38837824391	legs (full-house-rules)	ubuntu-latest	2026-10-16T01:57:10Z	2026-10-16T02:01:13Z	success
+38837824391	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-16T01:57:11Z	2026-10-16T02:04:59Z	success
+38837824391	gate-verdict	ubuntu-latest	2026-10-16T02:25:50Z	2026-10-16T02:26:06Z	success
+38837824391	verdict	ubuntu-latest	2026-10-16T02:25:50Z	2026-10-16T02:25:53Z	success
+38837824391	local	ubuntu-latest	2026-10-16T02:25:55Z	2026-10-16T02:26:02Z	success
+38837824391	images-push	ubuntu-latest	2026-10-16T02:25:56Z	2026-10-16T02:26:45Z	success
+38833509485	proof from zero (three features, three refusals)	ubuntu-latest	2026-10-16T01:08:43Z	2026-10-16T01:11:12Z	failure
+38840455689	derive	ubuntu-latest	2026-10-16T02:26:48Z	2026-10-16T02:27:02Z	success
+38840455689	images	ubuntu-latest	2026-10-16T02:27:05Z	2026-10-16T02:27:37Z	success
+38840455689	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-16T02:27:05Z	2026-10-16T02:35:01Z	success
+38840455689	legs (selftest, 3/5)	ubuntu-latest	2026-10-16T02:27:05Z	2026-10-16T02:57:34Z	success
+38840455689	legs (selftest, 4/5)	ubuntu-latest	2026-10-16T02:27:05Z	2026-10-16T02:52:22Z	success
+38840455689	legs (full-house-rules)	ubuntu-latest	2026-10-16T02:27:05Z	2026-10-16T02:31:21Z	success
+38840455689	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-16T02:27:05Z	2026-10-16T02:34:26Z	success
+38840455689	legs (static)	ubuntu-latest	2026-10-16T02:27:05Z	2026-10-16T02:34:12Z	success
+38840455689	legs (supply-chain)	ubuntu-latest	2026-10-16T02:27:05Z	2026-10-16T02:32:47Z	success
+38840455689	legs (selftest, 5/5)	ubuntu-latest	2026-10-16T02:27:05Z	2026-10-16T02:54:35Z	success
+38840455689	legs (selftest, 1/5)	ubuntu-latest	2026-10-16T02:27:05Z	2026-10-16T02:42:51Z	success
+38840455689	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-16T02:27:05Z	2026-10-16T02:36:01Z	success
+38840455689	legs (selftest, 2/5)	ubuntu-latest	2026-10-16T02:27:05Z	2026-10-16T02:50:14Z	success
+38840455689	verdict	ubuntu-latest	2026-10-16T02:57:36Z	2026-10-16T02:57:39Z	success
+38840455689	gate-verdict	ubuntu-latest	2026-10-16T02:57:36Z	2026-10-16T02:57:56Z	success
+38840455689	images-push	ubuntu-latest	2026-10-16T02:57:42Z	2026-10-16T02:57:47Z	success
+38840455689	local	ubuntu-latest	2026-10-16T02:57:42Z	2026-10-16T02:57:50Z	success
+38840455689	deploy-staging	ubuntu-latest	2026-10-16T02:57:50Z	2026-10-16T02:57:55Z	success
+38835139822	derive	ubuntu-latest	2026-10-16T01:26:40Z	2026-10-16T01:27:09Z	success
+38835139822	images	ubuntu-latest	2026-10-16T01:27:11Z	2026-10-16T01:33:12Z	success
+38835139822	legs (static)	ubuntu-latest	2026-10-16T01:27:11Z	2026-10-16T01:33:49Z	success
+38835139822	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-16T01:27:11Z	2026-10-16T01:36:05Z	success
+38835139822	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-16T01:27:11Z	2026-10-16T01:38:02Z	failure
+38835139822	legs (selftest)	ubuntu-latest	2026-10-16T01:27:11Z	2026-10-16T01:56:23Z	success
+38835139822	legs (full-house-rules)	ubuntu-latest	2026-10-16T01:27:11Z	2026-10-16T01:31:04Z	success
+38835139822	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-16T01:27:11Z	2026-10-16T01:35:43Z	success
+38835139822	verdict	ubuntu-latest	2026-10-16T01:56:25Z	2026-10-16T01:56:29Z	failure
+38835139822	gate-verdict	ubuntu-latest	2026-10-16T01:56:25Z	2026-10-16T01:56:40Z	success
+38834655077	derive	ubuntu-latest	2026-10-16T01:21:19Z	2026-10-16T01:21:35Z	success
+38834655077	images	ubuntu-latest	2026-10-16T01:21:38Z	2026-10-16T01:22:12Z	success
+38834655077	legs (static)	ubuntu-latest	2026-10-16T01:21:38Z	2026-10-16T01:28:19Z	success
+38834655077	legs (selftest, 3/5)	ubuntu-latest	2026-10-16T01:21:38Z	2026-10-16T01:52:40Z	success
+38834655077	legs (selftest, 2/5)	ubuntu-latest	2026-10-16T01:21:38Z	2026-10-16T01:38:04Z	failure
+38834655077	legs (selftest, 1/5)	ubuntu-latest	2026-10-16T01:21:38Z	2026-10-16T01:53:01Z	success
+38834655077	legs (full-house-rules)	ubuntu-latest	2026-10-16T01:21:38Z	2026-10-16T01:25:54Z	success
+38834655077	legs (supply-chain)	ubuntu-latest	2026-10-16T01:21:38Z	2026-10-16T01:27:22Z	success
+38834655077	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-16T01:21:38Z	2026-10-16T01:30:52Z	success
+38834655077	legs (selftest, 4/5)	ubuntu-latest	2026-10-16T01:21:38Z	2026-10-16T01:44:15Z	success
+38834655077	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-16T01:21:38Z	2026-10-16T01:27:38Z	success
+38834655077	legs (selftest, 5/5)	ubuntu-latest	2026-10-16T01:21:38Z	2026-10-16T01:52:07Z	success
+38834655077	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-16T01:21:38Z	2026-10-16T01:29:54Z	success
+38834655077	verdict	ubuntu-latest	2026-10-16T01:53:04Z	2026-10-16T01:53:07Z	failure
+38834655077	gate-verdict	ubuntu-latest	2026-10-16T01:53:04Z	2026-10-16T01:53:21Z	success
+38846237684	legs (selftest, 1/6)	ubuntu-latest	2026-10-16T04:00:39Z	2026-10-16T04:32:02Z	success
+38846237684	legs (static)	ubuntu-latest	2026-10-16T03:35:30Z	2026-10-16T03:42:16Z	success
+38846237684	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-16T03:35:30Z	2026-10-16T03:45:20Z	success
+38846237684	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-16T03:35:30Z	2026-10-16T03:46:15Z	success
+38846237684	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-16T03:35:30Z	2026-10-16T03:43:48Z	success
+38846237684	legs (full-house-rules)	ubuntu-latest	2026-10-16T03:35:30Z	2026-10-16T03:39:04Z	success
+38846237684	legs (supply-chain)	ubuntu-latest	2026-10-16T03:35:30Z	2026-10-16T03:41:26Z	success
+38846237684	legs (selftest, 2/6)	ubuntu-latest	2026-10-16T03:35:30Z	2026-10-16T03:58:13Z	success
+38846237684	legs (selftest, 5/6)	ubuntu-latest	2026-10-16T03:35:30Z	2026-10-16T04:00:09Z	success
+38846237684	derive	ubuntu-latest	2026-10-16T03:35:02Z	2026-10-16T03:35:27Z	success
+38846237684	images	ubuntu-latest	2026-10-16T03:35:30Z	2026-10-16T03:41:17Z	success
+38846237684	legs (selftest, 6/6)	ubuntu-latest	2026-10-16T03:35:30Z	2026-10-16T03:54:12Z	success
+38846237684	legs (selftest, 4/6)	ubuntu-latest	2026-10-16T03:35:30Z	2026-10-16T03:53:40Z	success
+38846237684	legs (selftest, 3/6)	ubuntu-latest	2026-10-16T03:35:30Z	2026-10-16T03:51:03Z	success
+38846237684	gate-verdict	ubuntu-latest	2026-10-16T04:32:04Z	2026-10-16T04:32:21Z	success
+38846237684	verdict	ubuntu-latest	2026-10-16T04:32:04Z	2026-10-16T04:32:09Z	success
+38846237684	local	ubuntu-latest	2026-10-16T04:32:11Z	2026-10-16T04:32:19Z	success
+38846237684	images-push	ubuntu-latest	2026-10-16T04:32:12Z	2026-10-16T04:33:16Z	success
+38831047792	derive	ubuntu-latest	2026-10-16T00:42:57Z	2026-10-16T00:43:16Z	success
+38831047792	images	ubuntu-latest	2026-10-16T00:43:19Z	2026-10-16T00:49:24Z	success
+38831047792	legs (selftest, 1/5)	ubuntu-latest	2026-10-16T00:43:19Z	2026-10-16T01:00:04Z	success
+38831047792	legs (full-house-rules)	ubuntu-latest	2026-10-16T00:43:19Z	2026-10-16T00:47:20Z	success
+38831047792	legs (selftest, 3/5)	ubuntu-latest	2026-10-16T00:43:19Z	2026-10-16T01:02:55Z	success
+38831047792	legs (supply-chain)	ubuntu-latest	2026-10-16T00:43:19Z	2026-10-16T00:49:06Z	success
+38831047792	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-16T00:43:19Z	2026-10-16T00:53:01Z	success
+38831047792	legs (selftest, 2/5)	ubuntu-latest	2026-10-16T00:43:19Z	2026-10-16T01:06:31Z	success
+38831047792	legs (static)	ubuntu-latest	2026-10-16T00:43:19Z	2026-10-16T00:49:20Z	success
+38831047792	legs (selftest, 5/5)	ubuntu-latest	2026-10-16T00:43:19Z	2026-10-16T01:05:24Z	success
+38831047792	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-16T00:43:19Z	2026-10-16T00:50:10Z	success
+38831047792	legs (selftest, 4/5)	ubuntu-latest	2026-10-16T00:43:19Z	2026-10-16T01:07:59Z	success
+38831047792	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-16T00:43:19Z	2026-10-16T00:50:59Z	success
+38831047792	gate-verdict	ubuntu-latest	2026-10-16T01:08:01Z	2026-10-16T01:08:18Z	success
+38831047792	verdict	ubuntu-latest	2026-10-16T01:08:01Z	2026-10-16T01:08:05Z	success
+38831047792	images-push	ubuntu-latest	2026-10-16T01:08:08Z	2026-10-16T01:08:38Z	failure
+38831047792	local	ubuntu-latest	2026-10-16T01:08:07Z	2026-10-16T01:08:17Z	success
+38831584650	derive	ubuntu-latest	2026-10-16T00:48:32Z	2026-10-16T00:48:56Z	success
+38831584650	images	ubuntu-latest	2026-10-16T00:48:59Z	2026-10-16T00:54:44Z	success
+38831584650	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-16T00:48:59Z	2026-10-16T00:55:17Z	success
+38831584650	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-16T00:48:59Z	2026-10-16T00:59:41Z	success
+38831584650	legs (full-house-rules)	ubuntu-latest	2026-10-16T00:48:59Z	2026-10-16T00:52:59Z	success
+38831584650	legs (static)	ubuntu-latest	2026-10-16T00:48:59Z	2026-10-16T00:53:21Z	success
+38831584650	legs (selftest, 2/5)	ubuntu-latest	2026-10-16T00:48:59Z	2026-10-16T01:12:52Z	success
+38831584650	legs (selftest, 4/5)	ubuntu-latest	2026-10-16T00:48:59Z	2026-10-16T01:14:08Z	success
+38831584650	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-16T00:48:59Z	2026-10-16T00:57:51Z	success
+38831584650	legs (selftest, 5/5)	ubuntu-latest	2026-10-16T00:48:59Z	2026-10-16T01:04:46Z	success
+38831584650	legs (supply-chain)	ubuntu-latest	2026-10-16T00:48:59Z	2026-10-16T00:52:37Z	success
+38831584650	legs (selftest, 3/5)	ubuntu-latest	2026-10-16T00:48:59Z	2026-10-16T01:20:46Z	success
+38831584650	legs (selftest, 1/5)	ubuntu-latest	2026-10-16T00:48:59Z	2026-10-16T01:19:42Z	success
+38831584650	gate-verdict	ubuntu-latest	2026-10-16T01:20:48Z	2026-10-16T01:21:07Z	success
+38831584650	verdict	ubuntu-latest	2026-10-16T01:20:48Z	2026-10-16T01:20:51Z	success
+38831584650	images-push	ubuntu-latest	2026-10-16T01:20:53Z	2026-10-16T01:21:33Z	success
+38831584650	local	ubuntu-latest	2026-10-16T01:20:53Z	2026-10-16T01:21:01Z	success
+38841237700	legs (selftest, 3/5)	ubuntu-latest	2026-10-16T03:05:59Z	2026-10-16T03:30:19Z	success
+38841237700	images	ubuntu-latest	2026-10-16T02:36:18Z	2026-10-16T02:42:09Z	success
+38841237700	legs (static)	ubuntu-latest	2026-10-16T02:36:18Z	2026-10-16T02:41:54Z	success
+38841237700	legs (selftest, 4/5)	ubuntu-latest	2026-10-16T02:36:17Z	2026-10-16T02:56:00Z	success
+38841237700	legs (full-house-rules)	ubuntu-latest	2026-10-16T02:36:18Z	2026-10-16T02:40:42Z	success
+38841237700	legs (selftest, 5/5)	ubuntu-latest	2026-10-16T02:36:17Z	2026-10-16T03:04:25Z	success
+38841237700	legs (selftest, 2/5)	ubuntu-latest	2026-10-16T02:36:18Z	2026-10-16T03:00:32Z	success
+38841237700	legs (selftest, 1/5)	ubuntu-latest	2026-10-16T02:36:18Z	2026-10-16T02:53:22Z	success
+38841237700	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-16T02:36:17Z	2026-10-16T02:43:10Z	success
+38841237700	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-16T02:36:18Z	2026-10-16T02:47:31Z	success
+38841237700	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-16T02:36:17Z	2026-10-16T02:44:05Z	success
+38841237700	legs (supply-chain)	ubuntu-latest	2026-10-16T02:36:17Z	2026-10-16T02:41:59Z	success
+38841237700	derive	ubuntu-latest	2026-10-16T02:35:50Z	2026-10-16T02:36:15Z	success
+38841237700	verdict	ubuntu-latest	2026-10-16T03:30:22Z	2026-10-16T03:30:25Z	success
+38841237700	gate-verdict	ubuntu-latest	2026-10-16T03:30:22Z	2026-10-16T03:30:36Z	success
+38841237700	images-push	ubuntu-latest	2026-10-16T03:30:27Z	2026-10-16T03:31:08Z	success
+38841237700	local	ubuntu-latest	2026-10-16T03:30:27Z	2026-10-16T03:30:34Z	success
+38369697485	derive	ubuntu-latest	2026-10-13T08:30:18Z	2026-10-13T08:30:20Z	failure
+38369697485	gate-verdict	ubuntu-latest	2026-10-13T08:30:20Z	2026-10-13T08:30:23Z	failure
+38369697485	verdict	ubuntu-latest	2026-10-13T08:30:20Z	2026-10-13T08:30:22Z	failure
+38368566745	derive	ubuntu-latest	2026-10-13T08:20:18Z	2026-10-13T08:20:19Z	failure
+38368566745	verdict	ubuntu-latest	2026-10-13T08:20:20Z	2026-10-13T08:20:21Z	failure
+38368566745	gate-verdict	ubuntu-latest	2026-10-13T08:20:20Z	2026-10-13T08:20:22Z	failure
+38365273185	derive	ubuntu-latest	2026-10-13T07:50:37Z	2026-10-13T07:50:39Z	failure
+38365273185	verdict	ubuntu-latest	2026-10-13T07:50:39Z	2026-10-13T07:50:42Z	failure
+38365273185	gate-verdict	ubuntu-latest	2026-10-13T07:50:39Z	2026-10-13T07:50:41Z	failure
+38365595388	derive	ubuntu-latest	2026-10-13T07:53:34Z	2026-10-13T07:53:37Z	failure
+38365595388	verdict	ubuntu-latest	2026-10-13T07:53:37Z	2026-10-13T07:53:39Z	failure
+38365595388	gate-verdict	ubuntu-latest	2026-10-13T07:53:37Z	2026-10-13T07:53:39Z	failure
+38362568485	derive	ubuntu-latest	2026-10-13T07:25:39Z	2026-10-13T07:25:41Z	failure
+38362568485	verdict	ubuntu-latest	2026-10-13T07:25:41Z	2026-10-13T07:25:43Z	failure
+38362568485	gate-verdict	ubuntu-latest	2026-10-13T07:25:41Z	2026-10-13T07:25:43Z	failure
+38358583709	derive	ubuntu-latest	2026-10-13T06:46:05Z	2026-10-13T06:46:07Z	failure
+38358583709	verdict	ubuntu-latest	2026-10-13T06:46:07Z	2026-10-13T06:46:10Z	failure
+38358583709	gate-verdict	ubuntu-latest	2026-10-13T06:46:07Z	2026-10-13T06:46:09Z	failure
+38356668489	derive	ubuntu-latest	2026-10-13T06:26:06Z	2026-10-13T06:26:09Z	failure
+38356668489	verdict	ubuntu-latest	2026-10-13T06:26:09Z	2026-10-13T06:26:11Z	failure
+38356668489	gate-verdict	ubuntu-latest	2026-10-13T06:26:09Z	2026-10-13T06:26:11Z	failure
+38378571926	derive	ubuntu-latest	2026-10-15T22:52:00Z	2026-10-15T22:52:20Z	success
+38378571926	images	ubuntu-latest	2026-10-15T22:52:24Z	2026-10-15T22:58:33Z	success
+38378571926	legs (static)	ubuntu-latest	2026-10-15T22:52:24Z	2026-10-15T22:59:10Z	success
+38378571926	legs (pytest-x2, 3/3)	ubuntu-latest	2026-10-15T22:52:24Z	2026-10-15T23:01:04Z	success
+38378571926	legs (selftest, 4/5)	ubuntu-latest	2026-10-15T22:52:24Z	2026-10-15T23:13:21Z	success
+38378571926	legs (selftest, 5/5)	ubuntu-latest	2026-10-15T22:52:24Z	2026-10-15T23:20:48Z	success
+38378571926	legs (supply-chain)	ubuntu-latest	2026-10-15T22:52:24Z	2026-10-15T22:54:12Z	failure
+38378571926	legs (selftest, 1/5)	ubuntu-latest	2026-10-15T22:52:24Z	2026-10-15T23:17:44Z	success
+38378571926	legs (pytest-x2, 1/3)	ubuntu-latest	2026-10-15T22:52:24Z	2026-10-15T23:02:08Z	success
+38378571926	legs (full-house-rules)	ubuntu-latest	2026-10-15T22:52:24Z	2026-10-15T22:56:33Z	success
+38378571926	legs (selftest, 2/5)	ubuntu-latest	2026-10-15T22:52:24Z	2026-10-15T23:16:08Z	success
+38378571926	legs (selftest, 3/5)	ubuntu-latest	2026-10-15T22:52:24Z	2026-10-15T23:22:17Z	success
+38378571926	legs (pytest-x2, 2/3)	ubuntu-latest	2026-10-15T22:52:24Z	2026-10-15T23:02:31Z	success
+38378571926	verdict	ubuntu-latest	2026-10-15T23:22:20Z	2026-10-15T23:22:23Z	failure
+38378571926	gate-verdict	ubuntu-latest	2026-10-15T23:22:20Z	2026-10-15T23:22:36Z	success
+38355237193	derive	ubuntu-latest	2026-10-13T06:10:23Z	2026-10-13T06:10:25Z	failure
+38355237193	gate-verdict	ubuntu-latest	2026-10-13T06:10:25Z	2026-10-13T06:10:27Z	failure
+38355237193	verdict	ubuntu-latest	2026-10-13T06:10:25Z	2026-10-13T06:10:27Z	failure
+38351765131	derive	ubuntu-latest	2026-10-13T05:30:47Z	2026-10-13T05:30:49Z	failure
+38351765131	verdict	ubuntu-latest	2026-10-13T05:30:50Z	2026-10-13T05:30:52Z	failure
+38351765131	gate-verdict	ubuntu-latest	2026-10-13T05:30:50Z	2026-10-13T05:30:52Z	failure

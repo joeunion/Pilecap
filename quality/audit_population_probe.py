@@ -1,6 +1,6 @@
 """Rule 49's runner: who writes an audit row, and did they declare who and where.
 
-Started as a subprocess by `quality/checks.py::audit_row_shape` — never by the
+Started as a subprocess by `quality/checks/rule_49.py::audit_row_shape` — never by the
 default suite, and never in the gate's own process. It is a subprocess for the
 reason `quality/lifecycle_probe.py`, `quality/refusal_probe.py` and
 `quality/hotpath_probe.py` are: the answer lives in **live function objects**,
@@ -24,7 +24,7 @@ Output: one JSON object on stdout —
      "seam_error": "",
      "audited": [{"dotted", "module", "file", "line",
                   "actor": "required"|"defaulted"|"absent",
-                  "tenant": "required"|"defaulted"|"absent"}],
+                  "tenant": "required"|"defaulted"|"absent", "sweep": bool}],
      "services": ["<dotted names of EVERY @service, audited or not>"]}
 
 `services` is the second list for one reason: the allow-list's own consistency
@@ -40,6 +40,7 @@ pass.
 
 from __future__ import annotations
 
+import ast
 import importlib
 import inspect
 import json
@@ -77,6 +78,92 @@ def _shape(parameters: Any, name: str) -> str:
     return "required"
 
 
+def _on_the_sweep_signature(function: Any) -> bool:
+    """Whether it is the factory's `(*, before, tenant: None) -> core.types.Swept`, resolved."""
+    from apps.core.types import Swept
+
+    try:
+        signature = inspect.signature(function, eval_str=True)
+    except (NameError, TypeError, SyntaxError):
+        return False
+    if set(signature.parameters) != {"before", "tenant"}:
+        return False
+    tenant = signature.parameters["tenant"].annotation
+    return tenant in (None, type(None)) and signature.return_annotation is Swept
+
+
+def _factory_calls(module: Any) -> list[ast.Call]:
+    """Every call in the module's source whose callee resolves to `core.schedules.daily_purge`."""
+    from apps.core.schedules import daily_purge
+
+    try:
+        tree = ast.parse(inspect.getsource(module))
+    except (OSError, TypeError, SyntaxError):
+        return []
+    return [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and _resolve(module, node.func) is daily_purge
+    ]
+
+
+def _resolve(module: Any, node: ast.expr) -> Any:
+    """A `Name` or dotted `Attribute` read through the module's globals; None when it is neither."""
+    if isinstance(node, ast.Constant):
+        return node.value
+    if isinstance(node, ast.Name):
+        return vars(module).get(node.id)
+    if isinstance(node, ast.Attribute):
+        base = _resolve(module, node.value)
+        return getattr(base, node.attr, None) if base is not None else None
+    return None
+
+
+def factory_reach() -> set[str]:
+    """What the `daily_purge(...)` declarations reach, as `module.qualname`, by rule 31's walk."""
+    from apps.workflows.client import discovered_schedules
+    from quality.lifecycle_probe import (
+        activity_closure,
+        reached_activities,
+        registries,
+        workflow_name_of,
+    )
+
+    scheduled_workflows: set[str] = set()
+    for declaration in discovered_schedules():
+        scheduled_workflows.add(
+            workflow_name_of(getattr(declaration.schedule("audit-probe").action, "workflow", None))
+        )
+    declared: list[tuple[str, str]] = []
+    import apps as apps_package
+
+    for module_info in pkgutil.iter_modules(apps_package.__path__):
+        dotted_module = f"apps.{module_info.name}.activities"
+        try:
+            module = importlib.import_module(dotted_module)
+        except ModuleNotFoundError as error:
+            if error.name != dotted_module:
+                raise
+            continue
+        for call in _factory_calls(module):
+            workflow = next((k.value for k in call.keywords if k.arg == "workflow"), None)
+            name = workflow_name_of(_resolve(module, workflow)) if workflow is not None else ""
+            if name and name in scheduled_workflows:
+                declared.append((f"apps.{module_info.name}.activities", name))
+    workflow_by_name, activity_by_name = registries()
+    reached, _walked = reached_activities(declared, workflow_by_name, activity_by_name)
+    out: set[str] = set()
+    for dotted in reached:
+        module_name, _, attr = dotted.rpartition(".")
+        out |= activity_closure(getattr(importlib.import_module(module_name), attr))
+    return out
+
+
+def _dotted(function: Any) -> str:
+    """`module.qualname`, the spelling rule 31's walk answers in."""
+    return f"{getattr(function, '__module__', '')}.{getattr(function, '__qualname__', '')}"
+
+
 def main() -> int:
     sys.path.insert(0, str(ROOT))
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.test")
@@ -95,6 +182,7 @@ def main() -> int:
 
     import apps as apps_package
 
+    reach = factory_reach()
     for module_info in pkgutil.iter_modules(apps_package.__path__):
         name = f"apps.{module_info.name}.services"
         try:
@@ -103,7 +191,8 @@ def main() -> int:
             continue
         for attribute, value in vars(services).items():
             wrapped = getattr(value, "__wrapped__", None)
-            if wrapped is None or getattr(wrapped, "__module__", None) != name:
+            home = str(getattr(wrapped, "__module__", ""))
+            if wrapped is None or (home != name and not home.startswith(f"{name}.")):
                 continue
             dotted = f"{module_info.name}.{attribute}"
             out["services"].append(dotted)
@@ -123,6 +212,7 @@ def main() -> int:
                     "line": line,
                     "actor": _shape(parameters, "actor"),
                     "tenant": _shape(parameters, "tenant"),
+                    "sweep": _dotted(value) in reach and _on_the_sweep_signature(wrapped),
                 }
             )
     out["audited"].sort(key=lambda row: row["dotted"])

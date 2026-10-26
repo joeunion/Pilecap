@@ -1,0 +1,4 @@
+# golden-anchor: {"nth": 0, "scope": ["WidgetFilter"], "side": "before", "text": "due_before: Annotated[AwareDatetime | None, FilterLookup(q=\"due_at__lt\")] = Field("}
+    name: Annotated[str | None, FilterLookup(q="name__icontains")] = Field(
+        default=None, json_schema_extra=example("bench")
+    )

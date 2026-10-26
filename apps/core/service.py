@@ -41,8 +41,9 @@ import dataclasses
 import inspect
 import sys
 from collections.abc import Callable
+from contextvars import ContextVar
 from functools import wraps
-from typing import Any, cast
+from typing import Any, cast, overload
 from uuid import UUID
 
 from django.db import models, transaction
@@ -52,6 +53,8 @@ from apps.core import context
 from apps.core.actor import Actor
 from apps.core.exceptions import DomainError
 from apps.core.log import REDACTED, get_logger
+from apps.core.roads import road
+from apps.core.surfaces import STAFF
 
 log = get_logger("apps.core.service")
 
@@ -142,8 +145,8 @@ def _declares_tenant(fn: Callable[..., Any]) -> bool:
 
     Everything else in the tree either requires a `Tenant` (audited, tenanted,
     unchanged) or declares no `tenant` at all (`create_user`,
-    `record_zitadel_identity`, `create_tenant`, `record_run_id`,
-    `purge_dispatched_outbox` — unaudited before and unaudited now; a service
+    `record_zitadel_identity`, `create_tenant`, `record_run_id` — unaudited
+    before and unaudited now (a sweep declares `tenant: None`: rule 49); a service
     that never claims to be about a tenant's rows is not made into one by this).
 
     `deactivate_user` was on that list until it was given an `actor` and a
@@ -164,11 +167,14 @@ def _declares_tenant(fn: Callable[..., Any]) -> bool:
 
 
 def _allowed_keys(module_name: str) -> frozenset[str]:
-    """The app's `LOG_KEYS`, or the default."""
-    module = sys.modules.get(module_name)
-    declared = getattr(module, "LOG_KEYS", None) if module is not None else None
-    if isinstance(declared, (frozenset, set, tuple, list)):
-        return frozenset(str(key) for key in declared)
+    """The app's `LOG_KEYS`, or the default.
+
+    A `services/` package's members share the package's keys, so the parent is asked second.
+    """
+    for name in (module_name, module_name.rpartition(".")[0]):
+        declared = getattr(sys.modules.get(name), "LOG_KEYS", None)
+        if isinstance(declared, (frozenset, set, tuple, list)):
+            return frozenset(str(key) for key in declared)
     return DEFAULT_LOG_KEYS
 
 
@@ -222,7 +228,8 @@ def _plain(value: Any) -> Any:
     return str(value)
 
 
-def _trace_id() -> str:
+def trace_id() -> str:
+    """The current span's trace as 32 hex characters, or `""` outside a span."""
     span_context = trace.get_current_span().get_span_context()
     return format(span_context.trace_id, "032x") if span_context.is_valid else ""
 
@@ -379,6 +386,9 @@ def write_audit(
         object_type=object_type,
         object_id=object_id,
         door=str(bound.get("door") or ""),
+        # The surface the door bound beside `door` — context, for `door`'s
+        # reason: it is where the call came in, which is what context is for.
+        surface=str(bound.get("surface") or STAFF),
         outcome=outcome,
         error_code=error_code,
         input=payload,
@@ -386,12 +396,35 @@ def write_audit(
         session_id=str(bound.get("session_id") or ""),
         correlation_id=str(bound.get("correlation_id") or ""),
         causation_id=str(bound.get("causation_id") or ""),
-        trace_id=_trace_id(),
+        trace_id=trace_id(),
     ).save()
 
 
-def service[F: Callable[..., Any]](fn: F) -> F:
-    """Wrap a write. See the module docstring for what that buys."""
+#: Set while a service writes its row: a `witness=False` service it calls writes none (ADR core-29).
+_WITNESSED: ContextVar[bool] = ContextVar("djb_service_witnessed", default=False)
+
+
+@overload
+def service[F: Callable[..., Any]](fn: F, /) -> F: ...
+
+
+@overload
+def service[F: Callable[..., Any]](*, witness: bool = True) -> Callable[[F], F]: ...
+
+
+@road("audit", example="apps/example/services.py::create_widget")
+def service(fn: Any = None, /, *, witness: bool = True) -> Any:
+    """Wrap a write: its transaction, its audit row and its span (the module docstring says why).
+
+    `witness=False` writes no row under a witnessing service: the door call's row is that one's.
+    """
+    if fn is None:
+        return lambda target: _wrap(target, witness=witness)
+    return _wrap(fn, witness=witness)
+
+
+def _wrap[F: Callable[..., Any]](fn: F, *, witness: bool) -> F:
+    """The `@service` wrapper itself; `witness` is read once, at decoration time (ADR core-29)."""
     _require_keyword_only(fn)
 
     action = f"{_app_label(fn.__module__)}.{fn.__name__}"
@@ -405,6 +438,7 @@ def service[F: Callable[..., Any]](fn: F) -> F:
         if args:  # pragma: no cover - the signature already refuses this
             raise TypeError(f"{action} is keyword-only.")
 
+        writes = audited and (witness or not _WITNESSED.get())
         allowed = _allowed_keys(fn.__module__)
         payload = redact(kwargs, allowed)
         tenant = kwargs.get("tenant")
@@ -420,10 +454,15 @@ def service[F: Callable[..., Any]](fn: F) -> F:
             span.set_attribute("service.action", action)
 
             log.info(f"{action}.called", **{INPUT_KEY: payload})
+            token = _WITNESSED.set(True) if writes else None
             try:
                 with transaction.atomic():
-                    result = fn(**kwargs)
-                    if audited:
+                    try:
+                        result = fn(**kwargs)
+                    finally:
+                        if token is not None:
+                            _WITNESSED.reset(token)
+                    if writes:
                         write_audit(
                             action=action,
                             tenant=tenant,
@@ -440,7 +479,7 @@ def service[F: Callable[..., Any]](fn: F) -> F:
                     **{INPUT_KEY: payload},
                 )
                 span.set_attribute("service.error_code", exc.code)
-                if audited:
+                if writes:
                     write_audit(
                         action=action,
                         tenant=tenant,
@@ -452,7 +491,7 @@ def service[F: Callable[..., Any]](fn: F) -> F:
                 raise
             except Exception as exc:
                 log.exception(f"{action}.failed", code="unhandled")
-                if audited:
+                if writes:
                     write_audit(
                         action=action,
                         tenant=tenant,
@@ -464,4 +503,5 @@ def service[F: Callable[..., Any]](fn: F) -> F:
                 raise
             return result
 
+    call.__dict__["__witness__"] = witness
     return cast(F, call)

@@ -1,0 +1,3 @@
+ACTION_PROSE: dict[str, str] = {
+    "portal_request.submit": "You may not send requests about widgets here.",
+}

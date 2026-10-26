@@ -32,7 +32,9 @@ from allauth.socialaccount.models import SocialAccount
 from django.test import Client
 from django.urls import reverse
 
+from apps.accounts.adapter import RESOURCE_OWNER_SCOPE
 from apps.accounts.models import User
+from apps.accounts.tests.conftest import join, subject_of
 from apps.accounts.tests.stub_issuer import StubIssuer
 from apps.core.actor import actor_for, system_actor
 from apps.core.models import Invitation, Membership, Organization, Tenant
@@ -106,6 +108,84 @@ def test_the_authorize_redirect_carries_pkce_and_state(
     assert params["redirect_uri"][0].endswith(CALLBACK_PATH)
 
 
+def test_the_authorize_asks_the_platform_to_name_the_realm_without_confining_it(
+    api: Client, stub_issuer: StubIssuer
+) -> None:
+    """The resource-owner scope rides beside the sign-in scopes, and no realm's org scope does."""
+    scopes = set(start_login(api)["scope"][0].split())
+
+    assert scopes == {"openid", "profile", "email", RESOURCE_OWNER_SCOPE}
+    assert not any(one.startswith("urn:zitadel:iam:org:id:") for one in scopes)
+
+
+def test_a_round_trip_lands_in_the_realm_the_platform_names_whatever_a_stale_row_says(
+    api: Client, stub_issuer: StubIssuer, instance: Any, homed: str, tenant: Tenant, owner: User
+) -> None:
+    """A join row a rollback re-spelled `staff` does not decide where the round trip lands.
+
+    The platform names the realm the person lives in (the resource-owner claims
+    the authorize asked for), so the adapter's first arm decides and the person
+    is recorded in the tenant's realm again.
+    """
+    from apps.accounts.models import STAFF_REALM, SsoIdentity
+    from apps.accounts.selectors import get_platform_provider_id
+    from apps.accounts.services import create_user
+    from apps.core.services import root_organization
+
+    person = create_user(email="grace@customer.example")
+    add_membership(
+        user=person,
+        tenant=tenant,
+        organization=root_organization(tenant=tenant),
+        role="admin",
+        is_default=True,
+        actor=system_actor(tenant=tenant),
+    )
+    join(person, "sub-in-the-tenant-realm", realm=STAFF_REALM)
+    # The person signed in before the rollback, so allauth holds their subject too.
+    SocialAccount.objects.create(
+        user=person, provider=get_platform_provider_id(), uid="sub-in-the-tenant-realm"
+    )
+    stub_issuer.subject = "sub-in-the-tenant-realm"
+    stub_issuer.email = person.email
+    stub_issuer.resource_owner = {
+        "id": homed,
+        "name": "the tenant's realm",
+        "primary_domain": "realm.localhost",
+    }
+
+    response = sign_in(api)
+
+    assert response.status_code == 302, response.content
+    assert SsoIdentity.objects.filter(
+        user=person, subject="sub-in-the-tenant-realm", realm=homed, connection__isnull=True
+    ).exists()
+
+
+def test_a_stale_row_introduces_nobody_when_allauth_holds_the_subject_for_someone_else(
+    api: Client, stub_issuer: StubIssuer, instance: Any, homed: str, tenant: Tenant, owner: User
+) -> None:
+    """The realm-spelling exception needs both tables to name the candidate; else it refuses."""
+    from apps.accounts.models import STAFF_REALM, SsoIdentity
+    from apps.accounts.selectors import get_platform_provider_id
+    from apps.accounts.services import create_user
+
+    person = create_user(email="grace@customer.example")
+    join(person, "sub-in-the-tenant-realm", realm=STAFF_REALM)
+    SocialAccount.objects.create(
+        user=owner, provider=get_platform_provider_id(), uid="sub-in-the-tenant-realm"
+    )
+    stub_issuer.subject = "sub-in-the-tenant-realm"
+    stub_issuer.email = person.email
+    stub_issuer.resource_owner = {"id": homed, "name": "realm", "primary_domain": "r.localhost"}
+
+    response = sign_in(api)
+
+    assert response.status_code == 403
+    assert "_auth_user_id" not in api.session
+    assert not SsoIdentity.objects.filter(realm=homed, subject="sub-in-the-tenant-realm").exists()
+
+
 def test_the_login_round_trips_and_creates_the_session(
     api: Client, stub_issuer: StubIssuer
 ) -> None:
@@ -115,7 +195,7 @@ def test_the_login_round_trips_and_creates_the_session(
     assert response.status_code == 302
     person = User.objects.get(email=stub_issuer.email)
     assert api.session.get("_auth_user_id") == str(person.pk)
-    assert person.zitadel_sub == stub_issuer.subject
+    assert subject_of(person) == stub_issuer.subject
     # And they hold nothing: an IdP answers who, never what they may do.
     assert not Membership.objects.filter(user_id=person.pk).exists()
 
@@ -146,7 +226,7 @@ def test_a_second_login_reuses_the_user(api: Client, stub_issuer: StubIssuer) ->
     sign_in(api)
 
     assert User.objects.filter(email=stub_issuer.email).count() == 1
-    assert User.objects.get(pk=first.pk).zitadel_sub == stub_issuer.subject
+    assert subject_of(first) == stub_issuer.subject
     assert api.session.get("_auth_user_id") == str(first.pk)
 
 
@@ -166,7 +246,7 @@ def test_an_existing_local_account_is_linked_not_duplicated(
 
     assert User.objects.filter(email=owner.email).count() == 1
     owner.refresh_from_db()
-    assert owner.zitadel_sub == "zitadel-subject-for-the-owner"
+    assert subject_of(owner) == "zitadel-subject-for-the-owner"
     assert api.session.get("_auth_user_id") == str(owner.pk)
 
 
@@ -179,8 +259,7 @@ def test_a_subject_already_linked_elsewhere_is_refused(
     honest answer is a refusal: one of those two facts is wrong, and guessing
     which is how somebody inherits somebody else's account.
     """
-    owner.zitadel_sub = "a-subject-that-is-taken"
-    owner.save(update_fields=["zitadel_sub"])
+    join(owner, "a-subject-that-is-taken")
     stub_issuer.email = member.email
     stub_issuer.subject = "a-subject-that-is-taken"
 
@@ -189,7 +268,7 @@ def test_a_subject_already_linked_elsewhere_is_refused(
     assert response.status_code == 403
     assert "_auth_user_id" not in api.session
     member.refresh_from_db()
-    assert member.zitadel_sub is None
+    assert subject_of(member) is None
 
 
 # --- W2R3-4: an unverified assertion is refused, with no User row -------------
@@ -690,7 +769,7 @@ def test_a_second_subject_for_a_person_who_already_holds_one_is_refused(
     assert response.status_code == 403
     assert "_auth_user_id" not in api.session
     owner.refresh_from_db()
-    assert owner.zitadel_sub == "sub-original"
+    assert subject_of(owner) == "sub-original"
     assert SocialAccount.objects.filter(uid="sub-impostor").count() == 0
 
 
@@ -734,7 +813,7 @@ def test_a_social_account_held_by_one_person_is_never_rehomed(
     is; it gets a vote.
     """
     SocialAccount.objects.create(user=owner, provider="zitadel", uid="sub-x")
-    assert owner.zitadel_sub is None
+    assert subject_of(owner) is None
     stub_issuer.subject = "sub-x"
     stub_issuer.email = member.email
 
@@ -744,7 +823,7 @@ def test_a_social_account_held_by_one_person_is_never_rehomed(
     assert "_auth_user_id" not in api.session
     assert SocialAccount.objects.get(uid="sub-x").user_id == owner.pk
     member.refresh_from_db()
-    assert member.zitadel_sub is None
+    assert subject_of(member) is None
 
 
 @pytest.mark.parametrize("asserted", ["an address nobody holds", "another account's address"])
@@ -773,7 +852,7 @@ def test_an_allauth_row_without_our_column_never_signs_anyone_in(
       address.
     """
     SocialAccount.objects.create(user=member, provider="zitadel", uid="sub-y")
-    assert member.zitadel_sub is None
+    assert subject_of(member) is None
     stub_issuer.subject = "sub-y"
     stub_issuer.email = (
         "nobody-here@example.com" if asserted == "an address nobody holds" else owner.email
@@ -788,8 +867,8 @@ def test_an_allauth_row_without_our_column_never_signs_anyone_in(
     assert SocialAccount.objects.get(uid="sub-y").user_id == member.pk
     member.refresh_from_db()
     owner.refresh_from_db()
-    assert member.zitadel_sub is None
-    assert owner.zitadel_sub is None
+    assert subject_of(member) is None
+    assert subject_of(owner) is None
 
 
 # --- a refused sign-in writes nothing ----------------------------------------
@@ -832,7 +911,7 @@ def test_a_deactivated_person_signing_in_writes_nothing(
     assert response.status_code == 403
     assert "_auth_user_id" not in api.session
     member.refresh_from_db()
-    assert member.zitadel_sub is None
+    assert subject_of(member) is None
     assert SocialAccount.objects.filter(user_id=member.pk).count() == 0
     assert Membership.objects.filter(user_id=member.pk).count() == memberships_before
     assert not Membership.objects.filter(user_id=member.pk, tenant=other_tenant).exists()
@@ -881,4 +960,4 @@ def test_the_rp_road_is_unchanged_under_ours(
     assert landed.status_code == 302
     person = User.objects.get(email=stub_issuer.email)
     assert api.session.get("_auth_user_id") == str(person.pk)
-    assert person.zitadel_sub == stub_issuer.subject
+    assert subject_of(person) == stub_issuer.subject

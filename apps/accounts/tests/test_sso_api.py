@@ -17,32 +17,15 @@ from apps.accounts.services import create_sso_connection, verify_sso_domain
 from apps.accounts.tests.conftest import CLIENT_SECRET
 from apps.core.actor import Actor, system_actor
 from apps.core.models import Membership, Tenant
+from apps.core.tests.unclaimed import unclaimed_role
+from apps.core.tests.wire import REQUEST_FIXED_QUERIES
 
 pytestmark = pytest.mark.django_db
 
 LIST_URL = "/api/v1/auth/sso-connections/"
 
-# One query for the connections page and one for the prefetched domains, plus
-# the session, the user, the membership `TenantMiddleware` resolves the tenant
-# from, the one `resolve_org` resolves the acting ORG from (the hierarchy's
-# standing per-request cost), and the SAVEPOINT `ATOMIC_REQUESTS` opens with the
-# RELEASE that closes it. Eight.
-# Measured, not guessed — and it is a *budget*: the point is that adding a
-# second connection below does not move it, which is what an N+1 on
-# `email_domains` would do.
-# ADR core-18 took the COUNT off this pin: the default list issues none any
-# more — `has_more` comes from fetching one row more than asked for.
-# `?include_count=true` puts it back, and costs exactly one more (twelve).
-#
-# **8 -> 11 at the `accounts` read sweep**, and the three are the ask: the
-# selector now calls `require(actor, "sso_connection.read")` before the
-# queryset, and resolving what this hat holds is a membership read plus the two
-# delta reads `effective_permissions` makes (the `Grant` rows and the
-# `RolePermission` rows). It is a CONSTANT three — the whole reason the budget
-# is measured at four connections below is that a per-row cost would show up
-# here as four — and it is the same three every other swept `list_` in this
-# tree pays.
-LIST_QUERY_BUDGET = 11
+#: The fixed request cost, then the page and the prefetched domains — constant in the row count.
+LIST_QUERY_BUDGET = REQUEST_FIXED_QUERIES + 2
 
 # How many connections the query pin is measured at. More than one, because a
 # budget measured at one row cannot tell a constant from a linear cost.
@@ -138,16 +121,7 @@ def test_the_list_pays_the_same_query_count_however_many_rows(
     sso_connection: SsoConnection,
     django_assert_num_queries: Any,
 ) -> None:
-    """`email_domains` is derived from a related table, so it is an N+1 waiting to happen.
-
-    The budget is measured, not guessed: the page, the prefetched domains, the
-    session, the user, the membership `TenantMiddleware` resolves the tenant
-    from, the one `resolve_org` resolves the acting org from, and the
-    `ATOMIC_REQUESTS` savepoint and its release — eight, with the `count` off by
-    default since ADR core-18. What makes it a *pin*
-    rather than a number is the seeded scale — a per-row query would put this
-    well past the budget at four connections, and exactly at it with one.
-    """
+    """`email_domains` is a related table: at four connections a per-row read would show."""
     for index in range(SEEDED_CONNECTIONS - 1):
         create_sso_connection(
             tenant=tenant,
@@ -256,3 +230,141 @@ def test_a_verified_domain_appears_in_verified_domains(
     row = next(item for item in listed if item["id"] == created["id"])
     assert row["email_domains"] == ["acme.co.uk", "acme.com"]
     assert row["verified_domains"] == ["acme.com"]
+
+
+# --- the wire's `enforced` is what the realm's policy says, released included --
+
+
+def _materialised(connection_id: str, tenant: Tenant, root_org: Any) -> None:
+    """The configuration run as the worker runs it: the activity under the tenant's headers, closed.
+
+    Closed as the workflow's own `_finish` closes it, because a run that stayed
+    `running` would make a later ask with the same key the same live run — and
+    hide the refusal a landed run's key meets.
+    """
+    from unittest.mock import patch
+
+    from apps.accounts.activities import apply_identity_config
+    from apps.accounts.types import KIND_SSO_CONNECTION, IdentityConfigSync
+    from apps.workflows import context as workflow_context
+    from apps.workflows.models import WorkflowRun
+    from apps.workflows.services import finish_run
+
+    tokens = workflow_context.set_principal(
+        tenant_id=str(tenant.pk), user_id=None, org_id=str(root_org.pk)
+    )
+    try:
+        # A worker thread's connection hygiene, stood down on the test's own thread.
+        with patch("apps.accounts.activities.close_old_connections", lambda: None):
+            apply_identity_config(IdentityConfigSync(kind=KIND_SSO_CONNECTION, key=connection_id))
+    finally:
+        workflow_context.reset_principal(tokens)
+    running = WorkflowRun.objects.for_tenant(tenant).filter(
+        workflow_id__contains=f":identity_config:{connection_id}-",
+        status=WorkflowRun.Status.RUNNING,
+    )
+    for workflow_id in running.values_list("workflow_id", flat=True):
+        finish_run(tenant=tenant, workflow_id=workflow_id, status=WorkflowRun.Status.COMPLETED)
+
+
+def _read_back(api: Client, connection_id: str) -> tuple[bool, str, str]:
+    listed = api.get(LIST_URL).json()["items"]
+    row = next(one for one in listed if one["id"] == connection_id)
+    return row["enforced"], row["sync_state"], row["status"]
+
+
+@pytest.mark.parametrize("release", ["disable", "un-enforce"])
+def test_a_released_wall_reads_enforced_false_once_the_release_lands(
+    api: Client, owner: Any, tenant: Tenant, root_org: Any, instance: Any, release: str
+) -> None:
+    """`enforced` on the wire is the materialised fact — so a released wall reads `false`.
+
+    Disabling a connection, or switching `enforced` off, asks a run that takes the
+    provider off the realm's sign-in and gives the password back. Once that run
+    has landed the realm no longer requires the provider, and the read-back says
+    so rather than repeating the row's standing intent.
+    """
+    api.force_login(owner)
+    created = api.post(LIST_URL, {**BODY, "enforced": False}, content_type="application/json")
+    connection_id = created.json()["id"]
+    _materialised(connection_id, tenant, root_org)
+    url = f"{LIST_URL}{connection_id}/"
+    assert api.patch(url, {"enforced": True}, content_type="application/json").status_code == 200
+    _materialised(connection_id, tenant, root_org)
+    assert _read_back(api, connection_id) == (True, "applied", "active")
+
+    if release == "disable":
+        assert api.delete(url).status_code == 204
+    else:
+        assert (
+            api.patch(url, {"enforced": False}, content_type="application/json").status_code == 200
+        )
+    # The release asked its own run — even where it returns to the intent the
+    # connection was created with, whose run landed long ago.
+    assert _read_back(api, connection_id)[1] == "pending"
+    _materialised(connection_id, tenant, root_org)
+
+    enforced, sync_state, _status = _read_back(api, connection_id)
+    assert (enforced, sync_state) == (False, "applied")
+    if release == "un-enforce":
+        # And the wall goes back up when asked again, through a run of its own.
+        assert (
+            api.patch(url, {"enforced": True}, content_type="application/json").status_code == 200
+        )
+        assert _read_back(api, connection_id)[1] == "pending"
+        _materialised(connection_id, tenant, root_org)
+        assert _read_back(api, connection_id) == (True, "applied", "active")
+
+
+def test_a_tenant_role_key_arrives_through_the_door(
+    api: Client, owner: Any, tenant: Any, owner_actor: Any
+) -> None:
+    """`default_role` is the open role key the column holds, not a three-word enum on the wire."""
+    from apps.core.services import create_role
+
+    auditor = unclaimed_role("auditor")
+    create_role(tenant=tenant, actor=owner_actor, key=auditor, name="Auditor")
+    api.force_login(owner)
+    response = api.post(
+        LIST_URL, {**BODY, "default_role": auditor}, content_type="application/json"
+    )
+    assert response.status_code == 201, response.content
+    assert response.json()["default_role"] == auditor
+
+
+def test_an_unsaid_default_role_is_the_deployments_default(api: Client, owner: Any) -> None:
+    from apps.core.authz import default_role_key
+
+    api.force_login(owner)
+    body = {key: value for key, value in BODY.items() if key != "default_role"}
+    response = api.post(LIST_URL, body, content_type="application/json")
+    assert response.status_code == 201, response.content
+    assert response.json()["default_role"] == default_role_key()
+
+
+# --- the PATCH answers the row as the next read finds it ----------------
+
+
+def test_a_patch_that_drops_a_verified_domain_answers_what_the_next_read_finds(
+    api: Client, owner: Any, tenant: Tenant
+) -> None:
+    """The PATCH body equals the list's row for the same connection, whole."""
+    api.force_login(owner)
+    created = api.post(LIST_URL, BODY, content_type="application/json").json()
+    connection = SsoConnection.objects.get(pk=created["id"])
+    verify_sso_domain(
+        tenant=tenant, actor=system_actor(tenant), connection=connection, domain="acme.com"
+    )
+
+    patched = api.patch(
+        f"{LIST_URL}{connection.pk}/",
+        {"email_domains": ["acme.co.uk"]},
+        content_type="application/json",
+    )
+    assert patched.status_code == 200, patched.content
+    listed = api.get(LIST_URL).json()["items"]
+    row = next(item for item in listed if item["id"] == created["id"])
+
+    assert patched.json() == row
+    assert row["email_domains"] == ["acme.co.uk"]
+    assert row["verified_domains"] == []

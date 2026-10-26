@@ -11,7 +11,8 @@ a `tenant` parameter, `@service` reads the declaration, and the row lands where
 
 **Does a refused login leave one?** No, and that is the answer rather than
 the gap. It is the same precedent (door refusals leave no audit row
-BY DESIGN) applied to the workforce door: `@service` is the audit population's
+BY DESIGN) applied to the platform door, where the workforce's Google now
+arrives through Zitadel: `@service` is the audit population's
 one writer, and a refusal is a door turning somebody away before any write
 exists. What it leaves instead is a structured log line, and the tests below
 assert the ABSENCE of a row and the PRESENCE of the declaration that says the
@@ -28,9 +29,10 @@ from django.http import HttpRequest
 from django.test import Client
 
 from apps.accounts import adapter as adapter_module
-from apps.accounts.adapter import GOOGLE_PROVIDER, SocialAccountAdapter
-from apps.accounts.models import User
-from apps.accounts.services import record_zitadel_identity
+from apps.accounts.adapter import SocialAccountAdapter
+from apps.accounts.models import STAFF_REALM, User
+from apps.accounts.selectors import get_platform_provider_id
+from apps.accounts.services import record_identity
 from apps.accounts.tests import test_identity_doors as doors
 from apps.accounts.tests.conftest import assertion
 from apps.accounts.tests.stub_issuer import StubIssuer
@@ -40,7 +42,7 @@ from apps.core.audit import AuditEntry
 
 pytestmark = pytest.mark.django_db
 
-ACTION = "accounts.record_zitadel_identity"
+ACTION = "accounts.record_identity"
 
 #: The configured-workforce-door fixture, borrowed from the module whose whole
 #: subject is that door rather than copied. A second copy of "both halves of the
@@ -60,7 +62,8 @@ def test_recording_an_identity_writes_one_platform_audit_row(member: User) -> No
     """The gap refined, closed. One call, one row, in the platform ledger."""
     before = platform_rows()
 
-    record_zitadel_identity(
+    record_identity(
+        realm=STAFF_REALM,
         user=member,
         subject="zitadel-subject-ledger-1",
         tenant=None,
@@ -76,7 +79,7 @@ def test_recording_an_identity_writes_one_platform_audit_row(member: User) -> No
 def test_the_row_count_tracks_the_call_count_including_the_no_op(member: User) -> None:
     """Idempotent write, non-idempotent ledger — and the ledger is right.
 
-    `record_zitadel_identity` runs on EVERY login, not only the first, and the
+    `record_identity` runs on EVERY login, not only the first, and the
     second call is a no-op against the column. It is not a no-op against the
     trail: "the platform asserted this identity again" is exactly the fact a
     ledger is asked for afterwards, and a row per call is what makes the count
@@ -85,7 +88,8 @@ def test_the_row_count_tracks_the_call_count_including_the_no_op(member: User) -
     before = platform_rows()
 
     for _ in range(3):
-        record_zitadel_identity(
+        record_identity(
+            realm=STAFF_REALM,
             user=member,
             subject="zitadel-subject-ledger-2",
             tenant=None,
@@ -97,7 +101,8 @@ def test_the_row_count_tracks_the_call_count_including_the_no_op(member: User) -
 
 def test_the_subject_never_reaches_the_row(member: User) -> None:
     """`subject` is not in this app's `LOG_KEYS`, so the trail says who, not what."""
-    record_zitadel_identity(
+    record_identity(
+        realm=STAFF_REALM,
         user=member,
         subject="zitadel-subject-ledger-3",
         tenant=None,
@@ -132,7 +137,7 @@ def test_a_real_login_leaves_the_row_the_adapter_path_owes(
     [("outsider@gmail.example", True), ("insider@union.studio", False)],
     ids=["domain_not_allowed", "email_not_verified"],
 )
-def test_neither_workforce_refusal_writes_an_audit_row(
+def test_neither_platform_refusal_writes_an_audit_row(
     workforce: None, login_request: HttpRequest, email: str, verified: bool
 ) -> None:
     """A population NON-diff, at BOTH refusal branches.
@@ -149,8 +154,8 @@ def test_neither_workforce_refusal_writes_an_audit_row(
         SocialAccountAdapter(login_request).pre_social_login(
             login_request,
             assertion(
-                provider=GOOGLE_PROVIDER,
-                subject="google-ledger",
+                provider=get_platform_provider_id(),
+                subject="zitadel-ledger",
                 email=email,
                 verified=verified,
             ),
@@ -167,7 +172,7 @@ def test_the_non_audit_is_declared_where_the_refusal_lives() -> None:
     who has just found "no audit row" will be standing. The precedent is
     named because that is what makes this a ruling rather than an opinion.
     """
-    doc = inspect.getdoc(SocialAccountAdapter._workforce_login) or ""
+    doc = inspect.getdoc(SocialAccountAdapter._platform_login) or ""
 
     assert "same precedent" in doc
     assert "BY DESIGN" in doc
@@ -181,18 +186,28 @@ def test_the_refusal_still_has_its_structured_log_line() -> None:
     that the line EXISTS at EVERY refusal branch — a log assertion at one of
     them proves nothing about the others.
 
-    **Three, since the deactivation fix.** The door refused two things when this
-    was written; it now also refuses a person who has been switched off, before
-    it links them to anything. The number is hand-written and so is the list of
-    reasons below it, which is the point: a branch that learns to refuse without
-    learning to say so reds this test by arithmetic.
+    **The platform branch is the one door now**, so it carries the three
+    refusals the retired direct Google road used to — a domain nobody
+    configured, an address nobody verified, a person who has been switched off
+    — beside the three it always had for two identifiers that disagree. The
+    count is hand-written and so is the list of reasons below it, which is the
+    point: a branch that learns to refuse without learning to say so reds this
+    test by arithmetic.
     """
-    source = inspect.getsource(SocialAccountAdapter._workforce_login)
+    source = inspect.getsource(SocialAccountAdapter._platform_login)
 
-    assert source.count('"accounts.workforce.refused"') == 3
-    assert 'reason="domain_not_allowed"' in source
-    assert 'reason="email_not_verified"' in source
-    assert 'reason="inactive"' in source
+    reasons = (
+        "claim_dormant",
+        "domain_not_allowed",
+        "email_not_verified",
+        "inactive",
+        "subject_address_disagree",
+        "subject_mismatch",
+        "subject_already_linked",
+    )
+    assert source.count('"accounts.platform.refused"') == len(reasons)
+    for reason in reasons:
+        assert f'reason="{reason}"' in source, reason
     assert "log.warning" in source
     # And through `core.log`, never a bare `logging.getLogger` (rule 19).
     assert "from apps.core.log import" in inspect.getsource(adapter_module)

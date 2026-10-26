@@ -50,13 +50,16 @@ import pytest
 from apps.accounts.models import User
 from apps.accounts.services import issue_token
 from apps.comms.models import Message, MessageTemplate, Recipient
+from apps.comms.schemas import RecipientOut
 from apps.comms.services import send
 from apps.core.actor import Actor, actor_for
 from apps.core.exceptions import refusal_message
 from apps.core.models import Grant, Membership, Organization, Tenant
+from apps.core.schemas import without_personal
 
 # The transport harness, from the module that owns it. Copying it here would be
 # a second thing to keep in step with the MCP protocol version.
+from apps.core.tests.doors import assert_four_doors
 from apps.core.tests.test_mcp import MCP_HEADERS, PROTOCOL_VERSION, running
 
 #: House rule 46. The door pair this module answers for `apps/comms`, read by
@@ -433,7 +436,7 @@ def a_device(tenant: Tenant, owner_actor: Actor, recipient: Recipient) -> Any:
         actor=owner_actor,
         recipient=recipient,
         platform="ios",
-        push_token="not-a-real-registration-token-0009",
+        push_token="not-a-real-registration-token-0009",  # noqa: S106 — a fake token value only this test holds
         label="Ada's iPhone",
     )
 
@@ -521,7 +524,7 @@ async def test_the_two_device_doors_answer_the_same_row_and_neither_carries_the_
 
     application = build_application()
     bearer_header = {"authorization": f"Bearer {bearer}"}
-    token = "not-a-real-registration-token-0009"
+    token = "not-a-real-registration-token-0009"  # noqa: S105 — a fake token value only this test holds
 
     async with running(application):
         transport = httpx.ASGITransport(app=application)
@@ -703,6 +706,17 @@ def _row(body: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in body.items() if key not in PER_VIEWER_FIELDS}
 
 
+# What a contact event carries: the row less the four fields `RecipientOut` marks personal.
+RECIPIENT_EVENT_KEYS = frozenset(
+    {"v", "id", "user_id", "organization_id", "created_at", "archived_at", "archived_by"}
+)
+
+
+def _published(body: dict[str, Any]) -> dict[str, Any]:
+    """The contact as an event carries it: no viewer's acts, no `personal` field at any depth."""
+    return without_personal(RecipientOut, _row(body))
+
+
 def _payloads(tenant: Tenant, name: str) -> list[dict[str, Any]]:
     from apps.events.models import Event
 
@@ -764,13 +778,9 @@ async def test_archive_and_restore_say_the_same_bytes_on_rest_mcp_and_the_outbox
 
     for verb, outbox in (("archive", archived[0]), ("restore", restored[0])):
         over_rest, over_mcp = answered[verb]
-        # The spine stamps the payload version beside the row (`emit(v=1)`); the
-        # row itself is what the three renderings must agree on, byte for byte.
-        assert outbox.pop("v") == 1, outbox
         assert over_rest["id"] == str(recipient.pk)
-        assert _canonical(over_mcp) == _canonical(over_rest), (verb, over_mcp, over_rest)
-        assert not PER_VIEWER_FIELDS & set(outbox), (verb, sorted(outbox))
-        assert _canonical(outbox) == _canonical(_row(over_rest)), (verb, outbox, over_rest)
+        assert set(outbox) == RECIPIENT_EVENT_KEYS
+        assert_four_doors(rest=over_rest, mcp=over_mcp, event_payload=outbox, out=RecipientOut)
 
     archive_body = answered["archive"][0]
     assert archive_body["archived_at"] is not None
@@ -865,10 +875,11 @@ async def test_a_contacts_acts_are_the_viewers_and_the_payload_is_nobodys(
     assert "archive" not in listed["allowed_acts"], listed
 
     (payload,) = await sync_to_async(_payloads)(tenant, "comms.recipient.archived")
+    assert set(payload) == RECIPIENT_EVENT_KEYS
     assert payload.pop("v") == 1
     assert not PER_VIEWER_FIELDS & set(payload), sorted(payload)
-    assert _canonical(payload) == _canonical(_row(archived.json()))
+    assert _canonical(payload) == _canonical(_published(archived.json()))
     assert archived.json()["allowed_acts"] == ["restore"]
     # The member reads the archived row: the payload's bytes, and none of the acts.
-    assert _canonical(_row(member_after.json())) == _canonical(payload)
+    assert _canonical(_published(member_after.json())) == _canonical(payload)
     assert member_after.json()["allowed_acts"] == []

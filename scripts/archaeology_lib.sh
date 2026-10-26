@@ -4,7 +4,7 @@
 # `archaeology` leg share ONE implementation instead of two that agree today
 # and drift tomorrow.
 # Sourced by scripts/publish.sh, scripts/check.sh and
-# scripts/tests/test_fe_leg.sh / scripts/tests/test_publish.sh's drives.
+# quality/tests/test_fe_leg.py / quality/tests/test_publish.py's worlds.
 # BASH ONLY, for the reason gate_ledger.sh states: sourced into an interactive
 # zsh, `local path` ties to $PATH and every helper dies silently.
 #
@@ -55,9 +55,9 @@ fi
 # are written to be mutually exclusive BY CONSTRUCTION, and the double-match
 # refusal there is what proves they still are.
 rules_for() {
-    local p=$1 hit="" _cy=""
+    local p=$1 hit="" _cy="" _br=""
     case "$p" in
-    apps/* | config/* | manage.py) hit="$hit R1" ;;
+    apps/* | config/* | manage.py | pilecap/*) hit="$hit R1" ;;
     esac
     case "$p" in
     quality/* | docs/product/instruments.md) hit="$hit R2" ;;
@@ -71,13 +71,15 @@ rules_for() {
     #
     # THE THREE PATHS ARE SPELLED, and that is the one hand list in this file.
     # It is legal here because the rung that wrote it named what RE-DERIVES it:
-    # `case_r12_equals_the_readers_defaults` in scripts/tests/test_publish.sh
+    # `test_r12_is_the_measured_files_the_readers_default_to` in quality/tests/test_archaeology.py
     # greps the three readers' own defaults — `DJB_GATE_DURATIONS_PATH:-` and
     # `DJB_GATE_MEMBER_DURATIONS:-` in scripts/check.sh, `LOOP_SCOPE_MAP_PATH=`
-    # in scripts/loop_tier.sh — and reds when the two sets differ, so a fourth
+    # in quality/djb/scope.py — and reds when the two sets differ, so a fourth
     # measured file with no row here is a red rather than a silent ship.
     case "$p" in
     scripts/test_impact.json | scripts/pytest_durations.json | scripts/gate_member_durations.json) hit="$hit R12" ;;
+    # R14 — the platform's own proofs; a second arm before the glob, for R12's reason.
+    .github/workflows/proof-from-zero.yml | .github/workflows/nightly-proof.yml | .github/workflows/mirror-images.yml) hit="$hit R14" ;;
     scripts/* | deploy/* | perf/* | compose.yaml | compose/* | Dockerfile | .dockerignore | .devcontainer/* | .github/*) hit="$hit R3" ;;
     esac
     case "$p" in
@@ -90,7 +92,7 @@ rules_for() {
     TEMPLATE_VERSION | CHANGELOG.md) hit="$hit R6" ;;
     esac
     case "$p" in
-    docs/product/north-star.md | docs/product/queue.md | docs/product/queue-detail.md | docs/product/readouts.md | docs/product/misses.md | docs/product/in-flight.md | docs/product/goal-posts.md | docs/product/design-agreements.md | docs/product/pilot-readiness.md | docs/product/rep-day.md) hit="$hit R7" ;;
+    docs/product/north-star.md | docs/product/queue.md | docs/product/queue-detail.md | docs/product/readouts.md | docs/product/misses.md | docs/product/in-flight.md | docs/product/goal-posts.md | docs/product/design-agreements.md | docs/product/pilot-readiness.md | docs/product/rep-day.md | docs/product/threat-model.md) hit="$hit R7" ;;
     esac
     # R8S BEFORE R8's GLOB. `case` takes the FIRST matching pattern, so the two
     # format-teaching files under cycles/ are mutually exclusive with the
@@ -110,19 +112,22 @@ rules_for() {
     # block because the rules are disjoint across blocks and `hit` accumulates;
     # these two OVERLAP by design, and only a shared block's first-match rule
     # separates them. Split them and every R8S path double-matches into exit 2.
+    # The briefs directory takes the same shape: its README ships, the briefs are the build's archaeology.
     _cy=docs/product/cycles
+    _br=docs/product/briefs
     case "$p" in
-    "$_cy"/EXAMPLE-cycle-plan.md | "$_cy"/README.md) hit="$hit R8S" ;;
-    "$_cy"/* | docs/product/archive/* | docs/product/retro/* | docs/product/drafts/* | docs/product/proposals/* | docs/product/pm-handoff-*.md) hit="$hit R8" ;;
+    "$_cy"/EXAMPLE-cycle-plan.md | "$_cy"/README.md | "$_br"/README.md) hit="$hit R8S" ;;
+    "$_cy"/* | "$_br"/* | docs/product/archive/* | docs/product/retro/* | docs/product/drafts/* | docs/product/proposals/* | docs/product/surveys/* | docs/product/reports/* | docs/product/pm-handoff-*.md) hit="$hit R8" ;;
     esac
-    # R9's LAST ARM IS A GLOB — the design directory, the pattern book's home.
+    # R9's LAST TWO ARMS ARE GLOBS — the design directory, the pattern book's home, and the
+    # ADR directory, the decision log (one file per id).
     # R8's clause names the class, never the instance: the book ships, and its
     # drawer beside it is the product's and the template never tracks it, so
     # there is nothing here for a glob to swallow that a filename would have
     # kept out, and one glob cannot double-match. A NEW directory under
     # docs/product/ is still unplaced (exit 2) until somebody decides it.
     case "$p" in
-    docs/product/adrs-ingredients.md | docs/product/api-editorial-standard.md | docs/product/architecture.md | docs/product/build-contract.md | docs/product/operating-protocol.md | docs/product/partition-closure.md | docs/product/scale-envelope.md | docs/product/publication-manifest.md | docs/product/design/*) hit="$hit R9" ;;
+    docs/product/adrs-ingredients.md | docs/product/api-editorial-standard.md | docs/product/architecture.md | docs/product/build-contract.md | docs/product/operating-protocol.md | docs/product/partition-closure.md | docs/product/scale-envelope.md | docs/product/publication-manifest.md | docs/product/design/* | docs/product/adrs/*) hit="$hit R9" ;;
     esac
     case "$p" in
     docs/product/skeletons/*) hit="$hit R10" ;;
@@ -135,6 +140,11 @@ rules_for() {
     # committed document and the generated client the pin compares.
     case "$p" in
     frontend/*) hit="$hit R11" ;;
+    esac
+    # R13 — THE SDK REFERENCE, generated from the facade and the goldens; the
+    # one place a product developer reads. One glob: the directory is one artefact.
+    case "$p" in
+    docs/sdk/*) hit="$hit R13" ;;
     esac
     # TWO WAYS TO READ ONE ANSWER, AND THEY ARE THE SAME ANSWER. `$(rules_for
     # …)` is the obvious one and it FORKS: `scripts/divergence_census.sh`
@@ -149,7 +159,7 @@ rules_for() {
 
 bucket_for_rule() {
     case "$1" in
-    R1 | R2 | R3 | R4 | R5 | R6 | R9 | R11) printf 'SHIP' ;;
+    R1 | R2 | R3 | R4 | R5 | R6 | R9 | R11 | R13) printf 'SHIP' ;;
     # R8S: the two format-teaching files inside an otherwise-trimmed directory.
     # They are FORMAT, not archaeology — the plan template and the directory's
     # own contract — and four shipped files send a first PM there.
@@ -176,6 +186,8 @@ bucket_for_rule() {
     # them EMPTY — was rejected: an empty durations file is still a claim about
     # a suite, and it still conflicts with the product's own copy.)
     R12) printf 'TRIM' ;;
+    # R14 — the platform proves itself; a product's repository proves the product.
+    R14) printf 'TRIM' ;;
     R10) printf 'SKELETON-SOURCE' ;;
     *) printf 'UNKNOWN' ;;
     esac

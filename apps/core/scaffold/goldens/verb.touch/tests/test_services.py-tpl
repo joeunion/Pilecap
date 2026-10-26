@@ -1,0 +1,30 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "imports", "text": ""}
+from apps.example.events import WIDGET_TOUCHED
+from apps.example.services import archive_widget, touch_widget
+from pilecap import Archived
+
+# golden-anchor: {"nth": 0, "scope": [], "side": "before", "text": "DUE_AT = datetime(2026, 11, 2, 17, 0, tzinfo=UTC)"}
+def test_a_touch_moves_updated_at_and_says_so_on_every_press(
+    tenant: Tenant, owner_actor: Actor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    published: list[str] = []
+
+    def spy(name: str, *, tenant: Tenant, payload: dict[str, Any], actor: Any = None) -> None:
+        published.append(name)
+
+    monkeypatch.setitem(bridge_registry, EMIT, spy)
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Seen")
+    first = touch_widget(tenant=tenant, actor=owner_actor, widget=widget)
+    again = touch_widget(tenant=tenant, actor=owner_actor, widget=first)
+    assert widget.updated_at < first.updated_at < again.updated_at
+    assert again.name == "Seen"
+    assert published.count(WIDGET_TOUCHED) == 2
+
+
+def test_an_archived_widget_refuses_a_touch(tenant: Tenant, owner_actor: Actor) -> None:
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Gone")
+    archive_widget(tenant=tenant, actor=owner_actor, widget=widget)
+    with pytest.raises(Archived):
+        touch_widget(tenant=tenant, actor=owner_actor, widget=widget)
+
+

@@ -42,20 +42,21 @@ import {
     importRepeatedSentence,
     nothingToImportSentence,
     refusedRowSentence,
-} from "@/copy/widget";
+} from "@pilecap/copy/widget";
 import type { components } from "@/api/generated/schema";
-import { RefusalPanel } from "@/screens/refusal-panel";
-import { pathFor } from "@/screens/routes";
-import type { Refusal, SurfaceState } from "@/screens/state";
-import { unhandledState } from "@/screens/state";
-import { importActs } from "@/screens/verbs";
-import { dayOf, StillLine } from "@/screens/widget/parts";
+import { RefusalPanel } from "@pilecap/ui/refusal-panel";
+import { pathFor, STAFF_SURFACE } from "@pilecap/ui/routes";
+import type { Refusal, SurfaceState } from "@pilecap/ui/state";
+import { unhandledState } from "@pilecap/ui/state";
+import { importActs } from "@pilecap/ui/verbs";
+import { StillLine } from "@pilecap/ui/still-line";
+import { dayOf } from "@/screens/widget/parts";
 import { ROAD } from "@/screens/widget/road";
 import "@/screens/widget/widget-face.css";
 
 /** The run row and one of its rows, the imports door's own shapes. */
-export type ImportRun = components["schemas"]["ImportOut"];
-export type ImportRow = components["schemas"]["ImportRowOut"];
+export type ImportRun = components["schemas"]["DjbImportOut"];
+export type ImportRow = components["schemas"]["DjbImportRowOut"];
 
 /** What the page shows: the run (none yet while choosing), its refused rows, and whether the file was already imported. */
 export type ImportView = {
@@ -73,10 +74,10 @@ export type ImportPress = {
 };
 
 export function WidgetImport({ state, press }: { readonly state: SurfaceState<ImportView>; readonly press?: ImportPress }) {
-    const list = pathFor("widget-list");
+    const list = pathFor("widget-list", {}, undefined, STAFF_SURFACE);
     return (
-        <main style={{ maxWidth: "var(--measure)", margin: "0 auto", padding: "var(--space-4) var(--space-3)" }}>
-            <p style={{ margin: "0 0 var(--space-2)", fontSize: "var(--type-facts)" }}>
+        <main className="widget-page widget-page-prose">
+            <p className="widget-crumb-line">
                 {list === null ? (
                     C.title
                 ) : (
@@ -85,7 +86,7 @@ export function WidgetImport({ state, press }: { readonly state: SurfaceState<Im
                     </a>
                 )}
             </p>
-            <h1 style={{ fontSize: "var(--type-title)", margin: "0 0 var(--space-3)", color: "var(--ink)" }}>{importPageTitle()}</h1>
+            <h1 className="widget-title">{importPageTitle()}</h1>
             {body(state, press)}
         </main>
     );
@@ -123,7 +124,7 @@ function Choose({ press, refused }: { readonly press: ImportPress | undefined; r
         <>
             {notice === null ? null : (
                 <div className="widget-refusal-seat">
-                    <RefusalPanel refusal={notice} seat="list-head" words={{ label: acts.stage.words.refused, remedies: C.remedies }} />
+                    <RefusalPanel surface={STAFF_SURFACE} refusal={notice} seat="list-head" refused={acts.stage.words.refused} />
                 </div>
             )}
             <p className="widget-quiet">{importColumnsSentence()}</p>
@@ -158,7 +159,7 @@ function Run({ view, press }: { readonly view: ImportView; readonly press: Impor
         if (previewed) counts.current?.focus();
     }, [previewed]);
     if (run === null || acts === null) return <Choose press={press} />;
-    const list = pathFor("widget-list");
+    const list = pathFor("widget-list", {}, undefined, STAFF_SURFACE);
     if (view.repeated === true && run.applied_at !== null && run.applied_at !== undefined) {
         return (
             <div data-band="imported" className="widget-band">
@@ -190,7 +191,7 @@ function Run({ view, press }: { readonly view: ImportView; readonly press: Impor
                 <>
                     {press?.refused === null || press?.refused === undefined ? null : (
                         <div className="widget-refusal-seat">
-                            <RefusalPanel refusal={press.refused} seat="list-head" words={{ label: acts.apply.words.refused, remedies: C.remedies }} />
+                            <RefusalPanel surface={STAFF_SURFACE} refusal={press.refused} seat="list-head" refused={acts.apply.words.refused} />
                         </div>
                     )}
                     {total === 0 ? (

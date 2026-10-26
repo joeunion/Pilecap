@@ -1,0 +1,58 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "imports", "text": ""}
+from pilecap import InheritedDownward
+
+# golden-anchor: {"nth": 0, "scope": ["Widget"], "side": "before", "text": "class Meta(OrgScopedModel.Meta):"}
+    # Nullable: a widget without a policy is the ordinary case (ADR core-4).
+    policy = models.ForeignKey(
+        "WidgetPolicy",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="widgets",
+        help_text="The policy this widget was created under, if any.",
+    )
+# golden-anchor: {"nth": 0, "scope": [], "side": "after", "text": "return str(self.organization.slug)"}
+class WidgetPolicy(InheritedDownward, OrgScopedModel, Archivable):
+    """Configuration one part of a tenant sets, **inherited by everything below**."""
+
+    #: ADR core-13, kind two of three: config, not traffic, with no cascade parent.
+    lifecycle: ClassVar[Lifecycle] = Lifecycle(
+        kind=LifecycleKind.UNBOUNDED,
+        reason=(
+            "a policy is a tenant's configuration, not its traffic: the population "
+            "is bounded by how many rules the business writes and never by time. A "
+            "retired policy still has to be readable, because every widget created "
+            "under it names it through a PROTECT, and 'what were the terms when "
+            "this was made' is a question a dispute turns on."
+        ),
+        trigger=(
+            "2026-08-24 — the first product whose policies genuinely churn (a "
+            "pricing rule rewritten weekly per branch), which is the product that "
+            "needs `superseded_at` on this row and a rule about what a superseded "
+            "policy's widgets are still allowed to resolve."
+        ),
+    )
+
+    name = models.CharField(max_length=200)
+    body = models.TextField(blank=True)
+
+    class Meta(OrgScopedModel.Meta):
+        verbose_name = "widget policy"
+        verbose_name_plural = "widget policies"
+        constraints = [
+            # Per **organization**, not per tenant: `governing()` resolves nearest first.
+            models.UniqueConstraint(
+                fields=["tenant", "organization", "name"],
+                name="widget_policy_unique_name_per_organization",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return self.name
+
+    @property
+    def organization_slug(self) -> str:
+        """Which node set it — a property, not a schema alias (ADR example-3)."""
+        return str(self.organization.slug)
+
+

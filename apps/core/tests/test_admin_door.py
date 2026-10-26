@@ -48,9 +48,10 @@ from apps.accounts.services import create_user
 from apps.core.actor import Actor, system_actor
 from apps.core.admin import Action, ServiceModelAdmin
 from apps.core.audit import AuditEntry
-from apps.core.models import Membership, Organization, Tenant
+from apps.core.models import Grant, Membership, Organization, Tenant
 from apps.core.services import (
     add_membership,
+    create_grant,
     create_organization,
     move_organization,
     root_organization,
@@ -58,7 +59,7 @@ from apps.core.services import (
 
 pytestmark = pytest.mark.django_db
 
-PASSWORD = "a-long-enough-password"  # pragma: allowlist secret
+PASSWORD = "a-long-enough-password"  # noqa: S105 — a throwaway password a test user is made with  # pragma: allowlist secret
 LIST_URL = "/admin/core/membership/"
 ADD_URL = "/admin/core/membership/add/"
 
@@ -162,16 +163,18 @@ def test_a_superuser_with_no_membership_sees_no_memberships_at_all(
     `None` and the read answers nothing. The alternative — "no tenant means
     every tenant" — is the exemption `ServiceModelAdmin.get_queryset`'s
     docstring exists to refuse, and it would make the empty hat the widest one
-    in the product.
+    in the product. Now the empty hat is REFUSED rather than shown an
+    empty page: no hat reads `membership`, and the change half no longer renders
+    what the read refuses.
     """
     root.is_staff = True
     root.save(update_fields=["is_staff"])
     api.force_login(root)
 
-    page = api.get(LIST_URL).content.decode()
+    response = api.get(LIST_URL)
 
-    assert owner.email not in page
-    assert "0 memberships" in page or "no memberships" in page.lower()
+    assert response.status_code == 403
+    assert owner.email not in response.content.decode()
 
 
 # --- the swallowed refusal: a refusal is a message, not an outage --------------
@@ -347,3 +350,54 @@ def test_a_conflict_from_the_move_service_renders_the_same_way(
     assert any("conflict" in message for message in rendered), rendered
     node.refresh_from_db()
     assert node.parent_id == root_org.pk
+
+
+# --- no write without the read — a superuser's hat decides what they see ---
+
+
+@pytest.fixture
+def hatted_superuser(tenant: Tenant, owner: User) -> tuple[User, Membership]:
+    """A staff superuser whose one membership is `admin` at the root of `tenant`."""
+    user = create_user(email="super-hat@example.com", password=PASSWORD, is_staff=True)
+    user.is_superuser = True
+    user.save(update_fields=["is_superuser"])
+    membership = add_membership(
+        user=user,
+        tenant=tenant,
+        is_default=True,
+        role=Membership.Role.ADMIN,
+        actor=system_actor(tenant=tenant),
+    )
+    return user, membership
+
+
+def test_a_superuser_whose_hat_withholds_the_read_gets_no_changelist_and_no_change_view(
+    api: Client,
+    tenant: Tenant,
+    owner_actor: Actor,
+    root_org: Organization,
+    hatted_superuser: tuple[User, Membership],
+) -> None:
+    """The change half no longer renders what the read half refuses.
+
+    Django gates a changelist on `has_view_or_change_permission`, so before this
+    a superuser rendered it through the CHANGE half whatever the hat's read said.
+    The withhold goes through `create_grant`, the hand-out service, never a raw row.
+    """
+    user, membership = hatted_superuser
+    api.force_login(user)
+    change_url = f"/admin/core/organization/{root_org.pk}/change/"
+
+    assert api.get("/admin/core/organization/").status_code == 200
+    assert api.get(change_url).status_code == 200
+
+    create_grant(
+        tenant=tenant,
+        actor=owner_actor,
+        membership=membership,
+        permission="organization.read",
+        effect=Grant.Effect.WITHHOLD,
+    )
+
+    assert api.get("/admin/core/organization/").status_code == 403
+    assert api.get(change_url).status_code == 403

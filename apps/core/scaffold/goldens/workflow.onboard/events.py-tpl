@@ -1,0 +1,3 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "before", "text": "WIDGET_ARCHIVED = \"example.widget.archived\""}
+# The one an app cannot emit from a request: an activity says it.
+WIDGET_ONBOARDED = "example.widget.onboarded"

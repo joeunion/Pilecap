@@ -1,37 +1,25 @@
-"""The HTTP door onto tags: the tenant's words at `/djb_tags/`, and the words a
-row carries at `/djb_tag_links/?subject=<kind>:<id>`.
+"""The HTTP door onto tags; each route resolves its row and calls the service its MCP twin calls.
 
-Generic, and deliberately so: there is no route per noun. A product's noun
-takes tags by declaring `attachments = ("tags", ...)` on its model, and these
-routes serve it through the `<kind>:<id>` pointer. Every read goes through
-`selectors.py`, every write through `services.py`; the routes never say 404 —
-`NotFound` from below is turned into a number by `config/api.py` alone, so the
-MCP tools over the same functions refuse identically.
+# why-not `from __future__ import annotations`: ninja reads the route signatures at import.
 """
 
-# NOTE: no `from __future__ import annotations` — ninja builds a Pydantic model
-# out of each route's signature at import time and needs real annotations.
-
-from typing import Literal
 from uuid import UUID
 
 from django.db.models import QuerySet
 from ninja import Router, Status
-from ninja.errors import HttpError
 from ninja.pagination import paginate
 
 from apps.accounts.auth import API_AUTH
-from apps.core.actor import Actor, actor_from_request
 from apps.core.api import CursorPagination
+from apps.core.api.acting import acting
 from apps.core.api.docs import Tag as DocTag
 from apps.core.api.docs import also_refuses, refuses
-from apps.core.models import Tenant
 from apps.core.requests import TenantRequest
+from apps.core.schemas import Show
 from apps.djb_tags.models import Tag, TagLink
-from apps.djb_tags.schemas import TagIn, TagLinkIn, TagLinkOut, TagOut, TagPatch
+from apps.djb_tags.schemas import DjbTagIn, DjbTagLinkIn, DjbTagLinkOut, DjbTagOut, DjbTagPatch
 from apps.djb_tags.selectors import get_tag, get_tag_link, list_tag_links, list_tags
 from apps.djb_tags.services import (
-    TagLinking,
     archive_tag,
     create_tag,
     create_tag_link,
@@ -65,23 +53,9 @@ TAGS = {
 router = Router(tags=["djb_tags"], auth=API_AUTH)
 
 
-def _acting(request: TenantRequest) -> tuple[Actor, Tenant]:
-    """The actor and tenant a write happens as. No tenant is refused, never guessed."""
-    if request.tenant is None:
-        raise HttpError(403, "No tenant for this request.")
-    return actor_from_request(request), request.tenant
-
-
-def linking_body(linking: TagLinking) -> Status[TagLink]:
-    """201 for the link this call made; 200 for the link that was already there."""
-    return Status(201 if linking.created else 200, linking.link)
-
-
-@router.get("/djb_tags/", response=list[TagOut], url_name="djb_tag-list")
+@router.get("/djb_tags/", response=list[DjbTagOut], url_name="djb_tag-list")
 @paginate(CursorPagination)
-def list_tags_route(
-    request: TenantRequest, show: Literal["live", "archived", "all"] = "live"
-) -> QuerySet[Tag]:
+def list_tags_route(request: TenantRequest, show: Show = "live") -> QuerySet[Tag]:
     """List tags
 
     The tenant's words, newest first. Every member of the tenant may read them.
@@ -90,12 +64,12 @@ def list_tags_route(
     `archived` the retired ones, `all` both. A retired word stays on every row
     that already carries it; it only leaves this list and the pickers.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     return list_tags(tenant=tenant, actor=actor, show=show)
 
 
-@router.post("/djb_tags/", response={201: TagOut}, url_name="djb_tag-create")
-def create_tag_route(request: TenantRequest, payload: TagIn) -> Status[Tag]:
+@router.post("/djb_tags/", response={201: DjbTagOut}, url_name="djb_tag-create")
+def create_tag_route(request: TenantRequest, payload: DjbTagIn) -> Status[DjbTagOut]:
     """Create a tag
 
     Coin a word for the whole tenant. Its `slug` is derived from `name` and is
@@ -103,24 +77,26 @@ def create_tag_route(request: TenantRequest, payload: TagIn) -> Status[Tag]:
     archived — is refused with `409 conflict` (restore an archived one instead).
     Takes an administrator of the whole tenant.
     """
-    actor, tenant = _acting(request)
-    return Status(201, create_tag(tenant=tenant, actor=actor, name=payload.name))
+    actor, tenant = acting(request)
+    return Status(
+        201, DjbTagOut.from_orm(create_tag(tenant=tenant, actor=actor, name=payload.name))
+    )
 
 
-@router.get("/djb_tags/{tag_id}/", response=TagOut, url_name="djb_tag-detail")
-def retrieve_tag(request: TenantRequest, tag_id: UUID) -> Tag:
+@router.get("/djb_tags/{tag_id}/", response=DjbTagOut, url_name="djb_tag-detail")
+def retrieve_tag(request: TenantRequest, tag_id: UUID) -> DjbTagOut:
     """Get a tag
 
     One word, live or archived. An archived word answers read-only: its
     `archived_at` and `archived_by` say when and by whom it was retired.
     """
-    actor, tenant = _acting(request)
-    return get_tag(tenant=tenant, actor=actor, tag_id=tag_id)
+    actor, tenant = acting(request)
+    return DjbTagOut.from_orm(get_tag(tenant=tenant, actor=actor, tag_id=tag_id))
 
 
-@router.patch("/djb_tags/{tag_id}/", response=TagOut, url_name="djb_tag-rename")
+@router.patch("/djb_tags/{tag_id}/", response=DjbTagOut, url_name="djb_tag-rename")
 @also_refuses("archived")
-def rename_tag_route(request: TenantRequest, tag_id: UUID, payload: TagPatch) -> Tag:
+def rename_tag_route(request: TenantRequest, tag_id: UUID, payload: DjbTagPatch) -> DjbTagOut:
     """Rename a tag
 
     Respell a word; its `slug` follows. Every row that carries it reads the new
@@ -128,39 +104,39 @@ def rename_tag_route(request: TenantRequest, tag_id: UUID, payload: TagPatch) ->
     word is refused with `409 archived`; restore it first. Takes an
     administrator of the whole tenant.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     tag = get_tag(tenant=tenant, actor=actor, tag_id=tag_id)
-    return rename_tag(tenant=tenant, actor=actor, tag=tag, name=payload.name)
+    return DjbTagOut.from_orm(rename_tag(tenant=tenant, actor=actor, tag=tag, name=payload.name))
 
 
-@router.post("/djb_tags/{tag_id}/archive/", response=TagOut, url_name="djb_tag-archive")
-@refuses("archive_blocked", "forbidden", "not_found")
-def archive_tag_route(request: TenantRequest, tag_id: UUID) -> Tag:
+@router.post("/djb_tags/{tag_id}/archive/", response=DjbTagOut, url_name="djb_tag-archive")
+@refuses("archive_blocked", "forbidden", "no_acting_scope", "not_found")
+def archive_tag_route(request: TenantRequest, tag_id: UUID) -> DjbTagOut:
     """Archive a tag
 
     Retire a word: it leaves `/djb_tags/` and every picker, and every row that
     already carries it keeps it, readable. Pressing it again answers the same
     row with its first date. Takes an administrator of the whole tenant.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     tag = get_tag(tenant=tenant, actor=actor, tag_id=tag_id)
-    return archive_tag(tenant=tenant, actor=actor, tag=tag)
+    return DjbTagOut.from_orm(archive_tag(tenant=tenant, actor=actor, tag=tag))
 
 
-@router.post("/djb_tags/{tag_id}/restore/", response=TagOut, url_name="djb_tag-restore")
-@refuses("forbidden", "not_found", "restore_blocked")
-def restore_tag_route(request: TenantRequest, tag_id: UUID) -> Tag:
+@router.post("/djb_tags/{tag_id}/restore/", response=DjbTagOut, url_name="djb_tag-restore")
+@refuses("forbidden", "no_acting_scope", "not_found", "restore_blocked")
+def restore_tag_route(request: TenantRequest, tag_id: UUID) -> DjbTagOut:
     """Restore a tag
 
     Bring a retired word back to `/djb_tags/` and the pickers. Pressing it on a live
     word answers the row unchanged. Takes an administrator of the whole tenant.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     tag = get_tag(tenant=tenant, actor=actor, tag_id=tag_id)
-    return restore_tag(tenant=tenant, actor=actor, tag=tag)
+    return DjbTagOut.from_orm(restore_tag(tenant=tenant, actor=actor, tag=tag))
 
 
-@router.get("/djb_tag_links/", response=list[TagLinkOut], url_name="djb_tag_links-list")
+@router.get("/djb_tag_links/", response=list[DjbTagLinkOut], url_name="djb_tag_links-list")
 @paginate(CursorPagination)
 def list_tag_links_route(request: TenantRequest, subject: str) -> QuerySet[TagLink]:
     """List a row's tags
@@ -171,15 +147,17 @@ def list_tag_links_route(request: TenantRequest, subject: str) -> QuerySet[TagLi
     the same answer as a row that does not exist. Archived words stay listed:
     the row still carries them.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     return list_tag_links(tenant=tenant, actor=actor, subject=subject)
 
 
 @router.post(
-    "/djb_tag_links/", response={200: TagLinkOut, 201: TagLinkOut}, url_name="djb_tag_link-create"
+    "/djb_tag_links/",
+    response={200: DjbTagLinkOut, 201: DjbTagLinkOut},
+    url_name="djb_tag_link-create",
 )
 @also_refuses("archived")
-def create_tag_link_route(request: TenantRequest, payload: TagLinkIn) -> Status[TagLink]:
+def create_tag_link_route(request: TenantRequest, payload: DjbTagLinkIn) -> Status[DjbTagLinkOut]:
     """Tag a row
 
     Put a word on a row, naming the row as `subject=<kind>:<id>`. The link lives
@@ -189,11 +167,10 @@ def create_tag_link_route(request: TenantRequest, payload: TagLinkIn) -> Status[
     `subject`; a row you cannot see is `404`; an archived word is
     `409 archived`.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     tag = get_tag(tenant=tenant, actor=actor, tag_id=payload.tag_id)
-    return linking_body(
-        create_tag_link(tenant=tenant, actor=actor, tag=tag, subject=payload.subject)
-    )
+    linking = create_tag_link(tenant=tenant, actor=actor, tag=tag, subject=payload.subject)
+    return Status(201 if linking.created else 200, DjbTagLinkOut.from_orm(linking.link))
 
 
 @router.delete("/djb_tag_links/{link_id}/", response={204: None}, url_name="djb_tag_link-delete")
@@ -203,7 +180,7 @@ def delete_tag_link_route(request: TenantRequest, link_id: UUID) -> Status[None]
     Take one word off one row. A link has no archive: removing it is how it
     goes, and tagging the row again brings it back.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     link = get_tag_link(tenant=tenant, actor=actor, link_id=link_id)
     delete_tag_link(tenant=tenant, actor=actor, link=link)
     return Status(204, None)

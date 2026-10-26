@@ -1,6 +1,6 @@
 """The one read chokepoint. **Query in, scoped page out — and no other path.**
 
-`search()` is a *selector* and not a service, and that placement is deliberate:
+`get_search_page()` is a *selector* and not a service, and that placement is deliberate:
 a search is a read, house rule 12 puts reads in selectors, and the
 ruling's intent ("a single search service always injects the filters") is
 preserved exactly where it matters — **one function builds the scope, and no
@@ -123,13 +123,13 @@ from uuid import UUID
 from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector
 from django.core.cache import cache
 from django.db import DatabaseError
-from django.db.models import F, Q, QuerySet
+from django.db.models import F, QuerySet
 
 from apps.core.api.pagination import MAX_LIMIT, decode_cursor, encode_cursor
 from apps.core.authz import allows, kind_of, refusal_sentence
 from apps.core.exceptions import Forbidden, SearchUnavailable
 from apps.core.log import get_logger
-from apps.core.models import ORG_FIELD, PATH_SEPARATOR, Organization, Tenant
+from apps.core.models import ORG_FIELD, Organization, Tenant, subtree_q
 from apps.search import engine as engine_module
 from apps.search import registry, services
 from apps.search.activities import display_for
@@ -236,36 +236,17 @@ def get_engine_configuration() -> EngineConfiguration:
 
 
 def list_visible_org_ids(*, tenant: Tenant | None, actor: Any) -> tuple[UUID, ...] | None:
-    """The acting hat's subtree, as ids. **One query.** `None` when unresolved.
+    """The acting hat's subtree as ids, in one query; `None` when the hat is unresolved.
 
-    This is the same resolution `ScopedQuerySet.visible_to` performs, in the same
-    direction (**downwards only** — a hat sees itself and everything beneath it,
-    never a parent's rows and never a sibling's), against the same indexed
-    materialized-path prefix. It is done here as ids rather than as a queryset
-    filter because the engine is not Postgres and cannot be handed a `Q`.
-
-    Returning ids rather than a path is the load-bearing part: paths never leave
-    Postgres, so re-parenting an organization updates **zero documents** — the
-    ancestry changed, the `organization_id` on every row did not, and the first
-    query after the move filters against the new subtree with no reindex and no
-    window where stale ancestry answers.
-
-    `None` means the hat did not resolve — a different fact from "the subtree is
-    empty", which cannot happen (an organization is always in its own subtree).
+    Ids, never paths: a re-parented organization rewrites zero documents.
     """
     if tenant is None:
         return None
     org = actor if isinstance(actor, Organization) else getattr(actor, "org", None)
     if not isinstance(org, Organization):
         return None
-    # The same predicate `visible_to` applies, spelled here because the engine is
-    # not Postgres and cannot be handed a `Q`. Django escapes the LIKE
-    # metacharacters in `__startswith`, and a path is base36 and dots anyway, so
-    # a slug that somehow carried a `%` could not widen the scan.
-    prefix = org.path
-    subtree = Q(path=prefix) | Q(path__startswith=prefix + PATH_SEPARATOR)
     return tuple(
-        Organization.objects.for_tenant(tenant).filter(subtree).values_list("id", flat=True)
+        Organization.objects.for_tenant(tenant).filter(subtree_q(org)).values_list("id", flat=True)
     )
 
 
@@ -573,7 +554,7 @@ def _close_circuit(*, tenant: Tenant, primary: str) -> None:
         services.announce_recovered(tenant=tenant, engine=primary)
 
 
-def search(
+def get_search_page(
     *,
     tenant: Tenant | None,
     actor: Any,
@@ -679,7 +660,7 @@ def search(
         attempt and the failover, and three copies of them is three places for
         the degraded page to drift from the healthy one.
         """
-        return _page(
+        return _engine_page(
             engine,
             tenant=tenant,
             org_ids=org_ids,
@@ -722,7 +703,7 @@ def search(
     return page
 
 
-def _page(
+def _engine_page(
     engine: SearchEngine,
     *,
     tenant: Tenant,

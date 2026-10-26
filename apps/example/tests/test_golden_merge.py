@@ -1,10 +1,4 @@
-"""The merge adoption's own test — copied with the adoption, and green on the copy.
-
-Every line is fenced `golden: merge`: the dry run, the merge leaving a
-read-only tombstone whose writes refuse `merged`, the ledger kept on the loser
-(`merge_keeps`), the same pair again unchanged, and a member refused. Rows and
-ledger lines are made by hand — the product's own business.
-"""
+"""The merge adoption's own test — copied with the adoption, and green on the copy."""
 
 # golden: merge begin
 import json
@@ -14,9 +8,9 @@ import pytest
 from django.apps import apps as django_apps
 from django.test import Client
 
-from apps.accounts.models import User
-from apps.core.models import Organization, Tenant
 from apps.example.models import Widget, WidgetEntry
+from pilecap.accounts import User
+from pilecap.tenancy import Organization, Tenant
 
 pytestmark = pytest.mark.django_db
 

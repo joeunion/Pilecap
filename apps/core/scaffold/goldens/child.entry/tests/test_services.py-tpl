@@ -1,0 +1,43 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "imports", "text": ""}
+from apps.example.models import WidgetEntry
+
+# golden-anchor: {"nth": 0, "scope": [], "side": "before", "text": "DUE_AT = datetime(2026, 11, 2, 17, 0, tzinfo=UTC)"}
+# --- The ledger is append-only, and the population is discovered --------------
+
+
+def test_the_ledger_declares_itself_append_only_and_is_discovered() -> None:
+    """`WidgetEntry` is in the append-only population without anybody listing it."""
+    from pilecap.testing import append_only_models, is_append_only
+
+    assert is_append_only(WidgetEntry)
+    assert WidgetEntry in append_only_models()
+    # And the negative, so the helper is not simply answering yes.
+    assert not is_append_only(Widget)
+
+
+
+
+def test_the_landing_gate_refuses_a_row_that_disagrees_with_its_widget(
+    tenant: Tenant, owner_actor: Actor
+) -> None:
+    """The gate at the model tier, where it actually lives."""
+    from django.core.exceptions import ValidationError
+
+    from apps.example.models import WidgetEntry as Entry
+    from pilecap.tenancy import create_organization
+
+    root = root_organization(tenant=tenant)
+    elsewhere = create_organization(
+        tenant=tenant, parent=root, name="Elsewhere", slug="elsewhere", actor=owner_actor
+    )
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="At the root")
+
+    misfiled = Entry(tenant=tenant, organization=elsewhere, widget=widget, note="wrong desk")
+    with pytest.raises(ValidationError) as raised:
+        misfiled.full_clean()
+    assert "organization" in raised.value.message_dict
+
+    # And the same row filed correctly validates.
+    Entry(tenant=tenant, organization=root, widget=widget, note="right desk").full_clean()
+
+

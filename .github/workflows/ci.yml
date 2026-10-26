@@ -26,8 +26,8 @@
 # of the last command in the pipe.
 #
 # **AND CI DOES NOT HAVE ITS OWN ENVIRONMENT EITHER. CI BRINGS UP THE STACK THE
-# GATE ASSUMES** — `docker compose up -d --wait`, this repository's own
-# `compose.yaml`, the same file a laptop runs. That is the same sentence as the
+# GATE ASSUMES** — `scripts/ci_stack.sh up`, compose's own `--wait` over this
+# repository's own `compose.yaml`, the same file a laptop runs. That is the same sentence as the
 # one above, one layer down: a hand-built CI environment that *resembles* the
 # gate's is a second description of the stack, and a second description drifts.
 #
@@ -51,9 +51,9 @@
 #                     rather than the 16 this file used to publish on its own.
 #   own-tree-census   `scripts/sweep.sh` — compose `db` AND compose `temporal`.
 #   selftest          BOTH shell refusal drives live in this leg:
-#                     `scripts/tests/test_backup_restore.sh` needs compose `db`
+#                     `quality/tests/test_backup.py` needs compose `db`
 #                     (`backup.sh` dumps with the pg_dump INSIDE the container),
-#                     `scripts/tests/test_sweep.sh` needs `db` AND `temporal`.
+#                     `quality/tests/test_reap.py` needs `db` AND `temporal`.
 #
 # `own-tree-census` runs BEFORE `selftest`, so it is the first leg that would
 # have gone red, not the drives themselves — both answer to the same
@@ -62,15 +62,16 @@
 # WHAT IS DELIBERATELY NOT STARTED, and why, because "start the stack" must not
 # quietly mean "start everything":
 #
-#   * zitadel — `config/settings/test.py` pins ZITADEL_ISSUER at 127.0.0.1:1 and
-#     the PAT empty (the suite must not dial), and no gate leg touches identity;
-#     `manage.py zitadel_audit` is an operator's drift tripwire, not a leg. Its
-#     first-instance bootstrap on an empty database also costs more than every
-#     other service here put together.
-#   * mailpit — `config/settings/test.py` uses the locmem email backend, so
-#     nothing in the gate opens an SMTP socket. (On a laptop it IS the contract;
-#     `scripts/setup.sh` starts it there for that reason. Here it would be a
-#     container nothing connects to.)
+#   * zitadel and mailpit — EXCEPT on a row whose unit's `needs` name them.
+#     `config/settings/test.py` pins ZITADEL_ISSUER at 127.0.0.1:1 and the PAT
+#     empty (the suite must not dial) and uses the locmem email backend, so no
+#     SUITE leg touches either, and Zitadel's first-instance bootstrap costs
+#     more than every other service here put together. But the `selftest`
+#     unit carries the identity-home drive (`quality/tests/test_identity_home.py`),
+#     which drives a real worker against a real Zitadel and reads a real
+#     Mailpit — so that unit's `needs` say `zitadel,mailpit`, and the stack step
+#     below starts both for the rows that carry it and for no other. A drive
+#     that was never run here would be a drive the trains road never measured.
 #   * the `observability` profile (otel-collector, clickstack) — `compose.yaml`
 #     says "in CI never" in as many words, and a profile is not started by a
 #     bare `up` in any case.
@@ -172,9 +173,9 @@ env:
   # into compose as POSTGRES_USER / POSTGRES_PASSWORD, so the value Django dials
   # and the value the container is created with cannot drift apart the way two
   # hand-kept lists do. `compose.yaml`'s own `${...:-djb}` defaults are then
-  # never relied on here. POSTGRES_DB is the third and it is NOT here — it comes
-  # from the derivation step, for the reason written where DATABASE_NAME used to
-  # be pinned.
+  # never relied on here. POSTGRES_DB is the third and it is NOT here — it is
+  # derived by `scripts/ci_stack.sh up`, for the reason written where
+  # DATABASE_NAME used to be pinned.
   #
   # (The sentence this replaces claimed the checked-in defaults in
   # `config/settings/base.py` made an override unnecessary. Half true and now
@@ -188,7 +189,8 @@ env:
   DATABASE_HOST: 127.0.0.1
   DATABASE_PORT: "5432"
   # DATABASE_NAME IS DELIBERATELY ABSENT FROM THIS BLOCK. It is DERIVED, by the
-  # step below, by invoking `scripts/db.sh` — the same function a laptop runs.
+  # stack step below (`scripts/ci_stack.sh up`), through `scripts/db.sh` — the
+  # same function a laptop runs.
   #
   # (The sentence this replaces read "A NAME, NOT A DERIVATION", pinned
   # `djb_main`, and argued that an ephemeral runner with one checkout makes the
@@ -206,6 +208,11 @@ env:
   DATABASE_PASSWORD: djb  # pragma: allowlist secret — the published compose password, refused in production by config.settings.guards
   REDIS_URL: redis://127.0.0.1:6379/0
   CACHE_URL: redis://127.0.0.1:6379/1
+  # The development values `.env.example` gives that the code's defaults are not (the `ci-env` census).
+  BRAND_ACCENT: "#3f4a5a"
+  EMAIL_HOST: 127.0.0.1
+  EMAIL_PORT: "1025"
+  SERVER_EMAIL: no-reply@localhost
   # NO `AWS_*` KEY IS HERE, AND THAT IS THE DESIGN. The store the suite talks to
   # has ONE authority: `config/settings/test.py` writes the compose MinIO's
   # address, region and published pair as literals and pins the session token
@@ -230,9 +237,9 @@ jobs:
 
     # WHAT TO RUN, ASKED RATHER THAN TYPED. This job's whole output is the
     # matrix the next one expands, and it comes out of the gate itself. It
-    # needs no venv, no database, no docker and no network beyond the checkout,
-    # because the listing reads one file and prints — so the job is a checkout
-    # and one shell step, and it is the cheapest job in this workflow.
+    # needs no database, no docker and no network beyond the checkout, because
+    # the listing reads one file and prints; on a pull request it installs the
+    # venv the lane's closure imports, and nothing else.
     #
     # AN EXIT 2 FROM THE LISTING FAILS THIS JOB, AND THERE IS NO FALLBACK. The
     # listing refuses rather than print a table it cannot vouch for (a leg in no
@@ -241,13 +248,24 @@ jobs:
     # design exists to delete, at exactly the moment the gate said the list was
     # wrong. `set -euo pipefail` and a bare invocation is the whole mechanism.
     #
-    # ON A PUSH TO MAIN IT ASKS ONE QUESTION FIRST: did a pull request's run
-    # already measure this tree green? (`gate_ci_consult`, the consult step
-    # below.) Yes → an empty matrix, `legs` skipped by its `if:`, and `verdict`
+    # ON A PUSH TO MAIN, AND ON A PULL REQUEST'S HEAD (CI-THIRD-1), IT ASKS ONE
+    # QUESTION FIRST: did a pull request's run already measure this tree green?
+    # (`ledger.ci_consult`, the consult step below.) Yes → an empty matrix, `legs` skipped by its `if:`, and `verdict`
     # names the run that measured it: one measurement per tree. Anything else
     # → the full matrix, exactly as if nothing had been asked.
+    #
+    # ON A PULL REQUEST IT ASKS THE LANE FIRST (`python -m quality.djb.scope
+    # lane`, the lane step below): one word — `docs`, `loop` or `full` — read
+    # through the loop's own scope derivation. `docs` is an empty matrix and
+    # this run is derive, verdict and gate-verdict alone; `loop` is the listing's
+    # rows narrowed by `--pr --base`; `full` is the listing's rows whole.
     outputs:
       matrix: ${{ steps.units.outputs.matrix }}
+      lane: ${{ steps.lane.outputs.lane }}
+      closure: ${{ steps.lane.outputs.closure }}
+      plan: ${{ steps.lane.outputs.plan }}
+      units: ${{ steps.lane.outputs.units }}
+      pytest: ${{ steps.lane.outputs.pytest }}
       seed: ${{ steps.units.outputs.seed }}
       honoured: ${{ steps.consult.outputs.honoured }}
       honoured_attempt: ${{ steps.consult.outputs.attempt }}
@@ -281,10 +299,13 @@ jobs:
 
       - name: the consult — did a pull request's run already measure this tree
         id: consult
-        # PUSHES ONLY: a pull request's run IS a measurement, and there is
-        # nothing earlier for it to honour.
+        # A PUSH AND A PULL REQUEST (CI-THIRD-1): a pull request asks of its
+        # HEAD with `--pr <number>`, and only a run of THAT pull request is a
+        # candidate — directly, or over a docs-only delta (the fold's re-push,
+        # `ledger.ci_consult`'s PR road); a head whose bytes main moved under
+        # is measured.
         #
-        # `gate_ci_consult` (scripts/gate_ledger.sh) prints exactly one line and
+        # `ledger.ci_consult` (quality/djb/ledger.py) prints exactly one line and
         # ALWAYS exits 0: `consult: honoured run=<id> attempt=<n> tree=<t>` when
         # a completed pull_request run of this workflow, for the pushed commit
         # or a pull request GitHub associates with it, published a green, whole,
@@ -293,16 +314,19 @@ jobs:
         # `consult: measure — <why>`. It never refuses, because measuring is
         # the safe answer: a tree the fallback bank pushed has no record and is
         # simply measured here.
-        if: github.event_name == 'push'
+        #
+        # THE STDLIB FLOOR: this job runs no `uv sync`, so the runner's own
+        # `python3 -E -S` runs the ledger — the module imports nothing else.
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          PUSH_SHA: ${{ github.sha }}
+          PUSH_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
-          . ./scripts/gate_ledger.sh
           answer="${RUNNER_TEMP:-/tmp}/consult.txt"
-          gate_ci_consult "$PUSH_SHA" >"$answer"
+          python3 -E -S -m quality.djb.ledger ci-consult "$PUSH_SHA" ${PR_NUMBER:+--pr "$PR_NUMBER"} >"$answer"
           line="$(sed -n 1p "$answer")"
           echo "$line"
           case "$line" in
@@ -322,6 +346,81 @@ jobs:
               ;;
             *) echo "  the full matrix runs" ;;
           esac
+
+      - name: Install uv
+        # THE LANE'S CLOSURE IS NOT STDLIB: a loop-lane diff under `apps/` is
+        # walked through `config.settings.discovery`, which imports Django. A
+        # pull request installs what `uv.lock` says before it asks; a push to
+        # main asks no lane and installs nothing.
+        if: github.event_name == 'pull_request'
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+
+      - name: Install dependencies
+        if: github.event_name == 'pull_request'
+        run: uv sync --frozen
+
+      - name: the lane — what this change can reach
+        id: lane
+        # ONE WORD, ASKED, NEVER TYPED HERE: `quality.djb.scope lane` prints
+        # `docs`, `loop` or `full` on its first line and why below it — the
+        # forced-full paths it saw, what the rows run, and the loop's own scope
+        # block. Its exit 2 fails this job, with no fallback, exactly as the
+        # listing's does.
+        #
+        # A PUSH TO MAIN IS `full` and asks nothing: it is graded whole. A pull
+        # request is the picker's word whatever its branch is called; only a
+        # `full` record vouches for a tree (`ledger.ci_judge`).
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          said="${RUNNER_TEMP:-/tmp}/lane.txt"
+          : >"$said"
+          if [ "$EVENT" != "pull_request" ] || [ -z "${PR_BASE:-}" ]; then
+            echo "full" >"$said"
+            echo "  lane:       full — a push to main is graded whole" >>"$said"
+          else
+            .venv/bin/python -m quality.djb.scope lane --plan --base "$PR_BASE" --head "$(git rev-parse HEAD)" >"$said"
+          fi
+          cat "$said"
+          lane="$(sed -n 1p "$said")"
+          case "$lane" in
+            docs | loop | full) ;;
+            *) echo "::error::the lane picker printed '${lane}' — none of docs, loop, full"; exit 2 ;;
+          esac
+          echo "lane=$lane" >>"$GITHUB_OUTPUT"
+          units="$(sed -n 's/^  units:      //p' "$said")"
+          if [ "$lane" = "loop" ] && [ -z "$units" ]; then
+            echo "::error::the loop lane printed no units: line — refusing to guess its rows"
+            exit 2
+          fi
+          # THE SELFTEST UNIT'S CLOSURE (`scope.SELFTEST_CLOSURE`): `withheld` on a `full` lane
+          # comes with a `units:` line that omits it, honoured below exactly as the loop's is;
+          # `narrowed` (CI-THIRD-2) with one naming `selftest:<shards>` and a `plan:` line.
+          closure="$(sed -n -E 's/^  [a-z]+:  (ran|narrowed|withheld) — .*/\1/p' "$said")"
+          if [ "$closure" != "" ] && [ "$closure" != "ran" ] && [ -z "$units" ]; then
+            echo "::error::the closure's unit is ${closure} and no units: line names the rows — refusing to guess"
+            exit 2
+          fi
+          plan="$(sed -n 's/^  plan:       //p' "$said")"
+          if [ "$closure" = "narrowed" ] && [ -z "$plan" ]; then
+            echo "::error::the closure's unit is narrowed and the lane printed no plan: line — refusing to guess"
+            exit 2
+          fi
+          echo "units=$units" >>"$GITHUB_OUTPUT"
+          echo "closure=$closure" >>"$GITHUB_OUTPUT"
+          echo "plan=$plan" >>"$GITHUB_OUTPUT"
+          # THE APP SUITE'S WORD (CI-THIRD-3): `<unit>: whole|narrowed — why`, one space after
+          # the colon; a narrowed unit is marked `<unit>:pr` on the `units:` line.
+          pytest="$(sed -n -E 's/^  [a-z0-9-]+: (whole|narrowed) — .*/\1/p' "$said")"
+          echo "pytest=$pytest" >>"$GITHUB_OUTPUT"
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            { echo "### lane: ${lane}"; echo; echo '```'; cat "$said"; echo '```'; } >>"$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: ask the gate what its units are
         id: units
@@ -346,22 +445,38 @@ jobs:
         #
         # STILL A DECLARED GAP: the listing cannot be handed the proposed
         # change's base, so a row carries no `selected=<n>`. The NARROWING is
-        # not missing: a non-train pull request's rows carry `--pr --base`.
+        # not missing: a `loop`-lane pull request's rows carry `--pr --base`.
         #
         # AND ON A PUSH THE CONSULT'S ANSWER COMES FIRST: a tree a pull
         # request's run already measured green is honoured with an EMPTY
         # matrix, and `legs` is skipped by its own `if:`.
+        #
+        # AND THE `docs` LANE IS AN EMPTY MATRIX, never asked of the listing:
+        # nothing the change touches is read by a row. An unset lane is exit 2.
         env:
           HONOURED: ${{ steps.consult.outputs.honoured }}
           HONOURED_ATTEMPT: ${{ steps.consult.outputs.attempt }}
           HONOURED_TREE: ${{ steps.consult.outputs.tree }}
+          LANE: ${{ steps.lane.outputs.lane }}
+          UNITS: ${{ steps.lane.outputs.units }}
         run: |
           set -euo pipefail
+          echo "critical path: derive → the longest legs row ∥ images → gate-verdict; images-push waits on verdict, off the record's path"
           if [ -n "${HONOURED:-}" ]; then
             echo "matrix=[]" >>"$GITHUB_OUTPUT"
             echo "honoured: tree ${HONOURED_TREE} was measured green by run ${HONOURED} (attempt ${HONOURED_ATTEMPT}) — no row runs, and legs is skipped by its if:"
             exit 0
           fi
+          case "${LANE:-}" in
+            docs)
+              echo "matrix=[]" >>"$GITHUB_OUTPUT"
+              echo "lane: docs — no row runs; derive, verdict and gate-verdict are this run"
+              exit 0
+              ;;
+            loop) echo "lane: loop — the lane's units alone, each narrowed by --pr --base: ${UNITS:-}" ;;
+            full) echo "lane: full — every row below runs whole${UNITS:+; the units line alone: ${UNITS}}" ;;
+            *) echo "::error::no lane reached this step ('${LANE:-}') — refusing to guess one"; exit 2 ;;
+          esac
           # The workflow-level `env:` block is exported into every step, so the
           # one hand-typed number is read here rather than copied into a second
           # place that could disagree with it — and refused if it is not one.
@@ -378,6 +493,22 @@ jobs:
           matrix='[]'
           while IFS=$'\t' read -r unit needs shards _legs passes || [ -n "${unit:-}" ]; do
             [ -n "$unit" ] || continue
+            # THE LOOP LANE RUNS ITS OWN UNITS: `quality.djb.scope lane`'s `units:` line names
+            # each, and `<unit>:1` is one unsharded row — the selftest unit's harness selection;
+            # `<unit>:<n>` is n rows, the narrowed selftest plan's own count (CI-THIRD-2).
+            if [ "${LANE:-}" = "loop" ] || [ -n "${UNITS:-}" ]; then
+              said_n=""
+              for word in ${UNITS:-}; do
+                case "$word" in "${unit}:"[1-9]*) said_n="${word#"${unit}:"}" ;; esac
+              done
+              case " ${UNITS:-} " in
+                *" ${unit}:1 "*) shards=0 ;;
+                *" ${unit}:"[1-9]*" "*) shards="$said_n" ;;
+                *" ${unit}:pr "*) ;;
+                *" ${unit} "*) ;;
+                *) echo "  skipped: ${unit} — not a unit the ${LANE:-} lane's diff reaches"; continue ;;
+              esac
+            fi
             case "$shards" in
               0) n=0 ;;
               N-capable) n="$SHARDS" ;;
@@ -427,6 +558,7 @@ jobs:
     # the consult honoured this tree — since a listing of no units is exit 2
     # there. `verdict` tells the two kinds of skipped apart.
     if: needs.derive.outputs.matrix != '[]'
+    timeout-minutes: 90
     runs-on: ubuntu-latest
 
     # ONE ROW PER UNIT, AND THE ROW NEVER DECIDES ANYTHING. Every row runs the
@@ -436,7 +568,11 @@ jobs:
     # be YAML acting on a declaration, which is the drift one layer down: the
     # listing's `needs` column is a DECLARATION and the GATE is what refuses a
     # unit whose organ is missing, at the leg. The cost of honouring that is
-    # about a minute on the rows that do not need it, paid in parallel.
+    # about a minute on the rows that do not need it, paid in parallel. ONE
+    # declared exception: Zitadel and Mailpit start only on a row whose `needs`
+    # name them — the identity platform's first-instance bootstrap costs more
+    # than the rest of the stack together, and the row reads the need from the
+    # listing's own column, never from a unit name typed here.
     #
     # `fail-fast: false` IS A CRITERION. The point of splitting is to learn the
     # whole red list in one run; cancelling the siblings of the first red would
@@ -448,8 +584,8 @@ jobs:
         include: ${{ fromJSON(needs.derive.outputs.matrix) }}
 
     # THE WORKFLOW'S `contents: read` PLUS `id-token: write` — the one widening,
-    # for the MinIO pull's login (the login steps say why). OIDC mints a per-job
-    # AWS identity; nothing durable holds a key.
+    # for the stack's ECR Public login (the login steps say why). OIDC mints a
+    # per-job AWS identity; nothing durable holds a key.
     permissions:
       contents: read
       id-token: write
@@ -541,41 +677,6 @@ jobs:
         # nobody has.
         run: uv sync --frozen
 
-      - name: this runner's own database name (derived, not typed)
-        # THE ONE THING THAT MAKES THE CENSUS LEG MEAN ANYTHING HERE. The name
-        # is not written down in this file; it is INVOKED out of
-        # `scripts/db.sh`, the same `db_name()` a laptop and a worktree run, so
-        # there is one derivation in this repository and not a copy of it in a
-        # YAML string. On a runner it resolves to `djb_<branch>_<8 hex of
-        # /home/runner/work/...>` — a derived shape, which is what
-        # `scripts/sweep.sh` requires before it will reason about an instance at
-        # all.
-        #
-        # AND IT REFUSES RATHER THAN FALLING BACK. If the derivation comes back
-        # empty, or something upstream has pinned a name of another shape, this
-        # step exits 2 and the job stops. A fallback to a typed name would
-        # restore exactly the vacuous green this step exists to end: the leg
-        # would run, find nothing in scope, and say clean. Could-not-look
-        # outranks a pass here as everywhere else.
-        #
-        # `$GITHUB_ENV` and not an output, because every later step wants it:
-        # compose creates POSTGRES_DB with it, and `scripts/db.sh`'s rule 1 — a
-        # name already in the environment wins — means the gate, the backup
-        # drive and the restore drill all read this same value rather than
-        # re-deriving one each.
-        run: |
-          . ./scripts/db.sh
-          . ./scripts/lifecycle.sh
-          if [ -z "${DATABASE_NAME:-}" ] || ! lc_derived_shape "$DATABASE_NAME"; then
-              echo "!! this job has no checkout-derived database name (exit 2)." >&2
-              echo "   DATABASE_NAME is '${DATABASE_NAME:-<empty>}'. The own-tree census" >&2
-              echo "   narrows every verdict to a derived identity, so a name of any other" >&2
-              echo "   shape leaves it asserting over an empty scope and passing." >&2
-              exit 2
-          fi
-          echo "DATABASE_NAME=${DATABASE_NAME}" >>"$GITHUB_ENV"
-          echo "this runner's database: ${DATABASE_NAME} (derived by scripts/db.sh)"
-
       - name: the arm64 handler the MinIO mirror needs
         # `compose.yaml` pins MinIO's last public release from the owner's ECR
         # Public mirror, linux/arm64 only; this runner is amd64, so the one
@@ -591,7 +692,8 @@ jobs:
         # `images` job's, and it must carry the `ecr-public-login` policy
         # (docs/runbooks/deploy.md, step 5b). us-east-1 is not a guess: ECR
         # Public's API lives in that region only. No role variable (a fork, a
-        # clone with no AWS account yet) → anonymous, as a laptop pulls.
+        # clone with no AWS account yet) → anonymous, as a laptop pulls — and
+        # rationed: a fork's full matrix can still meet `toomanyrequests`.
         if: vars.AWS_ECR_ROLE_ARN != ''
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -600,18 +702,50 @@ jobs:
 
       - name: log in to the registry the MinIO pin names
         # `registry-type: public` is `docker login public.ecr.aws` with an ECR
-        # Public token, through the action the `images` job already uses.
-        # `scripts/tests/test_setup_env.sh` refuses a compose-up job without it.
+        # Public token, through the action the `images` job already uses. It
+        # covers MinIO's pin, and a DJB_STACK_REGISTRY variable naming an ECR
+        # Public alias (the template's own repository points it at the mirror
+        # `mirror-images.yml` fills). With no role variable this step is
+        # skipped and every ECR Public pull is anonymous, rationed by data.
+        # `quality/tests/test_bootstrap.py` refuses a compose-up job without it.
         if: vars.AWS_ECR_ROLE_ARN != ''
         uses: aws-actions/amazon-ecr-login@v2
         with:
           registry-type: public
 
+      - name: the stack's registry, the product's choice
+        # Every later compose call in this job reads DJB_STACK_REGISTRY from `$GITHUB_ENV`.
+        # Order: the repository variable DJB_STACK_REGISTRY (a mirror the repository owns) ·
+        # else docker.io logged in with the repository's DOCKERHUB_USERNAME/DOCKERHUB_TOKEN ·
+        # else anonymous docker.io, which Docker Hub rate-limits per runner IP.
+        env:
+          # Pinned empty (house rule 62): choosing a registry needs no cloud credential.
+          AWS_ACCESS_KEY_ID: ""
+          AWS_SECRET_ACCESS_KEY: ""
+          AWS_SESSION_TOKEN: ""
+          STACK_REGISTRY: ${{ vars.DJB_STACK_REGISTRY }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -n "${STACK_REGISTRY:-}" ]; then
+              registry="${STACK_REGISTRY}"
+              echo "the stack pulls Docker Hub images from ${registry} (the repository variable DJB_STACK_REGISTRY)"
+          elif [ -n "${DOCKERHUB_USERNAME:-}" ] && [ -n "${DOCKERHUB_TOKEN:-}" ]; then
+              registry="docker.io"
+              printf '%s' "${DOCKERHUB_TOKEN}" | docker login docker.io --username "${DOCKERHUB_USERNAME}" --password-stdin
+              echo "the stack pulls Docker Hub images from docker.io, logged in as ${DOCKERHUB_USERNAME}"
+          else
+              registry="docker.io"
+              echo "::warning::the stack pulls Docker Hub images from docker.io anonymously — Docker Hub rate-limits anonymous pulls per runner IP and a full matrix can meet toomanyrequests; set the repository variable DJB_STACK_REGISTRY or the DOCKERHUB_USERNAME/DOCKERHUB_TOKEN secrets"
+          fi
+          echo "DJB_STACK_REGISTRY=${registry}" >>"$GITHUB_ENV"
+
       - name: the stack the gate assumes (docker compose up)
         # THE ENVIRONMENT, from the repository's OWN `compose.yaml` — the same
         # file, the same pinned images and the same published ports a laptop
         # runs, which is the point (see the header). ubuntu-latest ships docker
-        # and the compose v2 plugin; the two steps above are MinIO's alone.
+        # and the compose v2 plugin; the ECR Public login above serves the whole stack.
         #
         # `--wait` is what makes it a precondition rather than a race: every
         # service named here declares a healthcheck in `compose.yaml`, and
@@ -626,14 +760,17 @@ jobs:
         # rung that put them in `compose.yaml`, and the header says why for
         # those two as well.
         #
-        # The credentials come from the workflow `env:` block above and the
-        # database NAME from the derivation step above, rather than from
-        # `compose.yaml`'s `${...:-djb}` defaults — so the value Django dials
-        # and the value the container is created with are one value. That is
-        # also what puts the derived database on disk BEFORE the gate runs:
-        # `initdb` creates POSTGRES_DB on first boot, which is what the backup
-        # drive needs to exist before it can dump it, and what the own-tree
-        # census needs to exist before it can have anything in scope.
+        # ONE CALL, `scripts/ci_stack.sh up` — the recipe this job and the
+        # nightly share: it DERIVES this runner's database name through
+        # `scripts/db.sh` (refusing, exit 2, on any name of another shape —
+        # the own-tree census would otherwise assert over an empty scope and
+        # pass), hands it to every later step through `$GITHUB_ENV`, and
+        # creates the database under it with the workflow `env:` block's
+        # credentials, so the value Django dials and the value the container is
+        # created with are one value. That is also what puts the derived
+        # database on disk BEFORE the gate runs: `initdb` creates POSTGRES_DB
+        # on first boot, which the backup drive and the own-tree census need.
+        # An organ that never goes healthy is exit 1 with the diagnostics tail.
         #
         # No teardown step: the runner is ephemeral and is destroyed with the
         # job. A laptop tears down with `deploy/teardown.sh`; here there is
@@ -645,10 +782,55 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ""
           AWS_SESSION_TOKEN: ""
         run: |
-          POSTGRES_USER="$DATABASE_USER" \
-          POSTGRES_PASSWORD="$DATABASE_PASSWORD" \
-          POSTGRES_DB="$DATABASE_NAME" \
-            docker compose up -d --wait db redis temporal minio meilisearch
+          # A FAILED STEP HERE IS THE ROW'S EXIT: written where the gate step writes its own.
+          trap 'rc=$?; [ "$rc" = 0 ] || { mkdir -p "$RUNNER_TEMP/member-walls"; echo "$rc" >"$RUNNER_TEMP/member-walls/rc"; }' EXIT
+          ./scripts/ci_stack.sh up db redis temporal minio meilisearch
+
+      - name: the mail catcher, on a row whose unit needs it
+        # THE UNIT'S DECLARED NEEDS, read from the row the listing made — never
+        # a unit name typed here (the header says why these two are the only
+        # conditional services).
+        if: contains(format(',{0},', matrix.needs), ',mailpit,')
+        env:
+          # Pinned empty (house rule 62), as the stack step pins them.
+          AWS_ACCESS_KEY_ID: ""
+          AWS_SECRET_ACCESS_KEY: ""
+          AWS_SESSION_TOKEN: ""
+        run: |
+          # A FAILED STEP HERE IS THE ROW'S EXIT: written where the gate step writes its own.
+          trap 'rc=$?; [ "$rc" = 0 ] || { mkdir -p "$RUNNER_TEMP/member-walls"; echo "$rc" >"$RUNNER_TEMP/member-walls/rc"; }' EXIT
+          ./scripts/ci_stack.sh up mailpit
+
+      - name: the identity platform, its machine credential and the second host
+        # ONLY ON A ROW WHOSE UNIT NEEDS ZITADEL. The compose Zitadel writes its
+        # machine user's PAT into its bootstrap volume at first-instance
+        # creation; `scripts/setup.sh` reads it from there on a laptop, and this
+        # step does the same for the drives of this row, masked. The customer
+        # host resolves to this runner as it does on a verifier box's image.
+        if: contains(format(',{0},', matrix.needs), ',zitadel,')
+        env:
+          # Pinned empty (house rule 62): reading a volume needs no cloud credential.
+          AWS_ACCESS_KEY_ID: ""
+          AWS_SECRET_ACCESS_KEY: ""
+          AWS_SESSION_TOKEN: ""
+        run: |
+          set -euo pipefail
+          # A FAILED STEP HERE IS THE ROW'S EXIT: written where the gate step writes its own.
+          trap 'rc=$?; [ "$rc" = 0 ] || { mkdir -p "$RUNNER_TEMP/member-walls"; echo "$rc" >"$RUNNER_TEMP/member-walls/rc"; }' EXIT
+          ./scripts/ci_stack.sh up zitadel
+          pat_file="$(mktemp "${RUNNER_TEMP}/zitadel-pat.XXXXXX")"
+          docker compose cp zitadel:/zitadel/bootstrap/machine.pat "$pat_file"
+          pat="$(tr -d '\r\n' <"$pat_file")"
+          rm -f "$pat_file"
+          [ -n "$pat" ] || { echo "::error::the compose Zitadel's bootstrap volume holds no machine PAT"; exit 2; }
+          echo "::add-mask::${pat}"
+          # One name per line, so the drive preamble's census of what this job
+          # hands the gate step reads both.
+          echo "ZITADEL_ISSUER=http://localhost:8081" >>"$GITHUB_ENV"
+          echo "ZITADEL_PAT=${pat}" >>"$GITHUB_ENV"
+          getent ahosts customer.localhost >/dev/null 2>&1 ||
+            echo "127.0.0.1 customer.localhost" | sudo tee -a /etc/hosts >/dev/null
+          echo "customer.localhost resolves to: $(getent ahosts customer.localhost | awk 'NR == 1 { print $1 }')"
 
       - name: the frontend toolchain — pnpm
         # THE VERSION IS READ OUT OF `packageManager`, never typed. That field
@@ -696,8 +878,8 @@ jobs:
         # EVERY ROW INSTALLS, WHATEVER ITS UNIT — the same one-setup-for-every-
         # row rule the stack step keeps. A drive under the self-test unit
         # (the golden face copy) type-checks and censuses with this checkout's
-        # own `frontend/node_modules`; a verifier box has that directory from
-        # `setup.sh`, a runner has it only if a step makes it, and the row
+        # own `frontend/node_modules`; a runner — like any box — has that
+        # directory only where the fe leg's own install has run, and the row
         # that used to make it was the one whose unit carries the fe leg. So
         # the drive passed on every box and could not look on every self-test
         # shard, and no loop could see the difference.
@@ -734,6 +916,18 @@ jobs:
           fi
           exit 0
 
+      - name: the shell the gate's own tests drive — zsh
+        # test_db.py drives scripts/db.sh under a real zsh; on a runner with no
+        # zsh its cases could not look, and a gate-tests leg would measure exit 2.
+        env:
+          # Pinned empty (house rule 62): a package install needs no AWS identity.
+          AWS_ACCESS_KEY_ID: ""
+          AWS_SECRET_ACCESS_KEY: ""
+          AWS_SESSION_TOKEN: ""
+        run: |
+          command -v zsh >/dev/null 2>&1 || { sudo apt-get update -q && sudo apt-get install -y -q zsh; }
+          zsh --version
+
       - name: the gate, one unit (./scripts/check.sh --leg)
         # THE step. Not piped, not wrapped, not summarised: its exit status is
         # the job's. Which leg failed is printed by the script, with its wall
@@ -759,10 +953,8 @@ jobs:
         # `--passes 1` ONLY WHERE THE ROW CARRIES IT — the listing's `passes`
         # column, on the unit that runs the whole suite.
         #
-        # AND A TRAIN RUNS WHOLE. A pull request whose head is a `pm/*` branch
-        # is a train on the CI road (`scripts/pm_push.sh --pr`), and its run is
-        # the ONE measurement the push to main will honour — a narrowed run
-        # vouches for no tree — so its rows carry no `--pr --base`.
+        # AND ONLY THE `loop` LANE NARROWS: a `full` lane's rows run whole on a
+        # pull request too (derive's lane step says why it is full).
         #
         # THE WALLS, WRITTEN BY THE GATE ITSELF: `DJB_MEMBER_WALLS_OUT` names a
         # file OUTSIDE the checkout (the checkout is the measured tree), the
@@ -774,9 +966,14 @@ jobs:
           SHARD: ${{ matrix.shard }}
           PASSES: ${{ matrix.passes }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
-          PR_HEAD_REF: ${{ github.head_ref }}
+          LANE: ${{ needs.derive.outputs.lane }}
           DJB_GATE_PYTEST_SEED: ${{ needs.derive.outputs.seed }}
           DJB_MEMBER_WALLS_OUT: ${{ runner.temp }}/member-walls/walls.tsv
+          # THE SELFTEST PLAN (CI-THIRD-2): the lane's `plan:` line, handed to every row; only
+          # the selftest unit's legs read it, and an absent one is the whole unit.
+          SELFTEST_PLAN: ${{ needs.derive.outputs.plan }}
+          # THE UNITS LINE (CI-THIRD-3): a row whose unit it marks `:pr` is narrowed on a full lane.
+          UNITS: ${{ needs.derive.outputs.units }}
           # THE EXPORTED CREDENTIAL, PINNED EMPTY (house rule 62). The AWS login
           # above writes its assumed STS credentials into the job env for every
           # later step; the gate needs no cloud credential at all — the store
@@ -790,18 +987,28 @@ jobs:
           args=()
           [ -z "${SHARD:-}" ] || args+=(--shard "$SHARD")
           [ -z "${PASSES:-}" ] || args+=(--passes "$PASSES")
-          case "${PR_HEAD_REF:-}" in
-            pm/?*) PR_BASE="" ;;
-          esac
+          narrow=""
+          [ "${LANE:-}" != "loop" ] || narrow=1
+          case " ${UNITS:-} " in *" ${UNIT}:pr "*) narrow=1 ;; esac
+          [ -n "$narrow" ] || PR_BASE=""
           [ -z "${PR_BASE:-}" ] || args+=(--pr --base "$PR_BASE")
+          if [ -n "${SELFTEST_PLAN:-}" ]; then
+            printf '%s\n' "$SELFTEST_PLAN" >"${RUNNER_TEMP:-/tmp}/selftest_plan.txt"
+            export DJB_SELFTEST_PLAN="${RUNNER_TEMP:-/tmp}/selftest_plan.txt"
+          fi
           mkdir -p "${DJB_MEMBER_WALLS_OUT%/*}"
           echo "-- ./scripts/check.sh --leg $UNIT ${args[*]-}"
-          ./scripts/check.sh --leg "$UNIT" ${args[@]+"${args[@]}"}
+          rc=0
+          ./scripts/check.sh --leg "$UNIT" ${args[@]+"${args[@]}"} || rc=$?
+          # THE ROW'S OWN EXIT, PUBLISHED: a matrix result says `failure` for a 1
+          # and a 2 alike; the verdict jobs read this file to tell them apart.
+          echo "$rc" >"${DJB_MEMBER_WALLS_OUT%/*}/rc"
+          exit "$rc"
 
       - name: publish this row's member walls
         # `if: always()`: a red shard's walls are still walls, and the harvest
-        # reads only a green, complete run's anyway. Nothing to publish on a
-        # row whose unit has no members, and that is not a warning.
+        # reads only a green, complete run's anyway. Every row publishes its
+        # `rc`; a unit with members adds its walls.
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -824,9 +1031,7 @@ jobs:
           AWS_ACCESS_KEY_ID: ""
           AWS_SECRET_ACCESS_KEY: ""
           AWS_SESSION_TOKEN: ""
-        run: |
-          docker compose ps
-          docker compose logs --no-color --tail=200 db redis temporal
+        run: ./scripts/ci_stack.sh diagnose db redis temporal
 
   verdict:
     name: verdict
@@ -857,9 +1062,27 @@ jobs:
     # rows by name.
     permissions:
       contents: read
+    # THE LANE, HANDED ON: `images-push` and `local` stand down on the `docs`
+    # lane behind this output, so a documentation pull request is derive, verdict
+    # and gate-verdict alone.
+    outputs:
+      lane: ${{ steps.verdict.outputs.lane }}
 
     steps:
+      - name: the rows' own exits
+        id: rows
+        # EVERY ROW'S `rc`, FROM ITS `member-walls-*` ARTIFACT: a row that exited
+        # 2 could not look, and its matrix result reads `failure` all the same.
+        # A download that fails is read by the step below as could-not-look.
+        if: always() && needs.legs.result != 'skipped'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: member-walls-*
+          path: ${{ runner.temp }}/rows
+
       - name: the verdict
+        id: verdict
         # PASSES IFF DERIVE SUCCEEDED AND THE ROWS EITHER ALL SUCCEEDED OR WERE
         # SKIPPED BECAUSE THE CONSULT HONOURED THIS TREE. A matrix result is
         # `success` only when every row succeeded; `skipped` is two different
@@ -873,10 +1096,47 @@ jobs:
           HONOURED: ${{ needs.derive.outputs.honoured }}
           HONOURED_ATTEMPT: ${{ needs.derive.outputs.honoured_attempt }}
           HONOURED_TREE: ${{ needs.derive.outputs.honoured_tree }}
+          LANE: ${{ needs.derive.outputs.lane }}
+          MATRIX: ${{ needs.derive.outputs.matrix }}
+          ROWS_READ: ${{ steps.rows.outcome }}
+        # A JOB THE RUNNER NEVER RAN IS THE ROAD'S FAILURE, NOT THE TREE'S: a
+        # cancelled job, or rows derive planned and the runner skipped (billing,
+        # an outage), is `could not look` and exit 2 — never a red verdict. So
+        # is a row whose own exit was 2.
         run: |
           set -euo pipefail
+          echo "lane=${LANE:-}" >>"$GITHUB_OUTPUT"
           echo "derive: ${DERIVE_RESULT}"
+          echo "lane:   ${LANE:-none}"
           echo "rows:   ${LEGS_RESULT}"
+          case "$DERIVE_RESULT" in
+          cancelled | skipped)
+            echo "::error::could not look: derive did not run (${DERIVE_RESULT} by the runner) — nothing was judged"
+            exit 2
+            ;;
+          esac
+          if [ "$LEGS_RESULT" = "cancelled" ]; then
+            echo "::error::could not look: legs did not run (cancelled by the runner) — nothing was judged"
+            exit 2
+          fi
+          if [ "$LEGS_RESULT" = "skipped" ] && [ -z "${HONOURED:-}" ] && [ "${LANE:-}" != "docs" ] &&
+            [ -n "${MATRIX:-}" ] && [ "${MATRIX}" != "[]" ]; then
+            echo "::error::could not look: legs did not run (skipped by the runner with rows planned) — nothing was judged"
+            exit 2
+          fi
+          if [ "${ROWS_READ:-}" = "failure" ]; then
+            echo "::error::could not look: the rows' exits would not download — a row's 2 and its 1 cannot be told apart"
+            exit 2
+          fi
+          for rc_file in "${RUNNER_TEMP:-/tmp}"/rows/member-walls-*/rc; do
+            [ -f "$rc_file" ] || continue
+            if [ "$(tr -d '[:space:]' <"$rc_file")" = "2" ]; then
+              row="${rc_file%/rc}"
+              row="${row##*/member-walls-}"
+              echo "::error::could not look: ${row} could not look (rc=2) — nothing it holds was judged"
+              exit 2
+            fi
+          done
           if [ "$DERIVE_RESULT" != "success" ]; then
             echo "::error::derive did not succeed — the gate did not pass"
             exit 1
@@ -886,7 +1146,11 @@ jobs:
             exit 0
           fi
           if [ "$LEGS_RESULT" = "skipped" ] && [ -n "${HONOURED:-}" ]; then
-            echo "ok: tree ${HONOURED_TREE} measured green by run ${HONOURED} (attempt ${HONOURED_ATTEMPT}) — honoured, nothing re-measured"
+            echo "honoured: pull_request run ${HONOURED} for tree ${HONOURED_TREE} — nothing re-measured (attempt ${HONOURED_ATTEMPT})"
+            exit 0
+          fi
+          if [ "$LEGS_RESULT" = "skipped" ] && [ "${LANE:-}" = "docs" ]; then
+            echo "ok: the docs lane — no path this change touches is read by a row, and no row ran"
             exit 0
           fi
           if [ "$LEGS_RESULT" = "skipped" ]; then
@@ -901,11 +1165,12 @@ jobs:
     # THE RUN'S ONE MEASUREMENT, AS ONE RECORD. `./scripts/pm_push.sh
     # --ci-verdict <run id>` downloads this job's artifact and banks the `ci:`
     # row the pre-push honours, and a push to main's `derive` consults the same
-    # record (`gate_ci_consult`) before it measures anything. The grammar, its
+    # record (`ci-consult`) before it measures anything. The grammar, its
     # writer, its reader and every refusal the reader applies live once, in
-    # `scripts/gate_ledger.sh` § "the CI VERDICT" — this job CALLS the writer
-    # (`gate_ci_record_line`), so a record this job can publish is a record the
-    # reader can parse, and a field out of grammar is a red step, not a line.
+    # `quality/djb/ledger.py` (`ci_record`, `ci_parse`, `ci_judge`) — this job
+    # CALLS the writer (`ci-record`, under the stdlib floor: no `uv sync` here),
+    # so a record this job can publish is a record the reader can parse, and a
+    # field out of grammar is a red step, not a line.
     #
     # `needs:` EVERY JOB THE RECORD SPEAKS FOR, and `if: always()` for the
     # reason `verdict` carries it: a red or cancelled run must publish the
@@ -930,19 +1195,34 @@ jobs:
           # the step warns when the head's measured tree is not the checkout's.
           fetch-depth: 0
 
+      - name: the rows' own exits
+        id: rows
+        # EVERY ROW'S `rc`, FROM ITS `member-walls-*` ARTIFACT: a row that exited
+        # 2 could not look, and its matrix result reads `failure` all the same.
+        # A download that fails is read by the step below as could-not-look.
+        if: always() && needs.legs.result != 'skipped'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: member-walls-*
+          path: ${{ runner.temp }}/rows
+
       - name: the record (schema=gate-verdict/1)
         id: record
-        # THE TREE IS THE MEASURED TREE — `gate_measured_tree`, the reduction
+        # THE TREE IS THE MEASURED TREE — `ledger.measured_tree`, the reduction
         # every ledger row keys on — never `HEAD^{tree}`. On a pull request it
         # is the tree of GitHub's MERGE and `commit=` is the PR's head: when
         # main moved under the PR the two differ and the reader refuses, which
         # is the right answer. `attempt=` is this attempt's, and the artifact's
-        # name carries it (`gate_ci_artifact_name`), so a re-run never leaves a
+        # name carries it (`ledger.ci_artifact_name`), so a re-run never leaves a
         # reader holding an older attempt's green.
         #
-        # `scope=whole` on a train's head (`pm/*`) and on a push — the rows ran
-        # unnarrowed; `pr` on any other pull request, whose rows carried
-        # `--pr --base` and vouch for no tree.
+        # `scope=whole` on the `full` lane — a push or a forced-full pull
+        # request — whose rows ran unnarrowed; `pr` on the
+        # `loop` and `docs` lanes, whose rows were narrowed or never ran. The
+        # lane itself is the record's last field, `lane=<word>`, and the reader
+        # honours only `full` (`ledger.ci_judge`). A `docs` run is green when
+        # derive was, and no row and no image ran.
         #
         # AN HONOURED PUSH WRITES NO RECORD. Its rows never ran, so it measured
         # nothing; the tree's record is the pull request run's, which the
@@ -960,26 +1240,49 @@ jobs:
           RUN_ATTEMPT: ${{ github.run_attempt }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
-          PR_HEAD_REF: ${{ github.head_ref }}
+          LANE: ${{ needs.derive.outputs.lane }}
+          CLOSURE: ${{ needs.derive.outputs.closure }}
+          PYTEST: ${{ needs.derive.outputs.pytest }}
+          ROWS_READ: ${{ steps.rows.outcome }}
         run: |
           set -euo pipefail
-          . ./scripts/gate_ledger.sh
+          ledger() { python3 -E -S -m quality.djb.ledger "$@"; }
+          if [ "${ROWS_READ:-}" = "failure" ]; then
+            echo "record: none — the rows' exits would not download; a tree nobody could judge gets no record"
+            exit 2
+          fi
+          for rc_file in "${RUNNER_TEMP:-/tmp}"/rows/member-walls-*/rc; do
+            [ -f "$rc_file" ] || continue
+            if [ "$(tr -d '[:space:]' <"$rc_file")" = "2" ]; then
+              row="${rc_file%/rc}"
+              row="${row##*/member-walls-}"
+              echo "record: none — ${row} could not look (rc=2); a tree nobody judged gets no record"
+              exit 2
+            fi
+          done
           if [ -n "${HONOURED:-}" ]; then
             echo "record: none — this run measured nothing; tree ${HONOURED_TREE} was honoured from run ${HONOURED} (attempt ${HONOURED_ATTEMPT}), whose record is the verdict"
             exit 0
           fi
           out="${RUNNER_TEMP:-/tmp}/gate-verdict"
           mkdir -p "$out"
-          tree="$(gate_measured_tree)"
+          tree="$(ledger measured-tree)"
           rc=1
-          if [ "$DERIVE_RESULT" = "success" ] && [ "$LEGS_RESULT" = "success" ] && [ "$IMAGES_RESULT" = "success" ]; then
+          if [ "${LANE:-}" = "docs" ]; then
+            if [ "$DERIVE_RESULT" = "success" ] && [ "$LEGS_RESULT" = "skipped" ] && [ "$IMAGES_RESULT" = "skipped" ]; then
+              rc=0
+            fi
+          elif [ "$DERIVE_RESULT" = "success" ] && [ "$LEGS_RESULT" = "success" ] && [ "$IMAGES_RESULT" = "success" ]; then
             rc=0
           fi
-          # THE SAME TEST THE `legs` ROWS MADE: a pm/* head ran whole.
-          scope=whole
-          case "${PR_HEAD_REF:-}" in
-            pm/?*) ;;
-            *) [ -z "${PR_BASE:-}" ] || scope="pr" ;;
+          # THE SAME TEST THE `legs` ROWS MADE: only the loop lane narrowed.
+          lane=(--lane "${LANE:-}")
+          [ -z "${CLOSURE:-}" ] || lane+=(--closure "$CLOSURE")
+          [ -z "${PYTEST:-}" ] || [ -z "${CLOSURE:-}" ] || lane+=(--pytest "$PYTEST")
+          case "${LANE:-}" in
+            full) scope=whole ;;
+            docs | loop) scope=pr ;;
+            *) scope=pr; rc=1; lane=(); echo "::warning::no lane reached the record (derive failed) — recorded red, with no lane field" ;;
           esac
           # THE UNITS THE MATRIX RAN, `/1` where the row was handed one pass —
           # read out of derive's own output, so nothing here names a unit. No
@@ -987,21 +1290,20 @@ jobs:
           legs="$(printf '%s' "${MATRIX:-[]}" | jq -r '[.[] | .unit + (if .passes == "1" then "/1" else "" end)] | unique | join(",")' 2>/dev/null || true)"
           if [ -z "$legs" ]; then
             legs=none
-            rc=1
+            [ "${LANE:-}" = "docs" ] || rc=1
           fi
-          headtree="$(gate_measured_tree_of "$HEAD_SHA" 2>/dev/null || true)"
+          headtree="$(ledger measured-tree-of "$HEAD_SHA" 2>/dev/null || true)"
           if [ "$headtree" != "$tree" ]; then
             echo "::warning::the measured tree ${tree} is not ${HEAD_SHA}'s (${headtree:-unreadable}) — main moved under this pull request; the reader will refuse this record"
           fi
-          line="$(gate_ci_record_line "$HEAD_SHA" "$tree" "$legs" "$PYTEST_SHARDS" "$scope" "$rc" "$RUN_ID" "$RUN_ATTEMPT")"
-          printf '%s\n' "$line" >"${out}/${GATE_CI_RECORD}"
-          echo "artifact=$(gate_ci_artifact_name "$RUN_ATTEMPT")" >>"$GITHUB_OUTPUT"
+          line="$(ledger ci-record --out "$out" ${lane[@]+"${lane[@]}"} "$HEAD_SHA" "$tree" "$legs" "$PYTEST_SHARDS" "$scope" "$rc" "$RUN_ID" "$RUN_ATTEMPT")"
+          echo "artifact=$(ledger ci-artifact-name "$RUN_ATTEMPT")" >>"$GITHUB_OUTPUT"
           echo "$line"
-          echo "  derive=${DERIVE_RESULT} legs=${LEGS_RESULT} images=${IMAGES_RESULT}"
+          echo "  lane=${LANE:-none} derive=${DERIVE_RESULT} legs=${LEGS_RESULT} images=${IMAGES_RESULT}"
 
       - name: publish the record
         # `always()` so a red record is published as surely as a green one;
-        # the name is the record step's own (`gate_ci_artifact_name`), handed
+        # the name is the record step's own (`ci-artifact-name`), handed
         # over only once the record is on disk — so an honoured push, which
         # wrote none, publishes nothing rather than an empty artifact.
         if: always() && steps.record.outputs.artifact != ''
@@ -1027,7 +1329,7 @@ jobs:
     # this one. One optional JOB, reading one optional DIRECTORY, is the
     # smallest thing that is still one workflow.
     #
-    # `needs: verdict` IS THE SAME CRITERION `images` STANDS ON. Whatever a
+    # `needs: verdict` IS THE SAME CRITERION `images-push` STANDS ON. Whatever a
     # product does here — a deploy, a publish, a notification — is downstream of
     # the gate's own verdict, so it runs behind it rather than beside it. A
     # product that wants something IN the gate writes a leg
@@ -1040,6 +1342,7 @@ jobs:
     # silent, because a job that says nothing is indistinguishable from a job
     # that ran something.
     needs: verdict
+    if: needs.verdict.outputs.lane != 'docs'
     runs-on: ubuntu-latest
 
     permissions:
@@ -1096,55 +1399,35 @@ jobs:
     name: images
     runs-on: ubuntu-latest
 
-    # THIS JOB IS THE ONLY PLACE THE DEPLOYED IMAGE IS EVER BUILT (ADR deploy-4).
+    # THIS JOB IS THE ONLY PLACE THE DEPLOYED IMAGE IS EVER BUILT (ADR deploy-4):
+    # one build, `linux/amd64,linux/arm64`, and every environment pulls it.
     #
-    # It used to build two single-arch images, tag them locally, check the USER
-    # line, and let them die with the runner. Meanwhile `deploy/compose.yaml`
-    # carried a `build:` and runbook step 33 built the SAME tree a third time,
-    # arm64, on the box — the slowest and least debuggable machine in the
-    # system. Three builds of one tree is three chances to differ (a base image
-    # that moved, a transient mirror, a wheel rebuilt) and NOTHING anywhere
-    # could say whether the thing CI proved and the thing the box ran were the
-    # same software.
-    #
-    # Now: one build, `linux/amd64,linux/arm64`, pushed under the tree tag, and
-    # every environment pulls it. The box builds nothing.
-    #
-    # `needs: verdict` IS A CRITERION, NOT A COURTESY. A registry tag is a
-    # promotable artefact and `deploy/release.sh` will deploy anything the
-    # registry has — so a tag for a tree the gate has not passed is a red tree
-    # one command away from production. The build no longer runs beside the
-    # suite; it runs behind its verdict. The cost is the gate's wall clock added
-    # to the image's, paid once per tree, and it buys the invariant that
-    # EVERYTHING IN THE REGISTRY IS GREEN.
-    #
-    # IT NAMES `verdict` AND NOT THE ROWS, and that is the whole reason the
-    # verdict job exists: the rows are a matrix whose names change with the
-    # listing, so a `needs:` over them would have to be edited every time a unit
-    # is added — which is CI keeping a list of legs again, wearing a dependency.
-    # ADR deploy-4 (b)'s invariant is unchanged; it moved one job name over.
-    needs: verdict
+    # `needs: derive` — the build runs BESIDE the legs, off the record's path.
+    # It CANNOT PUSH: its session is the push role narrowed to reads by an
+    # inline session policy, and its output is an OCI archive handed to
+    # `images-push`, which alone stands behind `verdict` (ADR deploy-4 (b):
+    # everything in the registry is green).
+    needs: derive
+    # THE `docs` LANE BUILDS NO IMAGE: nothing it may touch is in one. The lane
+    # is derive's output — a job reads only the jobs it needs. AN HONOURED PUSH
+    # BUILDS NOTHING: `legs` skips, so `images-push` skips, so a build is unusable.
+    if: needs.derive.outputs.lane != 'docs' && needs.derive.outputs.honoured == ''
 
     permissions:
       contents: read
-      # OIDC. The push credential is a short-lived role assumption, never a
-      # stored access key — there is no long-lived registry secret in this
-      # repository and that is deliberate (ADR deploy-3's doctrine, one level
-      # out: no human types a secret, and nothing durable holds one).
+      # OIDC, for the read-only session below; no stored registry key exists.
       id-token: write
+
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      have: ${{ steps.have.outputs.have }}
+      push: ${{ steps.push.outputs.push }}
 
     steps:
       - uses: actions/checkout@v5
 
       - name: the tag this tree carries
-        # DERIVED, NEVER TYPED, and derived by the function that already owns it
-        # — `deploy/provision.sh image-tag`, the same one `deploy/ship.sh` writes
-        # into the box's TREE marker and `deploy/release.sh` resolves. A second
-        # copy of the derivation here is a second answer to "which tree is this".
-        #
-        # A `-dirty` tag cannot occur on a runner (the checkout is committed
-        # bytes) and is refused anyway, because a tag that says the tree was
-        # uncommitted names an image nobody can reproduce.
+        # Derived by `deploy/provision.sh image-tag`, the one owner; `-dirty` is refused.
         id: tag
         run: |
           tag="$(./deploy/provision.sh image-tag)"
@@ -1154,13 +1437,7 @@ jobs:
           esac
           echo "tag=$tag" >>"$GITHUB_OUTPUT"
 
-      # WHETHER THIS RUN CAN PUSH AT ALL, decided once and read by the two steps
-      # that care. A fork's pull request has no OIDC role to assume, and the
-      # honest behaviour there is to BUILD (so the Dockerfile is still proved)
-      # and not to push — rather than to fail a contributor's PR on a credential
-      # they were never going to have. `vars.` and not `secrets.`: the role ARN
-      # and the registry are coordinates, not secrets, and putting them in
-      # `vars` is what lets this condition be evaluated at all.
+      # A fork's pull request has no role: it builds (the Dockerfile is proved) and never pushes.
       - name: can this run push
         id: push
         run: |
@@ -1171,38 +1448,24 @@ jobs:
             echo "push=false" >>"$GITHUB_OUTPUT"
           fi
 
-      - name: assume the push role
+      - name: assume the push role, narrowed to reads
+        # The session policy intersects the role: ECR reads only, so no step here can push.
         if: steps.push.outputs.push == 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ECR_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+          inline-session-policy: '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["ecr:GetAuthorizationToken","ecr:BatchGetImage","ecr:GetDownloadUrlForLayer","ecr:BatchCheckLayerAvailability","ecr:DescribeImages"],"Resource":"*"}]}'
 
       - name: log in to the registry
         if: steps.push.outputs.push == 'true'
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: is this tag already in the registry
-        # creds: asks ECR, with the push role, whether both images are already under this tag
-        # THE BANK BUILDS THIS IMAGE NOW (ADR deploy-4a), on a verifier box,
-        # from the tree its own composed verdict has just passed. So by the
-        # time this job runs, the tag it is about to build usually EXISTS — and
-        # rebuilding it would push a second image under a name that already
-        # names one, which is two answers to "what is tree-abc123?" and the one
-        # thing the registry is supposed to settle.
-        #
-        # THE REGISTRY IS ASKED THROUGH `provision.sh image-digest` and not
-        # through a second `aws ecr describe-images` here: that function is the
-        # one place this tree composes a repository name and resolves a tag,
-        # and a describe-images beside it would be a second derivation of both.
-        # It exits non-zero both when the tag is absent AND when the registry
-        # could not be reached — and both answers are treated as ABSENT here,
-        # which is the safe direction: the cost of being wrong is one rebuild,
-        # and the cost of the other direction is a tag nobody ever built.
-        #
-        # BOTH SERVICES OR NEITHER. A half-present tag is not a tag: `web` and
-        # `worker` are one artefact of one tree, and a job that built only the
-        # missing half would leave two images of one tag from two builds.
+        # creds: asks ECR, with the read-only session, whether every image is already under this tag
+        # A present tag (the bank's build, or an honoured push's pull request) is never rebuilt:
+        # two images under one tag is two answers to "what is tree-abc123?". Unreachable reads as
+        # absent — the safe direction, and a refusal is printed and warned. EVERY SERVICE OR NONE: `provision.sh image-services` names one artefact.
         id: have
         env:
           TAG: ${{ steps.tag.outputs.tag }}
@@ -1213,12 +1476,18 @@ jobs:
           have=false
           if [ "${PUSH:-false}" = "true" ]; then
             have=true
-            for target in web worker; do
-              if digest="$(DJB_IMAGE_REGISTRY="$REGISTRY" ./deploy/provision.sh image-digest "$target" "$TAG" 2>/dev/null)"; then
+            err="$(mktemp)"
+            services="$(./deploy/provision.sh image-services)" || exit 1
+            for target in $services; do
+              if digest="$(DJB_IMAGE_REGISTRY="$REGISTRY" ./deploy/provision.sh image-digest "$target" "$TAG" 2>"$err")"; then
                 echo "$target -> $digest"
               else
                 have=false
                 echo "$target is NOT in the registry under $TAG"
+                sed 's/^/  /' "$err"
+                if grep -qiE 'denied|not authorized|unauthorized|forbidden|403' "$err"; then
+                  echo "::warning::the registry REFUSED the read of $target — building, as for an absent tag; the narrowed session may lack a read"
+                fi
               fi
             done
           fi
@@ -1228,62 +1497,201 @@ jobs:
           echo "have=$have" >>"$GITHUB_OUTPUT"
 
       - name: buildx, with a builder that can do two architectures
-        # `docker build` on the runner's default builder produces ONE
-        # architecture — the runner's, amd64 — and this deployment's box is
-        # Graviton. A single-arch image would be pulled by an arm64 box as a
-        # manifest it cannot run, or (worse, on some daemons) silently emulated.
-        # The `docker-container` driver is what makes `--platform` with two
-        # values produce a manifest LIST rather than a refusal.
+        # The `docker-container` driver is what makes two `--platform`s one manifest list.
         uses: docker/setup-buildx-action@v3
 
       - uses: docker/setup-qemu-action@v3
 
-      - name: build web and worker — ONE build, two architectures
-        # creds: pushes both images to ECR and composes their refs with the push role
+      - name: build every image service — ONE build, two architectures
+        # creds: builds into a local OCI archive; the read-only session it inherits cannot push
         if: steps.have.outputs.have != 'true'
-        # `--push` when there is a registry, `--load` is not available for a
-        # multi-arch build (the local image store holds one architecture), so a
-        # no-push run builds both architectures and keeps neither: what it
-        # proves is that the Dockerfile builds for both, which is the half a
-        # fork's PR can prove.
+        # The archive is the artefact `images-push` copies byte for byte (`--preserve-digests`).
         env:
           TAG: ${{ steps.tag.outputs.tag }}
-          REGISTRY: ${{ vars.DJB_IMAGE_REGISTRY }}
-          PUSH: ${{ steps.push.outputs.push }}
         run: |
           set -euo pipefail
-          if [ "$PUSH" = "true" ]; then output="--push"; else output=""; fi
-          for target in web worker; do
-            if [ "$PUSH" = "true" ]; then
-              ref="$(DJB_IMAGE_REGISTRY="$REGISTRY" ./deploy/provision.sh image-ref "$target" "$TAG")"
-            else
-              ref="local/djb-${target}:${TAG}"
-            fi
-            echo "-- $target -> $ref"
+          out="${RUNNER_TEMP}/images"
+          mkdir -p "$out"
+          services="$(./deploy/provision.sh image-services)" || exit 1
+          for target in $services; do
+            echo "-- $target -> ${out}/${target}.tar"
             docker buildx build \
               --platform linux/amd64,linux/arm64 \
               --target "$target" \
-              --tag "$ref" \
+              --tag "local/djb-${target}:${TAG}" \
               --provenance=false \
-              $output \
+              --output "type=oci,dest=${out}/${target}.tar" \
               .
+            echo "$target index $(tar -xOf "${out}/${target}.tar" index.json | jq -r '.manifests[0].digest')"
+          done
+          ls -l "$out"
+
+      - name: the images run as a non-root user
+        # creds: reads the local OCI archives only; the read-only session it inherits cannot push
+        # Read off the archive `images-push` copies, both architectures: the USER line a refactor loses.
+        if: steps.have.outputs.have != 'true'
+        run: |
+          set -euo pipefail
+          command -v skopeo >/dev/null || { echo "::error::no skopeo on this runner — the archive's USER cannot be read"; exit 1; }
+          services="$(./deploy/provision.sh image-services)" || exit 1
+          for target in $services; do
+            archive="${RUNNER_TEMP}/images/${target}.tar"
+            for arch in amd64 arm64; do
+              user="$(skopeo inspect --config --override-os linux --override-arch "$arch" "oci-archive:${archive}" | jq -r '.config.User // ""')"
+              echo "$target linux/$arch USER '${user}'"
+              case "${user%%:*}" in
+                "" | root | 0) echo "::error::$target linux/$arch runs as '${user:-root}' — the image lost its USER line"; exit 1 ;;
+              esac
+            done
+          done
+
+      - name: scan every built image before anything can push it
+        # A CRITICAL with a fix fails this job, so `images-push` never runs (ADR deploy-4 (b)).
+        if: steps.have.outputs.have != 'true'
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          AWS_ACCESS_KEY_ID: ""
+          AWS_SECRET_ACCESS_KEY: ""
+          AWS_SESSION_TOKEN: ""
+        run: |
+          set -uo pipefail
+          ./deploy/image_scan.sh --install "${RUNNER_TEMP}/trivy" || exit 2
+          export PATH="${RUNNER_TEMP}/trivy:${PATH}"
+          mkdir -p "${RUNNER_TEMP}/sbom"
+          services="$(./deploy/provision.sh image-services)" || exit 1
+          worst=0
+          for target in $services; do
+            archive="${RUNNER_TEMP}/images/${target}.tar"
+            rc=0
+            ./deploy/image_scan.sh "$archive" --sbom "${RUNNER_TEMP}/sbom/sbom-${target}-${TAG}.cdx.json" || rc=$?
+            echo "$target scan exit $rc"
+            [ "$rc" -le "$worst" ] || worst=$rc
+          done
+          exit "$worst"
+
+      - name: the SBOM of every built image
+        if: always() && steps.have.outputs.have != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ steps.tag.outputs.tag }}
+          path: ${{ runner.temp }}/sbom/
+          if-no-files-found: warn
+          overwrite: true
+
+      - name: hand the archive to the push
+        if: steps.push.outputs.push == 'true' && steps.have.outputs.have != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: images
+          path: ${{ runner.temp }}/images/
+          if-no-files-found: error
+          # One name for every attempt: a `--failed` rerun keeps attempt 1's build, and a rebuild replaces it.
+          overwrite: true
+          compression-level: 0
+          retention-days: 1
+
+  images-push:
+    name: images-push
+    # NOTHING IS PUSHED OFF A RED TREE: `needs: [images, verdict]` under the
+    # default `success()`, so a red row, a red build or a failed derive skips
+    # it. It builds nothing — it copies the archive `images` built, digests
+    # preserved, so the registry holds the bytes the build proved.
+    needs: [images, verdict]
+    # THE `docs` LANE PUSHES NOTHING; the lane is verdict's output.
+    if: needs.verdict.outputs.lane != 'docs'
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+      # The provenance attestation of every pushed digest.
+      attestations: write
+
+    steps:
+      - name: is there anything to push
+        id: todo
+        env:
+          PUSH: ${{ needs.images.outputs.push }}
+          HAVE: ${{ needs.images.outputs.have }}
+          TAG: ${{ needs.images.outputs.tag }}
+        run: |
+          if [ "$PUSH" != "true" ]; then
+            echo "::notice::no registry coordinates — nothing to push"
+            echo "push=false" >>"$GITHUB_OUTPUT"
+          elif [ "$HAVE" = "true" ]; then
+            echo "::notice::$TAG already in the registry — nothing to push"
+            echo "push=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "push=true" >>"$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v5
+        if: steps.todo.outputs.push == 'true'
+
+      - name: the archive the build made
+        if: steps.todo.outputs.push == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: images
+          path: ${{ runner.temp }}/images
+
+      - name: assume the push role
+        if: steps.todo.outputs.push == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ECR_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: log in to the registry
+        if: steps.todo.outputs.push == 'true'
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: push the built archive under the tree tag
+        # creds: copies the built OCI archives into ECR with the push role
+        # `--preserve-digests` refuses rather than re-encode: the pushed index IS the built one.
+        # The tags are immutable and name a TREE, the image's identity: a tag already present is skipped,
+        # whatever digest it holds — the first push wins and a rerun's rebuild (not byte-reproducible) is
+        # not re-pushed. Another tree's build under this tag cannot happen: the tag is derived from the tree.
+        if: steps.todo.outputs.push == 'true'
+        env:
+          TAG: ${{ needs.images.outputs.tag }}
+          REGISTRY: ${{ vars.DJB_IMAGE_REGISTRY }}
+        run: |
+          set -euo pipefail
+          command -v skopeo >/dev/null || { echo "::error::no skopeo on this runner — the archive cannot be copied"; exit 1; }
+          services="$(./deploy/provision.sh image-services)" || exit 1
+          for target in $services; do
+            archive="${RUNNER_TEMP}/images/${target}.tar"
+            ref="$(DJB_IMAGE_REGISTRY="$REGISTRY" ./deploy/provision.sh image-ref "$target" "$TAG")"
+            built="$(tar -xOf "$archive" index.json | jq -r '.manifests[0].digest')"
+            if present="$(DJB_IMAGE_REGISTRY="$REGISTRY" ./deploy/provision.sh image-digest "$target" "$TAG" 2>/dev/null)"; then
+              if [ "$present" = "$built" ]; then
+                echo "$ref already holds the built ${built} — nothing to push"
+                continue
+              fi
+              echo "${TAG} already pushed (${present}) — this rerun's build is not re-pushed (built ${built})"
+              continue
+            fi
+            echo "-- $target ${built} -> $ref"
+            skopeo copy --all --preserve-digests --retry-times 3 \
+              --dest-authfile "${HOME}/.docker/config.json" \
+              "oci-archive:${archive}" "docker://${ref}"
+            pushed="$(DJB_IMAGE_REGISTRY="$REGISTRY" ./deploy/provision.sh image-digest "$target" "$TAG")"
+            echo "$ref -> $pushed"
+            [ "$pushed" = "$built" ] || { echo "::error::$ref is $pushed, not the built $built"; exit 1; }
           done
 
       - name: the manifest carries BOTH architectures
         # creds: reads the pushed index and its digest back from ECR with the push role
-        # THE ASSERTION THAT MAKES "MULTI-ARCH" A FACT RATHER THAN A FLAG. A
-        # `--platform` typo, a builder that quietly fell back to the default
-        # driver, or a base image with no arm64 variant all produce a perfectly
-        # green build and a single-arch manifest — which fails, for the first
-        # time, on the Graviton box at 3am. Read back OUT OF THE REGISTRY, not
-        # out of the build log, because the registry is what the box will pull.
-        if: steps.push.outputs.push == 'true' && steps.have.outputs.have != 'true'
+        # Read back OUT OF THE REGISTRY, because the registry is what the box will pull.
+        if: steps.todo.outputs.push == 'true'
         env:
-          TAG: ${{ steps.tag.outputs.tag }}
+          TAG: ${{ needs.images.outputs.tag }}
           REGISTRY: ${{ vars.DJB_IMAGE_REGISTRY }}
         run: |
           set -euo pipefail
-          for target in web worker; do
+          services="$(./deploy/provision.sh image-services)" || exit 1
+          for target in $services; do
             ref="$(DJB_IMAGE_REGISTRY="$REGISTRY" ./deploy/provision.sh image-ref "$target" "$TAG")"
             platforms="$(docker buildx imagetools inspect --format '{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}} {{end}}' "$ref")"
             echo "$ref -> $platforms"
@@ -1293,47 +1701,56 @@ jobs:
             echo "$ref -> $digest"
           done
 
-      - name: the images run as a non-root user
-        # creds: pulls the pushed images back from ECR with the push role before running them
-        # SKIPPED WHEN THE TAG WAS ALREADY THERE, with the build. This step
-        # RUNS the image on the runner, and a runner cannot run an image it has
-        # no architecture for; more to the point, an image this job did not
-        # build is an image whose USER line this job did not change. The check
-        # belongs to the build, and it is skipped with it.
-        if: steps.have.outputs.have != 'true'
-        # Cheap, and it catches the one mistake a Dockerfile refactor makes
-        # most often: losing the USER line. Run against the runner's own
-        # architecture, pulled back from the registry where there is one — so
-        # what is checked is the artefact that will be deployed, not a
-        # by-product of the build.
+      - name: the digests this push attests
+        # creds: reads each pushed digest back from ECR with the push role
+        if: steps.todo.outputs.push == 'true'
         env:
-          TAG: ${{ steps.tag.outputs.tag }}
+          TAG: ${{ needs.images.outputs.tag }}
           REGISTRY: ${{ vars.DJB_IMAGE_REGISTRY }}
-          PUSH: ${{ steps.push.outputs.push }}
         run: |
           set -euo pipefail
-          for target in web worker; do
-            if [ "$PUSH" = "true" ]; then
-              ref="$(DJB_IMAGE_REGISTRY="$REGISTRY" ./deploy/provision.sh image-ref "$target" "$TAG")"
-              docker pull -q "$ref"
-            else
-              # No registry: build this one architecture into the local store,
-              # which is the only way a non-push run can run the image at all.
-              ref="local/djb-${target}:${TAG}"
-              docker buildx build --load --target "$target" --tag "$ref" .
-            fi
-            test "$(docker run --rm --entrypoint id "$ref" -u)" = "10001"
+          services="$(./deploy/provision.sh image-services)" || exit 1
+          : >"${RUNNER_TEMP}/subjects.txt"
+          for target in $services; do
+            ref="$(DJB_IMAGE_REGISTRY="$REGISTRY" ./deploy/provision.sh image-ref "$target" "$TAG")"
+            digest="$(DJB_IMAGE_REGISTRY="$REGISTRY" ./deploy/provision.sh image-digest "$target" "$TAG")"
+            printf '%s  %s\n' "${digest#sha256:}" "${ref%:*}" >>"${RUNNER_TEMP}/subjects.txt"
           done
+          cat "${RUNNER_TEMP}/subjects.txt"
+
+      - name: attest the build's provenance for every pushed digest
+        id: attest
+        if: steps.todo.outputs.push == 'true'
+        # The next step judges the outcome: a private repository off GitHub Enterprise Cloud cannot hold an attestation.
+        continue-on-error: true
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: ${{ runner.temp }}/subjects.txt
+
+      - name: the attestation landed, or the repository says why it cannot
+        if: steps.todo.outputs.push == 'true'
+        env:
+          OUTCOME: ${{ steps.attest.outcome }}
+          PRIVATE: ${{ github.event.repository.private }}
+          AWS_ACCESS_KEY_ID: ""
+          AWS_SECRET_ACCESS_KEY: ""
+          AWS_SESSION_TOKEN: ""
+        run: |
+          case "$OUTCOME/$PRIVATE" in
+            success/*) echo "provenance attested for every pushed digest" ;;
+            */true) echo "::warning::the provenance attestation failed on a private repository — attestations need a public repository or GitHub Enterprise Cloud; the push stands unattested" ;;
+            *) echo "::error::the provenance attestation failed ($OUTCOME) on a public repository"; exit 1 ;;
+          esac
 
   deploy-staging:
     name: deploy-staging
     # A MERGE TO MAIN GOES TO STAGING, BY THE ONE DEPLOY SCRIPT. `deploy/
     # stage.sh` is what a laptop runs; this job adds a trigger and a credential
     # and nothing else (ADR deploy-4 (f): promotion is neither a re-tag nor a
-    # rebuild). `needs: [verdict, images]` — a tree the gate has not passed has
-    # no image, and an image that did not build is nothing to pull. On an
+    # rebuild). `needs: [verdict, images-push]` — a tree the gate has not passed
+    # has no image, and an image that was not pushed is nothing to pull. On an
     # honoured push the rows never ran, `verdict` says so green, and `images`
-    # finds the tag the bank built: this job then deploys the tree that pull
+    # finds the tag already pushed: this job then deploys the tree that pull
     # request measured.
     #
     # IT SKIPS WITH A NOTICE, NEVER A RED, when the product's variables name no
@@ -1349,7 +1766,7 @@ jobs:
     # <name>`, and the deploy role's trust admits `…:ref:refs/heads/main`; a
     # product that adds an environment (for its protection rules) adds that
     # `…:environment:<name>` subject to the trust in the same change.
-    needs: [verdict, images]
+    needs: [verdict, images-push]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -1553,6 +1970,7 @@ jobs:
         # reads as `nightly:none`; an artifact that will not download (it
         # expires after 14 days) → an empty directory, which it reads as
         # unreadable. GitHub not answering is exit 2 here: could not look.
+        # A product tree (stage.sh's one grep of its drawer) has no nightly to ask for.
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -1560,6 +1978,11 @@ jobs:
           set -uo pipefail
           dir="${RUNNER_TEMP:-/tmp}/nightly-leak-proof"
           rm -rf "$dir"
+          if grep -Eq "^[[:space:]{]*rule_id_namespace:[[:space:]]*([\"']?[^[:space:]\"'#]|$)" quality/local/rules.yaml 2>/dev/null; then
+            echo "nightly: a product tree — the platform's nightly leak proof is the template's; stage.sh reads the product's own gate"
+            echo "dir=" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
           if ! run="$(gh run list --workflow nightly-proof.yml --branch main --status completed --limit 1 --json databaseId --jq '.[0].databaseId // ""')"; then
             echo "::error::could not ask GitHub for the latest nightly-proof run — the nightly tooth cannot be read; nothing was promoted"
             exit 2

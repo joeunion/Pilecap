@@ -1,0 +1,126 @@
+"""The REST door onto portal requests: send one about a widget, list them, read one.
+
+Which host may reach these routes is the surface's declaration (`surfaces.py`), never this file.
+# why-not `from __future__ import annotations`: ninja reads the route signatures at import.
+"""
+
+# golden: portal begin
+from uuid import UUID
+
+from django.db.models import QuerySet
+from ninja import Query, Router, Status
+from ninja.pagination import paginate
+
+from apps.example.selectors import get_widget
+from apps.example_portal.models import PortalRequest
+from apps.example_portal.schemas import PortalRequestFilter, PortalRequestIn, PortalRequestOut
+from apps.example_portal.selectors import get_portal_request, list_portal_requests
+from apps.example_portal.services import submit_portal_request
+from pilecap.api import API_AUTH, CursorPagination, Tag, TenantRequest, acting, also_refuses
+
+# The path says what the resource is, not which app holds it.
+PREFIX = "portal-requests"
+
+TAGS = {
+    "portal_requests": Tag(
+        "Portal requests",
+        "What customers ask about the widgets they can see. A request names one "
+        "widget and says, in the customer's words, what they want; it lives where "
+        "the customer was acting when they sent it, so they read it back and the "
+        "staff above them read it too. Requests are sent and read; nobody edits one.",
+        plane="everyday",
+        plane_note=("send a request about a widget, list the requests you can see, read one."),
+    ),
+}
+
+router = Router(tags=["portal_requests"], auth=API_AUTH)
+
+
+@router.get("/", response=list[PortalRequestOut], url_name="portal_request-list")
+@paginate(CursorPagination)
+def list_portal_requests_route(
+    request: TenantRequest, filters: Query[PortalRequestFilter]
+) -> QuerySet[PortalRequest]:
+    """List portal requests
+
+    List the requests you can see, newest first: the ones sent from the
+    organization you are acting as and from every organization beneath it.
+    `widget_id` and `priority` narrow them; a widget you cannot see lists none.
+
+    **Pages** are `?cursor=` and `?limit=` (50 by default, 200 at most). Send the
+    `next_cursor` you were given back as `?cursor=` and stop when `has_more` is
+    false. `count` is `null` unless you send `?include_count=true`.
+
+    Refusals you can get here:
+
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
+      organization.
+    * `403 forbidden` — your role here does not let you read requests.
+    * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+    """
+    actor, tenant = acting(request)
+    return list_portal_requests(tenant=tenant, actor=actor, filters=filters)
+
+
+@router.post("/", response={201: PortalRequestOut}, url_name="portal_request-submit")
+@also_refuses("archived")
+def submit_portal_request_route(
+    request: TenantRequest, payload: PortalRequestIn
+) -> Status[PortalRequest]:
+    """Send a portal request
+
+    Ask about a widget, in your own words.
+
+    Send the `widget_id` of a widget you can see, a `note` and, optionally, a
+    `priority` (`low`, `normal` or `high`). It lives where you are acting — no
+    field sets it — so you read it back, and so do the people above you.
+
+    Answers `201` with the request.
+
+    Refusals you can get here:
+
+    * `400 invalid` — `note` is empty or too long; `errors` names it.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
+      organization.
+    * `403 forbidden` — you may not send requests here.
+    * `404 not_found` — the widget is not one you can see from where you are
+      acting; nothing is sent. A widget in a branch alongside yours answers
+      this, exactly as one that does not exist.
+    * `409 archived` — the widget is archived; nothing is sent.
+    * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
+      `Idempotency-Key` for a different request, or the first request under
+      it has not finished. Resend the identical request, or use a new key.
+    * `422 invalid_body` — `priority` is not one of the three; nothing is sent.
+    * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+    """
+    actor, tenant = acting(request)
+    widget = get_widget(tenant=tenant, widget_id=payload.widget_id, org=actor.org, actor=actor)
+    row = submit_portal_request(
+        tenant=tenant, actor=actor, widget=widget, note=payload.note, priority=payload.priority
+    )
+    return Status(201, row)
+
+
+@router.get("/{request_id}/", response=PortalRequestOut, url_name="portal_request-detail")
+def retrieve_portal_request(request: TenantRequest, request_id: UUID) -> PortalRequest:
+    """Retrieve a portal request
+
+    Fetch one request by id.
+
+    You get it only if it was sent from the organization you are acting as or
+    from one beneath it. Anything else answers `404 not_found`, the same answer
+    an id that names nothing gets.
+
+    Refusals you can get here:
+
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
+      organization.
+    * `403 forbidden` — your role here does not let you read requests.
+    * `404 not_found` — nothing with that id that you can see.
+    * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+    """
+    actor, tenant = acting(request)
+    return get_portal_request(tenant=tenant, actor=actor, request_id=request_id)
+
+
+# golden: portal end

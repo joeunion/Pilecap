@@ -64,6 +64,9 @@ from typing import Any
 
 import yaml
 
+from quality.could_not_look import CouldNotLook
+from quality.tree import measured_tree
+
 ROOT = Path(__file__).resolve().parent.parent
 LOCKFILE_PATH = ROOT / "quality" / "partition.yaml"
 GATE_LEDGER = ROOT / "scripts" / "gate_ledger.sh"
@@ -79,13 +82,18 @@ EXIT_BROKEN = 2
 PLANT_DIR_ENV = "DJB_PARTITION_PLANT_DIR"
 PLANT_LABEL_ENV = "DJB_PARTITION_PLANT_LABEL"
 
-# : Points the ledger at a scratch file. The canary's forge sets it; a real run
-# : never does, so a forged row can never be mistaken for a banked verdict.
-LEDGER_OVERRIDE_ENV = "DJB_PARTITION_LEDGER"
+# : The one ledger override (`gate_ledger.sh::gate_ledger_path`); only the forge sets it.
+LEDGER_OVERRIDE_ENV = "DJB_GATE_LEDGER"
 
 
-class Broken(Exception):
-    """Enforcement is broken — exit 2. Never a finding about the tree."""
+class Broken(CouldNotLook):
+    """Enforcement is broken — exit 2. Never a finding about the tree.
+
+    The partition's own name for the one could-not-look class
+    (`quality.could_not_look.CouldNotLook`), so a caller's `except
+    CouldNotLook` — the roads door's, the engine's — catches the partition's
+    refusal with every other instrument's, and nothing else does.
+    """
 
 
 class Violation(Exception):
@@ -117,6 +125,17 @@ def lockfile() -> dict[str, Any]:
     if not isinstance(loaded, dict):
         raise Broken("the partition lockfile is not a mapping")
     return loaded
+
+
+def platform_apps_in(text: str) -> list[str]:
+    """`platform_apps:` of a lockfile's text in file order, read as YAML — the one reading."""
+    try:
+        loaded = yaml.safe_load(text)
+    except yaml.YAMLError as error:
+        raise Broken(f"the partition lockfile does not parse: {error}") from error
+    if not isinstance(loaded, dict):
+        raise Broken("the partition lockfile is not a mapping")
+    return [str(label) for label in loaded.get("platform_apps") or []]
 
 
 def platform_apps() -> tuple[str, ...]:
@@ -161,9 +180,10 @@ def tree_paths() -> tuple[str, ...]:
     plus every build artefact" — and a brand-new, not-yet-committed platform
     test file is IN the closure, which is the direction that has to be right.
     """
-    tracked = _git("ls-files", "-z").split("\0")
-    untracked = _git("ls-files", "--others", "--exclude-standard", "-z").split("\0")
-    return tuple(sorted({path for path in (*tracked, *untracked) if path}))
+    read = measured_tree(ROOT)
+    if read.why:
+        raise Broken(f"the measured tree could not be read: {read.why}")
+    return tuple(sorted(read.blobs))
 
 
 def _expand(pattern: str, apps: Sequence[str]) -> list[str]:
@@ -367,17 +387,10 @@ def _digest_sections_in_process() -> dict[str, Any]:
         return sorted(found)
 
     def _events() -> Any:
-        import importlib
-        import importlib.util
+        from apps.core.discovery import imported
 
         found = []
-        for config in django_apps.get_app_configs():
-            if not config.name.startswith("apps."):
-                continue
-            module_name = f"{config.name}.events"
-            if importlib.util.find_spec(module_name) is None:
-                continue
-            module = importlib.import_module(module_name)
+        for config, module in imported("events"):
             for attribute in sorted(dir(module)):
                 if attribute.startswith("_") or not attribute.isupper():
                     continue
@@ -927,6 +940,15 @@ def _walking_modules(*, root: Path = ROOT) -> list[str]:
     and a test that walks the registry is a quantified assertion — which is §5's
     census, a different instrument with a different disposition.
 
+    **A file that left between the listing and the read is skipped, and that is
+    not the census failing to look.** A test planting a module under `apps/` on
+    another worker can remove it after `rglob` named it and before it is opened;
+    a file that no longer exists calls nothing, so it cannot be a discovery walk,
+    and `FileNotFoundError` on that one path means exactly that. The census's
+    could-not-look is for a tree it cannot read: a file that is there and does
+    not parse is still `Broken` (exit 2), and every other read error — a
+    permission refused, a decoding failure — still raises.
+
     `root` is the canary's seam, not configuration: §8.4 drives this exact
     function over a scratch tree, because a canary that re-implemented the shape
     test would be proving a copy of the check rather than the check.
@@ -938,7 +960,13 @@ def _walking_modules(*, root: Path = ROOT) -> list[str]:
         if any(part == "tests" for part in parts) or parts[-1].startswith("test_"):
             continue
         try:
-            tree = ast.parse(path.read_text(), filename=str(path))
+            source = path.read_text()
+        except FileNotFoundError:
+            # Listed by the walk, gone by the open: another worker's plant. It
+            # calls nothing, so it is not a discovery walk (see the docstring).
+            continue
+        try:
+            tree = ast.parse(source, filename=str(path))
         except SyntaxError as error:  # pragma: no cover - a broken file is exit 2
             raise Broken(f"the seam census cannot parse {relative}: {error}") from error
         called = _called_names(tree)
@@ -972,15 +1000,10 @@ def _platform_test_modules(
 def read_census() -> list[str]:
     """Repository files a PLATFORM TEST reads that no closure class covers.
 
-    **This is the tooth the design's §3 does not have, and the reason it needs
-    one is the design's own standard.** Its header cites the architect
-    checklist's closed-question line — *every enumeration below is derived or
-    pinned, never a hand list of an open set* — and §3's class list IS a hand
-    list until something checks that it covers what the partition's tests
-    actually read. §8's canaries prove the LISTED classes move the hash; not one
-    of them can notice a class that was never listed, and a file a platform test
-    reads which is outside the closure is a silent stale green: edit it, and a
-    banked verdict goes on vouching for a suite whose answer just changed.
+    A file a platform test reads outside the closure is a silent stale green:
+    edit it and a banked verdict vouches for a suite whose answer changed. §8's
+    canaries prove the LISTED classes move the hash; this proves §3's hand list
+    covers what the tests read (the design's closed-question standard).
 
     The method, stated so a reader can disagree with it: a path this tree BUILDS
     — a `/`-chain rooted at `BASE_DIR`, `ROOT` or a `Path(...)` call, which is
@@ -990,14 +1013,19 @@ def read_census() -> list[str]:
     this usable: a first cut over bare string constants reported
     `docs/runbooks/deploy.md` (an assertion about prose), `docs` (a URL segment)
     and `APPS` (a case-insensitive filesystem matching `apps/`), and a census
-    that cries wolf is a census somebody widens until it is silent.
+    that cries wolf is a census somebody widens until it is silent. A built
+    path outside `tree_paths()` is skipped: a git-ignored file cannot be a
+    closure member, so its edit was never a banked verdict's input — the census
+    reports what the closure COULD cover and does not.
 
     `does_not_cover`, declared: a path assembled from a fixture, a setting, an
     environment variable or a loop variable is not seen; nor is a read performed
-    by a helper the test imports from outside its own module.
+    by a helper the test imports from outside its own module; a path outside the
+    measured tree (git-ignored) is not judged.
     """
     members = {path for paths in closure_members().values() for path in paths}
     covered = {str(Path(path).parent) for path in members}
+    measured = {str(part) for path in tree_paths() for part in (Path(path), *Path(path).parents)}
     strays: list[str] = []
     for module in _platform_test_modules():
         relative = str(module.relative_to(ROOT))
@@ -1015,6 +1043,8 @@ def read_census() -> list[str]:
             if any(built == d or d.startswith(f"{built}/") for d in covered):
                 continue
             if not (ROOT / built).exists():
+                continue
+            if built not in measured:
                 continue
             named.add(built)
         for value in sorted(named):

@@ -108,7 +108,7 @@ where the breakage lived.
 **The batch, when the brief carries more than one rung to verify** (the standing
 rule in `SKILL.md` § The loop, owner 2026-09-15): the rungs listed in order,
 each with its own criteria pointer and its own baseline for the red; ONE clone,
-ONE `--loop` consult; a verdict PER RUNG (a NOT MET blocks that rung alone);
+ONE consult (a lookup of the banked key, never a `--loop`); a verdict PER RUNG (a NOT MET blocks that rung alone);
 the cleanup census once. A security fix or a wire-driven door rung is never
 batched.
 
@@ -128,6 +128,14 @@ mirror lens, for every criterion over a stateful flow: *which state or
 population member did this criterion NOT drive?* — an undriven live path is a
 finding against the criteria.
 
+**The verifier's first question, before any criterion:** *"Did the rung reuse
+the roads the brief cited and add none? — `manage.py roads --json` on the
+baseline tree and on the rung's tree, diffed: a job gaining a road the criteria
+did not name, a `kept` entry the criteria did not name, or rule 84's ratchet
+classes rising, is NOT MET before the first criterion is read."*
+And the brief asks the verifier to *"say whether the rung kept the builder's
+seven"* (`django-conventions`, the block of that title).
+
 **A destructive plant builds its own victim on a COMMITTED tree** (builder and verifier alike): a plant that commits, resets or checks out — `git reset --hard`, `checkout --`, a scratch branch — runs only after the rung's own work is committed, and never against the tree the rung is being built in; a verifier-box rider (2026-09-16) lost every uncommitted edit to a `reset --hard HEAD~1` inside its own F.2 plant and rebuilt them from scratch.
 
 **A brief names the mechanism, never a finding id, for anything the builder will write into a shipped file.** The archaeology census refuses finding ids in comments and drives; a rider brief that cites one invites the builder to write exactly that, and the hook reds the commit. Ids belong in the commit message and the ledger (paid 2026-09-16).
@@ -142,12 +150,10 @@ finding against the criteria.
 
 **When the clone lives on a verifier box** (boxes are per PM choice, the brief
 says which): the brief names the instance id, and `scripts/verifier_box.sh
-run|loop|wait|fetch <id>` is the ONLY way to touch the tree — the agent stays on
-this machine. `verify_start.sh` runs on the box from `~/pilecap`; the ONE
-`--loop` is `loop <id> --log <name>` + `wait <id> <name>`, its log fetched into
-the scratchpad and cited by local path; the ledger cell is read off that log
-(a box's first `--loop` is always a measure — the loop ledger lives in `.git/`
-and no push carries it — so the cell reads `miss(no-ledger)`, never a reuse).
+run|fetch <id>` is the ONLY way to touch the tree — the agent stays on
+this machine. `verify_start.sh --no-loop` runs on the box from `~/pilecap`, its log fetched
+into the scratchpad and cited by local path; the ledger cell is the `loop:` line
+read off that log, and nothing on the box runs `--loop`.
 *If `run` prints `box reclaimed`, stop and report `stuck on: box reclaimed` —
 the verdict is lost, never red; the PM re-ups and re-dispatches.* The cleanup
 census names the box: `down <id>` unless the brief says the reaper takes it,
@@ -172,49 +178,20 @@ artifact — the builder deciding done by proxy:
 **And the prohibition, pasted in verbatim — this clause is the brief's, not a
 paraphrase of it:**
 
-> *Consult the verdict for the exact tree under test by running
-> `./scripts/check.sh --loop` in your OWN clone — unpiped, redirected to a
-> `*.log`, and exactly **one `--loop`, once**. That run IS the consult,
-> performed by the instrument that owns the key, and it is strictly more than
-> a grep: a grep vouches for the BUILDER's tree, while the clone is the UNION
-> of that branch and main, which is what `verify_start.sh` exists to build. A
-> `VERDICT REUSED` banner is the observation and the gate. A miss is not a
-> failure and not something to force or dodge: let the run **complete** —
-> never killed, never a byte added to change the key — and record the reason,
-> because the completed run is the union's verdict, which the grep never was.
-> **Step zero of the consult reads `verify_start.sh`'s own `consult:` line
-> and its `fold point <sha>`:** compare that sha with the builder's report's
-> `fold: main@<sha>` line — equal means the union is the builder's banked
-> tree and an `EXPECTED HIT` is the verdict; different means main moved after
-> the fold (or the builder never folded), the clone's own run is the consult,
-> and the report says so with the count the line prints.
-> Then drive the criteria through the doors and the UI. A second `--loop`,
-> `test.sh`, any other suite, and the full gate are all out of scope and a
-> criteria-writing error — if a criterion asks you to, say so and stop.*
+> *Build your clone with `./scripts/verify_start.sh <branch> --no-loop` and read its `consult:` line: `HIT` means the union is the builder's banked tree (or that tree plus prose); `MISS(code: …)` names the paths main gained by code after the fold point. Copy the line into your `loop:` cell. **Do not run `./scripts/check.sh --loop`, `test.sh`, any suite or the full gate** — the builder's bank is the measurement and a verifier that measures again has made a criteria error; if a criterion asks you to, say so and stop. Read the committed delta against every criterion by hand: re-run each planted RED on the baseline and the head, open every cited line, run the territory census and the seven, and drive the doors the criteria name. Start reading at the builder's `committed <sha8>` signal; its loop may still be running — your verdict names the commit, not the loop.*
 >
-> *Your ledger row carries the result as one typed cell,
-> `loop: hit|miss(<reason>) <s>` — or, since P20 G8, `loop: docs-only reuse of
-> <banked tree>` when the gate printed `pytest: REUSED from the banked verdict`
-> (a docs-only delta from a banked green; the row carries `reuse=<tree>`; copy
-> the gate's own line): `hit` when the `VERDICT REUSED` banner
-> printed, `<s>` being the `--loop`'s own wall clock; otherwise
-> `miss(<reason>)` with `<reason>` one of `tree` (the measured bytes moved),
-> `env:<component>[,<component>]` (an identical tree, one or more of the
-> fingerprint's five parts moved — `env:env-file`, `env:excluded`, `env:dists`,
-> `env:head`, `env:merge-base`, the last two being an amend or a rebase over
-> the same bytes), `env` (the environment line moved and the banked row is too
-> old to say which part), `scope` (a different selection over the same tree),
-> `no-ledger`, `unmatched` (the tree moved AND something the suite stands on
-> moved with it, so neither vouches), `ledger unmerged` — read off the banners,
-> never inferred — and `<s>` the completed run's wall clock. When the token is
-> `tree` the banner prints a second line, `since banked head <short>: N path(s)
-> changed; docs-only: yes|no`; copy it into the cell after the reason when it
-> says `yes`, because a re-measure bought by files no test reads is the thing
-> the round is counting.*
+> *Your ledger row carries the result as one typed cell, the `loop:` line
+> `verify_start.sh` prints under its `consult:` line, copied as printed —
+> exactly one of four: `loop: hit` (a loop row names the union's tree),
+> `loop: docs-only reuse` (main's delta since the fold is docs-only and a row
+> names the branch tip's tree), `loop: miss(code: <a8>..<b8>)` (main moved by
+> code after the fold point; the `consult:` line names the paths) or
+> `loop: miss(no-ledger)` (no loop row names the tree) — read off the line,
+> never inferred, and with no seconds: the lookup prints none.*
 
 Why a cap rather than a preference: the gate is deterministic on a tree,
 so re-running it is not a second opinion, it is the same opinion bought again —
-which is why the consult is one run and a miss is recorded rather than re-run.
+which is why the consult is a lookup and a miss is recorded rather than re-run.
 The separation survives intact: the builder still never decides done. A
 machine's recorded verdict decides *green*, the verification decides *meets
 criteria*, and its evidence is the product under its own hands, which no gate
@@ -262,7 +239,10 @@ already happened and what is already in the tree ·
 the constraints that are not negotiable (`architecture.md`) · known traps ·
 the enforcement conventions (canaries, floors, where a house rule is defined —
 `quality/rules.yaml`) · **the app map**, which the lead owns, and the
-introspection output for the apps in scope.
+introspection output for the apps in scope · *"the roads the rung REUSES, one line per job
+the rung touches, cited as `job · import` from `manage.py roads --json` on the
+baseline tree, and the statement that the rung adds no road — or names the job
+whose road it adds, with the marker's site as a criterion."*
 
 - **Every criterion names its sites (S5, owner 2026-09-18).** A criterion
   that says "the sixteen `require` literals in `apps/accounts/services.py`"
@@ -387,7 +367,15 @@ contract, the standing safety clauses — so a development brief no longer
 repeats them. What a brief still MUST carry, because no skill can know it:
 
 - **the territory** — the app and the exact file set, and what is
-  deliberately excluded;
+  deliberately excluded. On a product's tree the platform is outside every
+  territory by definition (`.claude/agents/builder.md`, house rule 95, the
+  pre-commit hook), so a brief does not repeat "nothing under `quality/` or
+  `scripts/`";
+- **the three commands a product rung meets, named when they apply** — a
+  client regeneration is `./scripts/rung_tidy.sh --client` (never
+  `scripts/gen_client.sh` by hand); the type check is CI's form, `uv run mypy`
+  over `pyproject.toml`'s `files`; a `Patch` field's words go in
+  `frontend/src/copy/<noun>.ts`;
 - **the criteria pointer** — where the acceptance criteria live, verbatim
   (a cycle file citation, never a paraphrase);
 - **the baseline sha** — the tree the criteria were written against, which
@@ -395,6 +383,12 @@ repeats them. What a brief still MUST carry, because no skill can know it:
 - **what is unusual** — sanctioned out-of-territory lines, worker-up
   requirements, known traps, exceptions to any standing rule, and anything
   this work does that the last ten rungs did not;
+- **"keep the builder's seven"** — the block of that title in
+  `django-conventions`, cited by title, never restated;
+- **the roads the rung reuses**, as the lead cited them — and the builder's
+  sentence: *"A helper you are about to write is a job you have not asked
+  `roads` about. Ask first. A road you add without the criteria naming its job
+  is NOT MET at PROVE, whatever else the rung did."*
 - **the seam block**, whenever the brief names a callable the rung will call
   and did not write — see immediately below.
 - **the batch, when the brief carries more than one rung** (the standing rule
@@ -404,6 +398,10 @@ repeats them. What a brief still MUST carry, because no skill can know it:
   the cap (four rungs or one session, one app, one territory, no frozen app);
   and the stop rule — a rung that cannot land is reported by name with the
   others marked untouched, never worked around.
+
+**On a product's tree**, a product builder's brief is territory + criteria
+pointer + "the one path" (`docs/sdk/the-one-path.md`): the builder reads
+`docs/sdk/reference.md` first, and the brief restates none of it.
 
 The clauses below remain as the record of what was paid for and for the
 occasional brief that must override one — an override is stated explicitly,
@@ -475,9 +473,7 @@ code"** · and the standing conventions it will otherwise rediscover.
 **Gate economics, which nobody works out unprompted.** Tell them:
 
 - **`./scripts/check.sh --loop` per rung** — the fast legs, `check --deploy`,
-  and ONE pytest pass. That is the builder's gate, and the only other agent
-  who runs it is the verifier, once, as its consult (§ Field test) — never as
-  a second gate. Fold main in at your last boundary, run it after that fold,
+  and ONE pytest pass. That is the builder's gate, and nobody else runs it: the verifier's consult is a lookup of the key you paste, so post `committed <sha8> — loop running on <box>` the moment your last commit is in, then launch the loop. Fold main in at your last boundary, run it after that fold,
   and paste the `banked:` key it printed, so the verifier's consult has a tree
   to hit.
 - **The box loop goes in a DRIVER SCRIPT in the builder's scratchpad, and the

@@ -75,11 +75,13 @@ from twilio.rest import Client as TwilioClient
 from apps.comms.models import BounceKind, Channel, Message, MessageEngagement
 from apps.connections.client import http_client, post_idempotent
 from apps.connections.models import Connection, InboundWebhook
+from apps.connections.providers import register_inbound_handler, register_webhook_verifier
 from apps.connections.selectors import list_connections
 from apps.core.actor import Actor, system_actor
 from apps.core.exceptions import Invalid, NotFound
 from apps.core.log import get_logger
 from apps.core.services import root_organization
+from apps.core.surfaces import STAFF, absolute_url
 
 log = get_logger("apps.comms.providers")
 
@@ -259,21 +261,7 @@ class ChannelProvider(Protocol):
     never tells us" — rather than an absent method the caller has to guess at.
     """
 
-    #: **A read-only property rather than `slug: str`** (T3, and it is a fix
-    #: rather than a style choice). A bare annotation on a Protocol declares a
-    #: SETTABLE variable, and mypy then refuses any implementation whose `slug`
-    #: cannot be assigned to — which is every frozen dataclass, including
-    #: `ConnectionChannel` below, the reference adapter whose own docstring
-    #: tells a product to write `register_channel(ConnectionChannel(...))`.
-    #: That line did not type-check, and nothing noticed because no module
-    #: under `apps/` or `config/` calls it: the registrations that ship are all
-    #: plain classes. `DevicePushChannel` is the second frozen adapter and it
-    #: met the same wall.
-    #:
-    #: Declaring it read-only is what the protocol always meant — the registry
-    #: reads a transport's slug and never assigns one — and it accepts both
-    #: shapes: a plain class attribute satisfies a read-only property, and so
-    #: does a frozen field.
+    #: Read-only, so a plain class attribute and a frozen dataclass field both satisfy it.
     @property
     def slug(self) -> str:
         """Which `Channel` this transport carries."""
@@ -598,38 +586,10 @@ def get_channel(slug: str) -> ChannelProvider:
     return provider
 
 
-def _email_provider_name() -> str:
-    """What to record in `Message.provider` for an email send.
-
-    Read off `EMAIL_BACKEND`, because that *is* the answer: `smtp` on a laptop
-    pointing at Mailpit, `locmem` under pytest, and the ESP's own name once a
-    deployment points the setting at an Anymail backend. Swapping provider is
-    therefore a setting and a credential, never a code path here — which is the
-    property `architecture.md` asked for.
-    """
-    backend = str(getattr(settings, "EMAIL_BACKEND", "") or "")
-    parts = [part for part in backend.split(".") if part and part != "EmailBackend"]
-    if not parts:
-        return "email"
-    if parts[0] == "anymail":
-        return f"anymail:{parts[-1]}"
-    return parts[-1]
-
-
 def _anymail_esp() -> str:
-    """Which Anymail ESP this deployment sends through, in Anymail's own spelling.
+    """The Anymail ESP `EMAIL_BACKEND` names (`anymail.backends.<esp>.EmailBackend`), else `""`.
 
-    `anymail.backends.resend.EmailBackend` → `"resend"`, and an empty string for
-    every backend that is not Anymail's — console, locmem, smtp, a product's own.
-    Read off `EMAIL_BACKEND` for the same reason `_email_provider_name` is: that
-    setting *is* the answer to "who carries our mail", and a second setting
-    naming the ESP would be a second thing to get out of step with the first.
-
-    The name matters beyond a log line because Anymail ships one webhook view
-    per ESP — the vendor's signature scheme and the vendor's event vocabulary,
-    both already written — and this string is how `_esp_tracking_view` finds the
-    right one. Which is the whole shape of ADR comms-12: **the seam is Anymail,
-    the provider is the product's setting.**
+    The one parser of the setting (ADR comms-12): the seam is Anymail, the provider is the setting.
     """
     parts = str(getattr(settings, "EMAIL_BACKEND", "") or "").split(".")
     if len(parts) >= 3 and parts[0] == "anymail" and parts[1] == "backends":
@@ -637,11 +597,19 @@ def _anymail_esp() -> str:
     return ""
 
 
-#: The attribute Anymail's Svix-signing webhook views name their signature
-#: secret with. Reading it off the class rather than knowing it is what makes
-#: this adapter a statement about *Anymail* rather than a statement about
-#: Resend: any ESP whose view declares one is driven by exactly this code.
-SECRET_ATTR = "_secret_setting_name"  # pragma: allowlist secret — an attribute NAME
+def _email_provider_name() -> str:
+    """What `Message.provider` records for an email send, derived from `_anymail_esp`."""
+    esp = _anymail_esp()
+    if esp:
+        return f"anymail:{esp}"
+    backend = str(getattr(settings, "EMAIL_BACKEND", "") or "")
+    parts = [part for part in backend.split(".") if part and part != "EmailBackend"]
+    return parts[-1] if parts else "email"
+
+
+#: The held Anymail internal naming a view's signing secret; pinned by
+#: `tests/test_esp_webhook.py::test_the_anymail_internal_we_hold_still_exists`.
+SECRET_ATTR = "_secret_setting_name"  # noqa: S105 — the attribute NAME that holds a provider's secret setting name  # pragma: allowlist secret — an attribute NAME
 
 
 def _esp_tracking_view_class(esp: str) -> type | None:
@@ -1316,126 +1284,27 @@ class EmailChannel:
 register_channel(EmailChannel())
 
 
-# --- The reference adapter: a channel whose transport is a Connection -------------
+def own_handle(provider: str, message: Message) -> str:
+    """Our own id as a provider's handle, `<provider>:<message pk>` — the one grammar for it.
 
-
-@dataclass(frozen=True)
-class ConnectionChannel:
-    """A channel carried by one of the tenant's own `Connection` rows.
-
-    **This is the shape an SMS or chat vendor takes in this product**, and it
-    ships as a worked adapter rather than as a vendor: a product registers one
-    from its `AppConfig.ready()` naming the provider slug it opened a connection
-    under, and nothing in this app changes.
-
-        register_channel(ConnectionChannel(slug="sms", provider="twilio", path="/Messages.json"))
-
-    Three properties are the reason it is a class here rather than an example in
-    a docstring:
-
-    * **the credential is never in this module.** It is read inside
-      `connections.client.http_client`, from the connection's encrypted column,
-      and put on the request as a header. Nothing here holds a token in a local
-      variable it might log;
-    * **the call happens from an activity.** `deliver_message` is what invokes a
-      channel, so this runs on a worker thread with a retry policy and a
-      deadline around it — never inside a request. That is house rule "anything
-      that waits or retries is a workflow", kept by construction;
-    * **the POST is idempotent by key.** `post_idempotent(key=message.pk)` sends
-      the message's own primary key, which is stable across every retry of one
-      logical send, so a vendor that honours the header does not text somebody
-      twice because our worker was restarted.
-
-    `address` names which field on the `Recipient` this channel reaches — `phone`
-    for SMS, `chat_handle` for chat — because that is the only thing that
-    genuinely differs between two `ConnectionChannel`s, and a missing address is
-    a refusal rather than a request to nowhere.
-
-    `transport` is how a test injects `httpx.MockTransport`: the same seam
-    `http_client` documents, so what a test exercises is the retry policy and
-    the headers the product ships rather than a copy of them.
+    Email's fallback stays an RFC 5322 Message-ID (`_accepted_handle`): it is mail's own grammar.
     """
-
-    slug: str
-    provider: str
-    path: str = "/messages"
-    address: str = "phone"
-    transport: httpx.BaseTransport | None = None
-
-    def fakeness(self) -> Fakeness | None:
-        """Real: it reaches a gateway over the network. See `EmailChannel`."""
-        return None
-
-    def send(self, *, message: Message, subject: str, body: str, nonce: str = "") -> Sent:
-        connection = (
-            # The system actor: a provider looking up its own credential is the
-            # platform reading for itself, and `list_connections` asks
-            # `connection.read` since Phase R (ADR core-27). There is no person
-            # here — a send runs inside an activity — and `allows` passes a
-            # `system` actor at step 1 while the scoped manager still fences the
-            # read to this tenant.
-            list_connections(tenant=message.tenant, actor=system_actor(message.tenant))
-            .filter(provider=self.provider, status=Connection.Status.CONNECTED)
-            .first()
-        )
-        if connection is None:
-            raise NotFound(
-                f"This tenant has no connected {self.provider!r} connection to send "
-                f"{self.slug!r} through."
-            )
-        to = str(getattr(message.recipient, self.address, "") or "").strip()
-        if not to:
-            # Fail closed. A send with no address is not a message that went
-            # somewhere unhelpful; it is a message that went nowhere, and the row
-            # should say so rather than say `sent`.
-            raise Invalid(
-                {self.address: [f"This recipient has no {self.address} to reach them on."]}
-            )
-        with http_client(connection, transport=self.transport) as client:
-            response = post_idempotent(
-                client,
-                self.path,
-                key=str(message.pk),
-                json={"to": to, "subject": subject, "body": body},
-            )
-        response.raise_for_status()
-        return Sent(provider=self.provider, provider_message_id=_vendor_handle(response, message))
-
-    def normalize_status(self, *, payload: dict[str, Any]) -> ProviderStatus | None:
-        """Nothing, until a product's vendor adapter says otherwise.
-
-        A vendor's delivery-receipt vocabulary is the vendor's, and inventing one
-        here would be inventing a mapping nobody can check. A product that wants
-        SMS delivery receipts subclasses or replaces this method and adds its
-        connection slug to `STATUS_PROVIDERS`.
-        """
-        return None
+    return f"{provider}:{message.pk}"
 
 
-def _vendor_handle(response: httpx.Response, message: Message) -> str:
-    """What the vendor called this message, or our own id as the fallback.
-
-    Falling back rather than raising: a vendor that accepted the message and
-    answered `204` has still accepted it, and refusing to record that because
-    the body was empty would turn a successful send into a retry.
-    """
+def _vendor_handle(response: httpx.Response, message: Message, *, provider: str) -> str:
+    """What the vendor called this message (`id`, `message_id`, `sid`, `name`), else ours."""
     try:
         body = response.json()
     except ValueError:
-        return str(message.pk)
+        return own_handle(provider, message)
     if not isinstance(body, dict):
-        return str(message.pk)
-    # `name` joined at T3, for FCM: its HTTP v1 send answers
-    # `{"name": "projects/<p>/messages/<id>"}` and nothing else, so a push
-    # gateway would otherwise record our own primary key as the vendor's handle
-    # — which is the one column a status webhook has to join on. Last in the
-    # tuple deliberately: it is the least specific of the four names and a
-    # vendor answering both `id` and `name` means the former.
+        return own_handle(provider, message)
     for key in ("id", "message_id", "sid", "name"):
         value = body.get(key)
         if value:
             return str(value)
-    return str(message.pk)
+    return own_handle(provider, message)
 
 
 # --- The fake: the SMS path, proved with no vendor and no account ----------------
@@ -1478,8 +1347,7 @@ class FakeSmsChannel:
       names it;
     * every send logs at **warning**, so a deployment running it is loud in the
       log sink rather than quietly texting nobody;
-    * `ConnectionChannel` above is the real shape, sitting immediately next to
-      it, so "what do I replace this with" has an answer in the same file.
+    * `TwilioSmsChannel` below is the real shape, in the same file.
 
     It reports delivery statuses in the same normalised vocabulary
     `EmailChannel` reads, which is what lets an escalation's *first* step be an
@@ -1493,7 +1361,7 @@ class FakeSmsChannel:
         to = str(message.recipient.phone or "").strip()
         if not to:
             raise Invalid({"phone": ["This recipient has no phone to reach them on."]})
-        handle = f"{FAKE_SMS_PROVIDER}:{message.pk}"
+        handle = own_handle(FAKE_SMS_PROVIDER, message)
         fake_sms_outbox.append(FakeSms(to=to, body=body, provider_message_id=handle))
         log.warning(
             "comms.fake_sms.sent",
@@ -1528,24 +1396,12 @@ class FakeSmsChannel:
         )
 
     def normalize_status(self, *, payload: dict[str, Any]) -> ProviderStatus | None:
-        """The same three words, read out of the same normalised shape.
-
-        Deliberately `EMAIL_STATUS` rather than a second mapping: a fake's
-        vocabulary is ours to choose, and choosing the one the product already
-        reads means this transport proves the *status contract* end to end
-        instead of proving a second contract nobody ships.
-        """
-        return EmailChannel().normalize_status(payload=payload)
+        """A receipt in the vocabulary the shipped SMS transport reads: Twilio's."""
+        return TwilioSmsChannel().normalize_status(payload=payload)
 
     def explain_status_drop(self, *, payload: dict[str, Any]) -> StatusDrop | None:
-        """And the same account of a drop, for the same reason.
-
-        Delegated rather than re-derived: a fake whose *diagnostics* diverged
-        from the transport it stands in for would be a fake that proves a
-        different contract from the one shipped, which is the one thing it must
-        not be.
-        """
-        return EmailChannel().explain_status_drop(payload=payload)
+        """And the same account of a drop, so the fake proves the contract that ships."""
+        return TwilioSmsChannel().explain_status_drop(payload=payload)
 
 
 register_channel(FakeSmsChannel())
@@ -1580,9 +1436,7 @@ register_channel(FakeSmsChannel())
 #: two registries on purpose: the connection IS the account.
 TWILIO_PROVIDER = "twilio"
 
-#: The connection slug this transport's status webhooks arrive under — the entry
-#: already in `STATUS_PROVIDERS` below, named here so the adapter and the map
-#: cannot drift.
+#: The connection slug this transport's status webhooks arrive under.
 SMS_STATUS_PROVIDER = "comms-sms"
 
 #: The header Twilio puts its signature in. A declared constant and never a
@@ -1668,7 +1522,7 @@ TWILIO_OPT_OUT_EVENT = "opt_out"
 #: `access_token` is the house's own reserved key and is read as the fallback, so
 #: a connection created through the ordinary OAuth-shaped door still works.
 TWILIO_ACCOUNT_SID_KEY = "account_sid"
-TWILIO_AUTH_TOKEN_KEY = "auth_token"  # pragma: allowlist secret — a KEY NAME
+TWILIO_AUTH_TOKEN_KEY = "auth_token"  # noqa: S105 — the dict key Twilio's auth token is stored under  # pragma: allowlist secret — a KEY NAME
 TWILIO_FROM_KEY = "from_number"
 
 
@@ -1686,22 +1540,13 @@ def _twilio_auth_token(connection: Connection) -> str:
 
 
 def status_callback_url(connection: Connection) -> str:
-    """The URL Twilio posts to, built the way this deployment builds every link.
+    """The URL Twilio posts to: the receiver's reversed path on the staff surface's host.
 
-    `PUBLIC_BASE_URL` plus the receiver's own reversed path, so there is one
-    answer to "where do our webhooks arrive" and a worker with no request can
-    give it. It is used twice and that is the point: it is handed to Twilio on
-    the way OUT as `status_callback`, and it is what the signature is verified
-    against on the way BACK, because Twilio signs the URL it was given.
-
-    The consequence is worth stating because it is a refusal a deployment can
-    walk into: a `PUBLIC_BASE_URL` that does not match the URL Twilio actually
-    called — a proxy rewriting the host, a stale value after a domain move —
-    makes every signature fail. That is fail-closed and deliberate; the fix is
-    the setting, and `comms.sms.signature_refused` is the line that says so.
+    Handed out as `status_callback` and verified against on the way back, because Twilio signs
+    the URL it was given; a host that differs from the one Twilio called fails every signature.
     """
     path = reverse("api:connection-webhook", kwargs={"connection_id": connection.pk})
-    return f"{str(settings.PUBLIC_BASE_URL).rstrip('/')}{path}"
+    return absolute_url(path=path, surface=STAFF, tenant=connection.tenant.slug)
 
 
 def _twilio_field(payload: Mapping[str, Any], *names: str) -> str:
@@ -1726,13 +1571,6 @@ def _is_opt_out(payload: Mapping[str, Any]) -> bool:
     return _twilio_field(payload, "Body").lower() in TWILIO_STOP_WORDS
 
 
-# NOT `frozen=True`, and the reason is the registry rather than taste:
-# `ChannelProvider.slug` is a protocol VARIABLE, so a class satisfies it only
-# with a settable attribute, and a frozen dataclass offers a read-only one.
-# `ConnectionChannel` above is frozen and gets away with it because nothing in
-# the tree hands it to `register_channel` under that annotation; this one is
-# registered by a product's `ready()` and by this module's tests, so it has to
-# satisfy the protocol mypy checks rather than the one prose describes.
 @dataclass
 class TwilioSmsChannel:
     """The SMS transport: Twilio's REST API out, Twilio's status callbacks back.
@@ -1790,7 +1628,7 @@ class TwilioSmsChannel:
         there is nothing here to stamp it on. The parameter is accepted because
         the protocol carries it; an adapter for a vendor that DOES take one
         (an `Idempotency-Key`, a client reference) should pass it through, which
-        is what `ConnectionChannel` and `DevicePushChannel` already do by keying
+        is what `DevicePushChannel` already does by keying
         their POST on the message.
         """
         connection = self._connection(message.tenant)
@@ -1953,33 +1791,21 @@ def verify_sms_webhook(
 #: hold several, one per ESP, each with its own connection row and secret.
 STATUS_PROVIDER = "comms-email"
 
-#: And the same for every other channel kind that can report back. The map is
-#: what tells the handler **which adapter's vocabulary a payload is written in**
-#: — comms-a hard-coded email, which was right while email was the only kind
-#: that could report and is a bug the moment SMS can. A product adding a second
-#: ESP or a real SMS vendor adds its connection slug here beside the channel it
-#: speaks for; the webhook route, the signature check and the handler are
-#: unchanged.
-STATUS_PROVIDERS: dict[str, str] = {
-    STATUS_PROVIDER: Channel.EMAIL.value,
-    SMS_STATUS_PROVIDER: Channel.SMS.value,
-}
+#: Which channel's adapter reads each connection slug's status webhooks — written only by
+#: `register_status_provider`, so the map and the two connections registries cannot disagree.
+STATUS_PROVIDERS: dict[str, str] = {}
 
-#: And **which verifier checks the signature on each slug's deliveries**. A map
-#: rather than one function for all of them, because a scheme belongs to whoever
-#: invented it: Resend signs with Svix and Twilio signs with an HMAC over the URL
-#: and the form fields, and the one thing both verifiers have in common is that
-#: neither of them is written here — each delegates to the vendor's own library
-#: (house rule 43's disposition; ADR comms-12's seam, one channel over).
-#:
-#: A slug absent from this map gets `verify_status_webhook`, which answers
-#: "no opinion" on every deployment that is not sending through an Anymail ESP —
-#: so a product's new connection slug keeps the door's own HMAC until somebody
-#: registers a verifier for it, which is the fail-safe direction.
-STATUS_VERIFIERS: dict[str, Any] = {
-    STATUS_PROVIDER: verify_status_webhook,
-    SMS_STATUS_PROVIDER: verify_sms_webhook,
-}
+
+def register_status_provider(slug: str, channel: str, verifier: Any = None) -> None:
+    """Route `slug`'s status webhooks to `channel`'s adapter and `verifier` — map and registries.
+
+    A `None` verifier is the ESP verifier, which answers "no opinion" where it cannot check.
+    """
+    key = str(slug).strip().lower()
+    STATUS_PROVIDERS[key] = str(channel)
+    register_inbound_handler(key, handle_status_webhook)
+    register_webhook_verifier(key, verifier or verify_status_webhook)
+
 
 #: The media type a form-encoded delivery arrives as. Twilio posts one for every
 #: messaging webhook it sends — Resend and most ESPs post JSON — so this door
@@ -2253,25 +2079,8 @@ def handle_status_webhook(*, received: InboundWebhook, actor: Actor) -> None:
         )
 
 
-# --- Push: the channel whose address is a TABLE ----------------------------------
-#
-# Push is the one kind of reach whose address is not a column on `Recipient`, and
-# the two transports below are shaped around that single fact. A person has a
-# phone, a tablet and a laptop browser; each install mints its own registration
-# token; the platform rotates one without asking. So the address is
-# `comms.Device` — see that model's docstring — and both transports resolve it
-# through `selectors.list_devices` rather than off `message.recipient`.
-#
-# **What is OWNER-CLOCKED here, stated rather than implied.** A live FCM
-# drive needs a Firebase project, and none was available. What is proven is
-# everything up to the vendor's edge: the address resolution, the fan-out to
-# several devices, the fail-closed refusal when a contact has none, the
-# idempotency key per device, the credential coming off the tenant's encrypted
-# `Connection` row and never out of settings, and the response handling — all of
-# it driven through `httpx.MockTransport`, which is the same seam
-# `apps/connections`' own client documents and the same one `ConnectionChannel`
-# is tested through. What is NOT proven is that a real gateway accepts the body
-# this builds. That boundary is real and it is the criterion the clock is on.
+# --- Push: the channel whose address is a TABLE (`comms.Device`) ------------------
+# does-not-cover: a live FCM gateway accepting the body; driven only through `httpx.MockTransport`.
 
 
 #: What `Message.provider` records for anything the fake carried. `fake-sms`'s
@@ -2313,7 +2122,7 @@ def _devices_for(message: Message) -> list[Any]:
     branch's cannot.
 
     A contact with no live device raises rather than returning an empty list,
-    and that is `ConnectionChannel`'s fail-closed rule in this channel's
+    and that is the transports' fail-closed rule in this channel's
     vocabulary: a push with nowhere to land is not a notification that went
     somewhere unhelpful, it is one that went nowhere, and the message row must
     say so instead of saying `sent`.
@@ -2366,7 +2175,7 @@ class FakePushChannel:
 
     def send(self, *, message: Message, subject: str, body: str, nonce: str = "") -> Sent:
         devices = _devices_for(message)
-        handle = f"{FAKE_PUSH_PROVIDER}:{message.pk}"
+        handle = own_handle(FAKE_PUSH_PROVIDER, message)
         for device in devices:
             fake_push_outbox.append(
                 Pushed(
@@ -2407,13 +2216,7 @@ class FakePushChannel:
         )
 
     def normalize_status(self, *, payload: dict[str, Any]) -> ProviderStatus | None:
-        """The same three words, out of the same normalised shape.
-
-        `FakeSmsChannel`'s reasoning verbatim: a fake's vocabulary is ours to
-        choose, and choosing the one the product already reads means this
-        transport proves the *status contract* end to end instead of proving a
-        second contract nobody ships.
-        """
+        """The normalised email vocabulary: no shipped push gateway reports status to mirror."""
         return EmailChannel().normalize_status(payload=payload)
 
     def explain_status_drop(self, *, payload: dict[str, Any]) -> StatusDrop | None:
@@ -2427,7 +2230,7 @@ class DevicePushChannel:
 
     **This is what an FCM (or APNs, or web-push) gateway looks like in this
     product**, and it ships as a worked adapter rather than as a vendor —
-    `ConnectionChannel`'s bargain one channel over, with the one difference that
+    a `Connection` row carries the credential, with the one difference that
     makes push push::
 
         register_channel(DevicePushChannel())                        # FCM
@@ -2451,10 +2254,8 @@ class DevicePushChannel:
     the trade the other way. House rule 44's watch is answered by construction:
     this adapter holds no library internals, because it holds no library.
 
-    The three properties `ConnectionChannel`'s docstring names hold here too and
-    for the same reasons — the credential is never in this module, the call
-    happens from an activity, the POST is idempotent by key — and are not
-    repeated.
+    The credential is never in this module, the call happens from an activity, and the
+    POST is idempotent by key.
     """
 
     slug: str = Channel.PUSH.value
@@ -2499,17 +2300,17 @@ class DevicePushChannel:
                     },
                 )
                 response.raise_for_status()
-                handles.append(_vendor_handle(response, message))
+                handles.append(_vendor_handle(response, message, provider=self.provider))
         return Sent(provider=self.provider, provider_message_id=handles[0])
 
     def normalize_status(self, *, payload: dict[str, Any]) -> ProviderStatus | None:
         """Nothing, until a product's gateway adapter says otherwise.
 
-        `ConnectionChannel.normalize_status`' answer, and the same argument: a
+        A
         gateway's delivery-receipt vocabulary is the gateway's, and inventing
         one here would be inventing a mapping nobody can check. A product that
         wants push receipts subclasses or replaces this method and adds its
-        connection slug to `STATUS_PROVIDERS`.
+        connection slug with `register_status_provider`.
         """
         return None
 

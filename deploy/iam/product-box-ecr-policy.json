@@ -1,0 +1,26 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ARegistryTokenTakesNoResource",
+      "Effect": "Allow",
+      "Action": "ecr:GetAuthorizationToken",
+      "Resource": "*"
+    },
+    {
+      "Sid": "PullTheTwoRepositoriesOnly",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:BatchGetImage",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:DescribeImages"
+      ],
+      "Resource": [
+        "arn:aws:ecr:${REGION}:${ACCOUNT_ID}:repository/${NAMESPACE}/djb-web",
+        "arn:aws:ecr:${REGION}:${ACCOUNT_ID}:repository/${NAMESPACE}/djb-worker",
+        "arn:aws:ecr:${REGION}:${ACCOUNT_ID}:repository/${NAMESPACE}/djb-frontend"
+      ]
+    }
+  ]
+}

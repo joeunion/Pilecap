@@ -36,8 +36,4 @@ export const WELCOME_COPY = {
     emptyLabel: "Sign in to see where you are acting",
     emptyDetail:
         "The door answered with no organizations at all. Either this session has no place in the tree yet, or the hat it asked for covers none.",
-
-    errorLabel: "The server refused",
-    transportLabel: "The server did not answer",
-    remedies: "What you can do",
 } as const;

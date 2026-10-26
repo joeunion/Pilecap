@@ -1,148 +1,119 @@
-"""Every activity retry policy starts at the deployment's floor, not a literal.
+"""Every run is handed the deployment's retry floor in its argument; no workflow reads settings.
 
-`TEMPORAL_RETRY_INITIAL_INTERVAL_SECONDS` exists because the time-skipping test
-server skips *workflow* timers and does NOT skip activity retry backoff: five
-attempts at the SDK's one-second default is fifteen real seconds inside one
-test, and four tests in this tree were paying it. The knob turns that into
-milliseconds under `test` while a deployment keeps the SDK's own value.
-
-**A knob nothing asserts is a knob that grows literals back.** The failure this
-module exists to catch is silent by construction: someone writes
-`initial_interval=timedelta(seconds=1)` at one policy, every assertion in the
-suite still passes, every row still reads `failed` or `completed`, and the only
-symptom is a wall clock nobody is reading. So each policy that opted in is
-named here, with the arithmetic that ties it to the setting.
-
-**No database, no server, no worker.** These are module constants built at
-import; the whole module is a settings read and some equality.
-
-It sits at `apps/test_retry_floor.py`, beside the other cross-app tripwires, and
-not inside any one app: the property is one property — *there is one floor* —
-so four copies would be four places to forget it, and a copy parked in
-`apps/workflows/tests/` breaks the layer contract outright, because
-`apps.workflows` may not import `apps.events` and the assertion has to name all
-four (import-linter, `pyproject.toml`, "The fixed layers hold"). A tripwire
-about several apps belongs above all of them.
+A tripwire above the apps it names: `apps.workflows` may not import them (the layer contract).
 """
 
 from __future__ import annotations
 
+import ast
+import dataclasses
 import pathlib
+import sys
 from datetime import timedelta
 
 import pytest
 from django.conf import settings
-from temporalio.common import RetryPolicy
+from temporalio.client import ScheduleActionStartWorkflow
 
+from apps.core.determinism import retry_policy
+from apps.core.retry import retry_floor_seconds
 from apps.events import workflows as events_workflows
-from apps.exports import workflows as exports_workflows
-from apps.files import workflows as files_workflows
 from apps.search import workflows as search_workflows
+from apps.workflows.client import discovered_schedules, discovered_workflows
 
 #: This checkout's top level — `apps/` is one directory down.
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
-#: The four modules that read the floor, and the constant each reads it into.
-#: Named as modules rather than imported constants so the assertion below is
-#: about *the module's* `RETRY_INITIAL_INTERVAL` — a module that dropped the
-#: read entirely fails here with an `AttributeError` that says which one.
-FLOOR_READERS = (
-    ("apps.exports.workflows", exports_workflows),
-    ("apps.files.workflows", files_workflows),
-    ("apps.search.workflows", search_workflows),
-    ("apps.events.workflows", events_workflows),
-)
-
-#: Every policy whose first interval IS the floor, unmultiplied.
-#: `(<where>, <the policy>)`.
-AT_THE_FLOOR: tuple[tuple[str, RetryPolicy], ...] = (
-    ("exports BUILD_RETRY", exports_workflows.BUILD_RETRY),
-    ("exports FINISH_RETRY", exports_workflows.FINISH_RETRY),
-    ("files VERIFY_RETRY", files_workflows.VERIFY_RETRY),
-    ("files RECORD_RETRY", files_workflows.RECORD_RETRY),
-    ("files FINISH_RETRY", files_workflows.FINISH_RETRY),
-    ("search RECONCILE_RETRY", search_workflows.RECONCILE_RETRY),
+#: The services that start a floor-taking run, and the argument class each builds.
+STARTERS = (
+    ("apps/djb_imports/services.py", "CheckImport"),
+    ("apps/djb_imports/services.py", "ApplyImport"),
+    ("apps/events/services.py", "DispatchEvent"),
+    ("apps/exports/services.py", "BuildExport"),
+    ("apps/files/services.py", "FinalizeUpload"),
 )
 
 
-def test_every_reader_takes_its_interval_from_the_one_setting() -> None:
-    """The four modules read the setting, and read it into the same shape.
-
-    A `timedelta` built from the setting's seconds — so a module that started
-    dividing, rounding or defaulting is a different value here and says so.
-    """
-    expected = timedelta(seconds=settings.TEMPORAL_RETRY_INITIAL_INTERVAL_SECONDS)
-    assert expected > timedelta(0), "a zero floor would make the arithmetic below vacuous"
-    for name, module in FLOOR_READERS:
-        assert module.RETRY_INITIAL_INTERVAL == expected, (
-            f"{name}.RETRY_INITIAL_INTERVAL is {module.RETRY_INITIAL_INTERVAL!r}, not the "
-            f"{expected!r} that TEMPORAL_RETRY_INITIAL_INTERVAL_SECONDS declares"
-        )
+def _workflow_modules() -> list[pathlib.Path]:
+    """Every discovered workflow class's module file, once each."""
+    files = {pathlib.Path(sys.modules[c.__module__].__file__ or "") for c in discovered_workflows()}
+    return sorted(files)
 
 
-@pytest.mark.parametrize(("where", "policy"), AT_THE_FLOOR, ids=[w for w, _ in AT_THE_FLOOR])
-def test_a_policy_at_the_floor_starts_at_the_floor(where: str, policy: RetryPolicy) -> None:
-    """Six policies, one number. A literal written back here is red on this line."""
-    expected = timedelta(seconds=settings.TEMPORAL_RETRY_INITIAL_INTERVAL_SECONDS)
-    assert policy.initial_interval == expected, (
-        f"{where}.initial_interval is {policy.initial_interval!r} — a hard-coded literal, not "
-        f"TEMPORAL_RETRY_INITIAL_INTERVAL_SECONDS ({expected!r}). Read the floor, not a number."
-    )
+def test_no_workflow_module_reads_settings() -> None:
+    """No discovered `workflows.py` imports `django.conf`: the floor arrives in the argument."""
+    readers = []
+    for path in _workflow_modules():
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("django"):
+                readers.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno}")
+    assert len(_workflow_modules()) >= 5, "the workflow population came back nearly empty"
+    assert readers == [], f"a workflow module imports Django (rule 9): {readers}"
+
+
+@pytest.mark.parametrize(("path", "arg_class"), STARTERS, ids=[f"{p}:{c}" for p, c in STARTERS])
+def test_every_start_hands_the_floor_in_its_argument(path: str, arg_class: str) -> None:
+    """Each construction of the run's argument in its service passes `retry_floor_seconds()`."""
+    tree = ast.parse((REPO_ROOT / path).read_text())
+    built = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == arg_class
+    ]
+    assert built, f"{path} builds no {arg_class}"
+    for call in built:
+        floors = [kw.value for kw in call.keywords if kw.arg == "retry_floor"]
+        assert len(floors) == 1, f"{path}:{call.lineno}: {arg_class}(...) hands no retry_floor"
+        value = floors[0]
+        assert (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "retry_floor_seconds"
+        ), f"{path}:{call.lineno}: retry_floor is not `retry_floor_seconds()`"
+
+
+def test_every_schedule_whose_argument_takes_a_floor_is_handed_it() -> None:
+    """A declared schedule's start arguments carry the deployment's floor, read from settings."""
+    handed = []
+    for declaration in discovered_schedules():
+        action = declaration.schedule("q").action
+        assert isinstance(action, ScheduleActionStartWorkflow), declaration.name
+        for arg in action.args:
+            if dataclasses.is_dataclass(arg) and hasattr(arg, "retry_floor"):
+                handed.append((declaration.name, arg.retry_floor))
+    assert handed, "no schedule's argument takes a retry floor — the search reconcile's does"
+    assert handed == [(name, retry_floor_seconds()) for name, _ in handed]
+
+
+def test_a_policy_built_from_the_floor_starts_at_the_floor() -> None:
+    """`retry_policy(initial_seconds=floor)` and the reconcile's start where the argument says."""
+    floor = retry_floor_seconds()
+    expected = timedelta(seconds=floor)
+    assert retry_policy(initial_seconds=floor, maximum_attempts=5).initial_interval == expected
+    reconcile = search_workflows.reconcile_retry(floor)
+    assert reconcile.initial_interval == expected
+    assert reconcile.maximum_interval is not None
+    assert reconcile.maximum_interval >= reconcile.initial_interval
 
 
 def test_the_index_retry_is_twice_the_floor_and_its_ceiling_cannot_sink_below_it() -> None:
-    """`apps/events`' INDEX_RETRY is the one deliberate multiple, and it is 2x.
-
-    An index that just refused a write is usually mid-settle rather than down,
-    so the ratio is that policy's own judgement while the floor underneath it is
-    the deployment's. `maximum_interval` is a CEILING: with the floor turned down
-    to milliseconds a literal five minutes is still above it, but the invariant
-    that actually has to hold is "never below the interval it caps", and that is
-    what is asserted rather than the five minutes.
-    """
-    floor = timedelta(seconds=settings.TEMPORAL_RETRY_INITIAL_INTERVAL_SECONDS)
-    policy = events_workflows.INDEX_RETRY
-    assert policy.initial_interval == 2 * floor, (
-        f"INDEX_RETRY.initial_interval is {policy.initial_interval!r}, not twice the floor "
-        f"({2 * floor!r})"
-    )
-    assert policy.maximum_interval is not None, "a policy that names no ceiling names no bound"
-    assert policy.maximum_interval >= policy.initial_interval, (
-        f"INDEX_RETRY caps at {policy.maximum_interval!r}, below the "
-        f"{policy.initial_interval!r} it is capping — the ceiling sank under the floor"
-    )
-
-
-def test_the_search_ceiling_cannot_sink_below_its_own_interval_either() -> None:
-    """The same invariant, on the only other policy here that names a ceiling."""
-    policy = search_workflows.RECONCILE_RETRY
-    assert policy.maximum_interval is not None, "a policy that names no ceiling names no bound"
+    """`apps/events`' `index_retry` is the one deliberate multiple, and it is 2x."""
+    floor = retry_floor_seconds()
+    policy = events_workflows.index_retry(floor)
+    assert policy.initial_interval == 2 * timedelta(seconds=floor)
+    assert policy.maximum_interval is not None
     assert policy.maximum_interval >= policy.initial_interval
 
 
 def test_the_test_settings_floor_is_milliseconds_and_the_base_default_is_the_sdks() -> None:
-    """The two values, asserted where a reader will look for them.
+    """The deployment default is the SDK's one second; the suite runs at a hundredth of it.
 
-    Not a tautology against `settings`: the DEPLOYMENT default is the SDK's one
-    second while the value this suite runs under is a hundredth of it, and the
-    seam is only worth anything while both halves are true — loosen the first
-    and a deployment gets a test knob, loosen the second and every gate run pays
-    real backoff again.
-
-    `base.py` is read as TEXT, not imported, and that is the layer contract's
-    doing rather than fussiness: `apps` may not import `config`
-    (`pyproject.toml`, "config mounts apps"), and the exemption there is written
-    for `apps.*.tests.*` — which this cross-app module is deliberately not.
-    Reading the declaration is also the idiom `apps/core/tests/test_settings.py`
-    already uses on `TEMPORAL_TASK_QUEUE`.
+    `base.py` is read as text: `apps` may not import `config` (the layer contract).
     """
     declaration = "TEMPORAL_RETRY_INITIAL_INTERVAL_SECONDS: float = 1.0"
     base_py = REPO_ROOT / "config" / "settings" / "base.py"
-    assert declaration in base_py.read_text(), (
-        f"{base_py} must declare `{declaration}` — the Temporal SDK's own default. A deployment's "
-        "backoff is not a test knob, and turning the base value down would hide real backoff "
-        "behind a green suite."
-    )
-    assert settings.TEMPORAL_RETRY_INITIAL_INTERVAL_SECONDS <= 0.05, (
-        "the suite's floor is milliseconds — anything slower is real backoff on every gate run"
-    )
+    assert declaration in base_py.read_text()
+    assert settings.TEMPORAL_RETRY_INITIAL_INTERVAL_SECONDS <= 0.05

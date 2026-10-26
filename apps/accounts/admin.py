@@ -333,7 +333,7 @@ ADMIN_REFUSED_SENTENCE = "This account cannot use the admin."
 #: before the `=`: any name containing "password" assigned a string literal is
 #: a candidate, and this one is an English sentence rendered on a public
 #: refusal page. There is no credential in this module to leak.
-PASSWORD_CHANGE_REFUSED_SENTENCE = "Passwords are not changed here."  # pragma: allowlist secret
+PASSWORD_CHANGE_REFUSED_SENTENCE = "Passwords are not changed here."  # noqa: S105 — the refusal sentence the admin shows, not a credential  # pragma: allowlist secret
 
 
 def _shadowed_admin_paths() -> tuple[str, ...]:

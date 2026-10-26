@@ -17,7 +17,10 @@ What is proved here and nowhere cheaper:
   after two rows) is retried by Temporal, resumes at the first unsettled row,
   and the file still makes four widgets, not five or six. The box's kill drive
   is the same property with a real worker process killed instead of an
-  exception raised; this is the in-process half.
+  exception raised; this is the in-process half;
+* **a cancel is its own exit**: cancelled mid-apply, the writer stops at a row
+  boundary before the run closes, and the run and the import both say
+  `cancelled`; cancelled mid-check, the same two rows say the same.
 
 `transaction=True` throughout: the activities run on worker threads with their
 own connections, and an `on_commit` hook only fires on a real commit.
@@ -25,10 +28,14 @@ own connections, and an `on_commit` hook only fires on a real commit.
 
 from __future__ import annotations
 
+import asyncio
+import threading
+import time
 from typing import TYPE_CHECKING, Any
 
 import pytest
-from temporalio.client import Client, WorkflowExecutionStatus
+from temporalio import activity
+from temporalio.client import Client, WorkflowExecutionStatus, WorkflowFailureError
 from temporalio.testing import WorkflowEnvironment
 
 from apps.core.actor import actor_for, system_actor
@@ -39,7 +46,8 @@ from apps.core.verbs import Importer
 from apps.djb_imports.models import Import, ImportRow
 from apps.djb_imports.services import apply_import, create_import
 from apps.djb_imports.tests import planted
-from apps.djb_imports.tests.conftest import FIVE_ROWS_ONE_BAD, stored_csv
+from apps.djb_imports.tests.conftest import FIVE_ROWS_ONE_BAD
+from apps.djb_imports.tests.store import stored_csv
 from apps.djb_imports.types import ImportSettled
 from apps.example.models import Widget
 from apps.workflows import client as client_module
@@ -211,3 +219,168 @@ async def test_an_apply_that_dies_part_way_resumes_and_writes_each_row_once(
         if event.HasField("activity_task_started_event_attributes")
     ]
     assert max(attempts) >= 2, "the apply activity was retried"
+
+
+#: How long the held row waits on the test, and then on the cancel reaching it.
+#: Bounded, so a broken arm fails this test instead of hanging the suite.
+HOLD_SECONDS = 60
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_mid_apply_closes_the_run_and_leaves_no_row_half_applied(
+    small_world: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cancel mid-apply: the run closes `cancelled`, the import says so, every row whole.
+
+    The third clean row is held on an `Event` until the test has asked Temporal
+    to cancel, and then until the cancel has reached the activity (a synchronous
+    activity learns of it only through a heartbeat's answer, so the held row
+    heartbeats while it waits — a slow row doing what a slow row should). The
+    count asserted is the number of `apply` calls that RETURNED: the activity
+    stops at a row boundary, so a row is either written whole or not at all.
+    """
+    tenant, actor = small_world
+    real_apply = planted.apply
+    calls = {"entered": 0, "returned": 0}
+    released = threading.Event()
+
+    def holds_the_third_row(**kwargs: Any) -> Any:
+        calls["entered"] += 1
+        if calls["entered"] == 3:
+            released.wait(HOLD_SECONDS)
+            deadline = time.monotonic() + HOLD_SECONDS
+            while not activity.is_cancelled() and time.monotonic() < deadline:
+                activity.heartbeat("held")
+                time.sleep(0.1)
+        applied = real_apply(**kwargs)
+        calls["returned"] += 1
+        return applied
+
+    monkeypatch.setitem(
+        planted.IMPORTERS,
+        "widget",
+        Importer(
+            row=planted.PlantedWidgetRow,
+            natural_key=planted.natural_key,
+            apply=holds_the_third_row,
+        ),
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        client = await _local_client(env, monkeypatch)
+        async with build_worker(client):
+            run = await _staged_and_checked(client, tenant, actor)
+            await run_db(apply_import, tenant=tenant, actor=actor, import_=run)
+            handle = client.get_workflow_handle(
+                run_id(tenant, run, "apply"), result_type=ImportSettled
+            )
+            deadline = time.monotonic() + HOLD_SECONDS
+            while await run_db(lambda: Widget.objects.filter(tenant=tenant).count()) < 2:
+                assert time.monotonic() < deadline, "the first two rows never landed"
+                await asyncio.sleep(0.05)
+            await handle.cancel()
+            released.set()
+            with pytest.raises(WorkflowFailureError) as ended:
+                await handle.result()
+            # Read BEFORE the worker shuts down: its graceful shutdown would let
+            # an abandoned activity finish, and hide that the run closed first.
+            calls_when_the_run_ended = dict(calls)
+            described = await handle.describe()
+
+    row = await run_db(lambda: WorkflowRun.objects.get(workflow_id=run_id(tenant, run, "apply")))
+    settled = await run_db(lambda: Import.objects.get(pk=run.pk))
+    outcomes = await run_db(
+        lambda: sorted(
+            ImportRow.objects.filter(run=run).exclude(outcome="").values_list("row_no", "outcome")
+        )
+    )
+    observed = {
+        "temporal": described.status and described.status.name,
+        "cause": type(ended.value.cause).__name__,
+        "run": (str(row.status), row.error),
+        "import": (str(settled.status), settled.failure, settled.cancelled_at is not None),
+        "apply_calls_when_the_run_ended": calls_when_the_run_ended,
+        "apply_calls": dict(calls),
+        "widgets": await run_db(lambda: Widget.objects.filter(tenant=tenant).count()),
+        "settled_rows": outcomes,
+    }
+    assert observed == {
+        "temporal": "CANCELED",
+        "cause": "CancelledError",
+        "run": ("cancelled", "cancelled"),
+        "import": ("failed", {}, True),
+        # The held row finished whole, the cancel was seen at its boundary, and
+        # no row after it was begun: one widget per `apply` call that returned.
+        # The run closed only after that — the workflow WAITED for the writer.
+        "apply_calls_when_the_run_ended": {"entered": 3, "returned": 3},
+        "apply_calls": {"entered": 3, "returned": 3},
+        "widgets": 3,
+        "settled_rows": [(1, "created"), (2, "created"), (3, "refused"), (4, "created")],
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_mid_check_closes_the_run_and_the_import_as_cancelled(
+    small_world: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cancel during the dry run: the run closes `cancelled` and the import says so.
+
+    The check does not heartbeat, so its workflow does not wait for it (the
+    default cancellation type): the cancel arm closes the import while the
+    check is held on its first lookup. The lookup runs under the preview's lock
+    on the import row, so the arm's write waits for the check and lands after
+    it — whichever order, the import ends `failed` with `cancelled`, the run
+    ends `cancelled`, and no widget is written.
+    """
+    tenant, actor = small_world
+    entered = threading.Event()
+    released = threading.Event()
+
+    def holds_the_first_lookup(**kwargs: Any) -> Any:
+        entered.set()
+        released.wait(HOLD_SECONDS)
+        return planted.natural_key(**kwargs)
+
+    monkeypatch.setitem(
+        planted.IMPORTERS,
+        "widget",
+        Importer(
+            row=planted.PlantedWidgetRow,
+            natural_key=holds_the_first_lookup,
+            apply=planted.apply,
+        ),
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        client = await _local_client(env, monkeypatch)
+        async with build_worker(client):
+            version = await run_db(stored_csv, actor, FIVE_ROWS_ONE_BAD)
+            run, _ = await run_db(
+                create_import, tenant=tenant, actor=actor, kind="widget", file_version=version
+            )
+            handle = client.get_workflow_handle(
+                run_id(tenant, run, "check"), result_type=ImportSettled
+            )
+            assert await asyncio.to_thread(entered.wait, HOLD_SECONDS), "the check never looked"
+            await handle.cancel()
+            released.set()
+            with pytest.raises(WorkflowFailureError) as ended:
+                await handle.result()
+            described = await handle.describe()
+
+    row = await run_db(lambda: WorkflowRun.objects.get(workflow_id=run_id(tenant, run, "check")))
+    settled = await run_db(lambda: Import.objects.get(pk=run.pk))
+    observed = {
+        "temporal": described.status and described.status.name,
+        "cause": type(ended.value.cause).__name__,
+        "run": (str(row.status), row.error),
+        "import": (str(settled.status), settled.failure, settled.cancelled_at is not None),
+        "widgets": await run_db(lambda: Widget.objects.filter(tenant=tenant).count()),
+    }
+    assert observed == {
+        "temporal": "CANCELED",
+        "cause": "CancelledError",
+        "run": ("cancelled", "cancelled"),
+        "import": ("failed", {}, True),
+        "widgets": 0,
+    }

@@ -49,6 +49,11 @@ def seeded(tenant: Tenant, other_tenant: Tenant) -> None:
         AuditEntry.objects.create(tenant=None, action=f"core.platform.{index}", door="shell")
 
 
+def _realm_asks() -> int:
+    """The platform receipts a tenant's birth leaves: its realm run, recorded (identity B)."""
+    return AuditEntry.objects.for_platform().filter(action="workflows.record_run").count()
+
+
 def _run(*args: str) -> str:
     out = StringIO()
     call_command("audit_tail", *args, stdout=out)
@@ -63,7 +68,7 @@ def test_platform_prints_exactly_the_platform_population(seeded: None) -> None:
     expected = AuditEntry.objects.for_platform().count()
     output = _run("--platform")
 
-    assert expected == 4
+    assert expected == 4 + _realm_asks()
     assert output.splitlines()[0] == f"{expected} audit rows (platform)"
     assert len(output.splitlines()) == expected + 1
     for index in range(4):
@@ -127,10 +132,11 @@ def test_limit_takes_the_newest_rows(seeded: None) -> None:
 
 
 def test_limit_zero_means_everything(seeded: None) -> None:
-    assert _run("--platform", "--limit", "0").splitlines()[0] == "4 audit rows (platform)"
+    counted = 4 + _realm_asks()
+    assert _run("--platform", "--limit", "0").splitlines()[0] == f"{counted} audit rows (platform)"
 
 
-def test_one_row_says_row_and_not_rows(tenant: Tenant) -> None:
+def test_one_row_says_row_and_not_rows(db: None) -> None:
     AuditEntry.objects.create(tenant=None, action="core.alone")
     assert _run("--platform").splitlines()[0] == "1 audit row (platform)"
 

@@ -1,0 +1,3 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "before", "text": "WIDGET_ARCHIVED = \"example.widget.archived\""}
+# A signed onboarding delivery confirmed this widget; never said on a redelivery.
+WIDGET_ONBOARDING_CONFIRMED = "example.widget.onboarding_confirmed"

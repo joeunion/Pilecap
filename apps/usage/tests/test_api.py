@@ -44,7 +44,7 @@ from apps.core.middleware import ORG_HEADER
 from apps.core.models import Organization, Tenant
 from apps.usage import meters as meters_module
 from apps.usage.services import record_usage
-from apps.usage.tests.conftest import METER, OTHER_METER, World
+from apps.usage.tests.conftest import METER, OTHER_METER, World, metered, owner_at, user_of
 from apps.usage.types import METERS_DESTINATION
 
 pytestmark = pytest.mark.django_db
@@ -75,10 +75,10 @@ def _body(response: Any) -> dict[str, Any]:
 def _record(world: World, **overrides: Any) -> Any:
     call: dict[str, Any] = {
         "tenant": world.tenant,
-        "actor": world.north_actor,
+        "actor": world.admin_at_a,
         "meter": METER,
         "quantity": Decimal("30"),
-        "ref": world.widget,
+        "ref": metered(world),
         "idempotency_key": "wire-1",
         "occurred_at": NOON,
     }
@@ -128,11 +128,11 @@ def test_a_token_scoped_elsewhere_is_refused_and_told_which_scope(
     ask for leaves the agent's human with nothing to act on.
     """
     _, plaintext = issue_token(
-        user=world.owner,
+        user=user_of(world.owner),
         tenant=world.tenant,
         name="elsewhere",
         scopes=["widgets:read"],
-        actor=actor_for(user=world.owner, tenant=world.tenant),
+        actor=actor_for(user=user_of(world.owner), tenant=world.tenant),
     )
 
     response = api.get(URL, headers=_bearer(plaintext))
@@ -151,11 +151,11 @@ def test_a_token_scoped_for_usage_reads(api: Client, world: World, a_declared_me
     """
     _record(world)
     _, plaintext = issue_token(
-        user=world.owner,
+        user=user_of(world.owner),
         tenant=world.tenant,
         name="narrow",
         scopes=["usage:read"],
-        actor=actor_for(user=world.owner, tenant=world.tenant),
+        actor=actor_for(user=user_of(world.owner), tenant=world.tenant),
     )
 
     response = api.get(f"{URL}?period=month&on={ON}", headers=_bearer(plaintext))
@@ -185,11 +185,11 @@ def test_the_report_is_the_seeded_ledger_and_re_adds(
         idempotency_key="d2",
     )
     _, plaintext = issue_token(
-        user=world.owner,
+        user=user_of(world.owner),
         tenant=world.tenant,
         name="root",
         scopes=["*"],
-        actor=actor_for(user=world.owner, tenant=world.tenant),
+        actor=actor_for(user=user_of(world.owner), tenant=world.tenant),
     )
 
     response = api.get(f"{URL}?period=month&on={ON}", headers=_bearer(plaintext))
@@ -225,11 +225,11 @@ def test_a_meter_that_was_asked_for_and_never_fired_answers_zero(
     """
     _record(world)
     _, plaintext = issue_token(
-        user=world.owner,
+        user=user_of(world.owner),
         tenant=world.tenant,
         name="root",
         scopes=["*"],
-        actor=actor_for(user=world.owner, tenant=world.tenant),
+        actor=actor_for(user=user_of(world.owner), tenant=world.tenant),
     )
 
     response = api.get(
@@ -250,11 +250,11 @@ def test_a_window_this_door_does_not_bucket_is_refused(api: Client, world: World
     a door that guessed at a third would be answering a question nobody asked.
     """
     _, plaintext = issue_token(
-        user=world.owner,
+        user=user_of(world.owner),
         tenant=world.tenant,
         name="root",
         scopes=["*"],
-        actor=actor_for(user=world.owner, tenant=world.tenant),
+        actor=actor_for(user=user_of(world.owner), tenant=world.tenant),
     )
 
     response = api.get(f"{URL}?period=year", headers=_bearer(plaintext))
@@ -275,22 +275,22 @@ def test_a_branch_never_tallies_a_sibling_over_the_wire(
     north's report tallies only north — so south's zero is a measurement rather
     than an empty database.
     """
-    _record(world, actor=world.north_actor, quantity=Decimal("30"), idempotency_key="north")
-    _record(world, actor=world.south_actor, quantity=Decimal("70"), idempotency_key="south")
+    _record(world, actor=world.admin_at_a, quantity=Decimal("30"), idempotency_key="north")
+    _record(world, actor=owner_at(world, world.b), quantity=Decimal("70"), idempotency_key="south")
 
     _, root_token = issue_token(
-        user=world.owner,
+        user=user_of(world.owner),
         tenant=world.tenant,
         name="root",
         scopes=["*"],
-        actor=actor_for(user=world.owner, tenant=world.tenant),
+        actor=actor_for(user=user_of(world.owner), tenant=world.tenant),
     )
     _, north_token = issue_token(
-        user=world.north_admin,
+        user=user_of(world.admin_at_a),
         tenant=world.tenant,
         name="north",
         scopes=["usage:read"],
-        actor=actor_for(user=world.north_admin, tenant=world.tenant),
+        actor=actor_for(user=user_of(world.admin_at_a), tenant=world.tenant),
     )
 
     whole = api.get(f"{URL}?period=month&on={ON}", headers=_bearer(root_token))
@@ -314,11 +314,11 @@ def test_there_is_no_write_door(api: Client, tenant: Tenant, world: World) -> No
     does not have — and the day somebody adds one, this test is what says so.
     """
     _, plaintext = issue_token(
-        user=world.owner,
+        user=user_of(world.owner),
         tenant=world.tenant,
         name="root",
         scopes=["*"],
-        actor=actor_for(user=world.owner, tenant=world.tenant),
+        actor=actor_for(user=user_of(world.owner), tenant=world.tenant),
     )
 
     response = api.post(
@@ -368,11 +368,11 @@ def test_the_vocabulary_is_the_live_registry(
     hand-listed vocabulary, which is the thing this route exists not to be.
     """
     _, plaintext = issue_token(
-        user=world.owner,
+        user=user_of(world.owner),
         tenant=world.tenant,
         name="root",
         scopes=["*"],
-        actor=actor_for(user=world.owner, tenant=world.tenant),
+        actor=actor_for(user=user_of(world.owner), tenant=world.tenant),
     )
 
     response = api.get(METERS_URL, headers=_bearer(plaintext))
@@ -399,11 +399,11 @@ def test_a_meter_this_deployment_does_not_declare_is_refused_not_zero_filled(
     which is what an agent needs to ask its human for the right spelling.
     """
     _, plaintext = issue_token(
-        user=world.owner,
+        user=user_of(world.owner),
         tenant=world.tenant,
         name="root",
         scopes=["*"],
-        actor=actor_for(user=world.owner, tenant=world.tenant),
+        actor=actor_for(user=user_of(world.owner), tenant=world.tenant),
     )
 
     response = api.get(
@@ -429,11 +429,11 @@ def test_a_meter_that_is_declared_is_not_refused(
     `?meters=` it was given.
     """
     _, plaintext = issue_token(
-        user=world.owner,
+        user=user_of(world.owner),
         tenant=world.tenant,
         name="root",
         scopes=["*"],
-        actor=actor_for(user=world.owner, tenant=world.tenant),
+        actor=actor_for(user=user_of(world.owner), tenant=world.tenant),
     )
 
     response = api.get(f"{URL}?period=month&on={ON}&meters={METER}", headers=_bearer(plaintext))
@@ -467,11 +467,11 @@ def test_a_sent_but_unresolved_hat_is_refused_rather_than_billed_at_zero(
     """
     _record(world)
     _, plaintext = issue_token(
-        user=world.owner,
+        user=user_of(world.owner),
         tenant=world.tenant,
         name="root",
         scopes=["*"],
-        actor=actor_for(user=world.owner, tenant=world.tenant),
+        actor=actor_for(user=user_of(world.owner), tenant=world.tenant),
     )
 
     response = api.get(
@@ -498,11 +498,11 @@ def test_a_hat_in_another_tenant_is_refused_the_same_way(
     names the header and never the slug.
     """
     _, plaintext = issue_token(
-        user=world.owner,
+        user=user_of(world.owner),
         tenant=world.tenant,
         name="root",
         scopes=["*"],
-        actor=actor_for(user=world.owner, tenant=world.tenant),
+        actor=actor_for(user=user_of(world.owner), tenant=world.tenant),
     )
 
     response = api.get(
@@ -531,11 +531,11 @@ def test_sending_no_hat_at_all_is_untouched(
     """
     _record(world)
     _, plaintext = issue_token(
-        user=world.owner,
+        user=user_of(world.owner),
         tenant=world.tenant,
         name="root",
         scopes=["*"],
-        actor=actor_for(user=world.owner, tenant=world.tenant),
+        actor=actor_for(user=user_of(world.owner), tenant=world.tenant),
     )
 
     response = api.get(f"{URL}?period=month&on={ON}", headers=_bearer(plaintext))
@@ -548,18 +548,18 @@ def test_a_hat_the_caller_really_holds_still_reads(
     api: Client, world: World, a_declared_meter: str
 ) -> None:
     """And a good `X-Org` is honoured, so the refusal above is not a blanket one."""
-    _record(world, actor=world.north_actor, idempotency_key="north-hat")
+    _record(world, actor=world.admin_at_a, idempotency_key="north-hat")
     _, plaintext = issue_token(
-        user=world.owner,
+        user=user_of(world.owner),
         tenant=world.tenant,
         name="root",
         scopes=["*"],
-        actor=actor_for(user=world.owner, tenant=world.tenant),
+        actor=actor_for(user=user_of(world.owner), tenant=world.tenant),
     )
 
     response = api.get(
         f"{URL}?period=month&on={ON}",
-        headers={**_bearer(plaintext), ORG_HEADER: world.north.slug},
+        headers={**_bearer(plaintext), ORG_HEADER: world.a.slug},
     )
 
     assert response.status_code == 200, response.content
@@ -601,11 +601,11 @@ def test_the_published_example_names_meters_this_deployment_declares(
     and this is the assertion that they are.
     """
     _, plaintext = issue_token(
-        user=world.owner,
+        user=user_of(world.owner),
         tenant=world.tenant,
         name="root",
         scopes=["*"],
-        actor=actor_for(user=world.owner, tenant=world.tenant),
+        actor=actor_for(user=user_of(world.owner), tenant=world.tenant),
     )
 
     catalogue = api.get(METERS_URL, headers=_bearer(plaintext))
@@ -627,11 +627,11 @@ def test_the_published_example_is_answered_rather_than_refused(api: Client, worl
     `400` here is the product refusing its own documentation.
     """
     _, plaintext = issue_token(
-        user=world.owner,
+        user=user_of(world.owner),
         tenant=world.tenant,
         name="root",
         scopes=["*"],
-        actor=actor_for(user=world.owner, tenant=world.tenant),
+        actor=actor_for(user=user_of(world.owner), tenant=world.tenant),
     )
     keys = sorted(_published_meters_example())
     assert keys, "an example with no meters in it cannot show a caller the shape"

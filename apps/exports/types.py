@@ -51,6 +51,8 @@ class BuildExport:
     """
 
     export_id: str
+    #: `core.retry.retry_floor_seconds()`, read on the Django side (rule 9).
+    retry_floor: float | None = None
 
 
 @dataclass

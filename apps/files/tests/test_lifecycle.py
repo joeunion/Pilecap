@@ -42,7 +42,6 @@ the assertions in this file are worth running in every rung.
 
 from __future__ import annotations
 
-import inspect
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
@@ -53,6 +52,7 @@ from apps.core.actor import actor_for
 from apps.core.audit import AuditEntry
 from apps.core.exceptions import Invalid
 from apps.core.lifecycle import LifecycleKind, lifecycle_of
+from apps.core.schedules import platform_id
 from apps.core.time import now
 from apps.files import activities, services
 from apps.files.models import PENDING_UPLOAD_TTL_HOURS, FileVersion, StoredFile
@@ -168,33 +168,20 @@ def test_the_stored_file_declaration_disposes_of_the_exports_purge_residue() -> 
     assert "2026-08-2" in declared.trigger, "a dated trigger, in the ADR grammar"
 
 
-def test_the_chain_from_the_declaration_to_a_schedule_holds_link_by_link() -> None:
-    """LF-Q's tooth, walked from inside the app rather than trusted from the gate.
+def test_the_schedule_this_app_declares() -> None:
+    """Hourly under one `platform:files:sweep-pending:<queue>` id; the TTL rides the action."""
+    declaration = activities.SWEEP_PENDING_UPLOADS
+    action = declaration.schedule(TASK_QUEUE).action
+    expected = platform_id(app="files", noun="sweep-pending", key=TASK_QUEUE)
 
-    Four links, each asserted separately, because the failure a `purged`
-    declaration invites is the chain stopping SHORT: a service nothing calls, an
-    activity no workflow executes, a workflow no schedule starts. Any one of
-    those reads, from the model, exactly like a table that is being swept.
-    """
-    # 1. the callable the declaration names exists and is this app's service.
-    assert callable(services.purge_pending_versions)
-
-    # 2. an activity references it.
-    assert "services.purge_pending_versions(" in inspect.getsource(activities.sweep_pending_uploads)
-
-    # 3. a workflow executes that activity, by name.
-    assert "sweep_pending_uploads" in inspect.getsource(SweepPendingUploadsWorkflow)
-
-    # 4. a ScheduleDeclaration in this app's SCHEDULES starts that workflow.
-    assert activities.SCHEDULES == [activities.SWEEP_PENDING_UPLOADS]
-    action = activities.SWEEP_PENDING_UPLOADS.schedule(TASK_QUEUE).action
-    # Narrowed rather than cast: `Schedule.action` is typed as the union base
-    # `ScheduleAction`, and asserting the concrete class is also the assertion
-    # that this schedule STARTS A WORKFLOW rather than doing something else.
+    assert activities.SCHEDULES == [declaration]
     assert isinstance(action, ScheduleActionStartWorkflow)
+    assert declaration.schedule_id(TASK_QUEUE) == action.id == expected
+    assert declaration.schedule_id("other") != expected
     assert action.workflow == SWEEP_WORKFLOW
     assert action.task_queue == TASK_QUEUE
     assert action.args == [SweepPendingUploads(ttl_hours=PENDING_UPLOAD_TTL_HOURS)]
+    assert declaration.schedule(TASK_QUEUE).spec.intervals[0].every == activities.SWEEP_EVERY
 
 
 def test_the_sweep_workflow_owns_no_run() -> None:
@@ -206,20 +193,6 @@ def test_the_sweep_workflow_owns_no_run() -> None:
     opposite half, and the pair is what makes the rule readable.
     """
     assert SweepPendingUploadsWorkflow.owns_no_run is True
-
-
-def test_both_ids_are_namespaced_by_task_queue() -> None:
-    """ADR events-2, observed live: a constant id is two deployments fighting.
-
-    A schedule id is global to the Temporal namespace, so a worktree starting a
-    worker would otherwise hijack every other worktree's sweep onto a queue that
-    is about to go away. Deterministic and per queue — house rule 18 — never
-    random.
-    """
-    assert activities.sweep_schedule_id(TASK_QUEUE).endswith(f":{TASK_QUEUE}")
-    assert activities.sweep_workflow_id(TASK_QUEUE).endswith(f":{TASK_QUEUE}")
-    assert activities.sweep_schedule_id("other") != activities.sweep_schedule_id(TASK_QUEUE)
-    assert activities.sweep_workflow_id("other") != activities.sweep_workflow_id(TASK_QUEUE)
 
 
 # --- what the sweep takes, and what it leaves -----------------------------------

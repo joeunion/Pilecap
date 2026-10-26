@@ -1,0 +1,3 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "after", "text": "WIDGET_RESTORED = \"example.widget.restored\""}
+WIDGET_POLICY_ARCHIVED = "example.widget_policy.archived"
+WIDGET_POLICY_RESTORED = "example.widget_policy.restored"

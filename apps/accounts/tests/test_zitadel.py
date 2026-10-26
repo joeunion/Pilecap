@@ -24,9 +24,9 @@ import pytest
 from django.core.management import call_command
 
 from apps.accounts import zitadel
-from apps.accounts.activities import _idp_name, apply_identity_config
-from apps.accounts.management.commands.zitadel_audit import idp_name_for
+from apps.accounts.activities import apply_identity_config
 from apps.accounts.models import SsoConnection
+from apps.accounts.selectors import get_tenant_realm
 from apps.accounts.tests.conftest import FakeZitadel
 from apps.accounts.types import KIND_SSO_CONNECTION, IdentityConfigSync
 from apps.core.models import Organization, Tenant
@@ -92,13 +92,16 @@ def test_ensure_idp_updates_the_object_our_row_already_names(instance: FakeZitad
     means the second call is the normal case rather than the exception.
     """
     made = zitadel.ensure_oidc_identity_provider(
-        name="acme", issuer="https://a.example", client_id="c", client_secret="s"
+        name="acme",
+        issuer="https://a.example",
+        client_id="c",
+        client_secret="s",  # noqa: S106 — a fake IdP client secret the test world configures
     )
     again = zitadel.ensure_oidc_identity_provider(
         name="acme",
         issuer="https://a.example",
         client_id="c",
-        client_secret="s",
+        client_secret="s",  # noqa: S106 — a fake IdP client secret the test world configures
         existing_id=made.id,
     )
 
@@ -112,10 +115,16 @@ def test_ensure_idp_updates_the_object_our_row_already_names(instance: FakeZitad
 def test_ensure_idp_finds_by_name_when_the_row_carries_no_id(instance: FakeZitadel) -> None:
     """The second net, for a row whose write-back never landed."""
     made = zitadel.ensure_oidc_identity_provider(
-        name="acme", issuer="https://a.example", client_id="c", client_secret="s"
+        name="acme",
+        issuer="https://a.example",
+        client_id="c",
+        client_secret="s",  # noqa: S106 — a fake IdP client secret the test world configures
     )
     again = zitadel.ensure_oidc_identity_provider(
-        name="acme", issuer="https://a.example", client_id="c", client_secret="s"
+        name="acme",
+        issuer="https://a.example",
+        client_id="c",
+        client_secret="s",  # noqa: S106 — a fake IdP client secret the test world configures
     )
 
     assert again.id == made.id
@@ -125,7 +134,10 @@ def test_ensure_idp_finds_by_name_when_the_row_carries_no_id(instance: FakeZitad
 def test_ensure_idp_recreates_when_the_recorded_id_is_gone(instance: FakeZitadel) -> None:
     """Somebody deleted it in the console; a re-sync repairs rather than dies."""
     made = zitadel.ensure_oidc_identity_provider(
-        name="acme", issuer="https://a.example", client_id="c", client_secret="s"
+        name="acme",
+        issuer="https://a.example",
+        client_id="c",
+        client_secret="s",  # noqa: S106 — a fake IdP client secret the test world configures
     )
     instance.idps.clear()
 
@@ -133,7 +145,7 @@ def test_ensure_idp_recreates_when_the_recorded_id_is_gone(instance: FakeZitadel
         name="acme",
         issuer="https://a.example",
         client_id="c",
-        client_secret="s",
+        client_secret="s",  # noqa: S106 — a fake IdP client secret the test world configures
         existing_id=made.id,
     )
 
@@ -175,10 +187,13 @@ def test_the_activity_materialises_and_writes_the_resource_id_back(
     sso_connection.refresh_from_db()
     assert sso_connection.zitadel_idp_id == applied.resource_id
     assert sso_connection.sync_state == SsoConnection.SyncState.APPLIED
-    # The object really is there, under the name the audit will look for.
-    remote = zitadel.get_identity_provider(idp_id=applied.resource_id)
+    # The object really is there, in the tenant's realm, under the name the
+    # audit will look for.
+    realm = get_tenant_realm(sso_connection.tenant)
+    assert realm is not None
+    remote = zitadel.get_identity_provider(idp_id=applied.resource_id, org_id=realm.id)
     assert remote is not None
-    assert remote["name"] == _idp_name(sso_connection)
+    assert remote["name"] == sso_connection.idp_name
     assert zitadel.oidc_issuer_of(remote) == sso_connection.issuer
 
 
@@ -195,8 +210,6 @@ def test_the_activity_twice_leaves_one_object(
     second = apply_identity_config(payload)
 
     assert first.resource_id == second.resource_id
-    assert first.created is True
-    assert second.created is False
     assert len(instance.idps) == 1
 
 
@@ -442,7 +455,10 @@ def test_zitadel_audit_counts_providers_no_row_claims(
 ) -> None:
     """The blind spot's one visible edge, and it is a count rather than a verdict."""
     zitadel.ensure_oidc_identity_provider(
-        name="made-by-hand", issuer="https://x.example", client_id="c", client_secret="s"
+        name="made-by-hand",
+        issuer="https://x.example",
+        client_id="c",
+        client_secret="s",  # noqa: S106 — a fake IdP client secret the test world configures
     )
     capsys.readouterr()
 
@@ -452,15 +468,17 @@ def test_zitadel_audit_counts_providers_no_row_claims(
 
 
 @pytest.mark.django_db
-def test_the_audit_and_the_activity_agree_on_an_idps_name(
+def test_an_idps_name_has_one_derivation_on_the_row(
     sso_connection: SsoConnection,
 ) -> None:
-    """Two modules deriving one name is two chances to derive it differently.
+    """The activity, the realm adapter and the audit all read `SsoConnection.idp_name`.
 
-    The audit cannot import the activity — that would drag Temporal into a shell
-    process for one f-string — so the restatement is pinned here instead.
+    It used to be derived twice — once in the activity and once, restated, in
+    the audit — and read a third time through a late import of the activity's
+    private helper by the realm adapter. One derivation on the row is the road;
+    this pins what it derives from: nothing renamable.
     """
-    assert idp_name_for(sso_connection) == _idp_name(sso_connection)
+    assert sso_connection.idp_name == f"{sso_connection.tenant.slug}:{sso_connection.pk}"
 
 
 @pytest.mark.django_db(transaction=True)

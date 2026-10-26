@@ -25,6 +25,7 @@ confirm nothing and a full page that would confirm too much.
 
 from __future__ import annotations
 
+import copy
 import json
 from typing import TYPE_CHECKING, Any
 
@@ -34,11 +35,15 @@ from apps.accounts.services import create_user
 from apps.core.actor import Actor, actor_for, system_actor
 from apps.core.exceptions import Forbidden
 from apps.core.models import Membership
+from apps.core.schemas import without_personal
 from apps.core.services import add_membership
+from apps.core.tests.test_retired_query import strict_query_seam
 from apps.events.models import Event
 from apps.example.models import Widget
 from apps.example.services import create_widget
+from apps.files.api import RETIRED_QUERY
 from apps.files.models import FileVersion, StoredFile
+from apps.files.schemas import StoredFileOut
 from apps.files.selectors import get_file
 from apps.files.services import archive_file, create_file, record_stored
 
@@ -46,8 +51,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from django.test import Client
 
     from apps.accounts.models import User
-
-    from .conftest import World
+    from apps.core.tests.permissions_world import World
 
 pytestmark = pytest.mark.django_db
 
@@ -59,14 +63,14 @@ VERSIONS_URL = "/api/v1/files/{}/versions/"
 DOWNLOAD_URL = "/api/v1/files/{}/download-url/"
 JSON = "application/json"
 DIGEST = "beadbead" * 8
-PASSWORD = "correct-horse-battery-staple"  # pragma: allowlist secret
+PASSWORD = "correct-horse-battery-staple"  # noqa: S105 — a throwaway password a test user is made with  # pragma: allowlist secret
 
 
 def _filed(world: World, org: Any, *, filename: str) -> StoredFile:
     """One document filed at a node of the tree by the owner, through the service."""
     return create_file(
         tenant=world.tenant,
-        actor=actor_for(user=world.owner, tenant=world.tenant, org=org),
+        actor=actor_for(user=world.user(world.owner), tenant=world.tenant, org=org),
         filename=filename,
         content_type="application/pdf",
         size_bytes=1024,
@@ -79,7 +83,7 @@ def _stored(world: World, file: StoredFile) -> FileVersion:
     row = FileVersion.objects.for_tenant(world.tenant).get(file=file, version=1)
     return record_stored(
         tenant=world.tenant,
-        actor=actor_for(user=world.owner, tenant=world.tenant, org=file.organization),
+        actor=actor_for(user=world.user(world.owner), tenant=world.tenant, org=file.organization),
         version=row,
         sha256=DIGEST,
         size_bytes=1024,
@@ -93,9 +97,9 @@ def _post(api: Client, url: str, body: dict[str, Any], org: Any) -> Any:
 @pytest.fixture
 def document(world: World, named_bucket: str, recorded_workflow_starts: None) -> StoredFile:
     """A document filed at the region, measured, and a live neighbour beside it."""
-    filed = _filed(world, world.region, filename="region-contract.pdf")
+    filed = _filed(world, world.a, filename="region-contract.pdf")
     _stored(world, filed)
-    _filed(world, world.region, filename="region-neighbour.pdf")
+    _filed(world, world.a, filename="region-neighbour.pdf")
     return filed
 
 
@@ -106,10 +110,10 @@ def sibling_admin(world: World) -> User:
     add_membership(
         user=user,
         tenant=world.tenant,
-        organization=world.sibling,
+        organization=world.b,
         is_default=True,
         role=Membership.Role.ADMIN,
-        actor=world.owner_actor,
+        actor=world.owner,
     )
     return user
 
@@ -121,17 +125,17 @@ def test_restore_brings_an_archived_document_back_to_the_list(
     api: Client, world: World, document: StoredFile
 ) -> None:
     """The restore half of the road. *Absent (the baseline):* no `file-restore` route."""
-    api.force_login(world.region_admin)
-    archived = _post(api, ARCHIVE_URL.format(document.pk), {}, world.region)
+    api.force_login(world.user(world.admin_at_a))
+    archived = _post(api, ARCHIVE_URL.format(document.pk), {}, world.a)
     assert archived.status_code == 200, archived.content
 
-    restored = _post(api, RESTORE_URL.format(document.pk), {}, world.region)
+    restored = _post(api, RESTORE_URL.format(document.pk), {}, world.a)
 
     assert restored.status_code == 200, restored.content
     body = restored.json()
     assert body["archived_at"] is None
     assert body["archived_by"] is None
-    listed = api.get(LIST_URL, headers={"X-Org": world.region.slug}).json()
+    listed = api.get(LIST_URL, headers={"X-Org": world.a.slug}).json()
     assert str(document.pk) in {row["id"] for row in listed["items"]}
     names = list(
         Event.objects.for_tenant(world.tenant)
@@ -141,7 +145,7 @@ def test_restore_brings_an_archived_document_back_to_the_list(
     )
     assert names == ["files.file.archived", "files.file.restored"]
 
-    again = _post(api, RESTORE_URL.format(document.pk), {}, world.region)
+    again = _post(api, RESTORE_URL.format(document.pk), {}, world.a)
     assert again.status_code == 200, again.content
     assert Event.objects.for_tenant(world.tenant).filter(name="files.file.restored").count() == 1, (
         "a repeated restore must not put a second event on the spine"
@@ -152,26 +156,33 @@ def test_archive_keeps_its_first_date_and_names_who_pressed_it(
     api: Client, world: World, document: StoredFile
 ) -> None:
     """`archived_by` is the pressing person; a second press changes neither field."""
-    api.force_login(world.region_admin)
+    api.force_login(world.user(world.admin_at_a))
 
-    first = _post(api, ARCHIVE_URL.format(document.pk), {}, world.region)
-    api.force_login(world.owner)
+    first = _post(api, ARCHIVE_URL.format(document.pk), {}, world.a)
+    api.force_login(world.user(world.owner))
     second = _post(api, ARCHIVE_URL.format(document.pk), {}, world.root)
 
     assert first.status_code == 200, first.content
     assert second.status_code == 200, second.content
-    assert first.json()["archived_by"]["id"] == str(world.region_admin.pk)
+    assert first.json()["archived_by"]["id"] == str(world.user(world.admin_at_a).pk)
     assert second.json()["archived_at"] == first.json()["archived_at"]
     assert second.json()["archived_by"] == first.json()["archived_by"]
     assert Event.objects.for_tenant(world.tenant).filter(name="files.file.archived").count() == 1
 
 
+@pytest.mark.parametrize("seam", ["bare", "behind a strict-query seam"])
 def test_the_list_cuts_by_show_and_refuses_the_archived_switch_naming_show(
-    api: Client, world: World, document: StoredFile
+    api: Client, world: World, document: StoredFile, seam: str, settings: Any
 ) -> None:
-    """`?show=live|archived|all`, default live; `?archived=` is not a second way to ask."""
-    archive_file(tenant=world.tenant, actor=world.owner_actor, file=document)
-    api.force_login(world.owner)
+    """`?show=live|archived|all`, default live; `?archived=` is not a second way to ask.
+
+    Driven both ways: bare, and behind a product's strict-query seam that defers
+    to the list's `RETIRED_QUERY` (`retired_query_of`) — the cuts pass through it
+    and the retired switch is answered in the declaration's own sentence."""
+    if seam != "bare":
+        strict_query_seam(settings)
+    archive_file(tenant=world.tenant, actor=world.owner, file=document)
+    api.force_login(world.user(world.owner))
 
     def ids(query: str) -> set[str]:
         answered = api.get(f"{LIST_URL}{query}")
@@ -189,14 +200,16 @@ def test_the_list_cuts_by_show_and_refuses_the_archived_switch_naming_show(
         assert refused.status_code == 400, (query, refused.content)
         assert refused.json()["code"] == "invalid"
         assert "show" in refused.json()["errors"], refused.json()
+    switch = api.get(f"{LIST_URL}?archived=true").json()
+    assert switch["errors"] == {"show": [RETIRED_QUERY["archived"].reason]}, switch
 
 
 def test_an_archived_document_reads_by_id_read_only(
     api: Client, world: World, document: StoredFile
 ) -> None:
     """Readable and still signing a link; every other write is `409 archived`."""
-    archive_file(tenant=world.tenant, actor=world.owner_actor, file=document)
-    api.force_login(world.owner)
+    archive_file(tenant=world.tenant, actor=world.owner, file=document)
+    api.force_login(world.user(world.owner))
 
     fetched = api.get(DETAIL_URL.format(document.pk))
     assert fetched.status_code == 200, fetched.content
@@ -224,11 +237,9 @@ def test_archive_then_read_through_the_selector_answers_the_archived_row(
     FIRST — so a `get_` that did not widen would answer `not_found` for a document
     whose id the caller legitimately holds.
     """
-    archive_file(tenant=world.tenant, actor=world.owner_actor, file=document)
+    archive_file(tenant=world.tenant, actor=world.owner, file=document)
 
-    read = get_file(
-        tenant=world.tenant, file_id=document.pk, org=world.root, actor=world.owner_actor
-    )
+    read = get_file(tenant=world.tenant, file_id=document.pk, org=world.root, actor=world.owner)
 
     assert read.pk == document.pk
     assert read.archived_at is not None
@@ -238,15 +249,15 @@ def test_restore_is_an_administrators_press_at_the_documents_own_node(
     api: Client, world: World, document: StoredFile, sibling_admin: User
 ) -> None:
     """A member is refused `forbidden`; a sibling branch's admin gets `not_found`."""
-    archive_file(tenant=world.tenant, actor=world.owner_actor, file=document)
+    archive_file(tenant=world.tenant, actor=world.owner, file=document)
 
-    api.force_login(world.plain_member)
-    member = _post(api, RESTORE_URL.format(document.pk), {}, world.region)
+    api.force_login(world.user(world.clerk))
+    member = _post(api, RESTORE_URL.format(document.pk), {}, world.a)
     assert member.status_code == 403, member.content
     assert member.json()["code"] == "forbidden"
 
     api.force_login(sibling_admin)
-    stranger = _post(api, RESTORE_URL.format(document.pk), {}, world.sibling)
+    stranger = _post(api, RESTORE_URL.format(document.pk), {}, world.b)
     assert stranger.status_code == 404, stranger.content
     assert stranger.json()["code"] == "not_found"
 
@@ -258,7 +269,7 @@ def test_the_product_acting_for_itself_may_not_archive_a_document(
     world: World, document: StoredFile
 ) -> None:
     """`may_archive` refuses the system actor: a workflow does not archive on its own say-so."""
-    robot: Actor = system_actor(world.tenant, world.region)
+    robot: Actor = system_actor(world.tenant, world.a)
 
     with pytest.raises(Forbidden):
         archive_file(tenant=world.tenant, actor=robot, file=document)
@@ -275,12 +286,12 @@ def widgets(world: World) -> tuple[Widget, Widget]:
     """A widget at the branch (under the region) and one at the sibling branch."""
     here = create_widget(
         tenant=world.tenant,
-        actor=actor_for(user=world.owner, tenant=world.tenant, org=world.branch),
+        actor=actor_for(user=world.user(world.owner), tenant=world.tenant, org=world.a1),
         name="Branch widget",
     )
     there = create_widget(
         tenant=world.tenant,
-        actor=actor_for(user=world.owner, tenant=world.tenant, org=world.sibling),
+        actor=actor_for(user=world.user(world.owner), tenant=world.tenant, org=world.b),
         name="Sibling widget",
     )
     return here, there
@@ -323,17 +334,17 @@ def test_a_document_filed_against_a_subject_lands_in_the_subjects_organization(
 ) -> None:
     """Filed under the region's hat against a branch widget: it lands at the BRANCH."""
     here, _there = widgets
-    _filed(world, world.region, filename="unattached.pdf")
-    api.force_login(world.region_admin)
+    _filed(world, world.a, filename="unattached.pdf")
+    api.force_login(world.user(world.admin_at_a))
 
-    created = _post(api, LIST_URL, _filing(f"widget:{here.pk}"), world.region)
+    created = _post(api, LIST_URL, _filing(f"widget:{here.pk}"), world.a)
 
     assert created.status_code == 201, created.content
     document = created.json()["file"]
-    assert document["organization_id"] == str(world.branch.pk)
+    assert document["organization_id"] == str(world.a1.pk)
     assert document["subject"] == f"widget:{here.pk}"
 
-    listed = api.get(f"{LIST_URL}?subject=widget:{here.pk}", headers={"X-Org": world.region.slug})
+    listed = api.get(f"{LIST_URL}?subject=widget:{here.pk}", headers={"X-Org": world.a.slug})
     assert listed.status_code == 200, listed.content
     assert [row["id"] for row in listed.json()["items"]] == [document["id"]]
 
@@ -347,10 +358,10 @@ def test_a_subject_in_a_sibling_branch_is_not_found_on_both_reads_and_writes(
 ) -> None:
     """Not `forbidden`: a refusal that told the two apart would confirm the row exists."""
     _here, there = widgets
-    api.force_login(world.region_admin)
+    api.force_login(world.user(world.admin_at_a))
 
-    created = _post(api, LIST_URL, _filing(f"widget:{there.pk}"), world.region)
-    listed = api.get(f"{LIST_URL}?subject=widget:{there.pk}", headers={"X-Org": world.region.slug})
+    created = _post(api, LIST_URL, _filing(f"widget:{there.pk}"), world.a)
+    listed = api.get(f"{LIST_URL}?subject=widget:{there.pk}", headers={"X-Org": world.a.slug})
 
     assert created.status_code == 404, created.content
     assert created.json()["code"] == "not_found"
@@ -368,16 +379,36 @@ def test_a_subject_kind_that_takes_no_files_is_refused_naming_subject(
 ) -> None:
     """`400 invalid` naming `subject` — on the filing and on the list alike."""
     here, _there = widgets
-    api.force_login(world.region_admin)
+    api.force_login(world.user(world.admin_at_a))
 
     for answered in (
-        _post(api, LIST_URL, _filing(f"widget:{here.pk}"), world.region),
-        _post(api, LIST_URL, _filing("widget"), world.region),
-        api.get(f"{LIST_URL}?subject=widget:{here.pk}", headers={"X-Org": world.region.slug}),
+        _post(api, LIST_URL, _filing(f"widget:{here.pk}"), world.a),
+        _post(api, LIST_URL, _filing("widget"), world.a),
+        api.get(f"{LIST_URL}?subject=widget:{here.pk}", headers={"X-Org": world.a.slug}),
     ):
         assert answered.status_code == 400, answered.content
         assert answered.json()["code"] == "invalid"
         assert "subject" in answered.json()["errors"], answered.json()
+
+
+def test_the_kind_is_judged_before_the_row_so_an_unreachable_row_of_a_kind_without_files_is_invalid(
+    api: Client,
+    world: World,
+    named_bucket: str,
+    widgets: tuple[Widget, Widget],
+    widgets_take_no_files: None,
+) -> None:
+    """`subject_for`'s order: the kind first, so the answer is `400 invalid` and never a `404`."""
+    _here, there = widgets
+    api.force_login(world.user(world.admin_at_a))
+
+    for answered in (
+        _post(api, LIST_URL, _filing(f"widget:{there.pk}"), world.a),
+        api.get(f"{LIST_URL}?subject=widget:{there.pk}", headers={"X-Org": world.a.slug}),
+    ):
+        assert answered.status_code == 400, answered.content
+        assert answered.json()["code"] == "invalid"
+        assert set(answered.json()["errors"]) == {"subject"}, answered.json()
 
 
 # --- the merge re-point ---------------------------------------------------------------
@@ -393,11 +424,11 @@ def test_the_repointer_moves_what_it_counted_to_the_survivor_and_its_node(
     dry-run count equals what moved; a second run moves nothing."""
     from apps.core.verbs import hook
 
-    at_branch = actor_for(user=world.owner, tenant=world.tenant, org=world.branch)
+    at_branch = actor_for(user=world.user(world.owner), tenant=world.tenant, org=world.a1)
     loser = create_widget(tenant=world.tenant, actor=at_branch, name="Loser")
     survivor = create_widget(
         tenant=world.tenant,
-        actor=actor_for(user=world.owner, tenant=world.tenant, org=world.region),
+        actor=actor_for(user=world.user(world.owner), tenant=world.tenant, org=world.a),
         name="Survivor",
     )
     filed = [
@@ -412,27 +443,25 @@ def test_the_repointer_moves_what_it_counted_to_the_survivor_and_its_node(
         ).file
         for n in (1, 2)
     ]
-    archive_file(tenant=world.tenant, actor=world.owner_actor, file=filed[1])
+    archive_file(tenant=world.tenant, actor=world.owner, file=filed[1])
     ours = [value for config, value in hook("merge_repointers") if config.label == "files"]
     assert len(ours) == 1
     repointer = ours[0]["*"]
 
     counted = repointer.count(tenant=world.tenant, loser=loser)
     moved = repointer.repoint(
-        tenant=world.tenant, actor=world.owner_actor, loser=loser, survivor=survivor
+        tenant=world.tenant, actor=world.owner, loser=loser, survivor=survivor
     )
 
     assert counted == moved == 2
     rows = StoredFile.objects.filter(pk__in=[one.pk for one in filed])
     assert {row.subject_id for row in rows} == {survivor.pk}
-    assert {row.organization_id for row in rows} == {world.region.pk}
+    assert {row.organization_id for row in rows} == {world.a.pk}
     versions = FileVersion.objects.filter(file__in=rows)
-    assert {row.organization_id for row in versions} == {world.region.pk}
+    assert {row.organization_id for row in versions} == {world.a.pk}
     assert repointer.count(tenant=world.tenant, loser=loser) == 0
     assert (
-        repointer.repoint(
-            tenant=world.tenant, actor=world.owner_actor, loser=loser, survivor=survivor
-        )
+        repointer.repoint(tenant=world.tenant, actor=world.owner, loser=loser, survivor=survivor)
         == 0
     )
 
@@ -454,11 +483,11 @@ def test_the_repoint_stamps_updated_at_on_every_row_it_moves(
 
     from apps.files.services import move_attached_files
 
-    at_branch = actor_for(user=world.owner, tenant=world.tenant, org=world.branch)
+    at_branch = actor_for(user=world.user(world.owner), tenant=world.tenant, org=world.a1)
     loser = create_widget(tenant=world.tenant, actor=at_branch, name="Loser")
     survivor = create_widget(
         tenant=world.tenant,
-        actor=actor_for(user=world.owner, tenant=world.tenant, org=world.region),
+        actor=actor_for(user=world.user(world.owner), tenant=world.tenant, org=world.a),
         name="Survivor",
     )
     filed = create_file(
@@ -475,7 +504,7 @@ def test_the_repoint_stamps_updated_at_on_every_row_it_moves(
     FileVersion.objects.filter(file=filed).update(updated_at=long_ago)
 
     moved = move_attached_files(
-        tenant=world.tenant, actor=world.owner_actor, loser=loser, survivor=survivor
+        tenant=world.tenant, actor=world.owner, loser=loser, survivor=survivor
     )
 
     assert moved == 1
@@ -496,11 +525,11 @@ def test_the_attach_specimen_files_against_its_subject_through_the_service(
     from apps.files.tests.attach_specimen import attach
 
     here, _there = widgets
-    document = attach(tenant=world.tenant, actor=world.region_actor, subject=here)
+    document = attach(tenant=world.tenant, actor=world.admin_at_a, subject=here)
 
     assert isinstance(document, StoredFile)
     assert (document.subject_kind, document.subject_id) == ("widget", here.pk)
-    assert document.organization_id == world.branch.pk
+    assert document.organization_id == world.a1.pk
     assert StoredFile.objects.for_tenant(world.tenant).filter(pk=document.pk).exists()
 
 
@@ -515,6 +544,7 @@ _EVERY_PRESS = (
     "database_unavailable",
     "forbidden",
     "insufficient_scope",
+    "no_acting_scope",
     "not_found",
     "rate_limited",
     "unauthenticated",
@@ -528,8 +558,8 @@ def test_archive_and_restore_take_no_body_and_still_answer_an_empty_one(
 ) -> None:
     """A bodiless press is the press (*red on the baseline:* `422 invalid_body`), and a
     client still sending `{}` is answered exactly as before — no wire break."""
-    api.force_login(world.region_admin)
-    hat = {"X-Org": world.region.slug}
+    api.force_login(world.user(world.admin_at_a))
+    hat = {"X-Org": world.a.slug}
 
     archived = api.post(ARCHIVE_URL.format(document.pk), headers=hat)
     assert archived.status_code == 200, archived.content
@@ -539,25 +569,63 @@ def test_archive_and_restore_take_no_body_and_still_answer_an_empty_one(
     assert restored.json()["archived_at"] is None
 
     for url in (ARCHIVE_URL, RESTORE_URL):
-        answered = _post(api, url.format(document.pk), {}, world.region)
+        answered = _post(api, url.format(document.pk), {}, world.a)
         assert answered.status_code == 200, answered.content
 
 
-def test_the_published_presses_take_no_body_and_keep_their_refusals() -> None:
-    """The document says it too: no `requestBody`, and the same `x-refusal-codes`."""
-    from config.api import api as the_api
+def _refusal_codes(operation: dict[str, Any]) -> set[str]:
+    """Every `x-refusal-codes` entry one published operation carries."""
+    return {
+        code
+        for body in (operation.get("responses") or {}).values()
+        if isinstance(body, dict)
+        for code in (body.get("x-refusal-codes") or ())
+    }
 
-    paths = the_api.get_openapi_schema()["paths"]
+
+def _presses_keep_their_refusals(paths: dict[str, Any]) -> None:
+    """No `requestBody`, and each press's pinned codes — plus only what EVERY operation adds.
+
+    The door's own composition (a product's strict-query seam publishing its
+    `invalid` on every operation, say) reaches every operation alike, so it is
+    no move of a press's refusal; a code only a press gained or lost is.
+    """
+    every = set.intersection(
+        *(
+            _refusal_codes(operation)
+            for methods in paths.values()
+            for operation in methods.values()
+            if isinstance(operation, dict)
+        )
+    )
     for verb, pinned in (("archive", ARCHIVE_REFUSALS), ("restore", RESTORE_REFUSALS)):
         operation = paths[f"/api/v1/files/{{file_id}}/{verb}/"]["post"]
         assert "requestBody" not in operation, verb
-        published = {
-            code
-            for body in (operation.get("responses") or {}).values()
-            if isinstance(body, dict)
-            for code in (body.get("x-refusal-codes") or ())
-        }
-        assert published == pinned, (verb, sorted(published))
+        published = _refusal_codes(operation)
+        assert published - every == pinned - every, (verb, sorted(published))
+        assert pinned <= published, (verb, sorted(published))
+        assert "invalid_body" not in published, verb
+
+
+def test_the_published_presses_take_no_body_and_keep_their_refusals() -> None:
+    """The document says it too: no `requestBody`, and the same `x-refusal-codes`.
+
+    Held on the template's document as published, and on the same document with
+    a product door's strict-query refusal composed onto every operation — the
+    press's own contract is unmoved by what the door adds everywhere."""
+    from config.api import api as the_api
+
+    paths = the_api.get_openapi_schema()["paths"]
+    _presses_keep_their_refusals(paths)
+
+    composed = copy.deepcopy(paths)
+    for methods in composed.values():
+        for operation in methods.values():
+            if isinstance(operation, dict):
+                responses = operation.setdefault("responses", {})
+                body = responses.setdefault("400", {})
+                body["x-refusal-codes"] = [*(body.get("x-refusal-codes") or ()), "invalid"]
+    _presses_keep_their_refusals(composed)
 
 
 def test_the_repoint_says_moved_once_per_document_and_nothing_on_a_repeat(
@@ -572,11 +640,11 @@ def test_the_repoint_says_moved_once_per_document_and_nothing_on_a_repeat(
     no event at all."""
     from apps.files.services import move_attached_files
 
-    at_branch = actor_for(user=world.owner, tenant=world.tenant, org=world.branch)
+    at_branch = actor_for(user=world.user(world.owner), tenant=world.tenant, org=world.a1)
     loser = create_widget(tenant=world.tenant, actor=at_branch, name="Loser")
     survivor = create_widget(
         tenant=world.tenant,
-        actor=actor_for(user=world.owner, tenant=world.tenant, org=world.region),
+        actor=actor_for(user=world.user(world.owner), tenant=world.tenant, org=world.a),
         name="Survivor",
     )
     filed = [
@@ -591,31 +659,33 @@ def test_the_repoint_says_moved_once_per_document_and_nothing_on_a_repeat(
         ).file
         for n in (1, 2)
     ]
-    archive_file(tenant=world.tenant, actor=world.owner_actor, file=filed[1])
+    archive_file(tenant=world.tenant, actor=world.owner, file=filed[1])
     said = Event.objects.for_tenant(world.tenant).filter(name="files.file.moved")
     assert said.count() == 0
 
     moved = move_attached_files(
-        tenant=world.tenant, actor=world.owner_actor, loser=loser, survivor=survivor
+        tenant=world.tenant, actor=world.owner, loser=loser, survivor=survivor
     )
 
     assert moved == 2
     payloads = {row["id"]: row for row in said.values_list("payload", flat=True)}
     assert set(payloads) == {str(one.pk) for one in filed}
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
     for one in filed:
         payload = payloads[str(one.pk)]
-        # The document as the REST door renders it, minus the one per-viewer field.
+        # The document as the REST door renders it, less the per-viewer and `personal` fields.
         read = api.get(DETAIL_URL.format(one.pk), headers={"X-Org": world.root.slug})
         assert read.status_code == 200, read.content
-        rendered = {k: v for k, v in read.json().items() if k != "allowed_acts"}
+        rendered = without_personal(
+            StoredFileOut, {k: v for k, v in read.json().items() if k != "allowed_acts"}
+        )
         assert "allowed_acts" not in payload
         assert payload["subject"] == f"widget:{survivor.pk}"
-        assert payload["organization_id"] == str(world.region.pk)
+        assert payload["organization_id"] == str(world.a.pk)
         assert {k: v for k, v in payload.items() if k != "v"} == rendered
 
     again = move_attached_files(
-        tenant=world.tenant, actor=world.owner_actor, loser=loser, survivor=survivor
+        tenant=world.tenant, actor=world.owner, loser=loser, survivor=survivor
     )
     assert again == 0
     assert said.count() == 2, "a repeat re-point must say nothing"

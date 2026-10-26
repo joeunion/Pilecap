@@ -1,75 +1,22 @@
 """The subscription door onto the event spine: endpoints, the catalogue, dead letters.
 
-The spine has had an outbox, signed deliveries, retries and dead-lettering from
-the start, and until now not one line of it was reachable by anybody who was
-not holding a shell (house rule 42; the owner's ruling). This is that
-surface, and it is three questions a subscriber actually asks:
-
-* **where do you send my events** — endpoints, created, read, changed, paused,
-  resumed, and given a new signing key;
-* **what events are there** — the catalogue, which is *derived* from the
-  installed apps' own `events.py` declarations and is therefore incapable of
-  going stale; and
-* **what did you fail to send me** — deliveries, the dead letters among them,
-  and a way to send one again.
-
-## The one shape to read this file for
-
-**The signing key is answered exactly once, at the moment it is minted, and
-there is no second reader anywhere.** `POST /webhook-endpoints/` and `POST
-/webhook-endpoints/{id}/secret/` answer `WebhookEndpointSecretOut`; every other read of
-an endpoint answers `WebhookEndpointOut`, which has **no secret field at all**.
-That is not a filter somebody remembered to apply — it is a schema with nowhere
-to put one, which is the difference between a rule and a habit. A subscriber
-that loses the key issues a new one; a key that could be read a second time
-would be a key that leaks twice, and the ADR (events-4) rejected re-reading it
-behind a permission for exactly that reason.
-
-## What is deliberately NOT here
-
-* **No `emit` door.** A caller who could name an event name and a payload could
-  publish `billing.invoice.paid` to every subscriber the tenant has, signed with
-  the tenant's own key. What may be emitted lives with the write that emits it;
-  `services.emit` carries the `# door:` reason.
-* **No endpoint delete.** `Delivery.endpoint` is `PROTECT` on purpose: the
-  deliveries are the record of what was sent to whom, and an endpoint that is
-  finished with is *paused*, not erased. The absence is the contract, the same
-  way the absence of an entry PATCH is in the example app.
-* **No `is_active` in the PATCH body.** Pausing and resuming are verbs on their
-  own sub-paths, so the audit trail says which act happened rather than that a
-  column changed.
-
-Tenancy, and why neither half of house rule 24 appears below: `Event`,
-`WebhookEndpoint` and (through its event) `Delivery` are **tenant**-scoped and
-not org-scoped. A subscription is a property of the whole tenant — one place its
-events go — so there is no `visible_to` to chain and no `may_be_named` fence to
-state (house rule 26 reads FK-target arguments to services that write *org*-
-scoped rows). Said out loud rather than left as an absence a reviewer has to
-infer.
-
-The routes never say 404. `selectors.get_endpoint` and `get_delivery` raise
-`NotFound` and `config/api.py` is the only module that turns that into a number,
-so the MCP tool over the same selector refuses byte-identically without
-repeating the rule.
+A signing key is answered only when minted; no other shape has a field for one (ADR events-4).
+why-not an `emit` door: a caller could publish any declared name, signed with the tenant's key.
+why-not an endpoint delete: `Delivery.endpoint` is PROTECT; pausing is how one is retired.
 """
 
-# NOTE: no `from __future__ import annotations` in this module, and that is
-# deliberate. ninja builds a Pydantic model out of a route's signature at import
-# time; with postponed evaluation every annotation is a string, and a
-# `FilterSchema` parameter comes out as an unresolvable forward reference.
+# why-not `from __future__ import annotations`: ninja resolves a `FilterSchema` parameter at import.
 
 from uuid import UUID
 
 from django.db.models import QuerySet
 from ninja import Query, Router, Status
-from ninja.errors import HttpError
 from ninja.pagination import paginate
 
 from apps.accounts.auth import API_AUTH
-from apps.core.actor import Actor, actor_from_request
 from apps.core.api import CursorPagination, ordered_by, searched
-from apps.core.api.docs import Tag
-from apps.core.models import Tenant
+from apps.core.api.acting import acting
+from apps.core.api.docs import Tag, also_refuses
 from apps.core.requests import TenantRequest
 from apps.events.events import declared_names
 from apps.events.models import Delivery, WebhookEndpoint
@@ -84,9 +31,9 @@ from apps.events.schemas import (
     WebhookEndpointSecretOut,
 )
 from apps.events.selectors import (
-    dead_lettered,
     get_delivery,
     get_endpoint,
+    list_dead_letters,
     list_deliveries,
     list_endpoints,
 )
@@ -98,33 +45,18 @@ from apps.events.services import (
     resume_endpoint,
     update_endpoint,
 )
+from apps.events.targets import refuse_private_target
 
-# **The root of `/api/v1/`** (ADR api-2, the owner's 2026-08-24 ruling): the
-# first path segment names a RESOURCE, never an app. This app serves four of
-# them and two needed better names once the `events/` skirt came off:
-# `endpoints` alone says nothing on a wire that also has OAuth endpoints, so it
-# is `/webhook-endpoints/`; and a catalogue is a document where this is a
-# collection, so it is `/event-types/` — which is the noun its own `url_name`
-# stem (`event_type`) already used. `/deliveries/` and `/dead-letters/` are
-# unchanged. House rule 32 refuses the regression.
+# The first path segment names a resource, never an app (ADR api-2, rule 32).
 PREFIX = ""
 
-# What `?ordering=` may name, and nothing else. Straight into `.order_by()` it
-# would let a client sort by any column and traverse any relation — a full-table
-# sort on an unindexed column at best, a read across a join at worst.
+# What `?ordering=` may name, and nothing else.
 ENDPOINT_ORDERING = ("created_at", "updated_at", "url")
 DELIVERY_ORDERING = ("created_at", "updated_at", "delivered_at", "dead_lettered_at", "attempts")
 
-# What `?q=` searches on the endpoint list. Text columns on this row; never a
-# related table's, or the search becomes a join nobody sized. The secret is not
-# among them and could not be: it is encrypted per row, so two endpoints holding
-# the same key hold different ciphertext and there is nothing to match against.
+# What `?q=` searches: this row's text columns, never a join; the secret is encrypted per row.
 ENDPOINT_SEARCH_FIELDS = ("url", "description")
 
-# What this app's tag is FOR, declared in the app that owns the tag and
-# collected into the OpenAPI document's `tags` section by `config/api.py`'s
-# discovery (ADR api-1). A reader meets the group before the routes in it, and
-# house rule 41 is what notices a tag nobody described.
 TAGS = {
     "events": Tag(
         "Webhooks & events",
@@ -141,41 +73,11 @@ TAGS = {
     ),
 }
 
-# `auth` is restated here rather than inherited from the API default, so that
-# reading this one file tells you what it takes to call these routes.
 router = Router(tags=["events"], auth=API_AUTH)
 
 
-def _acting(request: TenantRequest) -> tuple[Actor, Tenant]:
-    """The actor and tenant a write happens as.
-
-    Authentication has already guaranteed the user; nothing has guaranteed the
-    tenant. A signed-in user with no membership resolves to `None`, and a write
-    with no tenant is refused rather than guessed at.
-
-    **Whether the actor may do the thing is not decided here** — `services.py`
-    calls `authz.require`, and `policies.py` says the subscription surface is an
-    owner-or-admin one. A permission check in this function would be a second
-    copy of the rule, one per door.
-    """
-    if request.tenant is None:
-        raise HttpError(403, "No tenant for this request.")
-    return actor_from_request(request), request.tenant
-
-
 def with_secret(endpoint: WebhookEndpoint) -> WebhookEndpointSecretOut:
-    """The endpoint **and its plaintext key** — the one shape that carries one.
-
-    Called from exactly two places on each door: registering an endpoint, and
-    issuing it a new key. Both have just come back from the service that wrote
-    the encrypted column, so `endpoint.secret` here is the plaintext that was
-    minted a moment ago and exists nowhere else outside the database.
-
-    It lives in this module rather than being written twice because `mcp.py`
-    imports it, the same way it imports `ENDPOINT_ORDERING`: a "shown once"
-    guarantee that two doors implement separately is a guarantee one of them
-    will stop implementing.
-    """
+    """The endpoint and its plaintext key — the one shape that carries one; both doors call it."""
     return WebhookEndpointSecretOut(
         endpoint=WebhookEndpointOut.from_orm(endpoint),
         secret=endpoint.secret,
@@ -183,27 +85,7 @@ def with_secret(endpoint: WebhookEndpoint) -> WebhookEndpointSecretOut:
 
 
 def event_catalogue() -> list[EventTypeOut]:
-    """Every event name this deployment can emit — **one implementation, both doors**.
-
-    It lives here rather than in `selectors.py` because it does not return a
-    queryset: it reads no table at all. The population is the installed apps'
-    own `events.py` declarations (`events.declared_names()`), which is the same
-    registry `emit` validates an outbound name against and the same one
-    `manage.py introspect` prints.
-
-    **Derived, so it cannot rot.** A hand-listed catalogue is wrong the morning
-    after the next app declares an event, and nothing fails — the queue's cycle-0
-    finding #8, in the owner's own words. This one is a census, so the day
-    `apps.orders` declares `orders.order.placed`, the catalogue has it and no
-    file changed.
-
-    It is the same for every tenant on the deployment, deliberately: the
-    catalogue is the product's vocabulary, not a customer's data. Which of those
-    names a given tenant has *subscribed* to is `event_names` on its endpoints.
-
-    Sorted by name, so the page a client gets back is stable between calls and
-    two pages of it do not overlap.
-    """
+    """Every event name this deployment can emit, sorted by name, derived from each `events.py`."""
     return sorted(
         (
             EventTypeOut(name=name, app=app_label)
@@ -268,7 +150,7 @@ def list_endpoints_route(
     ones because the delivery fan-out wants exactly those; a door that is
     *about* the endpoints wants all of them.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     endpoints: QuerySet[WebhookEndpoint] = list_endpoints(
         tenant=tenant, active_only=False, actor=actor
     )
@@ -340,12 +222,11 @@ def create_endpoint_route(
     * `403 forbidden` — you are not an owner or an administrator of the tenant.
 
     ---
-    `Status(201, ...)` with a composed body rather than the row, because the row
-    alone cannot express "and here is the key, once". `with_secret` is shared
-    with `mcp.py` so the two doors cannot come to disagree about what "once"
-    means.
+    A composed body, not the row: the row cannot say "here is the key, once";
+    `with_secret` is shared with `mcp.py` so the two doors agree on "once".
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
+    refuse_private_target(payload.url)
     endpoint = register_endpoint(
         tenant=tenant,
         actor=actor,
@@ -376,7 +257,7 @@ def retrieve_endpoint(request: TenantRequest, endpoint_id: UUID) -> WebhookEndpo
       this read needs. Reading is not role-gated: any member of the tenant may
       see where its events go.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     return get_endpoint(tenant=tenant, endpoint_id=endpoint_id, actor=actor)
 
 
@@ -413,8 +294,10 @@ def update_endpoint_route(
     accident, and the audit trail should say which act happened rather than
     that a row changed.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     endpoint = get_endpoint(tenant=tenant, endpoint_id=endpoint_id, actor=actor)
+    if payload.url is not None:
+        refuse_private_target(payload.url)
     return update_endpoint(
         tenant=tenant,
         actor=actor,
@@ -455,7 +338,7 @@ def issue_endpoint_secret_route(
     ---
     200 rather than 201: nothing was created — one endpoint has a new key.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     endpoint = get_endpoint(tenant=tenant, endpoint_id=endpoint_id, actor=actor)
     return with_secret(issue_endpoint_secret(tenant=tenant, actor=actor, endpoint=endpoint))
 
@@ -486,7 +369,7 @@ def pause_endpoint_route(request: TenantRequest, endpoint_id: UUID) -> WebhookEn
     * `404 not_found` — no such endpoint, or it is not yours.
     * `403 forbidden` — you are not an owner or an administrator of the tenant.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     endpoint = get_endpoint(tenant=tenant, endpoint_id=endpoint_id, actor=actor)
     return deactivate_endpoint(tenant=tenant, actor=actor, endpoint=endpoint)
 
@@ -515,7 +398,7 @@ def resume_endpoint_route(request: TenantRequest, endpoint_id: UUID) -> WebhookE
     `POST /dead-letters/{id}/replay/`; that is a different question and a
     deliberate act with a row to point at.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     endpoint = get_endpoint(tenant=tenant, endpoint_id=endpoint_id, actor=actor)
     return resume_endpoint(tenant=tenant, actor=actor, endpoint=endpoint)
 
@@ -617,7 +500,7 @@ def list_deliveries_route(
     tenant's data — so `selectors.list_deliveries` scopes it by joining to the
     event, and that is the only way any door ever reaches one.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     deliveries: QuerySet[Delivery] = list_deliveries(tenant=tenant, actor=actor)
     deliveries = filters.filter(deliveries)
     return ordered_by(deliveries, ordering, allowed=DELIVERY_ORDERING, default="-created_at")
@@ -659,8 +542,8 @@ def list_dead_letters_route(
       for the permission, or act under an organization where you hold it.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
-    deliveries: QuerySet[Delivery] = dead_lettered(tenant=tenant, actor=actor)
+    actor, tenant = acting(request)
+    deliveries: QuerySet[Delivery] = list_dead_letters(tenant=tenant, actor=actor)
     return ordered_by(deliveries, ordering, allowed=DELIVERY_ORDERING, default="-dead_lettered_at")
 
 
@@ -669,6 +552,7 @@ def list_dead_letters_route(
     response=DeliveryOut,
     url_name="dead_letter-replay",
 )
+@also_refuses("invalid")
 def replay_dead_letter_route(request: TenantRequest, delivery_id: UUID) -> Delivery:
     """Replay a dead letter
 
@@ -698,6 +582,6 @@ def replay_dead_letter_route(request: TenantRequest, delivery_id: UUID) -> Deliv
     the ADR rejected it: this is the same resume path `manage.py replay_events`
     walks (events-3's machinery), reached from a door instead of from a shell.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     delivery = get_delivery(tenant=tenant, delivery_id=delivery_id, actor=actor)
     return enqueue_replay(tenant=tenant, actor=actor, delivery=delivery)

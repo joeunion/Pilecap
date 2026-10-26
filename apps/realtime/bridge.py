@@ -12,8 +12,8 @@ why the registry exists. Keep the dotted path stable:
 
 It is `async` because the channel layer is: `group_send` is a coroutine, and the
 one caller the design anticipates — a Temporal activity — is `async def` by
-house rule. A synchronous caller wraps it (`async_to_sync(push_event)`) rather
-than this module carrying a second copy of itself.
+house rule. A synchronous caller goes through `run_on_spine_loop` rather than
+this module carrying a second copy of itself.
 
 Nothing here reads the database, and that is deliberate. A push is fan-out to
 whoever happens to be connected: it takes a tenant id and a message that is
@@ -110,7 +110,7 @@ assumption that rots.** They keep their numbers; the first one FIRED and the
 other five stand as written. Any one of them expires the reasoning above and
 makes the demotion kick correct:
 
-1. **FIRED (P20, ADR core-27).** A product adds a `POLICIES` entry keyed on a
+1. **FIRED (ADR core-27).** A product adds a `POLICIES` entry keyed on a
    **read** verb (`*.view` / `*.read` / `*.list` / `*.get`) — which is now every
    kind in the deployment: `core.authz.allows` no longer grants read verbs to
    any membership regardless of role, `read_kinds` is what a connection resolves
@@ -140,11 +140,15 @@ seam rather than a rank comparison.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import asyncio
+import atexit
+import os
+import threading
+from collections.abc import Callable, Coroutine, Mapping
 from typing import Any
 from uuid import UUID
 
-from asgiref.sync import async_to_sync
+from asgiref.sync import SyncToAsync, async_to_sync
 from channels.layers import get_channel_layer
 from django.core.exceptions import ImproperlyConfigured
 
@@ -226,6 +230,84 @@ def _layer() -> Any:
             "CHANNEL_LAYERS in config/settings is what supplies one."
         )
     return layer
+
+
+#: How long a synchronous caller waits for one push or kick on the spine loop, in seconds.
+SPINE_CALL_TIMEOUT_SECONDS = 10.0
+
+
+class _SpineLoop:
+    """One event loop per process for the sync adapters, so the channel layer keeps one pool."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
+        self._pid = 0
+
+    def loop(self) -> asyncio.AbstractEventLoop:
+        """The process's spine loop, started on first use and again after a fork."""
+        with self._lock:
+            if (
+                self._loop is None
+                or self._thread is None
+                or self._pid != os.getpid()
+                or not self._thread.is_alive()
+            ):
+                loop = asyncio.new_event_loop()
+                thread = threading.Thread(
+                    target=loop.run_forever, name="realtime-spine-loop", daemon=True
+                )
+                thread.start()
+                self._loop, self._thread, self._pid = loop, thread, os.getpid()
+            return self._loop
+
+    def close(self) -> None:
+        """Stop the loop and close it, which flushes the channel layer's pools on it."""
+        with self._lock:
+            loop, thread, pid = self._loop, self._thread, self._pid
+            self._loop, self._thread = None, None
+        if loop is None or thread is None or pid != os.getpid():
+            return
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=SPINE_CALL_TIMEOUT_SECONDS)
+        if not thread.is_alive():
+            loop.close()
+
+
+_SPINE = _SpineLoop()
+atexit.register(_SPINE.close)
+
+
+def _outer_loop() -> asyncio.AbstractEventLoop | None:
+    """The ASGI server's loop when this thread is one of its `sync_to_async` threads, else None."""
+    if getattr(SyncToAsync.threadlocal, "main_event_loop_pid", None) != os.getpid():
+        return None
+    loop: asyncio.AbstractEventLoop | None = getattr(
+        SyncToAsync.threadlocal, "main_event_loop", None
+    )
+    return loop if loop is not None and loop.is_running() else None
+
+
+def run_on_spine_loop(call: Callable[..., Coroutine[Any, Any, None]], **kwargs: Any) -> None:
+    """Run a coroutine for a sync caller on a loop that outlives it: the server's or the spine."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        raise RuntimeError(
+            "A spine adapter was called from a thread running an event loop - await the coroutine."
+        )
+    if _outer_loop() is not None:
+        async_to_sync(call)(**kwargs)
+        return
+    future = asyncio.run_coroutine_threadsafe(call(**kwargs), _SPINE.loop())
+    try:
+        future.result(timeout=SPINE_CALL_TIMEOUT_SECONDS)
+    except TimeoutError:
+        future.cancel()
+        raise
 
 
 def group_for(*, tenant_id: UUID | str, event: EventMessage) -> str:
@@ -371,7 +453,7 @@ def kick_tenant_from_spine(*, tenant_id: Any, reason: str | None = None) -> None
     handed to a sync caller is a coroutine nobody awaits — a suspension that
     reports success and closes nothing.
     """
-    async_to_sync(kick_tenant)(tenant_id=tenant_id, reason=reason)
+    run_on_spine_loop(kick_tenant, tenant_id=tenant_id, reason=reason)
 
 
 def kick_from_spine(*, user_id: Any, reason: str | None = None) -> None:
@@ -388,7 +470,7 @@ def kick_from_spine(*, user_id: Any, reason: str | None = None) -> None:
     a client can act on and the difference between revoked and erased is the
     operator's business, not theirs.
     """
-    async_to_sync(kick_user)(user_id=user_id, reason=reason)
+    run_on_spine_loop(kick_user, user_id=user_id, reason=reason)
 
 
 def push_from_spine(*, tenant_id: UUID | str, event: Mapping[str, Any] | EventMessage) -> None:
@@ -424,4 +506,4 @@ def push_from_spine(*, tenant_id: UUID | str, event: Mapping[str, Any] | EventMe
     which is what such a body always meant.
     """
     message = event if isinstance(event, EventMessage) else EventMessage.model_validate(dict(event))
-    async_to_sync(push_event)(tenant_id=tenant_id, event=message)
+    run_on_spine_loop(push_event, tenant_id=tenant_id, event=message)

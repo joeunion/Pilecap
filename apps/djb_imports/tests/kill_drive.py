@@ -31,9 +31,11 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from collections.abc import Callable
+from pathlib import Path
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.local")
 
@@ -48,12 +50,12 @@ from apps.core.models import Membership  # noqa: E402
 from apps.core.services import add_membership, create_tenant, root_organization  # noqa: E402
 from apps.djb_imports.models import Import, ImportRow  # noqa: E402
 from apps.djb_imports.services import apply_import, create_import  # noqa: E402
-from apps.djb_imports.tests.conftest import stored_csv  # noqa: E402
 from apps.djb_imports.tests.live_worker import (  # noqa: E402
     ensure_bucket,
     importer_module,
     install_seam,
 )
+from apps.djb_imports.tests.store import stored_csv  # noqa: E402
 from apps.example.models import Widget  # noqa: E402
 
 PAUSE_SECONDS = "3"
@@ -76,9 +78,14 @@ def say(line: str) -> None:
     print(f"kill_drive: {line}", flush=True)
 
 
+def worker_log(n: int) -> Path:
+    """Where worker `n`'s output lands — the platform's temp directory, not a fixed `/tmp`."""
+    return Path(tempfile.gettempdir()) / f"kill_drive_worker_{n}.log"
+
+
 def worker_importer(n: int) -> str:
     """The `importer=` a worker's banner printed, or `?` when it printed none."""
-    with open(f"/tmp/kill_drive_worker_{n}.log", encoding="utf-8", errors="replace") as log:
+    with open(worker_log(n), encoding="utf-8", errors="replace") as log:
         for line in log:
             if line.startswith("live_worker:") and " importer=" in line:
                 return line.rsplit(" importer=", 1)[1].strip()
@@ -86,13 +93,13 @@ def worker_importer(n: int) -> str:
 
 
 def start_worker(n: int) -> subprocess.Popen[bytes]:
-    log = open(f"/tmp/kill_drive_worker_{n}.log", "wb")  # noqa: SIM115 - lives as long as the process
-    worker = subprocess.Popen(
+    log = open(worker_log(n), "wb")  # noqa: SIM115 - lives as long as the process
+    worker = subprocess.Popen(  # noqa: S603 — argv list built here from constants and paths; `python`, no shell
         [sys.executable, "-m", "apps.djb_imports.tests.live_worker", PAUSE_SECONDS],
         stdout=log,
         stderr=subprocess.STDOUT,
     )
-    say(f"worker {n} started pid={worker.pid} (log /tmp/kill_drive_worker_{n}.log)")
+    say(f"worker {n} started pid={worker.pid} (log {worker_log(n)})")
     return worker
 
 

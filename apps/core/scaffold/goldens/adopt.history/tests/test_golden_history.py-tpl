@@ -1,0 +1,50 @@
+import json
+from typing import Any
+
+import pytest
+from django.test import Client
+
+from apps.example.models import Widget
+from pilecap.accounts import User
+from pilecap.tenancy import Organization, Tenant, create_organization
+from pilecap.testing import actor_for
+
+pytestmark = pytest.mark.django_db
+
+WIDGETS_URL = "/api/v1/widgets/"
+JSON = "application/json"
+
+
+def _body(response: Any) -> dict[str, Any]:
+    parsed: dict[str, Any] = json.loads(response.content)
+    return parsed
+
+
+def test_the_history_reads_what_was_done_newest_first(
+    api: Client, tenant: Tenant, root_org: Organization, owner: User
+) -> None:
+    acting = actor_for(user=owner, tenant=tenant, org=root_org)
+    branch = create_organization(
+        tenant=tenant, parent=root_org, name="Branch", slug="branch", actor=acting
+    )
+    widget = Widget.objects.create(tenant=tenant, organization=root_org, owner=owner, name="w")
+    url = f"{WIDGETS_URL}{widget.pk}/"
+    api.force_login(owner)
+
+    edited = api.patch(url, {"name": "w2", "version": widget.version}, content_type=JSON)
+    assert edited.status_code == 200, edited.content
+    moved = api.post(
+        f"{url}move/",
+        {"organization_id": str(branch.pk), "version": _body(edited)["version"]},
+        content_type=JSON,
+    )
+    assert moved.status_code == 200, moved.content
+    assert api.post(f"{url}archive/").status_code == 200
+    assert api.post(f"{url}restore/").status_code == 200
+
+    history = api.get(f"{url}history/")
+    assert history.status_code == 200, history.content
+    entries = _body(history)["items"]
+    assert [e["verb"] for e in entries] == ["restore", "archive", "move", "update"]
+    assert entries[3]["changed_fields"] == ["name"]
+    assert entries[3]["door"] == "rest"

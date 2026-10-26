@@ -1,0 +1,4 @@
+# golden: noun begin
+WIDGET_ARCHIVED = "example.widget.archived"
+WIDGET_RESTORED = "example.widget.restored"
+# golden: noun end

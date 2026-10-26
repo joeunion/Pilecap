@@ -26,6 +26,7 @@
 # stays in front of the digest for the reader; the digest is what is pulled.
 # To move a pin: `docker buildx imagetools inspect <image>:<tag>`, check the
 # index lists linux/amd64 and linux/arm64, and replace tag and digest together.
+# A Docker Hub image is `${DJB_STACK_REGISTRY:-docker.io}/<repo>`: CI sets it from the repository variable of that name (else docker.io), ci.yml step "the stack's registry, the product's choice"; the template's own variable names its image mirror (`mirror-images.yml`, never shipped to a product); a laptop leaves it unset.
 name: djangobootstrap
 
 services:
@@ -40,7 +41,7 @@ services:
     # 16.10 and rebuild RDS (an owner-approval infra act, to buy a shorter-lived
     # major); no pin at all (that is the finding). Revisit trigger: a stack
     # component refusing 18 — a stop-and-report for whichever rung finds it.
-    image: postgres:18@sha256:5a5a84b19854a9ffaa54082c166ff4ec27473a361e496e5ea167f298f2da9722
+    image: ${DJB_STACK_REGISTRY:-docker.io}/library/postgres:18@sha256:5a5a84b19854a9ffaa54082c166ff4ec27473a361e496e5ea167f298f2da9722  # pin-exception: the prefix picks Docker Hub or its ECR Public mirror; the digest here is the pin in both
     restart: unless-stopped
     # /dev/shm IS 1g, NOT DOCKER'S 64 MB DEFAULT (an ADR in this file's own form).
     # Context: Postgres keeps its dynamic shared memory in /dev/shm, and on this
@@ -95,7 +96,7 @@ services:
       retries: 30
 
   redis:
-    image: redis:7@sha256:c6eabf748fc7a61dbb5a705c78bcf3d6377b1127a97d0ce965c11c44ba46896f
+    image: ${DJB_STACK_REGISTRY:-docker.io}/library/redis:7.4.5@sha256:90e7a336d044f1abc9e9dbc05d65566850896d11453bbd1dd0fb7e5059f0e8fb  # pin-exception: the prefix picks Docker Hub or its ECR Public mirror; the digest here is the pin in both
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
     ports:
@@ -112,7 +113,7 @@ services:
     # Pinned: `latest` is the CLI's rolling tag, and a laptop that silently
     # moves a server version between two worktrees is a debugging session
     # nobody asked for. 1.8.2 ships Temporal server 1.31.2 / UI 2.50.1.
-    image: temporalio/temporal:1.8.2@sha256:cf86707827fac99e4d1c4a47dc11b105382d796199c7bd41fb3213fb0471628e
+    image: ${DJB_STACK_REGISTRY:-docker.io}/temporalio/temporal:1.8.2@sha256:cf86707827fac99e4d1c4a47dc11b105382d796199c7bd41fb3213fb0471628e  # pin-exception: the prefix picks Docker Hub or its ECR Public mirror; the digest here is the pin in both
     restart: unless-stopped
     command:
       - server
@@ -150,7 +151,7 @@ services:
     #
     # Pinned to the patch, like Temporal and the collector are, so two worktrees
     # never see two versions.
-    image: axllent/mailpit:v1.30.7@sha256:d5ecbb067db3705fa953d79e1b7f81ef84038df67aba6c52825d8c02a1ea748a
+    image: ${DJB_STACK_REGISTRY:-docker.io}/axllent/mailpit:v1.30.7@sha256:d5ecbb067db3705fa953d79e1b7f81ef84038df67aba6c52825d8c02a1ea748a  # pin-exception: the prefix picks Docker Hub or its ECR Public mirror; the digest here is the pin in both
     restart: unless-stopped
     environment:
       # Accept whatever credentials a client offers, over plain SMTP: this
@@ -184,17 +185,17 @@ services:
     # debugging session the Temporal pin's comment already refuses.
     image: ghcr.io/zitadel/zitadel:v4.17.1@sha256:3ac6910685d48f32481f01f45e3e6215efe5a9df2c069591b481e9a101712db5
     restart: unless-stopped
-    # `start-from-init` is init + setup + start in one command, and all three
-    # are idempotent: a container that is recreated against an existing database
-    # migrates what needs migrating and starts. The masterkey encrypts secrets
-    # at rest in Postgres — from the environment, never an argument, so it is
-    # not in `docker inspect` or the process table.
-    command: start-from-init --masterkeyFromEnv --tlsMode disabled
-    # Root, because the first-instance bootstrap writes the machine user's PAT
-    # to the bootstrap volume and the distroless image's default user cannot.
-    # The volume never leaves this laptop; see scripts/setup.sh for what reads it.
-    user: "0"
-    environment:
+    # The box's three-service split, `deploy/compose.yaml` at `zitadel`, read
+    # there for the why; the one difference is `--tlsMode disabled` here, where
+    # no proxy terminates TLS. `start` serves only, after the two one-shots
+    # below exit 0, and NO `user:` — the image's own non-root user.
+    command: start --masterkeyFromEnv --tlsMode disabled
+    depends_on:
+      zitadel-setup:
+        condition: service_completed_successfully
+    # What `start` reads on every boot; the database's admin credentials and
+    # the first-instance bootstrap set are on the one-shots only.
+    environment: &zitadel-service-env
       ZITADEL_MASTERKEY: ${ZITADEL_MASTERKEY:-djb-local-development-masterkey!}
       # Where Zitadel thinks it is. This is not cosmetic: the issuer in the
       # discovery document, every redirect and every token audience are built
@@ -212,47 +213,13 @@ services:
       ZITADEL_SERVICEPING_ENABLED: false
       # A dedicated `zitadel` database on the one Postgres this repository
       # already runs (ADR ident-1: isolation by database, not by instance — a
-      # second stateful container earns nothing on a laptop). The database and
-      # its owner do not exist on a fresh volume: `init` creates both, which is
-      # why the admin credentials below are the compose Postgres superuser's.
-      # That is the init mechanism — Zitadel's own, not a sidecar and not a
-      # line in db.sh, because it is the only one that also runs when somebody
-      # types `docker compose up -d zitadel` without setup.sh.
+      # second stateful container earns nothing on a laptop).
       ZITADEL_DATABASE_POSTGRES_HOST: db
       ZITADEL_DATABASE_POSTGRES_PORT: 5432
       ZITADEL_DATABASE_POSTGRES_DATABASE: zitadel
       ZITADEL_DATABASE_POSTGRES_USER_USERNAME: ${ZITADEL_DATABASE_USER:-zitadel}
       ZITADEL_DATABASE_POSTGRES_USER_PASSWORD: ${ZITADEL_DATABASE_PASSWORD:-zitadel}
       ZITADEL_DATABASE_POSTGRES_USER_SSL_MODE: disable
-      ZITADEL_DATABASE_POSTGRES_ADMIN_USERNAME: ${POSTGRES_USER:-djb}
-      ZITADEL_DATABASE_POSTGRES_ADMIN_PASSWORD: ${POSTGRES_PASSWORD:-djb}
-      ZITADEL_DATABASE_POSTGRES_ADMIN_SSL_MODE: disable
-      # The admin connection has to land somewhere that already exists to be
-      # able to create the one that does not.
-      ZITADEL_DATABASE_POSTGRES_ADMIN_EXISTINGDATABASE: postgres
-      # The first instance, created once, on an empty database. The human is a
-      # way in to the console; the machine user is what OUR services
-      # authenticate the management API with (ident-2: the console is not a
-      # door — this PAT is).
-      # Display names, so they derive from PRODUCT_NAME (ADR platform-1 in
-      # docs/product/architecture.md): set PRODUCT_NAME in .env and the
-      # first instance is named after the product. ZITADEL_ORG_NAME still wins
-      # when a deployment needs the org to differ from the product's name.
-      # The USERNAMES below do not derive: they are login identifiers, and a
-      # first instance is created once — renaming one is an account migration,
-      # not a setting.
-      ZITADEL_FIRSTINSTANCE_ORG_NAME: ${ZITADEL_ORG_NAME:-${PRODUCT_NAME:-Pilecap}}
-      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_USERNAME: ${ZITADEL_ADMIN_USERNAME:-zitadel-admin@djangobootstrap.localhost}
-      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORD: ${ZITADEL_ADMIN_PASSWORD:-Password1!}
-      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORDCHANGEREQUIRED: false
-      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_USERNAME: ${ZITADEL_MACHINE_USERNAME:-djb-platform}
-      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_NAME: ${PRODUCT_NAME:-Pilecap} platform service account
-      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_PAT_EXPIRATIONDATE: ${ZITADEL_MACHINE_PAT_EXPIRES_AT:-2099-01-01T00:00:00Z}
-      # The PAT is written here, on a named volume — never into the tree, and
-      # never into an image. scripts/setup.sh copies it out into .env (which is
-      # gitignored) as ZITADEL_PAT, which is how settings and the management
-      # client read it.
-      ZITADEL_FIRSTINSTANCE_PATPATH: /zitadel/bootstrap/machine.pat
       # --- CLASSIC LOGIN, PINNED (classic-login-pin) -----------------------
       # v4 routes OIDC `authorize` to Login V2, which is a SEPARATE CONTAINER
       # this stack does not ship — so without this line the browser sign-in
@@ -306,7 +273,7 @@ services:
       # it must never be looser, and the test pins that direction as well as
       # pinning that every key here interpolates a variable the examples carry.
       ZITADEL_DEFAULTINSTANCE_LOGINPOLICY_ALLOWREGISTER: ${ZITADEL_ALLOW_SELF_REGISTRATION:-false}
-      ZITADEL_DEFAULTINSTANCE_LOCKOUTPOLICY_MAXPASSWORDATTEMPTS: ${ZITADEL_MAX_PASSWORD_ATTEMPTS:-100}
+      ZITADEL_DEFAULTINSTANCE_LOCKOUTPOLICY_MAXPASSWORDATTEMPTS: ${ZITADEL_MAX_PASSWORD_ATTEMPTS:-10}
       ZITADEL_DEFAULTINSTANCE_RESTRICTIONS_DISALLOWPUBLICORGREGISTRATION: ${ZITADEL_DISALLOW_PUBLIC_ORG_REGISTRATION:-true}
     ports:
       # Loopback only, like every other service here. 8081 rather than
@@ -314,10 +281,9 @@ services:
       # services fighting for a port is not a debugging session either.
       - "127.0.0.1:${ZITADEL_EXTERNALPORT:-8081}:8080"
     volumes:
+      # Mounted here though `zitadel-setup` writes it: `scripts/setup.sh`'s
+      # `docker compose cp zitadel:` needs a container that stays up.
       - zitadel_bootstrap:/zitadel/bootstrap
-    depends_on:
-      db:
-        condition: service_healthy
     healthcheck:
       # The binary's own readiness command — the image is distroless, so there
       # is no shell and no curl to ask with.
@@ -328,6 +294,67 @@ services:
       # the first-instance bootstrap before it answers.
       retries: 60
       start_period: 10s
+
+  # The privileged half, in containers that exit (`restart: "no"`): root,
+  # because the bootstrap writes the PAT into `zitadel_bootstrap` and the
+  # image's own user cannot. `init` creates the database and its role.
+  zitadel-init:
+    image: ghcr.io/zitadel/zitadel:v4.17.1@sha256:3ac6910685d48f32481f01f45e3e6215efe5a9df2c069591b481e9a101712db5
+    restart: "no"
+    command: init
+    user: "0"
+    environment: &zitadel-bootstrap-env
+      <<: *zitadel-service-env
+      # The compose Postgres superuser's, because the database and its owner
+      # do not exist on a fresh volume and `init` creates both.
+      ZITADEL_DATABASE_POSTGRES_ADMIN_USERNAME: ${POSTGRES_USER:-djb}
+      ZITADEL_DATABASE_POSTGRES_ADMIN_PASSWORD: ${POSTGRES_PASSWORD:-djb}
+      ZITADEL_DATABASE_POSTGRES_ADMIN_SSL_MODE: disable
+      # The admin connection has to land somewhere that already exists to be
+      # able to create the one that does not.
+      ZITADEL_DATABASE_POSTGRES_ADMIN_EXISTINGDATABASE: postgres
+      # The first instance, created once, on an empty database. The human is a
+      # way in to the console; the machine user is what OUR services
+      # authenticate the management API with (ident-2: the console is not a
+      # door — this PAT is).
+      # Display names, so they derive from PRODUCT_NAME (ADR platform-1 in
+      # docs/product/architecture.md): set PRODUCT_NAME in .env and the
+      # first instance is named after the product. ZITADEL_ORG_NAME still wins
+      # when a deployment needs the org to differ from the product's name.
+      # The USERNAMES below do not derive: they are login identifiers, and a
+      # first instance is created once — renaming one is an account migration,
+      # not a setting.
+      ZITADEL_FIRSTINSTANCE_ORG_NAME: ${ZITADEL_ORG_NAME:-${PRODUCT_NAME:-Pilecap}}
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_USERNAME: ${ZITADEL_ADMIN_USERNAME:-zitadel-admin@djangobootstrap.localhost}
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORD: ${ZITADEL_ADMIN_PASSWORD:-Password1!}
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORDCHANGEREQUIRED: false
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_USERNAME: ${ZITADEL_MACHINE_USERNAME:-djb-platform}
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_NAME: ${PRODUCT_NAME:-Pilecap} platform service account
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_PAT_EXPIRATIONDATE: ${ZITADEL_MACHINE_PAT_EXPIRES_AT:-2099-01-01T00:00:00Z}
+      # The PAT is written here, on a named volume — never into the tree, and
+      # never into an image. scripts/setup.sh copies it out into .env (which is
+      # gitignored) as ZITADEL_PAT, which is how settings and the management
+      # client read it.
+      ZITADEL_FIRSTINSTANCE_PATPATH: /zitadel/bootstrap/machine.pat
+    volumes:
+      - zitadel_bootstrap:/zitadel/bootstrap
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # `setup` runs the migrations and the first-instance bootstrap that writes
+  # ZITADEL_FIRSTINSTANCE_PATPATH; the same environment as `zitadel-init`.
+  zitadel-setup:
+    image: ghcr.io/zitadel/zitadel:v4.17.1@sha256:3ac6910685d48f32481f01f45e3e6215efe5a9df2c069591b481e9a101712db5
+    restart: "no"
+    command: setup --masterkeyFromEnv --tlsMode disabled
+    user: "0"
+    depends_on:
+      zitadel-init:
+        condition: service_completed_successfully
+    environment: *zitadel-bootstrap-env
+    volumes:
+      - zitadel_bootstrap:/zitadel/bootstrap
 
   minio:
     # The S3-compatible object store a laptop, a worktree and CI upload to
@@ -378,6 +405,8 @@ services:
     # for the next time a registry loses it is still `scripts/setup.sh`'s pull
     # step, which refuses with COULD NOT LOOK and names the image. To re-pin:
     # push to the same repository and replace tag and digest together.
+    # The ONE path a product still pulls from the platform owner's registry; the
+    # decision on its home (a product-owned mirror, or a listed vendor) is the owner's — N2155.
     # pin-exception: pinned by digest, but to a single linux/arm64 manifest on the
     # owner's ECR Public mirror rather than a multi-arch index on a listed registry —
     # no registry serves the amd64 layers of this release any more (see above).
@@ -432,7 +461,7 @@ services:
     # the stronger of the two and it is the house precedent (Temporal, Mailpit,
     # Zitadel): `v1.53` moves under a running worktree when a patch ships,
     # `v1.53.1` does not.
-    image: getmeili/meilisearch:v1.53.1@sha256:8d6643d86d71fad6ad3cba92cde7ccfce9e4d6c384bda67598eb553571c32431
+    image: ${DJB_STACK_REGISTRY:-docker.io}/getmeili/meilisearch:v1.53.1@sha256:8d6643d86d71fad6ad3cba92cde7ccfce9e4d6c384bda67598eb553571c32431  # pin-exception: the prefix picks Docker Hub or its ECR Public mirror; the digest here is the pin in both
     restart: unless-stopped
     environment:
       # Published development value, worth exactly nothing — see
@@ -476,7 +505,7 @@ services:
 
   otel-collector:
     profiles: ["observability"]
-    image: otel/opentelemetry-collector-contrib:0.140.0@sha256:ffc818ee108d0b934fd14207fd87ff247c9b64f344ed349d0b66c166c18a2312
+    image: ${DJB_STACK_REGISTRY:-docker.io}/otel/opentelemetry-collector-contrib:0.140.0@sha256:ffc818ee108d0b934fd14207fd87ff247c9b64f344ed349d0b66c166c18a2312  # pin-exception: the prefix picks Docker Hub or its ECR Public mirror; the digest here is the pin in both
     restart: unless-stopped
     command: ["--config=/etc/otel/config.yaml"]
     environment:

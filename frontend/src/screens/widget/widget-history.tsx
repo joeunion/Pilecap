@@ -26,18 +26,30 @@
 // golden: history begin
 import { useEffect, useRef } from "react";
 
-import { WIDGET_COPY as C, historyWhat } from "@/copy/widget";
-import { RefusalPanel } from "@/screens/refusal-panel";
-import type { SurfaceState } from "@/screens/state";
-import { unhandledState } from "@/screens/state";
-import { VERB_TABLE } from "@/screens/verbs";
-import { Card, dayOf, type HistoryEntry, type HistoryPage, StillLine } from "@/screens/widget/parts";
+import { changedWhat, HISTORY_WORDS, WIDGET_COPY as C } from "@pilecap/copy/widget";
+import { RefusalPanel } from "@pilecap/ui/refusal-panel";
+import { STAFF_SURFACE } from "@pilecap/ui/routes";
+import type { SurfaceState } from "@pilecap/ui/state";
+import { unhandledState } from "@pilecap/ui/state";
+import { VERB_TABLE } from "@pilecap/ui/verbs";
+import { Card } from "@pilecap/ui/card";
+import { StillLine } from "@pilecap/ui/still-line";
+import { dayOf, type HistoryEntry, type HistoryPage } from "@/screens/widget/parts";
 
 /** What the route hands the card: its read, and *Show earlier* when the page has more. */
 export type HistoryPress = {
     readonly state: SurfaceState<HistoryPage>;
     readonly earlier?: { readonly onShowEarlier: () => void; readonly busy: boolean };
 };
+
+/**
+ * ONE HISTORY ROW'S WHAT (patterns.md §10): a family verb's state word, read
+ * off the verb table; else the noun's own word for its own verb; else
+ * *Changed ⟨fields⟩*. The family's words are never spelled a second time.
+ */
+export function historyWhat(verb: string, changed: readonly string[]): string {
+    return VERB_TABLE.find((row) => row.verb === verb)?.state ?? HISTORY_WORDS[verb] ?? changedWhat(changed);
+}
 
 /** One row: what, who (a name or no clause — never an address or an id), and the day. */
 function rowWords(entry: HistoryEntry): string {
@@ -82,9 +94,10 @@ export function HistoryCard({ history }: { readonly history: HistoryPress }) {
             return (
                 <Card title={C.historyTitle}>
                     <RefusalPanel
+                        surface={STAFF_SURFACE}
                         refusal={state.refusal}
                         seat="card-head"
-                        words={{ label: VERB_TABLE.find((row) => row.verb === "history")?.refused ?? C.errorLabel, remedies: C.remedies }}
+                        refused={VERB_TABLE.find((row) => row.verb === "history")?.refused}
                     />
                 </Card>
             );

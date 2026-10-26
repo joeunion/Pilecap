@@ -77,7 +77,6 @@ Named here because the census's own blind spots are the surveyor's map:
 from __future__ import annotations
 
 import importlib
-import importlib.util
 from dataclasses import dataclass, replace
 
 from django.conf import settings
@@ -362,9 +361,10 @@ def _platform_seam(registry: IntegrationRegistry) -> None:
 def declaring_modules() -> list[str]:
     """Every `apps.<x>.integrations` module that exists, in app order.
 
-    **The walk, and the whole of the list there is** — derived from
-    `get_app_configs()` and a filename, never typed, which is the criterion this
-    instrument stands on. `apps.core.integrations` is skipped by name: this
+    **The walk, and the whole of the list there is** — `core.discovery.declaring`
+    over a filename, never typed, which is the criterion this instrument stands
+    on; unimported, because `census()` imports each module under its own `try`.
+    `apps.core.integrations` is skipped by name: this
     module IS the primitive, its own declarations are made by `_platform_seam`,
     and a module that discovered itself would declare them twice.
 
@@ -374,19 +374,9 @@ def declaring_modules() -> list[str]:
     the test that did it and into the next one that runs a command. Found the
     hard way while writing the census tooth.
     """
-    from django.apps import apps as django_apps
+    from apps.core.discovery import declaring
 
-    found: list[str] = []
-    for config in django_apps.get_app_configs():
-        if not config.name.startswith("apps."):
-            continue
-        module_name = f"{config.name}.{INTEGRATIONS_ATTR}"
-        if module_name == __name__:
-            continue
-        if importlib.util.find_spec(module_name) is None:
-            continue
-        found.append(module_name)
-    return found
+    return [name for _, name in declaring(INTEGRATIONS_ATTR) if name != __name__]
 
 
 def census() -> Census:

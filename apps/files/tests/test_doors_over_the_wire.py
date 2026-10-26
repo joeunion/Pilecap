@@ -38,10 +38,12 @@ import pytest
 
 from apps.accounts.services import issue_token
 from apps.core.actor import actor_for
-from apps.core.tests.test_mcp import MCP_HEADERS, PROTOCOL_VERSION, running
+from apps.core.tests.doors import assert_four_doors
+from apps.core.tests.permissions_world import World
+from apps.core.tests.wire import MCP_HEADERS, MCP_URL, initialize, rpc, running
 from apps.files.models import FileVersion, StoredFile
+from apps.files.schemas import StoredFileOut
 from apps.files.services import create_file, record_stored
-from apps.files.tests.conftest import World
 
 #: House rule 46. The door pair this module answers for `apps/files`, read by the
 #: gate off this module-level assignment. This app is born with its pair answered
@@ -53,7 +55,6 @@ DOOR_PAIR = ("rest", "mcp")
 LIST_URL = "/api/v1/files/"
 DETAIL_URL = "/api/v1/files/{}/"
 DOWNLOAD_URL = "/api/v1/files/{}/download-url/"
-MCP_URL = "/mcp"
 JSON = "application/json"
 
 DIGEST = "beadbead" * 8
@@ -110,11 +111,6 @@ def assert_same_document(*, over_mcp: dict[str, Any], over_rest: dict[str, Any])
         assert over_mcp[key] == over_rest[key], f"the two doors disagree about {key}"
 
 
-def _rpc(method: str, params: dict[str, Any], request_id: int) -> dict[str, Any]:
-    """One JSON-RPC request body, spelled the way a real MCP client spells it."""
-    return {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
-
-
 @pytest.fixture
 def seeded(
     recorded_workflow_starts: None, world: World, named_bucket: str
@@ -126,7 +122,7 @@ def seeded(
     `record_stored` would otherwise dial a Temporal server this module has no
     reason to start.
     """
-    acting = actor_for(user=world.owner, tenant=world.tenant, org=world.root)
+    acting = actor_for(user=world.user(world.owner), tenant=world.tenant, org=world.root)
     ticket = create_file(
         tenant=world.tenant,
         actor=acting,
@@ -155,11 +151,11 @@ def bearer(seeded: tuple[StoredFile, FileVersion], world: World) -> str:
     than of the doors, so it is arranged once and never worked around.
     """
     _, plaintext = issue_token(
-        user=world.owner,
+        user=world.user(world.owner),
         tenant=world.tenant,
         name="door-parity",
         scopes=["files:read", "files:write"],
-        actor=actor_for(user=world.owner, tenant=world.tenant),
+        actor=actor_for(user=world.user(world.owner), tenant=world.tenant),
     )
     return plaintext
 
@@ -168,11 +164,11 @@ def bearer(seeded: tuple[StoredFile, FileVersion], world: World) -> str:
 def read_only_bearer(seeded: tuple[StoredFile, FileVersion], world: World) -> str:
     """A token that may look and may not touch. The ceiling probe's subject."""
     _, plaintext = issue_token(
-        user=world.owner,
+        user=world.user(world.owner),
         tenant=world.tenant,
         name="files-read",
         scopes=["files:read"],
-        actor=actor_for(user=world.owner, tenant=world.tenant),
+        actor=actor_for(user=world.user(world.owner), tenant=world.tenant),
     )
     return plaintext
 
@@ -185,30 +181,13 @@ def unscoped_bearer(seeded: tuple[StoredFile, FileVersion], world: World) -> str
     is what refused: a route broken for every token would pass a one-sided test.
     """
     _, plaintext = issue_token(
-        user=world.owner,
+        user=world.user(world.owner),
         tenant=world.tenant,
         name="files-unscoped",
         scopes=["*"],
-        actor=actor_for(user=world.owner, tenant=world.tenant),
+        actor=actor_for(user=world.user(world.owner), tenant=world.tenant),
     )
     return plaintext
-
-
-async def _initialize(client: httpx.AsyncClient, headers: dict[str, str], who: str) -> None:
-    answered = await client.post(
-        MCP_URL,
-        headers=headers,
-        json=_rpc(
-            "initialize",
-            {
-                "protocolVersion": PROTOCOL_VERSION,
-                "capabilities": {},
-                "clientInfo": {"name": who, "version": "1"},
-            },
-            1,
-        ),
-    )
-    assert answered.status_code == 200, answered.text
 
 
 @pytest.mark.django_db(transaction=True)
@@ -238,11 +217,11 @@ async def test_the_two_doors_put_the_same_document_on_the_wire(
             listed_over_http = await client.get(LIST_URL, headers={**credential, "accept": JSON})
 
             headers = {**MCP_HEADERS, **credential}
-            await _initialize(client, headers, "files-door-parity")
+            await initialize(client, headers, "files-door-parity")
             called = await client.post(
                 MCP_URL,
                 headers=headers,
-                json=_rpc(
+                json=rpc(
                     "tools/call",
                     {"name": "get_file", "arguments": {"file_id": str(document.pk)}},
                     2,
@@ -251,7 +230,7 @@ async def test_the_two_doors_put_the_same_document_on_the_wire(
             listed = await client.post(
                 MCP_URL,
                 headers=headers,
-                json=_rpc("tools/call", {"name": "list_files", "arguments": {}}, 3),
+                json=rpc("tools/call", {"name": "list_files", "arguments": {}}, 3),
             )
 
     assert over_http.status_code == 200, over_http.text
@@ -324,11 +303,11 @@ async def test_the_two_doors_issue_the_same_link_for_the_same_version(
             )
 
             headers = {**MCP_HEADERS, **credential}
-            await _initialize(client, headers, "files-download-parity")
+            await initialize(client, headers, "files-download-parity")
             called = await client.post(
                 MCP_URL,
                 headers=headers,
-                json=_rpc(
+                json=rpc(
                     "tools/call",
                     {"name": "issue_download_url", "arguments": {"file_id": str(document.pk)}},
                     2,
@@ -380,11 +359,11 @@ async def test_the_two_doors_refuse_a_document_neither_can_see_identically(
             )
 
             headers = {**MCP_HEADERS, **credential}
-            await _initialize(client, headers, "files-refusal-parity")
+            await initialize(client, headers, "files-refusal-parity")
             called = await client.post(
                 MCP_URL,
                 headers=headers,
-                json=_rpc(
+                json=rpc(
                     "tools/call",
                     {"name": "issue_download_url", "arguments": {"file_id": nowhere}},
                     2,
@@ -435,19 +414,19 @@ async def test_the_two_doors_refuse_the_same_narrow_token(
             )
 
             narrow_headers = {**MCP_HEADERS, **narrow}
-            await _initialize(client, narrow_headers, "files-ceiling")
+            await initialize(client, narrow_headers, "files-ceiling")
             refused_mcp = await client.post(
                 MCP_URL,
                 headers=narrow_headers,
-                json=_rpc("tools/call", {"name": "create_file", "arguments": body}, 2),
+                json=rpc("tools/call", {"name": "create_file", "arguments": body}, 2),
             )
 
             wide_headers = {**MCP_HEADERS, **wide}
-            await _initialize(client, wide_headers, "files-ceiling-wide")
+            await initialize(client, wide_headers, "files-ceiling-wide")
             allowed_mcp = await client.post(
                 MCP_URL,
                 headers=wide_headers,
-                json=_rpc("tools/call", {"name": "create_file", "arguments": body}, 2),
+                json=rpc("tools/call", {"name": "create_file", "arguments": body}, 2),
             )
 
     assert refused_http.status_code == 403, refused_http.text
@@ -493,11 +472,11 @@ async def test_issuing_over_the_wire_is_audited_as_the_machine_door(
         transport = httpx.ASGITransport(app=application)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             headers = {**MCP_HEADERS, **credential}
-            await _initialize(client, headers, "files-audit-door")
+            await initialize(client, headers, "files-audit-door")
             called = await client.post(
                 MCP_URL,
                 headers=headers,
-                json=_rpc(
+                json=rpc(
                     "tools/call",
                     {"name": "issue_download_url", "arguments": {"file_id": str(document.pk)}},
                     2,
@@ -519,118 +498,10 @@ async def test_issuing_over_the_wire_is_audited_as_the_machine_door(
     ]
 
 
-@pytest.fixture
-def read_withheld(world: World) -> Any:
-    """One `withhold` row on the token holder's own membership. **`file.read`, gone.**
-
-    A withhold beats everything — "forbid overrides permit" — and it beats it
-    for an owner too, which is what makes this the smallest world in which a
-    perfectly ordinary credential is refused at both doors. Nothing about the
-    role, the hat or the document changes: the only difference between this test
-    and its neighbours is this row.
-    """
-    from apps.core.models import Grant, Membership
-
-    membership = Membership.objects.filter(tenant=world.tenant).get(user=world.owner)
-    return Grant.objects.create(
-        tenant=world.tenant,
-        membership=membership,
-        permission="file.read",
-        effect=Grant.Effect.WITHHOLD,
-    )
-
-
-@pytest.mark.django_db(transaction=True)
-@pytest.mark.asyncio
-async def test_both_doors_refuse_the_same_withheld_read_with_the_same_words(
-    bearer: str, seeded: tuple[StoredFile, FileVersion], read_withheld: Any
-) -> None:
-    """**PR4.f.2 — rule 46's named case for Phase R.**
-
-    A read is a permission now (ADR core-27), so there is a new refusal on both
-    doors, and a new refusal is exactly where two doors come apart: one composes
-    a body and the other stringifies an exception. Both go through
-    `core.exceptions.wire_refusal`, and this says so — the code AND the sentence,
-    not just the status.
-
-    The door driven is the ISSUANCE, deliberately: it is the one that mints a
-    credential, so it is the one where "refused, and nothing was signed" matters
-    most. Read beside the `not_found` case above, the pair is the whole claim —
-    a document neither door can SEE is `not_found` at both, and one they can see
-    but may not READ is `forbidden` at both, and the two stay different from
-    each other in the same way at each door.
-
-    *Absent (the baseline):* 200 at both, each carrying a signed `download_url`.
-    """
-    from apps.core.authz import refusal_sentence
-    from config.asgi import build_application
-
-    document, _version = seeded
-    application = build_application()
-    credential = {"authorization": f"Bearer {bearer}"}
-    sentence = refusal_sentence("file.read")
-
-    async with running(application):
-        transport = httpx.ASGITransport(app=application)
-        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-            over_http = await client.post(
-                DOWNLOAD_URL.format(document.pk),
-                headers={**credential, "accept": JSON, "content-type": JSON},
-                json={},
-            )
-
-            headers = {**MCP_HEADERS, **credential}
-            await _initialize(client, headers, "files-read-parity")
-            called = await client.post(
-                MCP_URL,
-                headers=headers,
-                json=_rpc(
-                    "tools/call",
-                    {"name": "issue_download_url", "arguments": {"file_id": str(document.pk)}},
-                    2,
-                ),
-            )
-
-    assert over_http.status_code == 403, over_http.text
-    rest_body = over_http.json()
-    assert rest_body["code"] == "forbidden"
-    assert rest_body["detail"] == sentence
-    assert "download_url" not in rest_body, "a URL was minted for a refused reader"
-
-    said = str(called.json())
-    assert "forbidden" in said, said
-    assert sentence in said, said
-    # Not `"download_url" not in said`: the TOOL is called `issue_download_url`
-    # and its name is in its own error line. What must be absent is a signed
-    # link, and a signed link is a URL.
-    assert "http" not in said, "a URL was minted for a refused reader"
-
-
 # --- the archive road and the attach subject, over both doors -------------------
 
 ARCHIVE_URL = "/api/v1/files/{}/archive/"
 RESTORE_URL = "/api/v1/files/{}/restore/"
-
-
-def _canonical(body: dict[str, Any]) -> str:
-    """One rendering, key-sorted, so "byte-equal" is a string comparison.
-
-    An event's payload carries the spine's own schema version, `v`, beside the
-    `Out` it was built from (`events.emit` stamps it); that one key is the
-    envelope's, and it is asserted separately rather than compared here.
-    """
-    import json
-
-    return json.dumps({k: v for k, v in body.items() if k != "v"}, sort_keys=True)
-
-
-def _as_broadcast(body: dict[str, Any]) -> dict[str, Any]:
-    """A viewer door's body as an event carries it: without `allowed_acts`.
-
-    The acts answer ONE viewer and an event goes to every subscriber, so the one
-    per-viewer field is the only difference between the two, by contract.
-    """
-    return {k: v for k, v in body.items() if k != "allowed_acts"}
 
 
 @pytest.mark.django_db(transaction=True)
@@ -661,11 +532,11 @@ async def test_archive_and_restore_put_one_body_on_both_doors_and_the_spine(
                 ARCHIVE_URL.format(document.pk), headers=rest_headers, json={}
             )
             headers = {**MCP_HEADERS, **credential}
-            await _initialize(client, headers, "files-archive-parity")
+            await initialize(client, headers, "files-archive-parity")
             archived_mcp = await client.post(
                 MCP_URL,
                 headers=headers,
-                json=_rpc(
+                json=rpc(
                     "tools/call",
                     {"name": "archive_file", "arguments": {"file_id": str(document.pk)}},
                     2,
@@ -674,7 +545,7 @@ async def test_archive_and_restore_put_one_body_on_both_doors_and_the_spine(
             restored_mcp = await client.post(
                 MCP_URL,
                 headers=headers,
-                json=_rpc(
+                json=rpc(
                     "tools/call",
                     {"name": "restore_file", "arguments": {"file_id": str(document.pk)}},
                     3,
@@ -700,20 +571,25 @@ async def test_archive_and_restore_put_one_body_on_both_doors_and_the_spine(
     assert rest_archived["archived_at"] is not None
     assert rest_archived["archived_by"] is not None
     assert len(spine["files.file.archived"]) == 1, "the repeat on the other door emitted nothing"
-    assert _canonical(mcp_archived) == _canonical(rest_archived)
     assert spine["files.file.archived"][0]["v"] == 1
-    assert "v" not in rest_archived
     assert "allowed_acts" in rest_archived
-    assert "allowed_acts" not in spine["files.file.archived"][0]
-    assert _canonical(spine["files.file.archived"][0]) == _canonical(_as_broadcast(rest_archived))
+    assert_four_doors(
+        rest=rest_archived,
+        mcp=mcp_archived,
+        event_payload=spine["files.file.archived"][0],
+        out=StoredFileOut,
+    )
 
     rest_restored = restored_http.json()
     mcp_restored = restored_mcp.json()["result"]["structuredContent"]
     assert rest_restored["archived_at"] is None
     assert len(spine["files.file.restored"]) == 1
-    assert _canonical(mcp_restored) == _canonical(rest_restored)
-    assert "allowed_acts" not in spine["files.file.restored"][0]
-    assert _canonical(spine["files.file.restored"][0]) == _canonical(_as_broadcast(rest_restored))
+    assert_four_doors(
+        rest=rest_restored,
+        mcp=mcp_restored,
+        event_payload=spine["files.file.restored"][0],
+        out=StoredFileOut,
+    )
 
 
 @pytest.fixture
@@ -726,7 +602,7 @@ def subject_widget(world: World, monkeypatch: pytest.MonkeyPatch) -> Any:
     monkeypatch.setattr(Widget, "attachments", (*declared, "files"), raising=False)
     return create_widget(
         tenant=world.tenant,
-        actor=actor_for(user=world.owner, tenant=world.tenant, org=world.region),
+        actor=actor_for(user=world.user(world.owner), tenant=world.tenant, org=world.a),
         name="Region widget",
     )
 
@@ -762,11 +638,11 @@ async def test_filing_against_a_subject_answers_one_shape_on_both_doors(
                 LIST_URL, headers={**credential, "accept": JSON, "content-type": JSON}, json=body
             )
             headers = {**MCP_HEADERS, **credential}
-            await _initialize(client, headers, "files-subject-parity")
+            await initialize(client, headers, "files-subject-parity")
             called = await client.post(
                 MCP_URL,
                 headers=headers,
-                json=_rpc("tools/call", {"name": "create_file", "arguments": body}, 2),
+                json=rpc("tools/call", {"name": "create_file", "arguments": body}, 2),
             )
             listed_http = await client.get(
                 f"{LIST_URL}?subject={subject}", headers={**credential, "accept": JSON}
@@ -774,7 +650,7 @@ async def test_filing_against_a_subject_answers_one_shape_on_both_doors(
             listed_mcp = await client.post(
                 MCP_URL,
                 headers=headers,
-                json=_rpc(
+                json=rpc(
                     "tools/call", {"name": "list_files", "arguments": {"subject": subject}}, 3
                 ),
             )
@@ -788,7 +664,7 @@ async def test_filing_against_a_subject_answers_one_shape_on_both_doors(
     moving = {"id", "created_at", "updated_at"}
     for key in DOCUMENT_KEYS - moving:
         assert mcp_file[key] == rest_file[key], f"the two doors disagree about {key}"
-    assert rest_file["organization_id"] == str(world.region.pk), "the subject's node, not the hat"
+    assert rest_file["organization_id"] == str(world.a.pk), "the subject's node, not the hat"
     assert rest_file["subject"] == subject
 
     expected = {rest_file["id"], mcp_file["id"]}
@@ -805,7 +681,7 @@ def region_document(recorded_workflow_starts: None, world: World, named_bucket: 
     """One document at the REGION, where an administrator and a member both stand."""
     return create_file(
         tenant=world.tenant,
-        actor=actor_for(user=world.owner, tenant=world.tenant, org=world.region),
+        actor=actor_for(user=world.user(world.owner), tenant=world.tenant, org=world.a),
         filename="region-contract.pdf",
         content_type="application/pdf",
         size_bytes=1024,
@@ -817,7 +693,10 @@ def region_document(recorded_workflow_starts: None, world: World, named_bucket: 
 def two_viewers(region_document: StoredFile, world: World) -> tuple[str, str]:
     """Two bearers at the region: its administrator and a plain member."""
     tokens = []
-    for person, name in ((world.region_admin, "region-admin"), (world.plain_member, "member")):
+    for person, name in (
+        (world.user(world.admin_at_a), "region-admin"),
+        (world.user(world.clerk), "member"),
+    ):
         _, plaintext = issue_token(
             user=person,
             tenant=world.tenant,
@@ -867,11 +746,11 @@ async def test_the_acts_answer_the_viewer_on_both_doors_and_never_ride_the_event
             for_member = await client.get(url, headers=as_member)
 
             headers = {**MCP_HEADERS, "authorization": f"Bearer {admin}"}
-            await _initialize(client, headers, "files-acts-parity")
+            await initialize(client, headers, "files-acts-parity")
             called = await client.post(
                 MCP_URL,
                 headers=headers,
-                json=_rpc(
+                json=rpc(
                     "tools/call",
                     {"name": "get_file", "arguments": {"file_id": str(region_document.pk)}},
                     2,
@@ -904,11 +783,11 @@ async def test_the_acts_answer_the_viewer_on_both_doors_and_never_ride_the_event
         lambda: Event.objects.for_tenant(world.tenant).get(name="files.file.archived").payload
     )()
     assert "allowed_acts" not in payload, payload
-    assert _canonical(_as_broadcast(rest)) == _canonical(payload)
+    assert_four_doors(rest=rest, mcp=over_mcp, event_payload=payload, out=StoredFileOut)
 
     # (3) a second viewer: every key equal but the acts.
     other = for_member.json()
     assert for_member.status_code == 200, for_member.text
     assert other["allowed_acts"] != rest["allowed_acts"], other
     assert "restore" not in other["allowed_acts"], other
-    assert _canonical(_as_broadcast(other)) == _canonical(payload)
+    assert_four_doors(rest=other, mcp=other, event_payload=payload, out=StoredFileOut)

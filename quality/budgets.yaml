@@ -11,13 +11,17 @@
 # here; green-because-unrecorded is not a pass. A services.py with no top-level
 # function is not a subject: there is no longest function to have measured.
 
+# The rows under apps/example/ and apps/example_portal/ are the worked example of a budget: they
+# advise everywhere and never refuse (ADR gate-5); the platform's own rows bind. An example row
+# follows its measurement, up or down: `./scripts/rung_tidy.sh --budgets` re-records it.
+
 # Seeded 2026-08-19 from main. The numbers are the measured values, verbatim:
 # a ceiling above reality would be headroom nobody granted.
 
 service_function_length:
   # Longest top-level function in each services.py, in lines, measured as the
   # span from `def` to the last line MINUS whatever the docstring spends
-  # (quality/gate.py::_measure_budgets_detailed). A service crossing its ceiling
+  # (quality/engine/run.py::_measure_budgets_detailed). A service crossing its ceiling
   # is a service growing a second job.
 
   # THE INSTRUMENT CHANGED HERE — 2026-08-29. Until that change the
@@ -48,7 +52,7 @@ service_function_length:
   # set, and an unfalsifiable population is the one thing an instrument here may
   # not carry. So a service that buys length with a valve still pays for it, and
   # that is the visible diff the ceiling is for.
-  apps/accounts/services.py: 65 # provision_sso_identity — the longest CODE in
+  apps/accounts/services.py: 64 # provision_sso_identity — the longest CODE in
   # this module, and it took the ceiling from `revoke_token` the moment the docstring stopped
   # counting: `revoke_token` was the module's most-argued function, not its longest one. 63 is
   # the identity round-trip a reader would expect to be the biggest thing here.
@@ -58,12 +62,12 @@ service_function_length:
   apps/connections/services.py: 46 # record_inbound_webhook — was 83, and the
   # 37-line gap IS the paragraph about why the identity is the provider's delivery id and never a
   # hash of the body. The argument is still in the source; it no longer buys ceiling.
-  apps/core/services.py: 69 # invite_member — was 95. Still the module's longest
+  apps/core/services: 69 # invite_member — was 95. Still the module's longest
   # code, and still two questions in one function (may you invite at all, may you grant this role).
   apps/events/services.py: 35 # record_event — took the ceiling from
   # `enqueue_dispatch`, whose 54 was largely the ADR events-3 resume argument. 35 lines of code
   # writing an event and its outbox row is what this module's biggest job actually costs.
-  apps/example/services.py: 62 # update_widget — was 50 (create_widget). The worked
+  apps/example/services.py: 46 # update_widget — was 50 (create_widget). The worked
   # example's versioned edit: the lock, the version compared, the policy lines kept OUT of the
   # copy — and eighteen of the lines are the golden fences a product copies the edit by (each
   # fence names every verb whose copy carries the block), not code.
@@ -73,7 +77,7 @@ service_function_length:
   apps/exports/services.py: 73 # create_export — was 102. Keeps the ceiling: two
   # refusals, the idempotency read, the row, the authorization, validate-and-save, the event and
   # the workflow start, which is the list its old note gave.
-  apps/files/services.py: 79 # record_stored — was 123. Note that this one does
+  apps/files/services.py: 78 # record_stored — was 123. Note that this one does
   # NOT fall to the "BODY is 40 lines" its old note claimed: rule 26's `# reach:` valve (8 lines)
   # and rule 13's `# authz:` valve (6) are comments inside the body and are still counted, by the
   # ruling that refused to exclude rule-mandated blocks. Recorded at the measured number.
@@ -91,12 +95,16 @@ service_function_length:
   apps/djb_imports/services.py: 62
   apps/djb_notes/services.py: 19
   apps/djb_tags/services.py: 26
+  apps/example_portal/services.py: 31
+  apps/realtime/services.py: 17
 
 out_schema_fields:
   # Declared fields per published *Out schema. An Out crossing its ceiling is a
   # contract quietly becoming a dump of the row.
   apps/accounts/schemas.py::RealmOut: 3 # A9
-  apps/accounts/schemas.py::SsoConnectionOut: 14 # A9, +1 for `verified_domains`
+  # +1 for `sync_state`: `enforced` is the materialised fact now, and the state
+  # of the run that materialises it is the other half of that fact on the wire.
+  apps/accounts/schemas.py::SsoConnectionOut: 15 # A9, +1 for `verified_domains`
   # — which of the claimed domains an operator has confirmed, and therefore
   # which of them route a sign-in at all. It is a second list beside
   # `email_domains` rather than a flag on the first because the two are
@@ -155,13 +163,13 @@ out_schema_fields:
   apps/comms/schemas.py::RecipientOut: 8 # C2-comms-b — + phone/chat_handle, the addresses the
   # other channel kinds reach; was 7 (C1-1b)
   apps/comms/schemas.py::TemplateOut: 10 # C1-1b — the words included; a template IS its body
-  apps/connections/schemas.py::ConnectionOut: 11
+  apps/connections/schemas.py::ConnectionOut: 12
   apps/connections/schemas.py::OAuthStartOut: 4
   apps/connections/schemas.py::InboundWebhookOut: 8
   apps/connections/schemas.py::WebhookAcceptedOut: 2
-  apps/core/schemas.py::MeasuredBasisOut: 2 # P0 W1-R1 (ADR core-7) — formula + inputs, and
+  apps/core/schemas.py::MeasuredBasisOut: 2 # ADR core-7 — formula + inputs, and
   # a third field would mean the basis had stopped being one thing
-  apps/core/schemas.py::MeasuredOut: 2 # P0 W1-R1 (ADR core-7) — the value and the basis it
+  apps/core/schemas.py::MeasuredOut: 2 # ADR core-7 — the value and the basis it
   # came from; the pair IS the contract
   apps/core/schemas.py::PingOut: 3 # + org, the acting hat (A10)
   # The tenancy and hierarchy doors (P5 B-CORE). Six new Out shapes, measured here at
@@ -243,19 +251,19 @@ out_schema_fields:
   # Recorded at the measured number rather than trimmed to look better: this ceiling catches an
   # Out becoming a dump of the row, and every one of these is answering a question somebody asks
   # while a webhook is broken.
-  apps/example/schemas.py::WidgetOut: 17 # + owner_name (the move's owner axis in words), + duplicated_from_id, merged_into_id, external_ref (the copy's source, the merge's survivor, the import's natural key)
+  apps/example/schemas.py::WidgetOut: 19 # + owner_name (the move's owner axis in words), + duplicated_from_id, merged_into_id, external_ref (the copy's source, the merge's survivor, the import's natural key), + due_at (owner's raise 2026-10-11)
   # (version and organization_name come from VersionedOut and HomedOut and are not own fields).
   # Was 13: + allowed_acts — the server's per-row answer to what
   # the acting hat may press on THIS row, so a face draws acts and never computes authority (the
   # two archive fields come from ArchivedOut and are not this class's own). Was 12: + policy_id
-  # (P0 W1-R3) — the id and not the row:
+  # — the id and not the row:
   # a widget's governing policy may live one or more levels UP, and embedding it would put
   # exactly the upward visibility governing() was built not to grant onto the wire. Was 11 (A10)
-  apps/example/schemas.py::WidgetEntryOut: 8 # P0 W1-R3 — a ledger line: what it is about
+  apps/example/schemas.py::WidgetEntryOut: 8 # a ledger line: what it is about
   # (widget_id), what it says (kind, note), where it landed (tenant/organization/_slug) and
   # when. No `updated_at`, deliberately: the model is append_only, so there is never a second
   # time to report and a field that always equalled created_at would be a lie in waiting.
-  apps/example/schemas.py::WidgetPolicyOut: 8 # P0 W1-R3 — id, name, body, the tenant, the
+  apps/example/schemas.py::WidgetPolicyOut: 8 # id, name, body, the tenant, the
   # organization and its slug, and the two timestamps. `organization_slug` is load-bearing
   # rather than convenience here: it is how a caller can tell that the policy governing them
   # was set further up the tree than they can see.
@@ -322,7 +330,7 @@ out_schema_fields:
   # What is deliberately NOT here is a PRICE: ADR usage-1 rules that this app meters and never
   # rates, and a money column on this shape would be a second truth able to disagree with the
   # rate card. Adding one should be a diff a reviewer reads, which is what this number is for.
-  # 7 -> 8 (P20 R4-F2): `organization_id` at the TOP level. Not an eighth FACT — the
+  # 7 -> 8: `organization_id` at the TOP level. Not an eighth FACT — the
   # branch was already on the shape, one level down on `crossed_by` — but a security
   # field rather than a data one: `events.services._subject_organization` reads the
   # payload's top level and nothing deeper, an absent key is stamped NULL, and the
@@ -391,31 +399,39 @@ out_schema_fields:
   # second, stale copy of a record with a different set of rules on it — the client fetches the
   # real thing through that kind's own door, which is where the scoping, the field-level rules
   # and the freshness already live (ADR search-2, "the document model is deliberately lean").
-  apps/example/schemas.py::WidgetStatsOut: 1 # P0 W1-R3 — one field, and it is a MeasuredOut
+  apps/example/schemas.py::WidgetStatsOut: 1 # one field, and it is a MeasuredOut
   # rather than an int (ADR core-7). A second aggregate would be a second MeasuredOut beside
   # it, never a naked number added to it; this ceiling is what makes that a visible diff.
   apps/core/schemas.py::ArchivedByOut: 2
   apps/core/schemas.py::ArchivedOut: 2
-  apps/djb_imports/schemas.py::ImportCountsOut: 4
-  apps/djb_imports/schemas.py::ImportOut: 19
-  apps/djb_imports/schemas.py::ImportStagedOut: 1
-  apps/djb_imports/schemas.py::ImportRowOut: 9
-  apps/djb_notes/schemas.py::NoteOut: 9
+  apps/djb_imports/schemas.py::DjbImportCountsOut: 4
+  apps/djb_imports/schemas.py::DjbImportOut: 19
+  apps/djb_imports/schemas.py::DjbImportStagedOut: 1
+  apps/djb_imports/schemas.py::DjbImportRowOut: 9
+  apps/djb_notes/schemas.py::DjbNoteOut: 9
   apps/core/schemas.py::VersionedOut: 1
   apps/core/schemas.py::HomedOut: 2
-  apps/core/schemas.py::BulkRefusalOut: 3
+  apps/core/schemas.py::BulkRefusalOut: 0
   apps/core/schemas.py::BulkResultOut: 4
   apps/core/schemas.py::BulkOut: 5
   apps/core/schemas.py::HistoryActorOut: 3
   apps/core/schemas.py::HistoryEntryOut: 5
   apps/core/schemas.py::ActsOut: 1
-  apps/djb_tags/schemas.py::TagOut: 6
-  apps/djb_tags/schemas.py::TagLinkOut: 10
+  apps/djb_tags/schemas.py::DjbTagOut: 6
+  apps/djb_tags/schemas.py::DjbTagLinkOut: 10
   apps/example/schemas.py::WidgetBulkResultOut: 1 # the item narrowed to WidgetOut
   apps/example/schemas.py::WidgetBulkOut: 1 # the results narrowed to the widget's result
   apps/example/schemas.py::WidgetDetailOut: 1
-  apps/example/schemas.py::RepointOut: 2
   apps/example/schemas.py::WidgetMergePreviewOut: 3
+  apps/accounts/schemas.py::IdentityHomeOut: 3
+  apps/example_portal/schemas.py::PortalRequestOut: 10 # + priority (owner's raise 2026-10-11)
+  apps/core/schemas.py::RefusalOut: 4
+  apps/core/schemas.py::RefusalRemedyOut: 2
+  apps/example/schemas.py::WidgetMovedOut: 1
+  apps/example/schemas.py::WidgetMergedOut: 2
+  apps/example/schemas.py::WidgetOnboardedOut: 1
+  apps/core/schemas.py::RepointOut: 2
+  apps/realtime/schemas.py::SocketTicketOut: 3
 
 hot_path_lookup_columns:
   # Cycle P3 F2 ( P-1). Rule 35's `index_served` clause asks that
@@ -487,7 +503,7 @@ hot_path_query_counts:
   apps.core.audit.AuditEntry.objects.for_platform: 1 # page of 50; M2 measure 12, F1b re-measure
   apps.events.selectors.list_stranded_outbox: 1 # with or without limit/already_seen (F1c);
   # the ceiling rides the registry entry's constants (RECONCILE_BATCH = 500, MAX_BATCHES = 20)
-  apps.events.selectors.endpoints_for: 1 # M2 measure 4; the wants() filter is Python
+  apps.events.selectors.list_endpoints_for: 1 # M2 measure 4; the wants() filter is Python
   apps.accounts.services.authenticate_token: 2 # cold: the key_hash read + the throttled
   # touch. Warm is 1 (N6) and is the harness's to hold — the probe rolls back, so it is
   # always cold.

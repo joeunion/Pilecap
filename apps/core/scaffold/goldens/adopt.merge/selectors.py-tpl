@@ -1,0 +1,64 @@
+# golden: noun begin
+from typing import Any
+from uuid import UUID
+
+from apps.example.models import Widget
+from pilecap import Actor, NotFound, ScopedQuerySet, Show, require, shown
+from pilecap.tenancy import Tenant
+
+# golden: noun end
+
+
+from pilecap import Invalid, Repointed, merge_counts
+
+
+from pilecap.attach import Tag, list_tag_links
+
+
+# golden: noun begin
+def _widgets_in(*, tenant: Tenant | None, org: Any, show: Show = "live") -> ScopedQuerySet[Widget]:
+    """The scoped read without the capability; a list and a get ask it at different nodes."""
+    rows: ScopedQuerySet[Widget] = shown(Widget.objects.for_tenant(tenant).visible_to(org), show)
+    return rows.select_related("owner", "organization", "archived_by")
+
+
+def list_widgets(
+    *, tenant: Tenant | None, org: Any = None, actor: Actor, show: Show = "live"
+) -> ScopedQuerySet[Widget]:
+    """The widgets this hat may see, their related rows joined; no hat reads nothing."""
+    # At the hat, before the queryset: a list has no row to hide.
+    require(actor, "widget.read")
+    return _widgets_in(tenant=tenant, org=org, show=show)
+
+
+def get_widget(*, tenant: Tenant | None, widget_id: UUID, org: Any = None, actor: Actor) -> Widget:
+    """One widget this hat may see, archived or not, or `NotFound`."""
+    widget = _widgets_in(tenant=tenant, org=org, show="all").filter(pk=widget_id).first()
+    if widget is None:
+        raise NotFound()
+    require(actor, "widget.read", widget)
+    return widget
+
+
+# golden: noun end
+
+
+# golden: archive version move bulk history duplicate attach end
+def get_widget_merge_preview(
+    *, tenant: Tenant | None, actor: Actor, widget: Widget, into: Widget
+) -> tuple[Repointed, ...]:
+    """What merging `widget` into `into` would move, per owning app. Writes nothing."""
+    if widget.pk == into.pk:
+        raise Invalid({"into": ["A record cannot be merged into itself."]})
+    require(actor, "widget.merge", widget)
+    require(actor, "widget.merge", into)
+    return merge_counts(tenant=tenant, loser=widget, noun="widget")
+
+
+# golden: attach begin
+def list_widget_tags(*, tenant: Tenant | None, actor: Actor, widget: Widget) -> list[Tag]:
+    """The words on this widget as this hat sees them, through the tags app's selector."""
+    # hat-scoped: a word is tenant-wide and read where the reader stands.
+    require(actor, "djb_tag.read")
+    links = list_tag_links(tenant=tenant, actor=actor, subject=f"widget:{widget.pk}")
+    return [link.tag for link in links]

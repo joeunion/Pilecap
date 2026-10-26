@@ -1,0 +1,17 @@
+# golden-anchor: {"nth": 0, "scope": ["widget_create"], "side": "before", "text": ") -> WidgetOut:"}
+    due_at: datetime | None = None,
+# golden-anchor: {"nth": 0, "scope": ["widget_create"], "side": "before", "text": ")"}
+        due_at=due_at,
+# golden-anchor: {"nth": 0, "scope": ["create_widget_route"], "side": "before", "text": ")"}
+        due_at=payload.due_at,
+# golden-anchor: {"nth": 0, "scope": ["widget_update"], "side": "before", "text": ") -> WidgetOut:"}
+    due_at: datetime | None = None,
+    clear_due_at: bool = False,
+# golden-anchor: {"nth": 0, "scope": ["widget_update"], "side": "before", "text": "updated = update_widget(tenant=tenant, actor=actor, widget=widget, version=version, **changes)"}
+    if due_at is not None:
+        changes["due_at"] = due_at
+    if clear_due_at:
+        changes["clear_due_at"] = True
+# golden-anchor: {"nth": 0, "scope": ["update_widget_route"], "side": "before", "text": ")"}
+        due_at=payload.due_at,
+        clear_due_at=bool(payload.clear_due_at),

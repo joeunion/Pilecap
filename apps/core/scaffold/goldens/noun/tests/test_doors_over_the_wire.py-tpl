@@ -1,0 +1,493 @@
+from __future__ import annotations
+
+import json
+
+
+from typing import Any
+
+import httpx
+import pytest
+from django.conf import settings
+from django.test import Client
+
+from apps.example.models import Widget
+from apps.example.schemas import WidgetOut
+from apps.example.services import create_widget
+from pilecap import Actor
+from pilecap.accounts import User, issue_token, revoke_token
+from pilecap.tenancy import Tenant
+from pilecap.testing import (
+    MCP_HEADERS,
+    MCP_URL,
+    actor_for,
+    assert_four_doors,
+    initialize,
+    rpc,
+    wire,
+    without_personal,
+)
+from pilecap.testing import bearer as mint_bearer
+
+#: House rule 46. The door pair this module answers for `apps/example`.
+DOOR_PAIR = ("rest", "mcp")
+
+pytestmark = pytest.mark.django_db
+
+LIST_URL = "/api/v1/widgets/"
+DETAIL_URL = "/api/v1/widgets/{}/"
+
+
+JSON = "application/json"
+PASSWORD = "a-long-enough-password"  # noqa: S105 — a throwaway password a test user is made with  # pragma: allowlist secret
+
+
+WIDGET_KEYS = frozenset(
+    {
+        "id",
+        "name",
+        "notes",
+        "owner_id",
+        "owner_email",
+        "tenant_id",
+        "organization_id",
+        "organization_slug",
+        "created_at",
+        "updated_at",
+        "archived_at",
+        "archived_by",
+        "allowed_acts",
+        "version",
+        # golden: field due_at begin
+        "due_at",
+        # golden: field due_at end
+    }
+)
+
+
+# The fields `WidgetOut` marks `personal`: both doors answer them, no event carries them.
+PERSONAL_KEYS = frozenset({"owner_email", "owner_name"})
+
+# What a widget event carries: the row less the viewer's acts and the person's fields.
+EVENT_KEYS = WIDGET_KEYS - {"allowed_acts"} - PERSONAL_KEYS
+
+
+# A page that always renders a form: the source of a real, server-issued CSRF token.
+CSRF_SOURCE_URL = "/admin/login/"
+
+
+def strict_client() -> Client:
+    """A client that enforces CSRF, which the shared `api` fixture does not."""
+    return Client(enforce_csrf_checks=True)
+
+
+def csrf_token(client: Client) -> str:
+    """A real CSRF token for this client, issued by the server."""
+    client.get(CSRF_SOURCE_URL)
+    return str(client.cookies[settings.CSRF_COOKIE_NAME].value)
+
+
+def test_a_bearer_write_needs_no_csrf_material(
+    tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    """The machine door, over the wire: a token, a POST, a row. No cookie."""
+    plaintext = mint_bearer(user=owner, tenant=tenant)
+
+    response = strict_client().post(
+        LIST_URL,
+        data=json.dumps({"name": "Minted by a machine"}),
+        content_type=JSON,
+        headers={"authorization": f"Bearer {plaintext}"},
+    )
+
+    assert response.status_code == 201, response.content
+    assert Widget.objects.for_tenant(tenant).filter(name="Minted by a machine").exists()
+
+
+def test_a_session_write_without_a_csrf_token_is_refused(
+    tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    """The human door keeps the whole of CSRF; nothing here was loosened."""
+    client = strict_client()
+    client.force_login(owner)
+
+    response = client.post(
+        LIST_URL,
+        data=json.dumps({"name": "Forged"}),
+        content_type=JSON,
+    )
+
+    assert response.status_code == 403, response.content
+    assert not Widget.objects.for_tenant(tenant).filter(name="Forged").exists()
+
+
+def test_a_session_write_with_a_csrf_token_is_allowed(
+    tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    """The other half of the same property: the browser that plays by the rules."""
+    client = strict_client()
+    client.force_login(owner)
+    token = csrf_token(client)
+
+    response = client.post(
+        LIST_URL,
+        data=json.dumps({"name": "Minted by a person"}),
+        content_type=JSON,
+        headers={"x-csrftoken": token},
+    )
+
+    assert response.status_code == 201, response.content
+    assert Widget.objects.for_tenant(tenant).filter(name="Minted by a person").exists()
+
+
+@pytest.fixture
+def bearer(tenant: Tenant, owner: User) -> str:
+    """A real token for the owner — the one credential both doors accept."""
+    return mint_bearer(user=owner, tenant=tenant, name="door-parity")
+
+
+@pytest.fixture
+def widget(tenant: Tenant, owner_actor: Actor, recorded_workflow_starts: None) -> Widget:
+    """One committed row for both doors to answer with."""
+    return create_widget(tenant=tenant, actor=owner_actor, name="Twin", notes="hello")
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_the_two_doors_put_the_same_key_set_on_the_wire(bearer: str, widget: Widget) -> None:
+    """The same row, fetched over HTTP and over JSON-RPC: one key set, not two."""
+    bearer_header = {"authorization": f"Bearer {bearer}"}
+
+    async with wire() as client:
+        over_http = await client.get(
+            DETAIL_URL.format(widget.pk), headers={**bearer_header, "accept": JSON}
+        )
+        assert over_http.status_code == 200, over_http.text
+
+        headers = {**MCP_HEADERS, **bearer_header}
+        await initialize(client, headers, "door-parity")
+
+        called = await client.post(
+            MCP_URL,
+            headers=headers,
+            json=rpc(
+                "tools/call",
+                {"name": "get_widget", "arguments": {"widget_id": str(widget.pk)}},
+                2,
+            ),
+        )
+        assert called.status_code == 200, called.text
+
+    answered = called.json()
+    assert "error" not in answered, answered
+    over_mcp = answered["result"]["structuredContent"]
+    rest_body = over_http.json()
+
+    assert set(over_mcp) == set(rest_body), (
+        "The two doors describe the same widget with different keys. "
+        f"Only on MCP: {sorted(set(over_mcp) - set(rest_body))}; "
+        f"only on REST: {sorted(set(rest_body) - set(over_mcp))}. "
+        "A `Field(alias=...)` on a read schema does this: the MCP transport "
+        "serialises `structuredContent` by alias and REST renders by field "
+        "name. Resolve a relation with a model property, not an alias "
+        "(ADR example-3; `apps/comms/models.py` is the precedent)."
+    )
+
+
+@pytest.fixture
+def member_bearer(tenant: Tenant, member: User) -> str:
+    """A real token for the plain member — the credential both doors accept."""
+    return mint_bearer(user=member, tenant=tenant, name="read-parity")
+
+
+@pytest.fixture
+def withheld_widget_read(tenant: Tenant, member: User) -> str:
+    """A committed `withhold` of `widget.read` on the member, and its sentence."""
+    from pilecap.tenancy import Grant, Membership
+    from pilecap.testing import refusal_sentence
+
+    membership = Membership.objects.get(user=member, tenant=tenant)
+    Grant.objects.create(
+        tenant=tenant,
+        membership=membership,
+        permission="widget.read",
+        effect=Grant.Effect.WITHHOLD,
+    )
+    return refusal_sentence("widget.read")
+
+
+# The sentence a presented-but-unresolvable bearer reads, written out.
+BEARER_NOT_VALID = "That bearer token is not valid."
+
+
+@pytest.fixture
+def revoked_bearer(tenant: Tenant, owner: User) -> str:
+    """A real token for a real person, withdrawn — and still in the caller's hand."""
+    actor = actor_for(user=owner, tenant=tenant)
+    token, plaintext = issue_token(user=owner, tenant=tenant, name="withdrawn", actor=actor)
+    revoke_token(token=token, tenant=tenant, actor=actor)
+    return plaintext
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_both_doors_refuse_one_revoked_token_with_the_same_code_and_sentence(
+    revoked_bearer: str,
+) -> None:
+    """House rule 46 at the door's own refusal, which has no principal behind it."""
+    bearer_header = {"authorization": f"Bearer {revoked_bearer}"}
+
+    async with wire() as client:
+        over_http = await client.get(LIST_URL, headers={**bearer_header, "accept": JSON})
+        over_mcp = await client.post(
+            MCP_URL,
+            headers={**MCP_HEADERS, **bearer_header},
+            json=rpc("tools/list", {}, 1),
+        )
+
+    assert over_http.status_code == 401, over_http.text
+    assert over_mcp.status_code == 401, over_mcp.text
+    rest_body = over_http.json()
+    mcp_body = over_mcp.json()
+
+    assert rest_body["code"] == mcp_body["code"] == "unauthenticated", (rest_body, mcp_body)
+    assert rest_body["detail"] == mcp_body["detail"] == BEARER_NOT_VALID, (rest_body, mcp_body)
+
+
+async def _mcp_call(
+    client: httpx.AsyncClient, headers: dict[str, str], name: str, arguments: dict[str, Any]
+) -> dict[str, Any]:
+    """`initialize`, then one `tools/call`; the result's `structuredContent`."""
+    await initialize(client, headers, "door-parity")
+    called = await client.post(
+        MCP_URL, headers=headers, json=rpc("tools/call", {"name": name, "arguments": arguments}, 2)
+    )
+    assert called.status_code == 200, called.text
+    answered = called.json()
+    assert "error" not in answered, answered
+    assert not answered["result"].get("isError"), answered
+    content: dict[str, Any] = answered["result"]["structuredContent"]
+    return content
+
+
+def _canonical(body: dict[str, Any]) -> str:
+    """One byte string per body: sorted keys, the door's own separators."""
+    return json.dumps(body, sort_keys=True, separators=(",", ":"))
+
+
+def _event_payload(tenant: Tenant, name: str) -> dict[str, Any]:
+    """The outbox row's payload for the one event of this name, minus the spine's `v`."""
+    from django.apps import apps as django_apps
+
+    outbox = django_apps.get_model("events", "Outbox")
+    rows = list(
+        outbox.objects.filter(event__tenant=tenant, event__name=name).select_related("event")
+    )
+    assert len(rows) == 1, [row.event.name for row in rows]
+    payload: dict[str, Any] = dict(rows[0].event.payload)
+    assert "v" in payload
+    payload.pop("v")
+    return payload
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+@pytest.mark.parametrize("verb", ["archive", "restore"])
+async def test_one_press_is_one_body_on_rest_mcp_and_the_outbox(
+    bearer: str, widget: Widget, tenant: Tenant, member: User, verb: str
+) -> None:
+    """M4: one viewer's REST and MCP answers are one byte string; the event is the row."""
+    from asgiref.sync import sync_to_async
+
+    from apps.example.services import archive_widget
+    from pilecap.testing import actor_for
+
+    if verb == "restore":
+        owner = await sync_to_async(lambda: widget.owner)()
+        await sync_to_async(archive_widget)(
+            tenant=tenant,
+            actor=actor_for(
+                user=owner, tenant=tenant, org=await sync_to_async(lambda: widget.organization)()
+            ),
+            widget=widget,
+        )
+
+    member_bearer = await sync_to_async(_token_for)(member, tenant)
+    bearer_header = {"authorization": f"Bearer {bearer}"}
+    async with wire() as client:
+        over_http = await client.post(
+            f"{LIST_URL}{widget.pk}/{verb}/", headers={**bearer_header, "accept": JSON}
+        )
+        assert over_http.status_code == 200, over_http.text
+        over_mcp = await _mcp_call(
+            client,
+            {**MCP_HEADERS, **bearer_header},
+            f"{verb}_widget",
+            {"widget_id": str(widget.pk)},
+        )
+        as_member = await client.get(
+            f"{LIST_URL}{widget.pk}/",
+            headers={"authorization": f"Bearer {member_bearer}", "accept": JSON},
+        )
+        assert as_member.status_code == 200, as_member.text
+
+    rest_body: dict[str, Any] = over_http.json()
+    member_body: dict[str, Any] = as_member.json()
+    event = await sync_to_async(_event_payload)(tenant, f"example.widget.{verb}d")
+    assert set(rest_body) == WIDGET_KEYS
+    assert (verb == "archive") == (rest_body["archived_at"] is not None)
+    assert rest_body["allowed_acts"], rest_body
+
+    # One viewer, two doors: one byte string.
+    assert _canonical(over_mcp) == _canonical(rest_body)
+    # The event is the row, never a viewer's acts.
+    assert "allowed_acts" not in event, sorted(event)
+    assert set(event) == EVENT_KEYS
+    assert _canonical(event) == _canonical(_as_published(rest_body))
+    assert_four_doors(rest=rest_body, mcp=over_mcp, event_payload=event, out=WidgetOut)
+    # A second viewer: the same row, other acts — and nothing else different.
+    assert member_body.pop("tags", []) == []
+    assert _canonical(_without_acts(member_body)) == _canonical(_without_acts(rest_body))
+    assert member_body["allowed_acts"] != rest_body["allowed_acts"]
+    assert not {"archive", "restore"} & set(member_body["allowed_acts"])
+
+
+def _without_acts(body: dict[str, Any]) -> dict[str, Any]:
+    """The row as every viewer sees it: the body minus this viewer's acts."""
+    return {key: value for key, value in body.items() if key != "allowed_acts"}
+
+
+def _as_published(body: dict[str, Any]) -> dict[str, Any]:
+    """The row as an event carries it: no viewer's acts, no `personal` field at any depth."""
+    return without_personal(WidgetOut, _without_acts(body))
+
+
+def _token_for(user: User, tenant: Tenant) -> str:
+    """A real bearer token for a second viewer of the same tenant."""
+    return mint_bearer(user=user, tenant=tenant, name="second-viewer")
+
+
+@pytest.fixture
+def branch(tenant: Tenant, owner: User) -> Any:
+    from pilecap.tenancy import create_organization, root_organization
+
+    root = root_organization(tenant=tenant)
+    return create_organization(
+        tenant=tenant,
+        parent=root,
+        name="Branch",
+        slug="branch",
+        actor=actor_for(user=owner, tenant=tenant, org=root),
+    )
+
+
+def _one_event(tenant: Tenant, name: str) -> dict[str, Any]:
+    return _event_payload(tenant, name)
+
+
+@pytest.fixture
+def branch_admin_bearer(tenant: Tenant, owner: User) -> tuple[str, list[str]]:
+    """A token for an ADMIN at A in a root/A/A1/B world, and the ids of A and A1."""
+    from pilecap.accounts import create_user
+    from pilecap.tenancy import Membership, add_membership, create_organization, root_organization
+    from pilecap.testing import system_actor
+
+    root = root_organization(tenant=tenant)
+    acting = actor_for(user=owner, tenant=tenant, org=root)
+    a = create_organization(tenant=tenant, parent=root, name="A", slug="a", actor=acting)
+    create_organization(tenant=tenant, parent=root, name="B", slug="b", actor=acting)
+    a1 = create_organization(tenant=tenant, parent=a, name="A1", slug="a1", actor=acting)
+    manager = create_user(email="a-admin@example.com", password=PASSWORD)
+    add_membership(
+        user=manager,
+        tenant=tenant,
+        organization=a,
+        is_default=True,
+        role=Membership.Role.ADMIN,
+        actor=system_actor(tenant=tenant),
+    )
+    return _token_for(manager, tenant), sorted([str(a.pk), str(a1.pk)])
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_both_doors_narrow_by_due_date_and_refuse_a_naive_one_alike(
+    bearer: str, tenant: Tenant, owner_actor: Actor, recorded_workflow_starts: None
+) -> None:
+    """`?due_after=` and `list_widgets(due_after=)` answer one page; naive is refused."""
+    from datetime import UTC, datetime
+
+    from asgiref.sync import sync_to_async
+
+    def world() -> str:
+        create_widget(
+            tenant=tenant, actor=owner_actor, name="Soon", due_at=datetime(2026, 10, 15, tzinfo=UTC)
+        )
+        late = create_widget(
+            tenant=tenant, actor=owner_actor, name="Late", due_at=datetime(2026, 12, 15, tzinfo=UTC)
+        )
+        return str(late.pk)
+
+    late_id = await sync_to_async(world)()
+    header = {"authorization": f"Bearer {bearer}"}
+    cut, naive = "2026-11-01T00:00:00Z", "2026-11-01T00:00:00"
+    async with wire() as client:
+        rest = await client.get(
+            LIST_URL, params={"due_after": cut}, headers={**header, "accept": JSON}
+        )
+        over_mcp = await _mcp_call(
+            client, {**MCP_HEADERS, **header}, "list_widgets", {"due_after": cut}
+        )
+        refused_rest = await client.get(
+            LIST_URL, params={"due_before": naive}, headers={**header, "accept": JSON}
+        )
+        refused_mcp = await client.post(
+            MCP_URL,
+            headers={**MCP_HEADERS, **header},
+            json=rpc("tools/call", {"name": "list_widgets", "arguments": {"due_before": naive}}, 3),
+        )
+
+    assert rest.status_code == 200, rest.text
+    assert [item["id"] for item in rest.json()["items"]] == [late_id]
+    assert _canonical(over_mcp) == _canonical(rest.json())
+
+    assert refused_rest.status_code == 400, refused_rest.text
+    assert refused_rest.json()["code"] == "invalid"
+    assert "due_before" in refused_rest.json()["errors"]
+    rendered = json.dumps(refused_mcp.json())
+    assert "invalid" in rendered, rendered
+    assert "due_before" in rendered, rendered
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_both_doors_order_by_due_date_alike_with_the_undated_last(
+    bearer: str, tenant: Tenant, owner_actor: Actor, recorded_workflow_starts: None
+) -> None:
+    """`?ordering=-due_at` and its MCP twin answer one page, undated last."""
+    from datetime import UTC, datetime
+
+    from asgiref.sync import sync_to_async
+
+    def world() -> None:
+        create_widget(tenant=tenant, actor=owner_actor, name="Undated")
+        for name, month in (("Soon", 10), ("Late", 12)):
+            create_widget(
+                tenant=tenant,
+                actor=owner_actor,
+                name=name,
+                due_at=datetime(2026, month, 15, tzinfo=UTC),
+            )
+
+    await sync_to_async(world)()
+    header = {"authorization": f"Bearer {bearer}"}
+    async with wire() as client:
+        rest = await client.get(
+            LIST_URL, params={"ordering": "-due_at"}, headers={**header, "accept": JSON}
+        )
+        over_mcp = await _mcp_call(
+            client, {**MCP_HEADERS, **header}, "list_widgets", {"ordering": "-due_at"}
+        )
+
+    assert rest.status_code == 200, rest.text
+    assert [item["name"] for item in rest.json()["items"]] == ["Late", "Soon", "Undated"]
+    assert _canonical(over_mcp) == _canonical(rest.json())

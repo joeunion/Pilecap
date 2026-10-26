@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, ClassVar
 
 from django.apps import AppConfig
 
@@ -32,7 +32,7 @@ class SearchConfig(AppConfig):
       projection table would be a shadow authorization copy, which ADR
       search-1 rejected and search-2 did not reinstate.
 
-    So `apps/search/migrations/` does not exist, on purpose. A rung that finds
+    So `search` has no `migrations/` directory, on purpose. A rung that finds
     itself running `makemigrations search` has been asked for the wrong thing.
 
     `depends_on` names two apps and both are load-bearing:
@@ -72,6 +72,12 @@ class SearchConfig(AppConfig):
     name = "apps.search"
     verbose_name = "Search"
     depends_on: tuple[str, ...] = ("core", "accounts", "events")
+    ratchet_floors: ClassVar[dict[str, int]] = {
+        "91.block-tail": 337,
+        "91.docstring-tail": 1356,
+        "91.module-tail": 552,
+        "91.narrative": 3,
+    }
 
     def ready(self, **kwargs: Any) -> None:
         from apps.core import bridge

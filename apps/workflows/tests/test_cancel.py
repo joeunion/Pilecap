@@ -8,11 +8,14 @@ nothing in the tree kept.
 
 Two witnesses, because there are exactly two, and a run reaches one or the other:
 
-* **the finish seam** — `workflows._finish` catches the cancellation from inside
+* **the finish seam** — `determinism.run_to_finish` catches the cancellation from inside
   the workflow and closes the row through the same activity that closes every
   completed and failed run. This is the ordinary path, and it is driven here
   against the real time-skipping server with the real worker: start a waiting
-  run, cancel it the way the service does, read the row.
+  run, cancel it the way the service does, read the row. Twice, because a
+  cancel reaches the seam in two shapes: a run waiting on a timer hears
+  `asyncio.CancelledError`, and a run waiting on an activity hears an
+  `ActivityError` whose cause is the cancel — `SendEmailWorkflow`, mid-send.
 * **the reconciler** — `activities.reconcile_runs` asks Temporal what became of
   a stranded row and now maps `CANCELED` to `cancelled` instead of lumping it
   into `failed`. That is the path for a run whose worker died before its seam
@@ -26,6 +29,7 @@ a stub would be a test of the stub.
 from __future__ import annotations
 
 import asyncio
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -35,7 +39,10 @@ from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
 from apps.accounts.models import User
+from apps.core import mail
+from apps.core.actor import system_actor
 from apps.core.asyncdb import run_db
+from apps.core.determinism import CANCELLED
 from apps.core.models import Tenant
 from apps.workflows import activities
 from apps.workflows import client as client_module
@@ -48,8 +55,7 @@ from apps.workflows.client import (
 from apps.workflows.models import WorkflowRun
 from apps.workflows.services import record_run, start_workflow, workflow_id
 from apps.workflows.tests.cancelwork import WaitForeverWorkflow
-from apps.workflows.types import ReconcileRuns
-from apps.workflows.workflows import CANCELLED
+from apps.workflows.types import ReconcileRuns, SendEmail
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -100,7 +106,7 @@ async def test_cancelling_a_waiting_run_closes_its_row_as_cancelled(
 
     A run that waits, a cancel, and then the row — read through the ordinary
     tenant door — says `cancelled` and carries a `finished_at`. The path is the
-    production `_finish` seam (rule 28's seam, which `cancelwork.py` wraps
+    production `run_to_finish` seam (rule 28's seam, which `cancelwork.py` wraps
     precisely so this is not a test of a test-only branch).
 
     Absent: the row says `running` for ever, which is what it did before this
@@ -141,6 +147,82 @@ async def test_cancelling_a_waiting_run_closes_its_row_as_cancelled(
     assert description.status is WorkflowExecutionStatus.CANCELED
     assert await run_db(status_of, run) == WorkflowRun.Status.CANCELLED
     assert await run_db(finished_at_of, run) is not None
+
+
+#: How long the stand-in mail host holds the activity open, at most. The test
+#: releases it as soon as the cancel has been read; the bound is only there so a
+#: red run cannot leave a worker thread waiting for ever.
+HOLD = 30.0
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_run_mid_activity_closes_its_row_as_cancelled(
+    tenant: Tenant, owner: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cancel that lands while the run awaits an ACTIVITY says `cancelled` too.
+
+    The waiter above is cancelled on a timer, where the cancel arrives as
+    `asyncio.CancelledError`. A run waiting on an activity hears it differently:
+    the SDK turns the task cancel into a cancel of the awaited activity and hands
+    back that activity's answer — an `ActivityError` whose cause is Temporal's
+    `CancelledError`, which is an `Exception`. `SendEmailWorkflow` is the real
+    workflow (`send_email` the real activity); only the mail host is held open,
+    so the cancel lands while the activity is running.
+
+    Absent: the `except Exception` arm read the cancel as a breakage and the row
+    said `failed`, carrying "Activity cancelled" — a deliberate stop recorded as
+    an error.
+    """
+    entered = threading.Event()
+    release = threading.Event()
+
+    def held_mail_host(**_kwargs: Any) -> int:
+        entered.set()
+        release.wait(HOLD)
+        return 1
+
+    monkeypatch.setattr(mail, "send_now", held_mail_host)
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        client = attach_interceptors(env.client)
+
+        async def connect() -> Client:
+            return client
+
+        monkeypatch.setattr(client_module, "get_client", connect)
+
+        async with worker_with_the_waiter(client):
+            try:
+                run = await start_workflow(
+                    workflow="SendEmailWorkflow",
+                    arg=SendEmail(to=["held@example.com"], subject="Held", template="invitation"),
+                    tenant=tenant,
+                    user=owner,
+                    client=client,
+                    task_queue=TASK_QUEUE,
+                    id=workflow_id(tenant=tenant, app="workflows", noun="email", key="held"),
+                )
+                handle = client.get_workflow_handle(run.workflow_id)
+                assert await asyncio.to_thread(entered.wait, HOLD), "the activity never started"
+
+                await handle.cancel()
+                with pytest.raises(BaseException):  # noqa: B017,PT011
+                    # As above: which exception the SDK wraps a cancelled
+                    # execution in is its business; the row is this test's.
+                    await handle.result()
+                description = await handle.describe()
+            finally:
+                # The activity ignores a cancel it cannot hear (it does not
+                # heartbeat); let it return so the worker can shut down.
+                release.set()
+
+    row = await run_db(lambda: WorkflowRun.objects.for_tenant(tenant).get(pk=run.pk))
+    assert (row.status, row.error, description.status) == (
+        WorkflowRun.Status.CANCELLED,
+        "",
+        WorkflowExecutionStatus.CANCELED,
+    )
+    assert row.finished_at is not None
 
 
 def test_the_seams_literal_is_the_models_word() -> None:
@@ -195,6 +277,7 @@ async def test_the_reconciler_reads_a_cancelled_execution_as_cancelled(
                     tenant=tenant, app="workflows", noun="wait", key="stranded"
                 ),
                 workflow_type="WaitForeverWorkflow",
+                actor=system_actor(tenant),
             )
             WorkflowRun.objects.filter(pk=row.pk).update(
                 started_at=timezone.now() - activities.RECONCILE_AFTER * 8

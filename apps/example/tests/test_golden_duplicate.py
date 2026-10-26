@@ -1,12 +1,4 @@
-"""The duplicate adoption's own test — copied with the adoption, and green on the copy.
-
-Every line is fenced `golden: duplicate`: a copy made at the presser's hat,
-owned by them and named `Copy of <name>`, carrying what the declaration copies
-and never the ledger; a repeated key answering the first copy. Rows and ledger
-lines are made by hand — the noun's create and its ledger are the product's own
-business, and so is a uniqueness the copied name could meet (the worked
-example's name-per-owner clash is `test_duplicate_merge.py`'s).
-"""
+"""The duplicate adoption's own test — copied with the adoption, and green on the copy."""
 
 # golden: duplicate begin
 import json
@@ -16,9 +8,9 @@ import pytest
 from django.apps import apps as django_apps
 from django.test import Client
 
-from apps.accounts.models import User
-from apps.core.models import Organization, Tenant
 from apps.example.models import Widget, WidgetEntry
+from pilecap.accounts import User
+from pilecap.tenancy import Organization, Tenant
 
 pytestmark = pytest.mark.django_db
 

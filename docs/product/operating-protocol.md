@@ -42,6 +42,10 @@ the cycles are too small to be interesting or the proving stage is not real.
 
 ## Standing practices adopted for this product
 
+- **The delegated decision class (owner, 2026-10-24 12:0x — "approved all").** When the lead's plan recommends an option, the spend it commits is under $25 (CI minutes, boxes, services) and the change is reversible, the PM takes the recommended option, records it in the ledger as the owner's standing rule with the reversal trigger, and the owner reads it in the next readout. Outside the class — a ship-definition change, real people's inboxes, irreversible acts on real data, spend over the line — the decision waits for the owner as before.
+- **The budget pause is the owner's to call (owner, 2026-10-24).** The Actions spending limit carries the budget email alerts; when one fires the PM tells the owner and keeps building and verifying; nothing re-runs CI as a probe; the owner decides whether to pause.
+- **The readout at every CLOSE (owner, 2026-10-24):** one message with two numbers — runner-minutes per merged PR (`scripts/ci_cost.py`, the all-in line) and hours from builder start to prod per rung — and the one decision they raise.
+
 *(Dated, with the owner's words and the measurement that earned each. Method
 that is general goes to the skill; only what is specific to this product stays
 here.)*

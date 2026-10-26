@@ -29,10 +29,10 @@ entries, index rows and ledger rows go in its DRAWER beside it (`LOCAL_BOOK`,
 ADR platform-extension-1), which the template never ships and so a fold can
 never conflict with. Absent, the drawer is byte-identical behaviour. Every
 block is read in both files — EVERY fenced block, not the first, for the
-reason `quality/checks.py::drawer_rows` gives: an append is how a product
+reason `quality/checks/rule_60_second_class.py::drawer_rows` gives: an append is how a product
 extends a list and how a canary is planted.
 
-Pure Python, no Django: `quality/checks.py` (rule 63) and the motion-ledger
+Pure Python, no Django: `quality/checks/rule_63.py` (rule 63) and the motion-ledger
 runner under `quality/runners/` (rule 66, a subprocess) both read the book
 through this module, so there is one grammar and not two.
 """
@@ -64,7 +64,11 @@ MOTION_TOKEN = re.compile(r"^--motion-[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 #: THE FACE LAYERS — every module under these draws (or declares it draws
 #: nothing), so every one names the book's sections it draws in a header line.
-FACE_LAYERS: tuple[str, ...] = ("frontend/src/screens", "frontend/src/components")
+FACE_LAYERS: tuple[str, ...] = (
+    "frontend/src/screens",
+    "frontend/src/kit",
+    "frontend/src/components",
+)
 FACE_SUFFIXES: tuple[str, ...] = (".ts", ".tsx", ".js", ".jsx")
 #: Test and story modules exercise a face; they do not draw one.
 FACE_EXEMPT_INFIXES: tuple[str, ...] = (".test.", ".stories.", ".spec.")

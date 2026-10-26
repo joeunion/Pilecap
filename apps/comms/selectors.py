@@ -68,8 +68,9 @@ from apps.comms.models import (
 )
 from apps.core.actor import Actor
 from apps.core.authz import require
-from apps.core.exceptions import Invalid, NotFound
+from apps.core.exceptions import NotFound
 from apps.core.models import ScopedQuerySet, Tenant
+from apps.core.verbs import shown
 
 # --- messages -------------------------------------------------------------------
 
@@ -292,40 +293,20 @@ def get_device_by_token_hash(
 # --- recipients -----------------------------------------------------------------
 
 
-#: The three cuts of the contact book `show` may ask for, in the order a
-#: refusal names them.
-RECIPIENT_SHOWS: tuple[str, ...] = ("live", "archived", "all")
-
-
 def _recipients_in(
     *,
     tenant: Tenant | None,
     org: Any = None,
     show: str = "live",
 ) -> ScopedQuerySet[Recipient]:
-    """The rows, without the capability. `_messages_in`'s shape and its reason.
-
-    **The cut is the queryset's own widening, never a filter on `archived_at`.**
-    `Recipient` is `Archivable`, so `for_tenant()` has already taken the closed
-    contacts out before anything here runs; a hand filter on the column after it
-    (`archived_at__isnull=False`) answers an empty book with no error, and one
-    that "includes" archived rows by not filtering answers the live book alone.
-    `.including_archived()` and `.archived_only()` are the only two ways back
-    in. `archived_by` rides the same join as the organization, because every
-    read shape of a contact names who closed it.
-    """
+    """The rows without the capability, cut by `show` through the archive road (rule 81)."""
     rows = (
         Recipient.objects.for_tenant(tenant)
         .visible_to(org)
         .select_related("organization", "archived_by")
     )
-    if show == "live":
-        return rows
-    if show == "archived":
-        return rows.archived_only()
-    if show == "all":
-        return rows.including_archived()
-    raise Invalid({"show": [f"Show one of: {', '.join(RECIPIENT_SHOWS)}."]})
+    cut: ScopedQuerySet[Recipient] = shown(rows, show)
+    return cut
 
 
 def list_recipients(

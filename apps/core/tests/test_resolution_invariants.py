@@ -11,8 +11,8 @@ it. They live beside `flat_product_census` for the same reason it does.
   write-only role this test plants through the same discovery walk, because on
   a template carrying only `admin` (`("*",)`) and `member` (`("*.read",)`) the
   assertion is nearly vacuous: two roles whose patterns cover the vocabulary
-  cannot show a residue that is anything but the predicate keys. The plant is
-  what makes it falsifiable.
+  cannot show a key held beyond the declaration. The plant is what makes it
+  falsifiable.
 * (b) `dataclasses.fields(World)` — every field typed `Actor` is an actor, every
   field typed `Organization` is a node. A world that grows a seventh person is
   in the cross product on the run it grows one, and nobody edits a list here.
@@ -79,18 +79,17 @@ PLANTED_ROLE = "canary_scribe"
 def _predicate_keys() -> set[str]:
     """Every key whose answer is also a question about a ROW.
 
-    The residue `collection` carries over `defaults_for` is exactly this set by
-    construction — a key with a predicate and no declaration is offered to every
-    role and the predicate is what narrows it (the compat residue Phase W
-    leaves). Derived from the vocabulary, never listed.
+    The keys whose answer a predicate narrows beyond the collection. Derived from
+    the vocabulary, never listed; the compat residue that once added these to
+    every role's collection is retired.
     """
     return {key for key, word in vocabulary().items() if word.predicate is not None}
 
 
-def test_every_declared_role_holds_its_declaration_plus_the_predicate_residue(
+def test_every_declared_role_holds_its_declaration_and_nothing_else(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """(a) A role holds what it was declared plus the predicate residue, and nothing else.
+    """(a) A role holds what it was declared, and nothing else.
 
     Two claims in one census, and the second is the one that pays: for every
     key that has NO predicate, `collection` and `defaults_for` agree exactly.
@@ -127,10 +126,9 @@ def test_every_declared_role_holds_its_declaration_plus_the_predicate_residue(
                 f"role {key}: holds {len(held)} · declared {len(declared)} · "
                 f"residue {len(residue)} -> {sorted(residue)[:8]}"
             )
-            assert residue <= predicates, (
-                f"the role {key!r} holds {sorted(residue - predicates)} that nothing "
-                "declared and no predicate narrows — a capability arriving from neither "
-                "the declaration nor the compat residue is a capability nobody can trace"
+            assert residue == set(), (
+                f"the role {key!r} holds {sorted(residue)} that nothing declared — "
+                "a capability arriving from outside the declaration is one nobody can trace"
             )
             for action in sorted(words):
                 if action in predicates:

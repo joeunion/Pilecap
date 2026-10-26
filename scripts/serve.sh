@@ -1,36 +1,5 @@
 #!/usr/bin/env bash
-# THIS FILE IS EXECUTED, AND IT IS BASH — not POSIX sh, and not zsh. The
-# shebang above is honoured by `./this`; `sh this` and `zsh this` IGNORE it,
-# and neither of them fails where the mistake was made. Measured on this tree:
-#
-#   zsh scripts/queue_cited.sh   exit 2 blaming the TREE ("this is not a
-#                                checkout root") for zsh's word-splitting
-#   zsh scripts/kill_mine.sh     an ordinary-looking census of nothing
-#   sh  scripts/sweep.sh         "lifecycle.sh: line 152: syntax error"
-#
-# A wrong shell here does not crash. It ANSWERS, and the answer looks like the
-# tree's fault.
-#
-# TWO TESTS, because on macOS `/bin/sh` IS bash: BASH_VERSION is set under
-# `sh x.sh` and only POSIX MODE tells the two apart (SHELLOPTS carries
-# `posix`). On Linux `/bin/sh` is dash and the first test is the one that
-# fires. Neither test alone covers both machines.
-#
-# A SOURCED library must never carry this. There the interpreter is the
-# caller's ON PURPOSE and an `exit` would kill the caller's shell — the
-# argument is scripts/db.sh's, at scripts/db.sh:50-57, and it is why db.sh is
-# the one executable in this tree deliberately without a belt.
-[ -n "${BASH_VERSION:-}" ] || {
-    echo "${0##*/}: must run under bash — not sh, not zsh. Try \`bash ${0}\`." >&2
-    exit 2
-}
-case ":${SHELLOPTS:-}:" in
-*:posix:*)
-    echo "${0##*/}: bash is in POSIX mode — which is what \`sh ${0}\` does on a" >&2
-    echo "  machine whose /bin/sh is bash. Try \`bash ${0}\`." >&2
-    exit 2
-    ;;
-esac
+. "$(dirname -- "${BASH_SOURCE:-$0}")/bash_only.sh" || exit 2
 # The web process: ASGI, because sockets and the MCP mount are not WSGI-shaped.
 #
 #   ./scripts/serve.sh              # this CHECKOUT's own port — it prints it
@@ -129,7 +98,7 @@ while [ $# -gt 0 ]; do
         ;;
     *)
         # A mistyped flag falling through to a silently different run is
-        # enforcement misfiring, and that is an exit 2 (scripts/check.sh:71-76).
+        # enforcement misfiring, and that is an exit 2 (quality/djb/gate_args.py::parse).
         echo "!! serve.sh: unknown argument '$1'." >&2
         usage >&2
         exit 2
@@ -141,7 +110,7 @@ done
 # through, so it is a requirement and not a nicety: serving without it means
 # serving somebody else's database on everybody's port. It sets no shell
 # options of its own and may read unset variables, so `set +u` around the
-# source is the same shape `rung_start.sh:410` and `seam_check.sh:182` use.
+# source is the same shape `scripts/rung_start.sh:774` uses.
 if [ ! -r scripts/db.sh ]; then
     echo "!! serve.sh: scripts/db.sh is missing or unreadable." >&2
     echo "   It is the one seam this checkout's database name AND its port are" >&2
@@ -154,7 +123,8 @@ set +u
 . scripts/db.sh
 set -u
 
-export DJANGO_SETTINGS_MODULE="${DJANGO_SETTINGS_MODULE:-config.settings.local}"
+[ -n "${DJANGO_SETTINGS_MODULE:-}" ] || [ ! -f .env ] ||
+    DJANGO_SETTINGS_MODULE="$(sed -n 's/^DJANGO_SETTINGS_MODULE=//p' .env | tail -1)"
 
 # The window, as one pair of names so the header's arithmetic has exactly one
 # home. `serve_port` takes 4 hex digits (16 bits) off the SAME digest db.sh
@@ -278,6 +248,14 @@ if port_is_taken "$PORT"; then
     printf '     PORT=%s ./scripts/serve.sh\n' "$((PORT + 1))" >&2
     exit 2
 fi
+
+# The settings module is the environment's or .env's, never this script's:
+# refused here, after the port answers that need no settings, and before uvicorn.
+[ -n "${DJANGO_SETTINGS_MODULE:-}" ] || {
+    gate_refuse "serve.sh: DJANGO_SETTINGS_MODULE is unset and .env names none — ./scripts/setup.sh writes .env with it, or export it."
+    exit 2
+}
+export DJANGO_SETTINGS_MODULE
 
 printf 'serve.sh: http://127.0.0.1:%s  (%s)\n' "$PORT" "$PORT_SOURCE"
 

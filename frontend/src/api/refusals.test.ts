@@ -26,9 +26,7 @@ function registryCodes(): readonly string[] {
 
 describe("the transport vocabulary is closed and is NOT the registry's", () => {
     it("is exactly its two declared halves, and nothing else", () => {
-        // IT USED TO READ "has exactly two members", and the change is the
-        // point rather than a loosening. P16 ruling 2 closes the STATE list at
-        // four and says in the same breath that the things which can go wrong
+        // The STATE list is closed at four and the things which can go wrong
         // are an open population belonging in a vocabulary — so this list may
         // grow, and the growth must be LOUD. Set-equality against the two
         // declared halves is that loudness: a member added to neither half, or
@@ -99,14 +97,15 @@ describe("registryRefusal", () => {
         expect(registryRefusal(wire)).toEqual({ kind: "registry", refusal: wire });
     });
 
-    it("refuses to invent a code when the body is not the envelope", () => {
-        // A proxy's HTML 502 is still a RESPONSE, so it is a registry refusal
-        // with the registry's own `error` code — never a transport failure,
-        // which would be a second lie about what happened.
-        const refusal = registryRefusal("<html>502 Bad Gateway</html>");
-        expect(refusal.kind).toBe("registry");
-        expect(refusal.refusal.code).toBe("error");
-        expect(refusal.refusal.detail).toBe(TRANSPORT_COPY.unreadable_refusal);
+    it("refuses to invent a registry code when the body is not the envelope", () => {
+        const refusal = registryRefusal("<html>500 Internal Server Error</html>", 500);
+        expect(refusal).toEqual({ kind: "transport", code: "network_unreachable", detail: TRANSPORT_COPY.unreadable_refusal });
+    });
+
+    it("a gateway status with no envelope is the unreachable case, in its sentence", () => {
+        for (const status of [502, 503, 504]) {
+            expect(registryRefusal("<html>Bad Gateway</html>", status)).toEqual({ kind: "transport", code: "network_unreachable", detail: TRANSPORT_COPY.network_unreachable });
+        }
     });
 });
 

@@ -12,25 +12,30 @@
  * (`core.middleware.resolve_org`), and a client that "knows" its own hat has
  * just resolved authority.
  *
- * **There is deliberately no mutation wrapper in this scaffold, and its absence
- * is declared rather than forgotten.** fe-conventions §4 requires every write
- * to go through one wrapper carrying a CSRF token, an `Idempotency-Key` and the
- * hat — and this scaffold makes no writes at all. Shipping the wrapper anyway
- * would be a reader-less declaration, which is the class this house refuses on
- * the Python side too (house rule 30's shape). The first rung that writes
- * builds it, and it will also need the server told which browser origin it is
- * (`CSRF_TRUSTED_ORIGINS`), which is the first 403 fe-conventions §4 warns
- * about.
+ * **ONE MUTATION WRAPPER, `send`, and every write goes through it** (fe-conventions
+ * §4). It carries three things every time so no call site can forget one: the
+ * page token (`X-CSRFToken`, read from the host's `csrftoken` cookie by
+ * `readPageToken` and nothing else), an `Idempotency-Key` minted per INTENT by
+ * `mintIntent` (a retry or a double press reuses it; a new intent mints a new
+ * one), and the hat. An unsafe call without either is a value TypeScript cannot
+ * construct: both are branded types only their one producer makes. The server
+ * must know the browser origin (`CSRF_TRUSTED_ORIGINS`, derived from the bound
+ * hosts); a page token the cookie did not carry is sent as no header at all,
+ * and the server's own `page_token_missing` is the answer the face renders.
+ *
+ * **A resource path is the document's.** Each path below is a key of the
+ * generated `paths`, and a `{segment}` in one is filled here, in the seam, from
+ * the id a screen handed over — a screen never spells a path.
  */
 
-import type { paths } from "@/api/generated/schema";
+import type { components, paths } from "@/api/generated/schema";
 import type { Refusal } from "@/api/refusals";
 import { registryRefusal, transportFailure } from "@/api/refusals";
 
 /**
  * The version segment is `config/urls.py`'s and the path is the document's,
- * taken verbatim (P16 ruling 1: rule 32 translates to the client as
- * CONSUMPTION — the client never composes a resource path of its own).
+ * taken verbatim: rule 32 reaches the client as CONSUMPTION — the client never
+ * composes a resource path of its own.
  *
  * SAME-ORIGIN ON PURPOSE. The origin lives in `next.config.ts`'s rewrite and
  * nowhere else, so the browser sends its session cookie without a CORS story
@@ -45,6 +50,20 @@ const TIMEOUT_MS = 10_000;
 export type OrganizationPage =
     paths[typeof ORGANIZATIONS]["get"]["responses"][200]["content"]["application/json"];
 export type Organization = OrganizationPage["items"][number];
+
+const WIDGETS = "/api/v1/widgets/" as const satisfies keyof paths;
+const WIDGET = "/api/v1/widgets/{widget_id}/" as const satisfies keyof paths;
+const PORTAL_REQUESTS = "/api/v1/portal-requests/" as const satisfies keyof paths;
+const PORTAL_REQUEST = "/api/v1/portal-requests/{request_id}/" as const satisfies keyof paths;
+
+/** The generated response types, used verbatim (Law 3). */
+export type WidgetPage = paths[typeof WIDGETS]["get"]["responses"][200]["content"]["application/json"];
+export type WidgetDetail = paths[typeof WIDGET]["get"]["responses"][200]["content"]["application/json"];
+export type PortalRequestPage =
+    paths[typeof PORTAL_REQUESTS]["get"]["responses"][200]["content"]["application/json"];
+export type PortalRequest =
+    paths[typeof PORTAL_REQUEST]["get"]["responses"][200]["content"]["application/json"];
+export type PortalRequestIn = components["schemas"]["PortalRequestIn"];
 
 /** What one call answers: the data, or the reason there is none. */
 export type Answer<T> =
@@ -73,19 +92,120 @@ export async function listOrganizations(hat: Hat): Promise<Answer<OrganizationPa
     return request<OrganizationPage>(ORGANIZATIONS, hat);
 }
 
-async function request<T>(path: string, hat: Hat): Promise<Answer<T>> {
-    // The hat rides in a header the server revalidates. Built here so no call
-    // site can spell the empty-string form.
+/** The widgets the acting hat can read — the customer face's list. */
+export async function listWidgets(hat: Hat): Promise<Answer<WidgetPage>> {
+    return request<WidgetPage>(WIDGETS, hat);
+}
+
+/** One widget, read-only — the customer face's record. */
+export async function getWidget(widgetId: string, hat: Hat): Promise<Answer<WidgetDetail>> {
+    return request<WidgetDetail>(filled(WIDGET, { widget_id: widgetId }), hat);
+}
+
+/** The portal requests the acting hat can see, newest first. */
+export async function listPortalRequests(hat: Hat): Promise<Answer<PortalRequestPage>> {
+    return request<PortalRequestPage>(PORTAL_REQUESTS, hat);
+}
+
+/** One portal request. */
+export async function getPortalRequest(requestId: string, hat: Hat): Promise<Answer<PortalRequest>> {
+    return request<PortalRequest>(filled(PORTAL_REQUEST, { request_id: requestId }), hat);
+}
+
+/** Send a portal request — one intent, one key, the page's token, the hat. */
+export async function submitPortalRequest(
+    body: PortalRequestIn,
+    hat: Hat,
+    token: PageToken,
+    intent: IntentKey,
+): Promise<Answer<PortalRequest>> {
+    return send<PortalRequest>({ path: PORTAL_REQUESTS, body, hat, token, intent });
+}
+
+/** A document path with its `{segment}`s filled from `segments`, each encoded. */
+function filled(template: string, segments: Readonly<Record<string, string>>): string {
+    return template.replace(/\{([^}]+)\}/g, (_whole, name: string) => encodeURIComponent(segments[name] ?? ""));
+}
+
+/** The page token: the host's `csrftoken` cookie. Only `readPageToken` makes one. */
+export type PageToken = string & { readonly __brand: "PageToken" };
+
+/** One intent's `Idempotency-Key`. Only `mintIntent` makes one. */
+export type IntentKey = string & { readonly __brand: "IntentKey" };
+
+/**
+ * The page token this host's session carries — read at the moment of the write,
+ * because signing in rotates it. Empty when the cookie is absent: the write is
+ * then sent with no token header, and the server's own refusal answers.
+ */
+export function readPageToken(): PageToken {
+    const found = /(?:^|;\s*)csrftoken=([^;]*)/.exec(typeof document === "undefined" ? "" : document.cookie);
+    return decodeURIComponent(found?.[1] ?? "") as PageToken;
+}
+
+/**
+ * A new intent's key: random, never a counter — two tabs sharing a counter
+ * collide on exactly the key that must not. Mint once per intent and reuse it
+ * on every retry of that intent.
+ */
+export function mintIntent(): IntentKey {
+    if (typeof crypto.randomUUID === "function") return crypto.randomUUID() as IntentKey;
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("") as IntentKey;
+}
+
+/** An unsafe call: it cannot be spelled without its token and its intent. */
+type UnsafeCall = {
+    readonly path: string;
+    readonly body: unknown;
+    readonly hat: Hat;
+    readonly token: PageToken;
+    readonly intent: IntentKey;
+};
+
+/**
+ * THE ONE MUTATION WRAPPER: a POST carrying the page token, the intent's key
+ * and the hat, answering exactly as a read does — the data, or the refusal.
+ */
+async function send<T>(call: UnsafeCall): Promise<Answer<T>> {
+    const headers: Record<string, string> = {
+        ...hatHeaders(call.hat),
+        "Content-Type": "application/json",
+        "Idempotency-Key": call.intent,
+    };
+    if (call.token !== "") {
+        headers["X-CSRFToken"] = call.token;
+    }
+    return exchange<T>(call.path, { method: "POST", headers, body: JSON.stringify(call.body) });
+}
+
+/** A read of a document path, carrying the hat. */
+export async function request<T>(path: string, hat: Hat): Promise<Answer<T>> {
+    return exchange<T>(path, { method: "GET", headers: hatHeaders(hat) });
+}
+
+/**
+ * The hat as a header — OMITTED on the default hat, never sent empty. Built
+ * here so no call site can spell the empty-string form.
+ */
+function hatHeaders(hat: Hat): Record<string, string> {
     const headers: Record<string, string> = { Accept: "application/json" };
     if (hat !== null && hat.trim() !== "") {
         headers["X-Org"] = hat;
     }
+    return headers;
+}
 
+/**
+ * One exchange with the backend: the answer's data, the server's refusal, or
+ * the transport failure — never a thrown fetch. `url` is a same-origin path, or
+ * the backend origin itself for the server-side surface ask (`@/api/surface`).
+ */
+export async function exchange<T>(url: string, init: RequestInit): Promise<Answer<T>> {
     let response: Response;
     try {
-        response = await fetch(path, {
-            method: "GET",
-            headers,
+        response = await fetch(url, {
+            ...init,
             // The browser session cookie is the credential a signed-in page
             // has. Same-origin through the proxy, so this is the default —
             // stated anyway, because the default is what a later refactor
@@ -107,7 +227,7 @@ async function request<T>(path: string, hat: Hat): Promise<Answer<T>> {
 
     if (!response.ok) {
         const body = await readJson(response);
-        return { kind: "refused", refusal: registryRefusal(body) };
+        return { kind: "refused", refusal: registryRefusal(body, response.status) };
     }
 
     const body = await readJson(response);

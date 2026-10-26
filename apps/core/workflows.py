@@ -26,6 +26,7 @@ from datetime import timedelta
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 
+from apps.core.determinism import reason_of
 from apps.core.types import ProbeOutcome
 
 #: The activity, **named as a string** and not imported (house rule 9).
@@ -62,34 +63,6 @@ PROBE_DEADLINE = timedelta(minutes=2)
 #: and asks again at 12:00 — which is the honest cadence for a detector whose
 #: subject changes on the timescale of an expiring key.
 PROBE_RETRY = RetryPolicy(maximum_attempts=1)
-
-#: How many links of a cause chain the reason below walks. Bounded because a
-#: cause chain is somebody else's data structure; three is
-#: `apps/workflows/workflows.py::_reason`'s number and this is its shape,
-#: restated rather than imported (`core` imports nothing above it).
-REASON_LINKS = 3
-
-
-def _reason(failure: BaseException) -> str:
-    """The cause chain, joined — never the wrapper alone.
-
-    Temporal wraps an activity's own exception in an `ActivityError` whose
-    `str()` is `"Activity task failed"`: true, and useless to whoever reads the
-    run six weeks later. `apps/workflows/workflows.py::_reason` is the worked
-    form and this is the same three links; it is restated rather than imported
-    because `core` imports nothing above it, and it is deterministic because it
-    reads nothing but the exception it was handed.
-    """
-    parts: list[str] = []
-    current: BaseException | None = failure
-    for _ in range(REASON_LINKS):
-        if current is None:
-            break
-        text = str(current).strip() or type(current).__name__
-        if text not in parts:
-            parts.append(text)
-        current = current.__cause__
-    return ": ".join(parts)
 
 
 @workflow.defn
@@ -150,7 +123,7 @@ class ProbeIntegrationsWorkflow:
                 retry_policy=PROBE_RETRY,
             )
         except Exception as failure:
-            return ProbeOutcome(statuses={}, incomplete=_reason(failure))
+            return ProbeOutcome(statuses={}, incomplete=reason_of(failure))
         return ProbeOutcome(statuses=statuses)
 
 

@@ -1,3 +1,5 @@
+from typing import ClassVar
+
 from django.apps import AppConfig
 
 
@@ -36,3 +38,8 @@ class NotesConfig(AppConfig):
     name = "apps.djb_notes"
     verbose_name = "Notes"
     depends_on: tuple[str, ...] = ("core", "accounts", "events")
+    ratchet_floors: ClassVar[dict[str, int]] = {
+        "91.block-tail": 39,
+        "91.docstring-tail": 132,
+        "91.module-tail": 66,
+    }

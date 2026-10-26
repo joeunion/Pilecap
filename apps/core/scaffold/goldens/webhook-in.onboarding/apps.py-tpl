@@ -1,0 +1,5 @@
+def ready(self) -> None:
+    """Register the onboarding inbound webhook through `pilecap.connections`."""
+    from apps.example.integrations import register_onboarding_webhooks
+
+    register_onboarding_webhooks()

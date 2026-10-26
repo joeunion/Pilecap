@@ -40,7 +40,7 @@ from apps.events import selectors, services
 from apps.events.models import Outbox
 
 
-def _moment(raw: str) -> datetime:
+def _instant_argument(raw: str) -> datetime:
     """A date or a datetime on the command line, as an aware UTC instant."""
     parsed = parse_datetime(raw)
     if parsed is None:
@@ -69,7 +69,7 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args: Any, **options: Any) -> None:
-        since = _moment(str(options["since"])) if options["since"] else None
+        since = _instant_argument(str(options["since"])) if options["since"] else None
         event_id: UUID | None = None
         if options["id"]:
             try:
@@ -81,7 +81,7 @@ class Command(BaseCommand):
             # means, and it is not something to discover after the fact.
             raise CommandError("Give --since or --id; replaying the whole outbox is not a default.")
 
-        rows = selectors.outbox_to_replay(since=since, event_id=event_id)
+        rows = selectors.list_outbox_to_replay(since=since, event_id=event_id)
         if options["failed_only"]:
             rows = rows.exclude(status=Outbox.Status.DISPATCHED)
 

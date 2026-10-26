@@ -32,37 +32,40 @@
 // golden: face begin
 import { type ReactNode, type Ref, type RefObject, useEffect, useRef, useState } from "react";
 
-import { WIDGET_COPY as C, widgetStateWord } from "@/copy/widget";
-import { RefusalPanel } from "@/screens/refusal-panel";
-import { pathFor } from "@/screens/routes";
-import type { Refusal, SurfaceState } from "@/screens/state";
-import { unhandledState } from "@/screens/state";
-import { type Act, actsFor, footAct, type Place, VERB_TABLE, type Verb } from "@/screens/verbs";
-import { Card, dayOf, Pill, StillLine, type WidgetDetail as Widget } from "@/screens/widget/parts";
+import { WIDGET_COPY as C, widgetStateWord } from "@pilecap/copy/widget";
+import { RefusalPanel } from "@pilecap/ui/refusal-panel";
+import { pathFor, STAFF_SURFACE } from "@pilecap/ui/routes";
+import type { Refusal, SurfaceState } from "@pilecap/ui/state";
+import { unhandledState } from "@pilecap/ui/state";
+import { type Act, actsFor, footAct, type Place, VERB_TABLE, type Verb } from "@pilecap/ui/verbs";
+import { Card } from "@pilecap/ui/card";
+import { Pill } from "@pilecap/ui/pill";
+import { StillLine } from "@pilecap/ui/still-line";
+import { dayOf, onboardedOf, placeOf, type WidgetDetail as Widget } from "@/screens/widget/parts";
 import { ROAD } from "@/screens/widget/road";
 import "@/screens/widget/widget-face.css";
 // golden: face end
 // golden: archive begin
-import { archivedSentence } from "@/copy/widget";
+import { archivedSentence } from "@pilecap/copy/widget";
 // golden: archive end
 // golden: version begin
 import { type EditPress, EditSheet } from "@/screens/widget/widget-edit";
 // golden: version end
 // golden: move begin
-import { movedSentence, moveSheetTitle } from "@/copy/widget";
+import { movedSentence, moveSheetTitle } from "@pilecap/copy/widget";
 import { type MovePress, MoveSheet } from "@/screens/widget/widget-move";
 // golden: move end
 // golden: history begin
 import { HistoryCard, type HistoryPress } from "@/screens/widget/widget-history";
 // golden: history end
 // golden: duplicate begin
-import { duplicatedBand } from "@/copy/widget";
+import { duplicatedBand } from "@pilecap/copy/widget";
 // golden: duplicate end
 // golden: attach begin
 import { type AttachPress, FilesCard, NotesCard, TagRow, useAdding } from "@/screens/widget/widget-attach";
 // golden: attach end
 // golden: merge begin
-import { mergedBand } from "@/copy/widget";
+import { mergedBand } from "@pilecap/copy/widget";
 import { type MergePress, MergeSheet } from "@/screens/widget/widget-merge";
 // golden: merge end
 
@@ -125,13 +128,7 @@ export type Sheet = "update" | "move" | "merge";
 
 export function WidgetRecord(props: WidgetRecordProps) {
     return (
-        <main
-            style={{
-                maxWidth: "calc(var(--measure) * 1.5 + var(--space-4))",
-                margin: "0 auto",
-                padding: "var(--space-4) var(--space-3)",
-            }}
-        >
+        <main className="widget-page widget-page-record">
             <Crumb />
             {body(props)}
         </main>
@@ -145,7 +142,7 @@ function body(props: WidgetRecordProps) {
             return (
                 <div aria-busy="true" aria-live="polite">
                     <StillLine />
-                    <p style={{ margin: "0 0 var(--space-3)", color: "var(--muted)" }}>{C.loadingOne}</p>
+                    <p className="widget-reading widget-reading-one">{C.loadingOne}</p>
                     <Grid
                         main={
                             <Card title={C.aboutTitle} busy>
@@ -165,7 +162,7 @@ function body(props: WidgetRecordProps) {
             // Not a claim about the record (that is `not_found`, §15): under the
             // crumb alone, one sentence, and no second door: the crumb is the
             // record's one door to the list (§14).
-            return <p style={{ margin: "0 0 var(--space-2)", color: "var(--ink)" }}>{C.gone}</p>;
+            return <p className="widget-sentence widget-sentence-gone">{C.gone}</p>;
         case "error":
             // The head carries the crumb alone; the notice sits in the content seat.
             return <RecordRefusal refusal={state.refusal} />;
@@ -177,9 +174,9 @@ function body(props: WidgetRecordProps) {
 
 /** §6: the crumb is one link to the list route, wearing the list's title, at the act floor (`.widget-crumb`). */
 function Crumb() {
-    const list = pathFor("widget-list");
+    const list = pathFor("widget-list", {}, undefined, STAFF_SURFACE);
     return (
-        <p style={{ margin: "0 0 var(--space-2)", fontSize: "var(--type-facts)" }}>
+        <p className="widget-crumb-line">
             {list === null ? (
                 C.title
             ) : (
@@ -209,17 +206,19 @@ function Ready(props: WidgetRecordProps & { readonly widget: Widget }) {
     }, [arrived]);
     // golden: merge end
     // golden: face begin
-    let movedAway = false;
-    let merged = false;
+    /** Where the row went, each verb's block saying its own. */
+    const gone = { moved: false, merged: false };
     // golden: face end
     // golden: move begin
-    movedAway = props.movedTo !== null && props.movedTo !== undefined;
+    gone.moved = props.movedTo !== null && props.movedTo !== undefined;
     // golden: move end
     // golden: merge begin
-    merged = widget.merged_into_id !== null && widget.merged_into_id !== undefined;
+    gone.merged = widget.merged_into_id !== null && widget.merged_into_id !== undefined;
     // golden: merge end
     // golden: face begin
+    const { moved: movedAway, merged } = gone;
     const live = archivedAt === null && !movedAway && !merged;
+    const onboarded = onboardedOf(widget);
     // golden: face end
     // golden: attach begin
     const adding = useAdding();
@@ -260,20 +259,16 @@ function Ready(props: WidgetRecordProps & { readonly widget: Widget }) {
     return (
         <>
             <header>
-                <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", columnGap: "var(--space-2)" }}>
-                    <h1
-                        ref={name}
-                        tabIndex={-1}
-                        style={{ fontSize: "var(--type-title)", margin: 0, color: "var(--ink)", overflowWrap: "anywhere" }}
-                    >
+                <div className="widget-head-line">
+                    <h1 ref={name} tabIndex={-1} className="widget-record-name">
                         {widget.name}
                     </h1>
                     {/* An archived or moved-away head wears no pill: its band says it (§16). */}
-                    {live ? <StatePill onboardedAt={widget.onboarded_at} /> : null}
+                    {live && onboarded !== undefined ? <StatePill onboardedAt={onboarded} /> : null}
                 </div>
                 {/* §6: the lede is one fact, the scope the record lives in, by name. */}
-                <p style={{ margin: "var(--space-1) 0 0", fontSize: "var(--type-facts)", color: "var(--muted)" }}>
-                    {widget.organization_name}
+                <p className="widget-lede">
+                    {placeOf(widget)}
                 </p>
                 {/* golden: face end */}
                 {/* golden: attach begin */}
@@ -311,7 +306,7 @@ function Ready(props: WidgetRecordProps & { readonly widget: Widget }) {
                 main={
                     <>
                         <Card title={C.aboutTitle}>
-                            <p style={{ margin: 0, color: widget.notes === "" ? "var(--muted)" : "var(--ink)" }}>
+                            <p className={widget.notes === "" ? "widget-notes widget-notes-empty" : "widget-notes"}>
                                 {widget.notes === "" ? C.descriptionEmpty : widget.notes}
                             </p>
                         </Card>
@@ -330,11 +325,11 @@ function Ready(props: WidgetRecordProps & { readonly widget: Widget }) {
                 }
                 rail={
                     <Card title={C.detailsTitle}>
-                        <dl style={{ margin: 0 }}>
+                        <dl className="widget-facts">
                             <Fact label={C.addedLabel} value={dayOf(widget.created_at)} />
                             <Fact label={C.changedLabel} value={dayOf(widget.updated_at)} />
-                            {widget.onboarded_at === null || widget.onboarded_at === undefined ? null : (
-                                <Fact label={C.onboardedLabel} value={dayOf(widget.onboarded_at)} />
+                            {onboarded === null || onboarded === undefined ? null : (
+                                <Fact label={C.onboardedLabel} value={dayOf(onboarded)} />
                             )}
                         </dl>
                     </Card>
@@ -516,7 +511,7 @@ function MoveSheetFor({
 /** §17: the copy's band — *Duplicated from ⟨source⟩.*, the source a live link — until the next navigation. */
 function DuplicatedBand({ source }: { readonly source: { readonly id: string; readonly name: string } }) {
     const words = duplicatedBand();
-    const door = pathFor("widget-detail", { id: source.id });
+    const door = pathFor("widget-detail", { id: source.id }, undefined, STAFF_SURFACE);
     return (
         <div data-band="duplicated" className="widget-band">
             <p>
@@ -536,7 +531,7 @@ function DuplicatedBand({ source }: { readonly source: { readonly id: string; re
  */
 function MergedBand({ widget, survivor }: { readonly widget: Widget; readonly survivor: { readonly id: string; readonly name: string } | null }) {
     const words = mergedBand(dayOf(widget.archived_at ?? widget.updated_at));
-    const door = survivor === null ? null : pathFor("widget-detail", { id: survivor.id });
+    const door = survivor === null ? null : pathFor("widget-detail", { id: survivor.id }, undefined, STAFF_SURFACE);
     return (
         <div data-band="merged" className="widget-band">
             <p>
@@ -668,7 +663,7 @@ function RefusalSeat({
     if (act === undefined) return null;
     return (
         <div className="widget-refusal-seat">
-            <RefusalPanel refusal={refused.refusal} seat={place} words={{ label: act.words.refused, remedies: C.remedies }} />
+            <RefusalPanel surface={STAFF_SURFACE} refusal={refused.refusal} seat={place} refused={act.words.refused} />
         </div>
     );
 }
@@ -676,34 +671,24 @@ function RefusalSeat({
 /** §16: the pill is the departure; the resting state wears none. */
 function StatePill({ onboardedAt }: { readonly onboardedAt: string | null | undefined }) {
     const word = widgetStateWord(onboardedAt);
-    return word === null ? null : <Pill word={word} />;
+    return word === null ? null : <Pill word={word} className="widget-pill" />;
 }
 
 /** §9: main (the work, at most the measure wide) and the rail beside it; one column on a phone. */
 function Grid({ main, rail }: { readonly main: ReactNode; readonly rail: ReactNode }) {
     return (
-        <div
-            style={{
-                display: "flex",
-                flexWrap: "wrap",
-                alignItems: "flex-start",
-                gap: "var(--space-4)",
-                marginBlockStart: "var(--space-4)",
-            }}
-        >
-            <div style={{ flex: "2 1 calc(var(--measure) / 2)", maxWidth: "var(--measure)", display: "grid", gap: "var(--space-3)" }}>
-                {main}
-            </div>
-            <aside style={{ flex: "1 1 calc(var(--measure) / 3)", display: "grid", gap: "var(--space-3)" }}>{rail}</aside>
+        <div className="widget-grid">
+            <div className="widget-grid-main">{main}</div>
+            <aside className="widget-grid-rail">{rail}</aside>
         </div>
     );
 }
 
 function Fact({ label, value }: { readonly label: string; readonly value: string }) {
     return (
-        <div style={{ margin: "0 0 var(--space-1)" }}>
-            <dt style={{ fontSize: "var(--type-facts)", color: "var(--muted)" }}>{label}</dt>
-            <dd style={{ margin: 0, color: "var(--ink)" }}>{value}</dd>
+        <div className="widget-fact-pair">
+            <dt className="widget-fact-label">{label}</dt>
+            <dd className="widget-fact-value">{value}</dd>
         </div>
     );
 }
@@ -711,8 +696,8 @@ function Fact({ label, value }: { readonly label: string; readonly value: string
 function RecordRefusal({ refusal }: { readonly refusal: Refusal }) {
     return (
         <RefusalPanel
+            surface={STAFF_SURFACE}
             refusal={refusal}
-            words={{ label: refusal.kind === "registry" ? C.errorLabel : C.transportLabel, remedies: C.remedies }}
         />
     );
 }

@@ -1,10 +1,4 @@
-"""The bulk adoption's own test — copied with the adoption, and green on the copy.
-
-Every line is fenced `golden: bulk`: a branch administrator archives three
-widgets, one of them in a sibling branch — answered in order, the sibling's
-`not_found`, the other two done — and the same batch under the same
-`Idempotency-Key` answers the identical body.
-"""
+"""The bulk adoption's own test — copied with the adoption, and green on the copy."""
 
 # golden: bulk begin
 import json
@@ -13,18 +7,16 @@ from typing import Any
 import pytest
 from django.test import Client
 
-from apps.accounts.models import User
-from apps.accounts.services import create_user
-from apps.core.actor import actor_for, system_actor
-from apps.core.models import Membership, Organization, Tenant
-from apps.core.services import add_membership, create_organization
 from apps.example.models import Widget
+from pilecap.accounts import User, create_user
+from pilecap.tenancy import Membership, Organization, Tenant, add_membership, create_organization
+from pilecap.testing import actor_for, system_actor
 
 pytestmark = pytest.mark.django_db
 
 WIDGETS_URL = "/api/v1/widgets/"
 JSON = "application/json"
-PASSWORD = "a-long-enough-password"  # pragma: allowlist secret
+PASSWORD = "a-long-enough-password"  # noqa: S105 — a throwaway password a test user is made with  # pragma: allowlist secret
 
 
 def _body(response: Any) -> dict[str, Any]:

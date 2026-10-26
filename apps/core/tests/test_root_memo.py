@@ -9,7 +9,7 @@ emitted, and nothing bounded N: a write that emitted three times paid three.
 
 **Two things happened to that path and the cases below hold both.** The memo
 took it to ONE per request. Then PR5.5 answered the register question — sight is
-the acting hat's, configuration is the root's — and the READ sites stopped
+the hat's, configuration is the root's — and the READ sites stopped
 resolving a node at all, so the emit path's number is now ZERO and the three
 equalities that measure it say so. What still asks for a root is every WRITE,
 in six apps, and that is what the contract clauses below are driven through.
@@ -128,7 +128,7 @@ def test_a_door_that_lists_endpoints_then_reads_an_event_pays_one_root_read(
     The history, kept because the number is the whole point: two root reads on
     the tree this was written against (one per selector, since `_tenant_root`
     held no memo), ONE once the memo landed, and NONE now that sight is the
-    acting hat's — the selectors ask `endpoint.read` and `event.read` with no
+    hat's — the selectors ask `endpoint.read` and `event.read` with no
     node and with the row, and neither resolves an organization.
 
     *Absent:* one root read, which is what a read path that started resolving
@@ -247,7 +247,7 @@ def test_the_hat_the_door_resolved_fills_the_memo(
 ) -> None:
     """**RT.1.** The root passed down from the one site that already holds it.
 
-    `core.middleware.resolve_org` reads the acting hat on every request at every
+    `core.middleware.resolve_org` reads the hat on every request at every
     door. When that hat IS the root — which is every request in a flat product
     and every request an administrator makes in a networked one — the row is
     already in hand and the memo is filled from it, so the request's first
@@ -311,7 +311,7 @@ def test_the_memo_answers_every_site_because_it_is_inside_the_one_function(
 
     **The two `_tenant_root` helpers this used to be driven through are gone**
     (PR5.5): the reads of tenant-wide kinds in `events` and `connections` ask at
-    the acting hat now and resolve no root at all, so the helper that used to
+    the hat now and resolve no root at all, so the helper that used to
     stand in for "a second caller" is no longer one. The write sites are, and
     the property is `root_organization`'s own — asked three times here, through
     the function every one of those sites calls unchanged. The registry of sites

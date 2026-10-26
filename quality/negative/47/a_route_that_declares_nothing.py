@@ -8,7 +8,7 @@
 # rule must be silent on every one of them — a check that could not tell a
 # derived set from a declared one would turn the whole document red.
 @router.get(
-    "/silent-probe/", response=WidgetOut, url_name="widget_silent_probe-detail"
+    "/silent-probe/{widget_id}/", response=WidgetOut, url_name="widget_silent_probe-detail"
 )
 def silent_probe_detail_route(request: TenantRequest, widget_id: UUID) -> Any:
     """Read a silent-probe widget

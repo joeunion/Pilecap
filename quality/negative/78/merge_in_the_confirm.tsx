@@ -1,6 +1,6 @@
 // patterns: §1
 import { Dialog } from "@/primitives/dialog";
-import { footAct, type Road } from "@/screens/verbs";
+import { footAct, type Road } from "@pilecap/ui/verbs";
 
 const ROAD: Road = { noun: "widget", seat: "record-acts", verbs: ["merge"] };
 

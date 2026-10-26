@@ -143,9 +143,9 @@ them verbatim):
   webhooks), and whether it adds a workflow.** A rung that adds a workflow is
   a rung the field test cannot drive without the worker up; say so.
 - **Development works in a worktree with its own database** (`scripts/db.sh`
-  derives it from the branch), runs **`./scripts/check.sh --loop` per rung**,
-  makes its migrations **inside the rung**, and **never runs
-  `makemigrations --merge`**.
+  derives it from the branch), runs **`--fast` per rung and opens its PR** (owner
+  2026-10-18: `--fast` green + PR open unblocks, CI is the verdict; `--loop` is
+  optional), makes migrations **inside the rung**, never `makemigrations --merge`.
 - **The surveyor carries six standing lenses**: query counts at seeded scale,
   migration graph health, `manage.py check --deploy`, **the worker** (task
   queue backlog, failed workflow runs, dead-letter deliveries), **the outbox**
@@ -175,6 +175,11 @@ finding, no verdict — has usually stopped converging; retire it, keep the
 worktree, and send a fresh builder into the **same tree** with the criteria
 and the standing state, so the work transfers and the spiral does not.
 Resume an agent that is converging; replace one that is not.
+**A standing agent whose return shows more than 300K context tokens is
+retired (owner, 2026-10-03)** — the next send is a fresh builder in the SAME
+worktree, its state the brief, the agent's report file under
+`docs/product/reports/<cycle>/` (R8 trims the template's reports; in a product the first report makes the directory) and `git log`. **The PM's own output is gated
+by `scripts/ledger_check.py` in `--fast` (owner, 2026-10-03).**
 `references/operations.md` § Running builders carries the full handling —
 anti-stall, commit-at-boundaries, turn-taking on suites, write-first ordering.
 
@@ -268,12 +273,13 @@ the calendar. The full pattern and the surface order live in
 `references/operations.md` § The surface-review program; the ordering itself
 is `queue.md`'s, as always.
 
-## Arm the watchdog — hourly, at the first dispatch
+## Arm the watchdog — every two hours, at the first dispatch
 
 **Arm it at the first dispatch of every session, and only while an agent is
 out.** A loop nobody is watching does not stop loudly; it stops silently,
-mid-stage, with an agent that returned to nobody. **It is hourly, not every
-fifteen minutes (owner, 2026-09-23).** Each fire re-reads the session's whole
+mid-stage, with an agent that returned to nobody. **It is every two hours by default
+(owner, 2026-10-02) — hourly before that (2026-09-23), never every fifteen
+minutes.** Each fire re-reads the session's whole
 context — 1.4M tokens a fire past 150k of context — and the measurement that
 set the cadence (readouts § COST BASELINE, Row 15) is fifty fires across one
 night, 59M tokens, zero stalls found: every stage advanced on a harness
@@ -282,12 +288,12 @@ peer's message). The watchdog insures only against a LOST notification, and
 that insurance does not need a quarter-hour cadence.
 
 ```
-CronCreate  cron: "<an off-minute> * * * *"  recurring: true
+CronCreate  cron: "<an off-minute> */2 * * *"  recurring: true
 prompt: Watchdog. ONE ListAgents call, nothing else read. If an agent named in
   docs/product/in-flight.md as OUT is still running, answer in one line: no-op.
   If the loop has stalled — nothing running and the stage has not advanced —
   restart it by dispatching the next stage from the cycle plan in
-  docs/product/cycles/, the dispatch ledger written BEFORE sending. If a hard
+  docs/product/cycles/ (R8S ships its README and example plan; the template's plans stay in the template), the dispatch ledger written BEFORE sending. If a hard
   stop is blocking (real money, real people's inboxes, interactive credentials,
   irreversible acts on real data, or a change to the ship definition), tell the
   owner rather than waiting silently. If in-flight.md says PAUSED, or the stage
@@ -312,16 +318,12 @@ and record the reaper failure as a queue row; exit 2 means the profile is gone �
 the two commands it prints are the owner's, ask — and the bootstrap is typed with its three coordinates in front (`DJB_DEPLOY_NAMESPACE=<ns> DJB_VERIFIER_ACCOUNT=<12 digits> DJB_VERIFIER_REGION=<region> ./deploy/iam/verifier_bootstrap.sh`, per its own header; the tree carries no default for any of them). (Until the verifier-box
 script lands, the command does not exist and this step is a no-op.)
 
-**Know what it does not do, and say so rather than implying otherwise.** The job
-is session-only: held in memory, never written to disk, gone when the session
-ends, and auto-expired after seven days regardless. **It watches for a stalled
-loop; it cannot survive the crash that stalls it.** Durability across a crash
-comes from the repository — the cycle plan, `in-flight.md`, the queue and this
-skill — which is what lets a *fresh* PM resume. The watchdog and the black box
-solve different halves, and neither substitutes for the other.
-
-If a watchdog that outlives the session is wanted, that is a cloud schedule and
-it runs outside this machine — ask the owner before setting one up.
+**Know what it does not do.** The job is session-only: in memory, gone with the
+session, auto-expired after seven days. **It watches for a stalled loop; it
+cannot survive the crash that stalls it.** Durability comes from the repository
+— the cycle plan, `in-flight.md`, the queue and this skill — which is what lets
+a *fresh* PM resume. A watchdog that outlives the session is a cloud schedule
+outside this machine — ask the owner before setting one up.
 
 **A watcher on a long run matches terminal lines only (owner rule, 2026-09-16).**
 Every line a `Monitor` lets through re-invokes the PM with the whole context —
@@ -444,8 +446,7 @@ each journey's ingredient list are stated in the plan. **Each rung
 names its app, its baseline tree, the doors it touches, and whether it adds a
 workflow.** A rung that needs two apps is two rungs, or a lead decision
 recorded as such.
-**5 BUILD** *(development · `opus`)* — rung by rung, gate green at each, in a
-worktree with its own database.
+**5 BUILD** *(development · `opus`)* — rung by rung, gate green at each, in a worktree with its own database. **The builder folds main before its bank, inside its own window, and signals at the commit:** when the rung's last commit is in, the builder posts `committed <sha8> — loop running on <box>` and then launches its one box `--loop`; the verifier is dispatched on that signal and reads while the box runs. The brief lives in the rung branch under `docs/product/briefs/<rung>.md` (R8S ships the directory's README; the template's briefs stay in the template) as a docs-only commit, never in the session's scratchpad: a dead agent's successor reads the tree, not a directory that died with the session.
 **Batching**: independent rungs may be verified in **one pass**. *"Each rung
 lands green alone"* governs landing, not verification, and the rule that matters
 — the builder never decides done — is untouched. A batched brief must carry
@@ -483,7 +484,8 @@ exceeded their build cost.
 
 **Batched verification — the standing rule (owner, 2026-09-15, "yes").** The
 same rule, one stage later: the rungs a batch built are VERIFIED by one
-field-test agent on one clone with one `--loop` consult, and follow-up rungs
+field-test agent on one shared clone with one consult — a lookup of the banked
+key, never a `--loop` — and follow-up rungs
 (`<id>F`, `<id>F2`…) are verified with the next verifier in their territory
 rather than each with a clone of its own. A verifier's fixed cost — the clone,
 the setup, the consult — is most of a ¼-rung's verification, and it is paid
@@ -511,11 +513,17 @@ a map. Quality is the constraint; wall-clock is the objective.
 what got built. Through the machine doors always — REST, MCP, and sockets
 where the rung touches them; through the browser too where a product has one,
 on desktop and phone. "Mostly works" is a fail with a list.
+**The verifier reads; it does not re-measure.** A verification is a reading of the committed delta against the criteria by hand — the planted REDs re-run, the greps on both trees, the territory census, the seven — on a clone `verify_start.sh --no-loop` builds, whose consult is a lookup of the builder's banked verdict and nothing more. The `loop:` cell is the line `verify_start.sh` prints, one of four: `hit`, `docs-only reuse` (main's delta since the fold is prose), `miss(code: <a8>..<b8>)` when main moved by code after the fold point, or `miss(no-ledger)` when no loop row names the tree — a miss is reported, and the PM orders one re-measure only when that code touches the rung's territory. A verifier that runs `check.sh --loop` has made a criteria error and says so. **A fold whose tree equals `git merge-tree` is merged on that equality and never re-read** (`pm_merge.sh` prints it); a fold with a declared resolution gets the same verifier's reading of the resolution, no loop.
 **7 CLOSE** *(you)* — update the ledgers, extend the e2e or the API walk so the
 win cannot silently regress, write down what you learned about the user, and
 **scan the cycle's friction log into stage 8's harvest** — recurring
 *violation* and *process* entries are miss candidates; what clears
-shop-the-price at CLOSE builds as a next-cycle band rung.
+shop-the-price at CLOSE builds as a next-cycle band rung. **And bank local
+main whole (owner, 2026-10-01):** origin is measured on every push, but local
+main between trains is not — so every CLOSE ends with the eight-box bank of
+main's tip (`pm_push.sh --bank --on-boxes 8`, the verifier env exported, under
+`nohup`), never the laptop's full gate (the Mac reds on effects that are the
+Mac's, not the tree's). A red walk is the next merge's refusal, read by you.
 **7b DEDRIFT** *(you, every cycle)* — the cycle just made some documentation
 false. Find it and fix it *now*, while you still know what changed.
 
@@ -668,7 +676,7 @@ intent** — lives with the tier mechanics in `references/operations.md`.
 | Call | Runs | Who runs it | Target |
 |---|---|---|---|
 | `--fast` | ruff · mypy · import-linter · house rules · `makemigrations --check` · linear-migrations | **pre-commit** | under a minute |
-| `--loop` | `--fast` + `check --deploy` + ONE pytest pass | **the builder, per rung; the verifier, once, as the consult** (a `VERDICT REUSED` banner is the gate; a miss completes and is recorded) | a couple of minutes |
+| `--loop` | `--fast` + `check --deploy` + ONE pytest pass | **the builder, per rung** — never the verifier, whose consult is a lookup of the builder's banked key (§ The loop, stage 6) | a couple of minutes |
 | *(no arg)* full | `--loop` + second pytest pass + canary self-test (every canary fires, every negative stays silent) + whatever e2e a product adds; **records a verdict in the ledger keyed on `git rev-parse HEAD^{tree}`** | **pre-push**, which consults the ledger first — a measured-green tree passes in seconds | — |
 
 **Exit 0 clean · 1 violations · 2 enforcement broken** (a dead canary, an
@@ -676,9 +684,9 @@ unbound scope or floor, a consistency failure, a negative-corpus hit, an unknown
 flag). **2 outranks a pass.** A mistyped flag is exit 2, never a silent full run.
 
 The economics nobody works out unprompted, and which the development brief must
-therefore say: **the builder runs `--loop` per rung and never the full gate by
-hand.** The gate is deterministic on a tree, so the full run happens once, at
-push, and the ledger makes a second run of the same tree free by construction.
+therefore say: **the builder runs `--fast` per rung and never the full gate by
+hand.** The gate is
+deterministic on a tree, so the full run happens once, in the PR's CI, and the ledger makes a second run of the same tree free by construction.
 A builder told only "gate green at each rung" reads that as the full gate and
 pays for it before the hook ever gets the chance not to. The targets above are
 targets — the measurements belong to the artifacts that produce them, not to
@@ -813,7 +821,7 @@ are not.
 
 A residual gets three things: **where it lives**, **what it costs**, and **the
 condition that makes it due**. *"The query floor on the orders list is lowered
-consciously when the derived field lands."* *"Production is stood up when a
+consciously when the derived field is built."* *"Production is stood up when a
 second customer is named."* A residual without a trigger is not a plan, it is a
 sentence that makes everyone feel better.
 

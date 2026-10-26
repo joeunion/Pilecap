@@ -81,7 +81,7 @@ def planted() -> Iterator[tuple[Any, Any]]:
 
 
 def _admin_at(tenant: Tenant, org: Organization, email: str) -> Actor:
-    user = create_user(email=email, password="x-irrelevant-9")  # pragma: allowlist secret
+    user = create_user(email=email, password="x-irrelevant-9")  # noqa: S106 — a throwaway password a test user is made with  # pragma: allowlist secret
     add_membership(
         user=user,
         tenant=tenant,
@@ -188,3 +188,43 @@ def test_an_archivable_kind_derives_archive_and_restore(planted: tuple[Any, Any]
         "widget_entry.update",
         "widget_entry.delete",
     }
+
+
+# --- the root is read once per page, never once per row ------------------------
+
+
+#: A page's worth of tenant-wide rows — the list door's own page size.
+PAGE = 20
+
+
+def test_a_page_of_tenant_wide_rows_reads_the_root_once(
+    tenant: Tenant, admin_member: User, root_org: Organization
+) -> None:
+    """`may_archive` over a page of tenant-wide rows resolves the root ONCE.
+
+    A tenant-wide row is asked at the tenant's root, and the root is memoised
+    on the TENANT INSTANCE (`root_organization`). Each row fetched without a
+    join carries its own lazily loaded `tenant`, so reading the root through
+    the row would pay a tenant fetch and a root read per row; the predicate
+    reads it through the actor's tenant when the row is that tenant's, so a
+    page pays one root read whatever its length. `Role` is the tenant-scoped
+    row here only because core owns it; the predicate never looks at the kind.
+    """
+    from django.db import connection
+    from django.test.utils import CaptureQueriesContext
+
+    from apps.core.models import Role
+
+    Role.objects.bulk_create(
+        [Role(tenant=tenant, key=f"page-{index}", name=f"Page {index}") for index in range(PAGE)]
+    )
+    rows = list(Role.objects.for_tenant(tenant).filter(key__startswith="page-"))
+    assert len(rows) == PAGE
+    actor = actor_for(user=admin_member, tenant=Tenant.objects.get(pk=tenant.pk), org=root_org)
+    with CaptureQueriesContext(connection) as captured:
+        answers = [may_archive(actor, row) for row in rows]
+    assert answers == [True] * PAGE
+    root_reads = [q["sql"] for q in captured.captured_queries if '"parent_id" IS NULL' in q["sql"]]
+    tenant_reads = [q["sql"] for q in captured.captured_queries if 'FROM "core_tenant"' in q["sql"]]
+    assert len(root_reads) == 1, root_reads
+    assert tenant_reads == [], tenant_reads

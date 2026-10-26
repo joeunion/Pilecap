@@ -49,6 +49,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from apps.core.exceptions import DomainError, Invalid, wire_refusal
+from apps.core.roads import road
 
 #: The most ids one batch may carry. E6's page ceiling, and DESIGN's "≥ 200".
 MAX_ITEMS = 200
@@ -112,6 +113,7 @@ def check_ids(ids: Sequence[Any]) -> list[Any]:
     return listed
 
 
+@road("bulk", example="apps/example/api.py::bulk_widgets")
 def run_bulk(
     *,
     tenant: Any,

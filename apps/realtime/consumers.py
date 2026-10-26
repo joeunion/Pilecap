@@ -67,30 +67,257 @@ something to keep alive on.
 
 from __future__ import annotations
 
-from typing import Any
+import threading
+import time
+from collections.abc import Callable
+from dataclasses import dataclass
+from importlib import import_module
+from typing import Any, Literal, Protocol
 
+from asgiref.sync import sync_to_async
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
+from django.conf import settings
+from django.core.cache import caches
 from django.core.exceptions import ImproperlyConfigured
 from django.urls import URLPattern, path
 
+# django_redis ships no type information (no `py.typed`).
+from django_redis import get_redis_connection  # type: ignore[import-untyped]
+from django_redis.cache import RedisCache  # type: ignore[import-untyped]
+from redis.exceptions import RedisError
+
+from apps.core import surfaces
 from apps.core.actor import TOKEN_ATTR
 from apps.core.api.scopes import READ, SCOPE_SEPARATOR, families_of_app, within_ceiling
-from apps.core.asgi_middleware import ORG_SCOPE_KEY
+from apps.core.asgi_middleware import ORG_SCOPE_KEY, SURFACE_SCOPE_KEY
 from apps.core.asgi_middleware import SCOPE_KEY as TENANT_SCOPE_KEY
 from apps.core.asyncdb import run_db
 from apps.core.authz import read_kinds
 from apps.core.log import get_logger
+from apps.core.surfaces import Surface
 from apps.realtime.bridge import kind_of_event, org_group, tenant_group, user_group
 from apps.realtime.middleware import token_auth
 from apps.realtime.schemas import (
     CLOSE_KICKED,
     CLOSE_NO_TENANT,
     CLOSE_NOT_A_COMMAND,
+    CLOSE_SESSION_EXPIRED,
+    CLOSE_TOO_MANY_SOCKETS,
     CLOSE_UNAUTHENTICATED,
+    TICKET_FAMILY,
 )
 from apps.realtime.selectors import list_subtree_org_ids
 
 log = get_logger(__name__)
+
+
+# The join count: a lease-bounded sorted set per credential and per tenant.
+
+Refusal = Literal["credential_ceiling", "tenant_ceiling"]
+
+# One script, so two handshakes racing for the last seat cannot both read "one left".
+_TAKE = """
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[3])
+redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', ARGV[3])
+if not redis.call('ZSCORE', KEYS[1], ARGV[1]) then
+  if redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[4]) then return 1 end
+  if redis.call('ZCARD', KEYS[2]) >= tonumber(ARGV[5]) then return 2 end
+end
+redis.call('ZADD', KEYS[1], ARGV[2], ARGV[1])
+redis.call('ZADD', KEYS[2], ARGV[2], ARGV[1])
+redis.call('EXPIRE', KEYS[1], ARGV[6])
+redis.call('EXPIRE', KEYS[2], ARGV[6])
+return 0
+"""
+_ANSWERS: dict[int, Refusal | None] = {0: None, 1: "credential_ceiling", 2: "tenant_ceiling"}
+
+
+class JoinCountUnavailable(Exception):
+    """The configured store did not answer, so no join can be proved under its ceiling."""
+
+
+@dataclass(frozen=True)
+class Seat:
+    """One socket's place in its credential's set and its tenant's set."""
+
+    credential_key: str
+    tenant_key: str
+    member: str
+
+
+def seat_for(*, credential: str, tenant_id: object, member: str) -> Seat:
+    """The two keys and the member one socket is counted under, prefixed by the cache."""
+    cache = caches["default"]
+    return Seat(
+        credential_key=cache.make_key(f"realtime:joins:credential:{credential}"),
+        tenant_key=cache.make_key(f"realtime:joins:tenant:{tenant_id}"),
+        member=member,
+    )
+
+
+def _lease() -> int:
+    return int(settings.REALTIME_JOIN_LEASE_SECONDS)
+
+
+class _Ledger(Protocol):
+    def take(self, seat: Seat, *, now: float, credential_max: int, tenant_max: int) -> int: ...
+    def refresh(self, seat: Seat, *, now: float) -> None: ...
+    def release(self, seat: Seat) -> None: ...
+    def count(self, key: str) -> int: ...
+
+
+class _RedisLedger:
+    def __init__(self, connection: Any) -> None:
+        self.connection = connection
+
+    def take(self, seat: Seat, *, now: float, credential_max: int, tenant_max: int) -> int:
+        answer = self.connection.eval(
+            _TAKE,
+            2,
+            seat.credential_key,
+            seat.tenant_key,
+            seat.member,
+            now,
+            now - _lease(),
+            credential_max,
+            tenant_max,
+            _lease(),
+        )
+        return int(answer)
+
+    def refresh(self, seat: Seat, *, now: float) -> None:
+        pipe = self.connection.pipeline()
+        for key in (seat.credential_key, seat.tenant_key):
+            pipe.zadd(key, {seat.member: now})
+            pipe.expire(key, _lease())
+        pipe.execute()
+
+    def release(self, seat: Seat) -> None:
+        pipe = self.connection.pipeline()
+        pipe.zrem(seat.credential_key, seat.member)
+        pipe.zrem(seat.tenant_key, seat.member)
+        pipe.execute()
+
+    def count(self, key: str) -> int:
+        return int(self.connection.zcard(key))
+
+
+class _LocalLedger:
+    def __init__(self) -> None:
+        self.sets: dict[str, dict[str, float]] = {}
+        self.lock = threading.Lock()
+
+    def take(self, seat: Seat, *, now: float, credential_max: int, tenant_max: int) -> int:
+        with self.lock:
+            mine = self._pruned(seat.credential_key, now)
+            theirs = self._pruned(seat.tenant_key, now)
+            if seat.member not in mine:
+                if len(mine) >= credential_max:
+                    return 1
+                if len(theirs) >= tenant_max:
+                    return 2
+            mine[seat.member] = now
+            theirs[seat.member] = now
+            return 0
+
+    def refresh(self, seat: Seat, *, now: float) -> None:
+        with self.lock:
+            for key in (seat.credential_key, seat.tenant_key):
+                self.sets.setdefault(key, {})[seat.member] = now
+
+    def release(self, seat: Seat) -> None:
+        with self.lock:
+            for key in (seat.credential_key, seat.tenant_key):
+                self.sets.get(key, {}).pop(seat.member, None)
+
+    def count(self, key: str) -> int:
+        with self.lock:
+            return len(self.sets.get(key, {}))
+
+    def _pruned(self, key: str, now: float) -> dict[str, float]:
+        members = self.sets.setdefault(key, {})
+        for member in [m for m, score in members.items() if score <= now - _lease()]:
+            del members[member]
+        return members
+
+
+_LOCAL = _LocalLedger()
+
+
+def _join_store() -> _Ledger:
+    if not isinstance(caches["default"], RedisCache):
+        return _LOCAL
+    try:
+        return _RedisLedger(get_redis_connection("default"))
+    except RedisError as failure:
+        raise JoinCountUnavailable(str(failure)) from failure
+
+
+def _counted[R](action: Callable[[_Ledger], R]) -> R:
+    try:
+        return action(_join_store())
+    except RedisError as failure:
+        raise JoinCountUnavailable(str(failure)) from failure
+
+
+def take_seat(seat: Seat) -> Refusal | None:
+    """Prune the dead, count both sets, and seat this socket unless either is at its ceiling."""
+    answer = _counted(
+        lambda ledger: ledger.take(
+            seat,
+            now=time.time(),
+            credential_max=int(settings.REALTIME_MAX_SOCKETS_PER_CREDENTIAL),
+            tenant_max=int(settings.REALTIME_MAX_SOCKETS_PER_TENANT),
+        )
+    )
+    return _ANSWERS[answer]
+
+
+def refresh_seat(seat: Seat) -> None:
+    """Renew this socket's lease in both sets — what a ping does to the count."""
+    _counted(lambda ledger: ledger.refresh(seat, now=time.time()))
+
+
+def release_seat(seat: Seat) -> None:
+    """Take this socket out of both sets — what a disconnect does to the count."""
+    _counted(lambda ledger: ledger.release(seat))
+
+
+def live_count(key: str) -> int:
+    """How many members a set holds now; the dead are pruned by the next join, not by this."""
+    return _counted(lambda ledger: ledger.count(key))
+
+
+# Not `run_db`: no database here, and the census orders the consumer's `run_db` reads.
+async def take_join(seat: Seat) -> Refusal | None:
+    """`take_seat`, off the event loop."""
+    return await sync_to_async(take_seat, thread_sensitive=False)(seat)
+
+
+async def refresh_join(seat: Seat) -> None:
+    """`refresh_seat`, off the event loop."""
+    await sync_to_async(refresh_seat, thread_sensitive=False)(seat)
+
+
+async def release_join(seat: Seat) -> None:
+    """`release_seat`, off the event loop."""
+    await sync_to_async(release_seat, thread_sensitive=False)(seat)
+
+
+def session_alive(session_key: str) -> bool:
+    """Whether the session behind a socket still exists and has not expired: one read."""
+    store = import_module(settings.SESSION_ENGINE).SessionStore(session_key=session_key)
+    return bool(store.load())
+
+
+def families_of_event(event_name: str) -> tuple[str, ...]:
+    """The scope families an event is from: its name's first segment is the app that declared it.
+
+    The one translation both per-frame questions ask — the ceiling's and the
+    surface's — so the two cannot come to read one event as two sections.
+    """
+    return families_of_app(str(event_name).split(".", 1)[0])
+
 
 PING = "ping"
 PONG = "pong"
@@ -158,6 +385,17 @@ class TenantEventsConsumer(AsyncJsonWebsocketConsumer):  # type: ignore[misc]
     #: does, so "unresolved" means hearing only what nobody owns a row for.
     reads: frozenset[str] | None = None
 
+    #: The surface the handshake's host resolved to (`scope["surface"]`, set by
+    #: `TenantMiddlewareASGI` — the host is read there and nowhere else), held
+    #: from connect for the per-frame question. `None` until `connect` accepts.
+    surface: Surface | None = None
+
+    #: This socket's place in the join count, held from the join to the disconnect.
+    seat: Seat | None = None
+
+    #: The session that opened this socket, re-read on every ping; `None` for a bearer socket.
+    session_key: str | None = None
+
     async def connect(self) -> None:
         user = self.scope.get("user")
         if user is None or not getattr(user, "is_authenticated", False):
@@ -168,6 +406,45 @@ class TenantEventsConsumer(AsyncJsonWebsocketConsumer):  # type: ignore[misc]
         if tenant is None:
             await self.close(code=CLOSE_NO_TENANT)
             return
+
+        # **The surface, before any group is joined.** A handshake at a host no
+        # surface answers at, or at a surface that does not expose this
+        # consumer's own families, closes exactly as an unresolvable tenant
+        # does: a handshake has no body for `surface_does_not_expose`, and the
+        # vocabulary this wire has for "nowhere you may listen" is this code.
+        # The bearer half needs it most — its middleware overrides the tenant
+        # the session stack left `None` at an unbound host.
+        surface = self.scope.get(SURFACE_SCOPE_KEY)
+        if not self._joins_on(surface):
+            await self.close(code=CLOSE_NO_TENANT)
+            return
+        self.surface = surface
+
+        # Counted BEFORE any group join: a refused socket was never reachable by a frame.
+        token = self.scope.get(TOKEN_ATTR)
+        credential = f"token:{token.pk}" if token is not None else f"user:{user.pk}"
+        seat = seat_for(credential=credential, tenant_id=tenant.pk, member=self.channel_name)
+        try:
+            refused = await take_join(seat)
+        except JoinCountUnavailable as failure:
+            refused = None
+            reason, detail = "count_unavailable", str(failure)
+        else:
+            reason, detail = (refused or ""), ""
+        if reason:
+            log.info(
+                "realtime.join.refused",
+                reason=reason,
+                detail=detail or None,
+                tenant_id=str(tenant.pk),
+                user_id=str(user.pk),
+                token_id=str(token.pk) if token is not None else None,
+            )
+            await self.close(code=CLOSE_TOO_MANY_SOCKETS)
+            return
+        self.seat = seat
+        if token is None:
+            self.session_key = getattr(self.scope.get("session"), "session_key", None)
 
         # **The user group is joined FIRST, before either read, and the ORDER is
         # the security property.** A read is two statements against the database
@@ -207,7 +484,6 @@ class TenantEventsConsumer(AsyncJsonWebsocketConsumer):  # type: ignore[misc]
         # The credential's ceiling, off the row the bearer middleware resolved.
         # `None` either way for a session: there is no token, so there is nothing
         # narrowing what this connection may hear.
-        token = self.scope.get(TOKEN_ATTR)
         self.ceiling = getattr(token, "scopes", None) if token is not None else None
         subtree = await run_db(list_subtree_org_ids, tenant=tenant, org=org)
         # The read set is asked at the HAT and not per org (Overrule 1, ratified
@@ -270,12 +546,55 @@ class TenantEventsConsumer(AsyncJsonWebsocketConsumer):  # type: ignore[misc]
         messages vanish into a socket that looks healthy.
         """
         if isinstance(content, dict) and content.get("type") == PING:
-            await self.send_json({"type": PONG})
+            await self._ping()
             return
         await self.close(code=CLOSE_NOT_A_COMMAND)
 
+    async def _ping(self) -> None:
+        """An ended session's socket closes; else the join lease renews and a pong goes back."""
+        if self.session_key is not None and not await run_db(session_alive, self.session_key):
+            log.info("realtime.session.expired", reason="session_ended")
+            await self.close(code=CLOSE_SESSION_EXPIRED)
+            return
+        if self.seat is not None:
+            try:
+                await refresh_join(self.seat)
+            except JoinCountUnavailable as failure:
+                log.warning("realtime.join.unrefreshed", detail=str(failure))
+        await self.send_json({"type": PONG})
+
+    async def disconnect(self, code: int) -> None:
+        """Give the socket's seat back; a store that does not answer leaves it to the lease."""
+        if self.seat is None:
+            return
+        seat, self.seat = self.seat, None
+        try:
+            await release_join(seat)
+        except JoinCountUnavailable as failure:
+            log.warning("realtime.join.unreleased", detail=str(failure))
+
+    def _joins_on(self, surface: Surface | None) -> bool:
+        """Whether this consumer may be joined at the surface its handshake resolved.
+
+        A consumer whose app owns scope families is one of those families'
+        doors, and joins only where the surface exposes one of them — the
+        REST door's `surface_does_not_expose`, said as a closed handshake. A
+        consumer whose app owns none (this one: the tenant's event stream; the
+        ticket door's `TICKET_FAMILY` is the REST door's, not the stream's) is
+        no family's door and joins on every resolved surface; what it carries
+        is narrowed frame by frame (`_on_surface`). No surface resolved: no join.
+        """
+        if surface is None:
+            return False
+        owned = tuple(
+            family
+            for family in families_of_app(type(self).__module__.split(".")[1])
+            if family != TICKET_FAMILY
+        )
+        return not owned or any(surfaces.exposes(surface, family) for family in owned)
+
     def may_hear(self, event_name: str) -> bool:
-        """Whether this connection may be told about this event. **Two questions, ANDed.**
+        """Whether this connection may be told about this event. **Three questions, ANDed.**
 
         They narrow different things and they are kept apart on purpose. The
         **ceiling** is the credential's — which sections of the product this
@@ -286,11 +605,41 @@ class TenantEventsConsumer(AsyncJsonWebsocketConsumer):  # type: ignore[misc]
         section its token was not given. Folding them into one set would make a
         re-mint require a reconnect and a permission change require a re-mint.
 
-        Composed by AND, and the ceiling is asked first: it is the cheaper
-        question (a split and a handful of set lookups, no name resolution) and
-        it is the one that answers for an app that declares no events at all.
+        And the **surface**'s, asked first: whether the host this socket was
+        opened at exposes the section the event belongs to — the frame-by-frame
+        half of the REST door's `surface_does_not_expose` (`_on_surface`). It is
+        the address's question, as it is at the HTTP door, and as cheap as the
+        ceiling's.
+
+        Composed by AND, and the ceiling is asked before the read set: it is the
+        cheaper question (a split and a handful of set lookups, no name
+        resolution) and it is the one that answers for an app that declares no
+        events at all.
         """
-        return self._within_ceiling(event_name) and self._may_read(event_name)
+        return (
+            self._on_surface(event_name)
+            and self._within_ceiling(event_name)
+            and self._may_read(event_name)
+        )
+
+    def _on_surface(self, event_name: str) -> bool:
+        """Whether the surface this socket was opened at exposes the section this event is from.
+
+        The event's name begins with the app that declared it and an app owns
+        the families a surface can name — the ceiling's own translation
+        (`families_of_app`), asked of the surface through the one predicate
+        every door asks (`surfaces.exposes`). Any of the app's families will
+        do, as for the ceiling. **An app that owns no family is heard only on a
+        total surface**: a surface that names its families has not named it,
+        and a customer host must not hear a section it cannot open.
+
+        `None` before `connect` accepts, which is a consumer in no group and
+        therefore reachable by no frame — `_may_read`'s reasoning.
+        """
+        if self.surface is None:
+            return True
+        owned = families_of_event(event_name)
+        return any(surfaces.exposes(self.surface, family) for family in owned or (None,))
 
     def _may_read(self, event_name: str) -> bool:
         """Whether the hat behind this connection may READ what this event is about.
@@ -364,10 +713,9 @@ class TenantEventsConsumer(AsyncJsonWebsocketConsumer):  # type: ignore[misc]
         """
         if self.ceiling is None:
             return True
-        app_label = str(event_name).split(".", 1)[0]
         return any(
             within_ceiling(ceiling=self.ceiling, scope=f"{family}{SCOPE_SEPARATOR}{READ}")
-            for family in families_of_app(app_label)
+            for family in families_of_event(event_name)
         )
 
     async def realtime_event(self, message: dict[str, Any]) -> None:

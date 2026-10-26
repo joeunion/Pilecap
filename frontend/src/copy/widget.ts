@@ -16,6 +16,17 @@ export const WIDGET_COPY = {
     changedLabel: "Last changed",
 
     /**
+     * The noun's own facts a row shows, keyed by field, in the model's order —
+     * the screen shape's columns (its choices, and the dates and words its edit
+     * sheet edits; the first three). `reads` is how a value reads: a day, or
+     * the word as the wire says it.
+     */
+    columns: {
+        due_at: { label: "Due at", reads: "day" },
+        status: { label: "Status", reads: "word" },
+    },
+
+    /**
      * The standing state's words. *Onboarded* is the resting state (most rows,
      * what a reader assumes) and wears no pill; it labels the details card's
      * fact. *Onboarding* is the departure, and the pill's one word.
@@ -33,11 +44,6 @@ export const WIDGET_COPY = {
     /** The record's two cards: the work (what the thing is) in main, the standing facts in the rail. */
     aboutTitle: "About",
     detailsTitle: "Details",
-
-    /** The refusal notice's first line, per member of the refusal union. */
-    errorLabel: "The server refused",
-    transportLabel: "The server did not answer",
-    remedies: "What you can do",
 
     /** Sentences. */
     loadingList: "Reading the widgets…",
@@ -141,6 +147,8 @@ export const WIDGET_FIELD_WORDS: Readonly<Record<string, string>> = {
     name: "Name",
     notes: "Notes",
     policy_id: "Policy Id",
+    due_at: "Due At",
+    clear_due_at: "Clear Due At",
 };
 // golden: history end
 // golden: version end
@@ -305,16 +313,20 @@ export function bulkSentence(state: string, done: number, total: number): string
 // golden: bulk end
 
 // golden: history begin
-/** The words a history row wears for the family's verbs and the noun's own; any other reads *Changed*. */
-const HISTORY_WORDS: Readonly<Record<string, string>> = {
+/**
+ * THE NOUN'S OWN HISTORY WORDS — the word a history row wears for a verb the
+ * wire's trail records on a widget (a service's first word, `create_widget` →
+ * `create`) that the verb table gives no state word. The family's verbs read
+ * their state word off the verb table (`@/screens/widget/widget-history`), so
+ * this map never spells *Archived*, *Moved*, *Duplicated* or *Merged* again.
+ * *Restore* is a family verb whose table row has no state word (no band
+ * follows a restore), so its history word is the noun's, here. Every key is a
+ * verb the wire's trail can say; a verb with no word here reads *Changed*.
+ */
+export const HISTORY_WORDS: Readonly<Record<string, string>> = {
     create: "Added",
-    archive: "Archived",
     restore: "Restored",
-    move: "Moved",
-    duplicate: "Duplicated",
-    merge: "Merged",
-    import: "Imported",
-    onboard: "Onboarded",
+    mark: "Onboarded",
 };
 
 /** *a*, *a and b*, *a, b and c* — the reader's list. */
@@ -324,14 +336,11 @@ function listed(words: readonly string[]): string {
 }
 
 /**
- * ONE HISTORY ROW'S WHAT (patterns.md §10): the verb's state word,
- * or *Changed ⟨fields⟩* for an edit, the fields in the reader's words (never a
- * key). A field the map has no word for is left out, and an edit naming none
- * reads *Changed*.
+ * AN EDIT'S WHAT (patterns.md §10): *Changed ⟨fields⟩*, the fields in the
+ * reader's words (never a key). A field the map has no word for is left out,
+ * and an edit naming none reads *Changed*.
  */
-export function historyWhat(verb: string, changed: readonly string[]): string {
-    const word = HISTORY_WORDS[verb];
-    if (word !== undefined) return word;
+export function changedWhat(changed: readonly string[]): string {
     const fields = changed.flatMap((key) => {
         const title = WIDGET_FIELD_WORDS[key];
         return title === undefined ? [] : [title.toLowerCase()];

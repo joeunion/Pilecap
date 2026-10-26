@@ -1,12 +1,12 @@
 """The inbound door: what is stored, and what is refused.
 
-`verify_and_store` is what `apps.connections`' provider receivers (rung A4) and
-any product's own inbound route call. The properties are the ones an attacker
+`verify_and_store` is what `apps.connections`' provider receivers and any
+product's own inbound route call. The properties are the ones an attacker
 and an outage each test in their own way: an unsigned or wrongly-signed body
 changes nothing, a verified one becomes an event that a workflow picks up, and
 the event is dispatched onward exactly like one this product emitted itself.
 
-**The source is a row** (ADR connections-1, rung W6). The stand-in below is a
+**The source is a row** (ADR connections-1). The stand-in below is a
 plain object rather than a `Connection`, and deliberately: `apps.events` may not
 import `apps.connections`, and what the receiver actually requires is the
 `SignedSource` *protocol* — two attributes — not any particular model. A test
@@ -33,7 +33,7 @@ from apps.workflows.models import WorkflowRun
 
 pytestmark = pytest.mark.django_db
 
-SECRET = "the-shared-secret"  # pragma: allowlist secret
+SECRET = "the-shared-secret"  # noqa: S105 — a signing secret the test both signs and verifies with  # pragma: allowlist secret
 NAME = "stripe.invoice.paid"
 
 
@@ -52,7 +52,9 @@ def signed(body: bytes, secret: str = SECRET) -> str:
 def test_a_verified_webhook_is_stored_and_handed_to_a_workflow(tenant: Tenant) -> None:
     body = json.dumps({"id": "in_123", "amount": 4200}).encode()
 
-    event = receivers.verify_and_store(body, signed(body), source=Source(tenant), name=NAME)
+    event = receivers.verify_and_store(
+        request_body=body, signature=signed(body), source=Source(tenant), name=NAME
+    )
 
     assert event.name == NAME
     assert event.payload["amount"] == 4200
@@ -65,7 +67,7 @@ def test_an_inbound_name_is_not_held_to_this_products_registry(tenant: Tenant) -
     """Somebody else's vocabulary. `emit` validates; this deliberately does not."""
     body = b"{}"
     event = receivers.verify_and_store(
-        body, signed(body), source=Source(tenant), name="acme.thing.happened"
+        request_body=body, signature=signed(body), source=Source(tenant), name="acme.thing.happened"
     )
     assert event.name == "acme.thing.happened"
 
@@ -75,7 +77,10 @@ def test_a_wrong_signature_stores_nothing(tenant: Tenant) -> None:
 
     with pytest.raises(Forbidden):
         receivers.verify_and_store(
-            body, signed(body, "not-the-secret"), source=Source(tenant), name=NAME
+            request_body=body,
+            signature=signed(body, "not-the-secret"),
+            source=Source(tenant),
+            name=NAME,
         )
 
     assert not Event.objects.for_tenant(tenant).exists()
@@ -83,7 +88,9 @@ def test_a_wrong_signature_stores_nothing(tenant: Tenant) -> None:
 
 def test_a_missing_signature_stores_nothing(tenant: Tenant) -> None:
     with pytest.raises(Forbidden):
-        receivers.verify_and_store(b"{}", "", source=Source(tenant), name=NAME)
+        receivers.verify_and_store(
+            request_body=b"{}", signature="", source=Source(tenant), name=NAME
+        )
     assert not Event.objects.for_tenant(tenant).exists()
 
 
@@ -93,7 +100,9 @@ def test_a_body_that_changed_in_flight_stores_nothing(tenant: Tenant) -> None:
     signature = signed(body)
 
     with pytest.raises(Forbidden):
-        receivers.verify_and_store(b'{"amount": 9999}', signature, source=Source(tenant), name=NAME)
+        receivers.verify_and_store(
+            request_body=b'{"amount": 9999}', signature=signature, source=Source(tenant), name=NAME
+        )
 
 
 def test_a_bare_hex_signature_is_accepted(tenant: Tenant) -> None:
@@ -101,14 +110,78 @@ def test_a_bare_hex_signature_is_accepted(tenant: Tenant) -> None:
     body = b"{}"
     bare = hmac.new(SECRET.encode(), body, hashlib.sha256).hexdigest()
 
-    event = receivers.verify_and_store(body, bare, source=Source(tenant), name=NAME)
+    event = receivers.verify_and_store(
+        request_body=body, signature=bare, source=Source(tenant), name=NAME
+    )
     assert event.pk is not None
+
+
+def test_an_uppercase_hex_digest_is_accepted(tenant: Tenant) -> None:
+    """The one verifier ACCEPTS: the offered hex is case-normalised before comparing.
+
+    A sender that upper-cases its digest signed the same bytes with the same
+    key; refusing it would be a verifier disagreeing with the HMAC, not with the
+    sender. Prefixed and bare, both.
+    """
+    body = b'{"a":1}'
+    digest = hmac.new(SECRET.encode(), body, hashlib.sha256).hexdigest().upper()
+
+    assert receivers.signature_matches(secret=SECRET, body=body, signature="sha256=" + digest)
+    assert receivers.signature_matches(secret=SECRET, body=body, signature=digest)
+    event = receivers.verify_and_store(
+        request_body=body, signature="sha256=" + digest, source=Source(tenant), name=NAME
+    )
+    assert event.pk is not None
+
+
+def test_an_uppercase_prefix_is_accepted(tenant: Tenant) -> None:
+    """`SHA256=` is the same algorithm name; the prefix is matched without regard to case."""
+    body = b'{"a":1}'
+    digest = hmac.new(SECRET.encode(), body, hashlib.sha256).hexdigest()
+
+    assert receivers.signature_matches(secret=SECRET, body=body, signature="SHA256=" + digest)
+    assert receivers.signature_matches(
+        secret=SECRET, body=body, signature="SHA256=" + digest.upper()
+    )
+    # Accepting a spelling is not accepting a forgery: the wrong key, upper-cased,
+    # is still the wrong key.
+    wrong = hmac.new(b"not-the-secret", body, hashlib.sha256).hexdigest().upper()
+    assert not receivers.signature_matches(secret=SECRET, body=body, signature="SHA256=" + wrong)
+
+
+def test_a_signature_outside_ascii_is_refused_not_raised(tenant: Tenant) -> None:
+    """No hex digest carries a non-ASCII character, and `compare_digest` raises on one.
+
+    A header is whatever a caller sent; a verifier that raised on it would turn a
+    forged request into a 500 rather than a refusal.
+    """
+    body = b"{}"
+    assert receivers.signature_matches(secret=SECRET, body=body, signature="sha256=é") is False
+    with pytest.raises(Forbidden):
+        receivers.verify_and_store(
+            request_body=body, signature="sha256=é", source=Source(tenant), name=NAME
+        )
+    assert not Event.objects.for_tenant(tenant).exists()
+
+
+def test_a_v2_header_outside_ascii_is_refused_not_raised() -> None:
+    """The v2 grammar refuses a non-ASCII header rather than raising on it.
+
+    Two raises it replaces: `compare_digest` on a non-ASCII digest (`TypeError`)
+    and `int()` on a timestamp `isdigit` accepted (`ValueError`, a superscript).
+    """
+    timestamp = int(now().timestamp())
+    for header in (f"t={timestamp},sha256=é", "t=²,sha256=" + "0" * 64):
+        assert receivers.parse_signature_v2(header) is None
+        assert receivers.signature_v2_matches(secret=SECRET, body=b"{}", signature=header) is False
 
 
 def test_a_body_that_is_not_json_is_refused_after_verifying(tenant: Tenant) -> None:
     body = b"<xml/>"
     with pytest.raises(Invalid):
-        receivers.verify_and_store(body, signed(body), source=Source(tenant), name=NAME)
+        receivers.verify_and_store(
+            request_body=body, signature=signed(body), source=Source(tenant), name=NAME
+        )
     assert not Event.objects.for_tenant(tenant).exists()
 
 
@@ -116,8 +189,8 @@ def test_a_caller_may_hand_over_an_already_decoded_payload(tenant: Tenant) -> No
     """Form-encoded senders exist; the signature is still over the raw bytes."""
     body = b"type=charge&amount=1"
     event = receivers.verify_and_store(
-        body,
-        signed(body),
+        request_body=body,
+        signature=signed(body),
         source=Source(tenant),
         name=NAME,
         payload={"type": "charge", "amount": "1"},
@@ -126,7 +199,7 @@ def test_a_caller_may_hand_over_an_already_decoded_payload(tenant: Tenant) -> No
 
 
 def test_an_empty_secret_refuses_a_v2_forgery(tenant: Tenant) -> None:
-    """The forgery the empty-secret clause exists to refuse (queue N191a, H4).
+    """The forgery the empty-secret clause exists to refuse.
 
     A source whose `webhook_secret` is empty — never minted, revoked, cleared —
     is a source with no key at all. Without the clause, `signature_v2_matches`
@@ -153,7 +226,10 @@ def test_an_empty_secret_refuses_a_v1_forgery_through_the_inbound_door(tenant: T
 
     with pytest.raises(Forbidden):
         receivers.verify_and_store(
-            body, signed(body, ""), source=Source(tenant, webhook_secret=""), name=NAME
+            request_body=body,
+            signature=signed(body, ""),
+            source=Source(tenant, webhook_secret=""),
+            name=NAME,
         )
 
     assert not Event.objects.for_tenant(tenant).exists()
@@ -173,7 +249,9 @@ def test_a_real_secret_still_verifies_under_both_schemes(tenant: Tenant) -> None
         )
         is True
     )
-    event = receivers.verify_and_store(body, signed(body), source=Source(tenant), name=NAME)
+    event = receivers.verify_and_store(
+        request_body=body, signature=signed(body), source=Source(tenant), name=NAME
+    )
     assert event.pk is not None
 
 

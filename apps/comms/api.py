@@ -1,46 +1,11 @@
-"""The comms API: send one message, read the log, keep what may be said.
+"""The comms doors: send, the log, what may be said — each door calls the service (ADR comms-1)."""
 
-Two halves. **The send door** — `POST /messages/` and the two reads beside it —
-is C1-1a's and is the point of the app. **The management surface** below it is
-C1-1b's: templates that are versioned rather than edited, a contact book, and
-five consent verbs. The asymmetry `policies.py` states runs right through it —
-anybody in the tenant may send and may keep contacts; only an owner or an admin
-changes what the product is allowed to say.
-
-Two shapes are worth reading for, because they are the difference between a
-management door and a set of columns:
-
-* **a template is never PATCHed.** `POST /templates/{name}/versions/` answers
-  `201` with a new row at `version + 1`; the words a message was sent with stay
-  exactly where they were.
-* **consent is five verbs, not five fields.** `grant-consent`, `revoke-consent`,
-  `quiet-hours`, `suppress`, `unsuppress` — each a POST on its own sub-path. A
-  column a door can set is a column a door can set back, and `PreferenceOut`
-  reports the timestamps that nothing accepts.
-
-The shape of the send route is the whole point of this app.
-`POST /api/v1/messages/` is **not** a create endpoint that happens to
-send an email: it is `send()` behind a door, so a consent refusal comes back as
-`201` with `status="suppressed"` and a reason rather than as an error. A client
-that treats 2xx as "it went out" is reading the status code where it should be
-reading the row — which is why `status` and `suppressed_reason` are on the
-schema and not hidden behind a second call.
-
-The route never says 404 either. `selectors.get_message` raises `NotFound` and
-`config/api.py` is the only module that turns that into a number, so the MCP
-tool over the same selector refuses identically without repeating the rule.
-"""
-
-# NOTE: no `from __future__ import annotations` in this module, and that is
-# deliberate. ninja builds a Pydantic model out of a route's signature at import
-# time; with postponed evaluation every annotation is a string, and a
-# `FilterSchema` parameter comes out as an unresolvable forward reference.
+# No `from __future__ import annotations`: ninja resolves route signatures at import.
 
 from uuid import UUID
 
 from django.db.models import QuerySet
 from ninja import Query, Router, Status
-from ninja.errors import HttpError
 from ninja.pagination import paginate
 
 from apps.accounts.auth import API_AUTH
@@ -71,7 +36,6 @@ from apps.comms.schemas import (
     RecipientIn,
     RecipientOut,
     RecipientPatch,
-    RecipientShow,
     TemplateFilter,
     TemplateIn,
     TemplateOut,
@@ -111,45 +75,27 @@ from apps.comms.services import (
     unsuppress_recipient,
     update_recipient,
 )
-from apps.core.actor import Actor, actor_from_request
 from apps.core.api import CursorPagination, ordered_by
-from apps.core.api.docs import Tag, refuses
+from apps.core.api.acting import acting
+from apps.core.api.docs import Tag, also_refuses, refuses
 from apps.core.api.pagination import ActsPagination
-from apps.core.exceptions import Invalid
-from apps.core.models import Tenant
+from apps.core.api.query import ARCHIVED_SWITCH, RetiredQuery, refuse_retired_query
 from apps.core.requests import TenantRequest
+from apps.core.schemas import Show
 from apps.core.verbs import with_allowed_acts
 
-# **The root of `/api/v1/`** (ADR api-2, the owner's 2026-08-24 ruling): the
-# first path segment names a RESOURCE, never an app. `comms` is what this
-# module is called, not what any caller wants; `/messages/`, `/templates/` and
-# `/recipients/` are. The one collision the flatten exposed resolves by a
-# BETTER NAME rather than by a prefix: `policies` alone says nothing on a wire
-# that also has authorization policies, so these are `/delivery-policies/` —
-# which is what they have always been. House rule 32 refuses the regression.
+# The first path segment names a resource, never the app (ADR api-2, rule 32).
 PREFIX = ""
 
-# What `?ordering=` may name, and nothing else. Straight into `.order_by()` it
-# would let a client sort by any column and traverse any relation.
+# What `?ordering=` may name, and nothing else.
 ORDERING = ("created_at", "updated_at", "sent_at", "status")
 TEMPLATE_ORDERING = ("name", "version", "created_at", "updated_at")
 RECIPIENT_ORDERING = ("email", "display_name", "created_at", "updated_at")
 POLICY_ORDERING = ("name", "version", "created_at", "updated_at")
-# Two columns and deliberately not four. `occurred_at` is when the PROVIDER says
-# the person acted and `created_at` is when we heard; a client sorting an
-# engagement list wants one of those, and nothing else on the row is an order
-# anybody has a question about.
+# The provider's moment and ours; nothing else on an engagement is an order.
 ENGAGEMENT_ORDERING = ("occurred_at", "created_at")
 
-# What each tag on this app's routers is FOR, in the app that owns the tag.
-# `config/api.py` collects these by discovery into the OpenAPI document's `tags`
-# section, so a reader meets the group before the routes in it (ADR api-1); an
-# undescribed tag is a house-rule-41 violation, not a blank heading.
-# The key is `messaging`, not `comms` (the owner's 2026-08-24 ruling, ruled
-# before N162a freezes tag keys as the credential vocabulary): `comms` was this
-# app's directory name, and a caller narrowing a token to a family should be
-# reading the word for the thing, not for the folder it happens to live in. The
-# display name did not move.
+# The tags this app's routes carry, described where they are owned (ADR api-1, rule 41).
 TAGS = {
     "messaging": Tag(
         "Messaging & contacts",
@@ -164,11 +110,7 @@ TAGS = {
             "contacted and how."
         ),
     ),
-    # T3. Its own family rather than a corner of `messaging`, because the two
-    # are not the same trust: `messaging:write` is "may contact a person" and
-    # `devices:write` is "may keep the push address book", which reaches nobody
-    # by itself. RUL-1 ratified the key before the door shipped, which is the
-    # order a frozen vocabulary has to be decided in.
+    # Its own family: keeping the push address book is not the trust of contacting a person.
     "devices": Tag(
         "Devices",
         "The push address book: the handsets and browsers a contact has let this "
@@ -194,24 +136,11 @@ TAGS = {
     ),
 }
 
-# `auth` is restated here rather than inherited from the API default, so that
-# reading this one file tells you what it takes to call these routes.
+# `?archived=` is the retired spelling of `?show=`, refused rather than ignored.
+RETIRED_QUERY: dict[str, RetiredQuery] = {"archived": ARCHIVED_SWITCH}
+
+# `auth` restated so this file says what calling these routes takes.
 router = Router(tags=["messaging"], auth=API_AUTH)
-
-
-def _acting(request: TenantRequest) -> tuple[Actor, Tenant]:
-    """The actor and tenant a send happens as.
-
-    Authentication has already guaranteed the user; nothing has guaranteed the
-    tenant. A send with no tenant is refused rather than guessed at.
-
-    **Whether the actor may send is not decided here** — `services.send` calls
-    `authz.require`. A permission check in this function would be a second copy
-    of the rule, one per door.
-    """
-    if request.tenant is None:
-        raise HttpError(403, "No tenant for this request.")
-    return actor_from_request(request), request.tenant
 
 
 @router.get("/messages/", response=list[MessageOut], url_name="message-list")
@@ -249,11 +178,12 @@ def list_messages_route(
 
     * `400 invalid` — `?ordering=` named a field this list does not accept, or
       a filter value was malformed. The response says what you may sort by.
-    * `403 forbidden` — the request resolved no tenant or no acting
+    * `403 forbidden` — your membership here does not allow you to read this.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     messages: QuerySet[Message] = list_messages(tenant=tenant, org=actor.org, actor=actor)
     messages = filters.filter(messages)
     return ordered_by(messages, ordering, allowed=ORDERING, default="-created_at")
@@ -322,8 +252,9 @@ def send_message_route(request: TenantRequest, payload: MessageIn) -> Status[Mes
       sent neither, named a template or policy that has no live version, the
       `context` did not match the template's declared variables, or `send_at`
       carried no timezone. `errors` names the field and nothing is sent.
-    * `403 forbidden` — you hold no membership in this tenant, or the request
-      resolved no tenant or no acting organization.
+    * `403 forbidden` — your membership here does not allow this.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
+      organization.
     * `404 not_found` — no contact your acting organization can address has
       that id. A contact in a branch you hold no membership over answers
       this too.
@@ -332,7 +263,7 @@ def send_message_route(request: TenantRequest, payload: MessageIn) -> Status[Mes
       it has not finished. Resend the identical request, or use a new key.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     recipient = get_recipient(
         tenant=tenant, recipient_id=payload.recipient_id, org=actor.org, actor=actor
     )
@@ -370,25 +301,22 @@ def retrieve_message(request: TenantRequest, message_id: UUID) -> Message:
 
     * `404 not_found` — no message your acting organization can see has that
       id.
-    * `403 forbidden` — the request resolved no tenant or no acting
+    * `403 forbidden` — your membership here does not allow you to read this.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     return get_message(tenant=tenant, message_id=message_id, org=actor.org, actor=actor)
 
 
 @router.get(
     "/messages/{message_id}/engagement/",
     response=list[MessageEngagementOut],
-    # `engagement-list`, not `message-engagement-list`: house rule 17 derives
-    # the MCP tool name from the `url_name` by splitting on the last hyphen, so
-    # the longer spelling would have demanded a tool called
-    # `list_message-engagements` — a hyphen inside a machine-door name, in an
-    # app whose every other tool is a plain identifier. The path already says
-    # which resource this hangs off.
+    # `engagement-list`: rule 17 derives the tool name from the last hyphen.
     url_name="engagement-list",
 )
+@also_refuses("invalid")
 @paginate(CursorPagination)
 def list_message_engagement_route(
     request: TenantRequest,
@@ -428,13 +356,14 @@ def list_message_engagement_route(
     Refusals you can get here:
 
     * `400 invalid` — `?ordering=` named a field this list does not accept.
-    * `403 forbidden` — the request resolved no tenant or no acting
+    * `403 forbidden` — your membership here does not allow you to read this.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
     * `404 not_found` — no message your acting organization can see has that
       id, or `?cursor=` did not come from this list.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     message = get_message(tenant=tenant, message_id=message_id, org=actor.org, actor=actor)
     rows: QuerySet[MessageEngagement] = list_engagements(
         tenant=tenant, message=message, org=actor.org, actor=actor
@@ -469,8 +398,9 @@ def cancel_message_route(request: TenantRequest, message_id: UUID) -> Message:
 
     Refusals you can get here:
 
-    * `403 forbidden` — you hold no membership in this tenant, or the request
-      resolved no tenant or no acting organization.
+    * `403 forbidden` — your membership here does not allow this.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
+      organization.
     * `404 not_found` — no message your acting organization can see has that
       id. A message in a branch you hold no membership over answers this too.
     * `409 conflict` — that message is past the point of being cancelled. The
@@ -480,30 +410,12 @@ def cancel_message_route(request: TenantRequest, message_id: UUID) -> Message:
       it has not finished. Resend the identical request, or use a new key.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     message = get_message(tenant=tenant, message_id=message_id, org=actor.org, actor=actor)
     return cancel_message(tenant=tenant, actor=actor, message=message)
 
 
-# --- templates: written once, revised, never edited ------------------------------
-#
-# **One resource, one address key: the NAME.** A template used to answer to
-# two — `{name}` to revise, the UUID to retire and to read — so a caller who had
-# just revised "welcome" by name could not retire it by name; it had to list
-# first to learn an id. That is a versioned-and-named resource, and this tree has
-# exactly one other, `/delivery-policies/` below: it is name-addressed on all
-# three of revise, retire and detail, and templates now match it.
-#
-# The name is also the key the rest of the product speaks. `send(template=...)`
-# takes a name, a policy step names a template by name, and a `Message` records
-# `template_name` + `template_version` rather than an id — so the id was only
-# ever reachable by listing, and nothing but these two routes asked for it.
-#
-# What the id bought was reaching a RETIRED version directly, and the list is
-# where that lives now — `GET /templates/?name=<name>` returns every version,
-# which is what the detail route's own prose already told callers to do. The
-# `url_name`s did not move, so no MCP tool name moved with the paths (rule 17
-# derives tool names from `url_name`, never from paths).
+# --- templates: written once, revised, never edited; addressed by name -------------
 
 
 @router.get("/templates/", response=list[TemplateOut], url_name="template-list")
@@ -536,11 +448,12 @@ def list_templates_route(
 
     * `400 invalid` — `?ordering=` named a field this list does not accept, or
       a filter value was malformed. The response says what you may sort by.
-    * `403 forbidden` — the request resolved no tenant or no acting
+    * `403 forbidden` — your membership here does not allow you to read this.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     templates: QuerySet[MessageTemplate] = list_templates(tenant=tenant, actor=actor)
     templates = filters.filter(templates)
     return ordered_by(templates, ordering, allowed=TEMPLATE_ORDERING, default="name")
@@ -573,7 +486,9 @@ def create_template_route(request: TenantRequest, payload: TemplateIn) -> Status
       `category` is not one this product knows. `errors` names the fields
       and nothing is created.
     * `403 forbidden` — you are not an owner or an administrator of the
-      tenant, or the request resolved no tenant or no acting organization.
+      tenant.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
+      organization.
     * `409 conflict` — a template already exists under that name. Publish a
       new version of it instead.
     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
@@ -581,7 +496,7 @@ def create_template_route(request: TenantRequest, payload: TemplateIn) -> Status
       it has not finished. Resend the identical request, or use a new key.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     template = create_template(
         tenant=tenant,
         actor=actor,
@@ -632,14 +547,16 @@ def revise_template_route(
     * `400 invalid` — a field is missing or malformed. `errors` names the
       fields and no version is published.
     * `403 forbidden` — you are not an owner or an administrator of the
-      tenant, or the request resolved no tenant or no acting organization.
+      tenant.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
+      organization.
     * `404 not_found` — no template of this tenant's has that name.
     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
       `Idempotency-Key` for a different request, or the first request under
       it has not finished. Resend the identical request, or use a new key.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     template = revise_template(
         tenant=tenant,
         actor=actor,
@@ -681,7 +598,9 @@ def retire_template_route(request: TenantRequest, name: str) -> MessageTemplate:
     Refusals you can get here:
 
     * `403 forbidden` — you are not an owner or an administrator of the
-      tenant, or the request resolved no tenant or no acting organization.
+      tenant.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
+      organization.
     * `404 not_found` — no template of this tenant's has that name, or it has
       no live version to retire.
     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
@@ -696,7 +615,7 @@ def retire_template_route(request: TenantRequest, name: str) -> MessageTemplate:
     use. `is_active` is the only column on a template that moves after it is
     written, and this verb is the only thing that moves it.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     template = get_template(tenant=tenant, name=name, actor=actor)
     return retire_template(tenant=tenant, actor=actor, template=template)
 
@@ -723,22 +642,22 @@ def retrieve_template(request: TenantRequest, name: str) -> MessageTemplate:
 
     * `404 not_found` — no template of this tenant's has that name, or none of
       its versions is live.
-    * `403 forbidden` — the request resolved no tenant or no acting
+    * `403 forbidden` — your membership here does not allow you to read this.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     return get_template(tenant=tenant, name=name, actor=actor)
 
 
-# --- delivery policies: how hard to try, as data ---------------------------------
-#
-# Five routes and five MCP twins, and the `url_name`s are worth a note because
-# they look inconsistent and are not. House rule 17 pairs a REST capability with
-# a tool by deriving candidate names from `<noun>-<verb>`, so `policies-list`
-# is what produces `list_policies` — the name the selector already has — while
-# the other four read best with the singular noun they act on. The alternative
-# was a tool called `list_policys`.
+# --- delivery policies: how hard to try, as data -------------------------------
+
+
+def ordered_policies(rows: QuerySet[DeliveryPolicy], ordering: str) -> QuerySet[DeliveryPolicy]:
+    """`ordering` over policies, newest version first within a name — both doors' list order."""
+    ordered = ordered_by(rows, ordering, allowed=POLICY_ORDERING, default="name")
+    return ordered.order_by(*ordered.query.order_by, "-version")
 
 
 @router.get("/delivery-policies/", response=list[PolicyOut], url_name="policies-list")
@@ -779,22 +698,15 @@ def list_policies_route(
 
     * `400 invalid` — `?ordering=` named a field this list does not accept, or
       a filter value was malformed. The response says what you may sort by.
-    * `403 forbidden` — the request resolved no tenant or no acting
+    * `403 forbidden` — your membership here does not allow you to read this.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     policies: QuerySet[DeliveryPolicy] = list_policies(tenant=tenant, actor=actor)
     policies = filters.filter(policies)
-    ordered = ordered_by(policies, ordering, allowed=POLICY_ORDERING, default="name")
-    # `ordered_by` **replaces** the ordering outright, so "newest version first
-    # within a name" — which `list_policies` promises and this door repeats —
-    # has to be restated or two versions of one policy come back in whatever
-    # order the database felt like that day. Restated here rather than fixed in
-    # `core.api.ordered_by`, which this app does not own; the template list
-    # beside this one has the same gap and it is reported rather than patched
-    # from a lane that cannot test the blast radius.
-    return ordered.order_by(*ordered.query.order_by, "-version")
+    return ordered_policies(policies, ordering)
 
 
 @router.post("/delivery-policies/", response={201: PolicyOut}, url_name="policy-create")
@@ -825,7 +737,9 @@ def create_policy_route(request: TenantRequest, payload: PolicyIn) -> Status[Del
       template or channel this product does not know. `errors` names the
       fields and nothing is created.
     * `403 forbidden` — you are not an owner or an administrator of the
-      tenant, or the request resolved no tenant or no acting organization.
+      tenant.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
+      organization.
     * `409 conflict` — a policy already exists under that name. Publish a new
       version of it instead.
     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
@@ -833,7 +747,7 @@ def create_policy_route(request: TenantRequest, payload: PolicyIn) -> Status[Del
       it has not finished. Resend the identical request, or use a new key.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     policy = create_policy(
         tenant=tenant,
         actor=actor,
@@ -879,14 +793,16 @@ def revise_policy_route(
     * `400 invalid` — a field is missing or malformed. `errors` names the
       fields and no version is published.
     * `403 forbidden` — you are not an owner or an administrator of the
-      tenant, or the request resolved no tenant or no acting organization.
+      tenant.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
+      organization.
     * `404 not_found` — no policy of this tenant's has that name.
     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
       `Idempotency-Key` for a different request, or the first request under
       it has not finished. Resend the identical request, or use a new key.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     policy = revise_policy(
         tenant=tenant,
         actor=actor,
@@ -919,7 +835,9 @@ def retire_policy_route(request: TenantRequest, name: str) -> DeliveryPolicy:
     Refusals you can get here:
 
     * `403 forbidden` — you are not an owner or an administrator of the
-      tenant, or the request resolved no tenant or no acting organization.
+      tenant.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
+      organization.
     * `404 not_found` — no policy of this tenant's has that name, or it has no
       live version to retire.
     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
@@ -932,7 +850,7 @@ def retire_policy_route(request: TenantRequest, name: str) -> DeliveryPolicy:
     reason consent is five verbs: a flag a door can set is a flag a door can set
     back, and this one decides what every future `send(policy=…)` will do.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     policy = get_policy(tenant=tenant, name=name, actor=actor)
     return retire_policy(tenant=tenant, actor=actor, policy=policy)
 
@@ -955,11 +873,12 @@ def retrieve_policy(request: TenantRequest, name: str) -> DeliveryPolicy:
 
     * `404 not_found` — no policy of this tenant's has that name, or none of
       its versions is live.
-    * `403 forbidden` — the request resolved no tenant or no acting
+    * `403 forbidden` — your membership here does not allow you to read this.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     return get_policy(tenant=tenant, name=name, actor=actor)
 
 
@@ -971,7 +890,7 @@ def retrieve_policy(request: TenantRequest, name: str) -> DeliveryPolicy:
 def list_recipients_route(
     request: TenantRequest,
     filters: Query[RecipientFilter],
-    show: RecipientShow = "live",
+    show: Show = "live",
     ordering: str = "email",
 ) -> QuerySet[Recipient]:
     """List contacts
@@ -987,8 +906,8 @@ def list_recipients_route(
 
     **Archived contacts are left out.** `?show=archived` lists only the
     archived ones and `?show=all` lists both; the default is `?show=live`.
-    `?archived=` is no longer accepted: it is refused with `400 invalid` naming
-    `show`, the parameter to ask with instead.
+    There is no `?archived=` — it is refused with `400 invalid` naming `show`,
+    the parameter to ask with instead, rather than ignored.
 
     Which contacts you see depends on the organization you are acting as (the
     `X-Org` header) — its own and those of organizations beneath it. The same
@@ -1005,23 +924,13 @@ def list_recipients_route(
       `?show=` named a cut other than `live`, `archived` or `all`, you sent
       `?archived=`, or a filter value was malformed. `errors` names the
       parameter and what it accepts.
-    * `403 forbidden` — the request resolved no tenant or no acting
+    * `403 forbidden` — your membership here does not allow you to read this.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    if "archived" in request.GET:
-        # The retired spelling, refused loudly rather than ignored: a client
-        # still sending it would otherwise be answered the live book and never
-        # learn that its "include the closed ones" had stopped meaning anything.
-        raise Invalid(
-            {
-                "show": [
-                    "`?archived=` is no longer accepted. Ask with `?show=archived` for the "
-                    "archived contacts alone, or `?show=all` for both."
-                ]
-            }
-        )
-    actor, tenant = _acting(request)
+    refuse_retired_query(request, RETIRED_QUERY)
+    actor, tenant = acting(request)
     recipients: QuerySet[Recipient] = list_recipients(
         tenant=tenant, org=actor.org, show=show, actor=actor
     )
@@ -1058,8 +967,9 @@ def create_recipient_route(request: TenantRequest, payload: RecipientIn) -> Stat
 
     * `400 invalid` — a field is missing or malformed. `errors` names the
       fields and nothing is created.
-    * `403 forbidden` — you hold no membership in this tenant, or the request
-      resolved no tenant or no acting organization.
+    * `403 forbidden` — your membership here does not allow this.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
+      organization.
     * `409 conflict` — this organization already has a contact at that
       address.
     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
@@ -1067,7 +977,7 @@ def create_recipient_route(request: TenantRequest, payload: RecipientIn) -> Stat
       it has not finished. Resend the identical request, or use a new key.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     recipient = create_recipient(
         tenant=tenant,
         actor=actor,
@@ -1106,11 +1016,12 @@ def retrieve_recipient(request: TenantRequest, recipient_id: UUID) -> Recipient:
     * `404 not_found` — no contact your acting organization can address has
       that id. A contact in a branch you hold no membership over answers
       this too.
-    * `403 forbidden` — the request resolved no tenant or no acting
+    * `403 forbidden` — your membership here does not allow you to read this.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=actor.org, actor=actor)
     return with_allowed_acts([recipient], actor)[0]
 
@@ -1120,6 +1031,7 @@ def retrieve_recipient(request: TenantRequest, recipient_id: UUID) -> Recipient:
     "invalid_body",
     "invalid",
     "forbidden",
+    "no_acting_scope",
     "insufficient_scope",
     "not_found",
     "archived",
@@ -1155,8 +1067,9 @@ def update_recipient_route(
 
     * `400 invalid` — a field you sent is malformed. `errors` names it and
       nothing is changed.
-    * `403 forbidden` — you hold no membership in this tenant, or the request
-      resolved no tenant or no acting organization.
+    * `403 forbidden` — your membership here does not allow this.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
+      organization.
     * `404 not_found` — no contact your acting organization can address has
       that id. A contact in a branch you hold no membership over answers
       this too.
@@ -1169,7 +1082,7 @@ def update_recipient_route(
       it has not finished. Resend the identical request, or use a new key.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=actor.org, actor=actor)
     updated = update_recipient(
         tenant=tenant,
@@ -1189,6 +1102,7 @@ def update_recipient_route(
 @refuses(
     "archive_blocked",
     "forbidden",
+    "no_acting_scope",
     "not_found",
     "idempotency_key_reuse",
     "in_progress",
@@ -1218,7 +1132,9 @@ def archive_recipient_route(request: TenantRequest, recipient_id: UUID) -> Recip
     Refusals you can get here:
 
     * `403 forbidden` — you do not administer the organization this contact
-      belongs to, or the request resolved no tenant or no acting organization.
+      belongs to.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
+      organization.
     * `404 not_found` — no contact your acting organization can address has
       that id. A contact in a branch you hold no membership over answers
       this too.
@@ -1230,7 +1146,7 @@ def archive_recipient_route(request: TenantRequest, recipient_id: UUID) -> Recip
       it has not finished. Resend the identical request, or use a new key.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=actor.org, actor=actor)
     archived = archive_recipient(tenant=tenant, actor=actor, recipient=recipient)
     return with_allowed_acts([archived], actor)[0]
@@ -1242,6 +1158,7 @@ def archive_recipient_route(request: TenantRequest, recipient_id: UUID) -> Recip
 @refuses(
     "restore_blocked",
     "forbidden",
+    "no_acting_scope",
     "not_found",
     "idempotency_key_reuse",
     "in_progress",
@@ -1266,7 +1183,9 @@ def restore_recipient_route(request: TenantRequest, recipient_id: UUID) -> Recip
     Refusals you can get here:
 
     * `403 forbidden` — you do not administer the organization this contact
-      belongs to, or the request resolved no tenant or no acting organization.
+      belongs to.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
+      organization.
     * `404 not_found` — no contact your acting organization can address has
       that id. A contact in a branch you hold no membership over answers
       this too.
@@ -1278,18 +1197,13 @@ def restore_recipient_route(request: TenantRequest, recipient_id: UUID) -> Recip
       it has not finished. Resend the identical request, or use a new key.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=actor.org, actor=actor)
     restored = restore_recipient(tenant=tenant, actor=actor, recipient=recipient)
     return with_allowed_acts([restored], actor)[0]
 
 
 # --- preferences: five verbs, and no column a door can set -----------------------
-#
-# Every one of these is a POST on a sub-path rather than a field on a PATCH, for
-# the reason `services.py` states: a column a door can set is a column a door can
-# set back, and "they consented on the 3rd and withdrew on the 9th" is a history,
-# not a checkbox. `PreferenceOut` reports the timestamps; nothing accepts them.
 
 
 @router.get(
@@ -1331,7 +1245,7 @@ def list_preferences_route(
       owner-or-administrator acts.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=actor.org, actor=actor)
     preferences: QuerySet[ChannelPreference] = list_preferences(
         tenant=tenant, recipient=recipient, org=actor.org, actor=actor
@@ -1372,7 +1286,9 @@ def grant_consent_route(
     * `400 invalid` — `channel` is not one this product knows. `errors` names
       it and nothing is recorded.
     * `403 forbidden` — you are not an owner or an administrator of the
-      tenant, or the request resolved no tenant or no acting organization.
+      tenant.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
+      organization.
     * `404 not_found` — no contact your acting organization can address has
       that id. A contact in a branch you hold no membership over answers
       this too.
@@ -1381,7 +1297,7 @@ def grant_consent_route(
       it has not finished. Resend the identical request, or use a new key.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=actor.org, actor=actor)
     return grant_consent(tenant=tenant, actor=actor, recipient=recipient, channel=payload.channel)
 
@@ -1419,7 +1335,9 @@ def revoke_consent_route(
 
     * `400 invalid` — `channel` is not one this product knows.
     * `403 forbidden` — you are not an owner or an administrator of the
-      tenant, or the request resolved no tenant or no acting organization.
+      tenant.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
+      organization.
     * `404 not_found` — no contact your acting organization can address has
       that id. A contact in a branch you hold no membership over answers
       this too.
@@ -1428,17 +1346,12 @@ def revoke_consent_route(
       it has not finished. Resend the identical request, or use a new key.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=actor.org, actor=actor)
     return revoke_consent(tenant=tenant, actor=actor, recipient=recipient, channel=payload.channel)
 
 
-# `quiet_hours-set` rather than `quiet-hours-set`, and the underscore is
-# load-bearing: house rule 17 splits a url_name on its LAST hyphen into a noun
-# and a verb, and looks for `<verb>_<noun>` on the machine door. A hyphen inside
-# the noun would make the pair it looks for `set_quiet-hours`, which is not a
-# name Python can carry — so the parity check would report a capability with no
-# tool, for a tool that is right there.
+# `quiet_hours-set`: rule 17 splits the url_name on its last hyphen.
 @router.post(
     "/recipients/{recipient_id}/quiet-hours/",
     response=PreferenceOut,
@@ -1478,7 +1391,9 @@ def set_quiet_hours_route(
       sent, or the timezone is not one this product recognises. `errors`
       names the field and nothing is changed.
     * `403 forbidden` — you are not an owner or an administrator of the
-      tenant, or the request resolved no tenant or no acting organization.
+      tenant.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
+      organization.
     * `404 not_found` — no contact your acting organization can address has
       that id. A contact in a branch you hold no membership over answers
       this too.
@@ -1487,7 +1402,7 @@ def set_quiet_hours_route(
       it has not finished. Resend the identical request, or use a new key.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=actor.org, actor=actor)
     return set_quiet_hours(
         tenant=tenant,
@@ -1531,7 +1446,9 @@ def suppress_recipient_route(
 
     * `400 invalid` — `channel` is not one this product knows.
     * `403 forbidden` — you are not an owner or an administrator of the
-      tenant, or the request resolved no tenant or no acting organization.
+      tenant.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
+      organization.
     * `404 not_found` — no contact your acting organization can address has
       that id. A contact in a branch you hold no membership over answers
       this too.
@@ -1540,7 +1457,7 @@ def suppress_recipient_route(
       it has not finished. Resend the identical request, or use a new key.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=actor.org, actor=actor)
     return suppress_recipient(
         tenant=tenant, actor=actor, recipient=recipient, channel=payload.channel
@@ -1578,7 +1495,9 @@ def unsuppress_recipient_route(
 
     * `400 invalid` — `channel` is not one this product knows.
     * `403 forbidden` — you are not an owner or an administrator of the
-      tenant, or the request resolved no tenant or no acting organization.
+      tenant.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
+      organization.
     * `404 not_found` — no contact your acting organization can address has
       that id. A contact in a branch you hold no membership over answers
       this too.
@@ -1587,31 +1506,14 @@ def unsuppress_recipient_route(
       it has not finished. Resend the identical request, or use a new key.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=actor.org, actor=actor)
     return unsuppress_recipient(
         tenant=tenant, actor=actor, recipient=recipient, channel=payload.channel
     )
 
 
-# --- devices: the push address book ----------------------------------------------
-#
-# **Its own scope family, on the same router.** `tags=["devices"]` is declared
-# per route rather than on a second `Router`, because ninja ACCUMULATES a nested
-# router's tags downward (`Router.set_api_instance`) and this app's mount already
-# carries `messaging` — a nested router would put two tags on every device
-# operation, which house rule 41 refuses and which makes the app appear twice in
-# the navigation (the shape `apps/accounts/api.py`'s mount note records). A tag
-# declared on the operation REPLACES the router's, so these two carry exactly
-# one each.
-#
-# Why a family of its own rather than `messaging` (RUL-1, ratified): the two
-# capabilities are not the same trust. `messaging:write` is "may contact a
-# person"; `devices:write` is "may add or retire a handset in the address book",
-# which reaches nobody by itself — a registration is not a send and not a
-# consent — and an agent trusted to keep an address book is not thereby trusted
-# to mail everybody in it. The key is frozen from the day it ships
-# (`apps/core/api/scopes.py`).
+# --- devices: the push address book, tagged per route (a nested router doubles tags) --
 
 
 @router.post("/devices/", response=DeviceOut, url_name="device-register", tags=["devices"])
@@ -1656,8 +1558,9 @@ def register_device_route(request: TenantRequest, payload: DeviceIn) -> Device:
     * `422 invalid_body` — the body carried a field this operation does not
       have, or was missing one it needs. Bodies are strict here: a misspelled
       field name is refused by name rather than dropped in silence.
-    * `403 forbidden` — you hold no membership in this tenant, or the request
-      resolved no tenant or no acting organization.
+    * `403 forbidden` — your membership here does not allow this.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
+      organization.
     * `404 not_found` — no contact your acting organization can address has
       that `recipient_id`. A contact in a branch you hold no membership over
       answers this too.
@@ -1666,7 +1569,7 @@ def register_device_route(request: TenantRequest, payload: DeviceIn) -> Device:
       it has not finished. Resend the identical request, or use a new key.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     recipient = get_recipient(
         tenant=tenant, recipient_id=payload.recipient_id, org=actor.org, actor=actor
     )
@@ -1708,8 +1611,9 @@ def retire_device_route(request: TenantRequest, device_id: UUID) -> Device:
 
     Refusals you can get here:
 
-    * `403 forbidden` — you hold no membership in this tenant, or the request
-      resolved no tenant or no acting organization.
+    * `403 forbidden` — your membership here does not allow this.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
+      organization.
     * `404 not_found` — no device your acting organization can reach has that
       id. A device belonging to a contact in a branch you hold no membership
       over answers this too.
@@ -1718,6 +1622,6 @@ def retire_device_route(request: TenantRequest, device_id: UUID) -> Device:
       it has not finished. Resend the identical request, or use a new key.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     device = get_device(tenant=tenant, device_id=device_id, org=actor.org, actor=actor)
     return retire_device(tenant=tenant, actor=actor, device=device)

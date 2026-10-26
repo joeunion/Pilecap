@@ -1,27 +1,16 @@
-"""Writes for the connections app.
+"""Writes for the connections app: each a `@service`, and each change asks `authz.require` first.
 
-Every function is `@service` — keyword-only, atomic, traced, logged and audited.
-Every one that changes a connection calls `authz.require` first, because the
-service authorizes and the door does not.
-
-**The load-bearing line in this module is the one that is not here.**
-`LOG_KEYS` does not contain `credentials`, and `core.service.redact` is an
-allow-list, so the credential a caller passes comes out as `[redacted]` in the
-`.called` log line and in the `AuditEntry.input` — automatically, on every
-service in this file, including ones somebody adds later. A blocklist would
-work until the day somebody named a parameter `token` instead.
+`LOG_KEYS` is an allow-list without `credentials`: a credential is `[redacted]` in log and audit.
 """
 
 from __future__ import annotations
 
-import importlib
-import importlib.util
 import inspect
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
+from uuid import UUID
 
-from django.apps import apps as django_apps
 from django.db import transaction
 from django.utils import timezone
 
@@ -29,17 +18,22 @@ from apps.connections.events import (
     CONNECTION_CREATED,
     CONNECTION_CREDENTIALS_UPDATED,
     CONNECTION_REVOKED,
+    CONNECTION_SIGNATURE_SCHEME_UPDATED,
     WEBHOOK_RECEIVED,
     V,
 )
 from apps.connections.models import Connection, InboundWebhook
 from apps.connections.providers import inbound_handler
 from apps.connections.schemas import ConnectionOut, InboundWebhookOut
+from apps.connections.types import HANDLE_WORKFLOW, HandleInboundWebhook
+from apps.core import bridge
 from apps.core.actor import Actor
 from apps.core.authz import require
 from apps.core.exceptions import Invalid, as_invalid
 from apps.core.log import get_logger
 from apps.core.models import Tenant
+from apps.core.retry import retry_floor_seconds
+from apps.core.schemas import event_payload
 from apps.core.service import service
 from apps.core.services import root_organization
 from apps.core.types import Swept
@@ -142,6 +136,7 @@ def create_connection(
     provider: str,
     name: str,
     credentials: dict[str, Any] | None = None,
+    is_signature_v2_required: bool = True,
 ) -> Connection:
     """Open a connection to an external system for this tenant."""
     # **AT THE TENANT'S ROOT, not at the acting hat.** A connection holds one
@@ -157,6 +152,7 @@ def create_connection(
         provider=str(provider).strip().lower(),
         name=str(name).strip(),
         credentials=dict(credentials or {}),
+        is_signature_v2_required=bool(is_signature_v2_required),
     )
     connection.connected_at = timezone.now() if connection.credentials else None
     with as_invalid():
@@ -203,6 +199,25 @@ def update_credentials(
 
 
 @service
+def set_signature_scheme(
+    *,
+    tenant: Tenant,
+    actor: Actor,
+    connection: Connection,
+    is_signature_v2_required: bool,
+) -> Connection:
+    """Choose whether this connection's inbound webhook refuses a body-only signature."""
+    # At the root: this row is the tenant's, not a branch's (see `create`).
+    require(actor, "connection.update", root_organization(tenant=tenant))
+    if connection.is_signature_v2_required == is_signature_v2_required:
+        return connection
+    connection.is_signature_v2_required = is_signature_v2_required
+    connection.save(update_fields=["is_signature_v2_required", "updated_at"])
+    _emit(CONNECTION_SIGNATURE_SCHEME_UPDATED, tenant=tenant, connection=connection, actor=actor)
+    return connection
+
+
+@service
 def revoke_connection(
     *,
     tenant: Tenant,
@@ -231,39 +246,12 @@ def revoke_connection(
     return connection
 
 
-@service
-def record_failure(
-    *,
-    tenant: Tenant,
-    actor: Actor,
-    connection: Connection,
-    reason: str,
-) -> Connection:
-    """Mark a connection as failing, with a reason a human can read.
-
-    Called by whatever made the outbound call — an activity, in the ordinary
-    case. `reason` is a summary, never a response body and never a header: an
-    upstream 401 very often echoes the token straight back.
-
-    **It asks at the root like the three services above, and does not carry the
-    valve `record_inbound_webhook` does.** "An activity, in the ordinary case"
-    is not "nothing but the system can reach this": an activity restores its
-    actor from the workflow's headers, and those carry the person and the hat
-    the run was started under. A valve claiming a system-only caller would be a
-    claim about a caller this tree does not have — the function has none today.
-    """
-    # At the root: this row is the tenant's, not a branch's (see `create`).
-    require(actor, "connection.update", root_organization(tenant=tenant))
-    connection.status = Connection.Status.ERROR
-    connection.last_error = str(reason)[:500]
-    connection.save(update_fields=["status", "last_error", "updated_at"])
-    return connection
-
-
 #: The columns the hand-off stamps on a stored delivery. A module constant so the
 #: write line has room for its `# authz-kind:` valve, which rule 13 reads on the
 #: line itself — the reason is the one `record_inbound_webhook`'s docstring gives.
 HANDED_OFF_FIELDS = ["status", "handed_off_to", "handed_off_at", "updated_at"]
+#: What the purge may take: a hand-off nobody claimed, or a handler that answered; never a failure.
+CLOSED_STATUSES = (InboundWebhook.Status.HANDED_OFF, InboundWebhook.Status.HANDLED)
 
 
 @service
@@ -288,10 +276,8 @@ def record_inbound_webhook(
     service will not do is parse the body or branch on it — **it does not know
     what any of this means and must not learn.** The one thing it does after
     the store is ask `providers.inbound_handler` whether some other app claimed
-    this provider's deliveries, and call it (ADR comms-4). That call is inside
-    this transaction and inside this request, so a handler owes the same
-    promise the spine hand-off does: be quick, and put anything that waits or
-    retries in a workflow.
+    this provider's deliveries, and start that handler's run on the commit
+    (ADR comms-4): the handler never runs inside this request.
 
     **A redelivery is answered with the row it already stored** (ADR
     connections-1). Each retry carries the same `DELIVERY_ID_HEADERS` id — the
@@ -371,38 +357,50 @@ def record_inbound_webhook(
         received.handed_off_to = handed_off_to
         received.handed_off_at = timezone.now()
         received.save(update_fields=HANDED_OFF_FIELDS)  # authz-kind: same row, same act
-    _hand_to_registered_handler(received=received, actor=actor)
+    _start_registered_handler(received=received)
     return received
 
 
-def _hand_to_registered_handler(*, received: InboundWebhook, actor: Actor) -> None:
-    """Give the stored delivery to whichever app claimed this provider slug.
+def _start_registered_handler(*, received: InboundWebhook) -> None:
+    """Start the run that hands this receipt to its provider's handler, on the commit."""
+    if inbound_handler(received.connection.provider) is None:
+        return
+    build_id = bridge.get(bridge.WORKFLOW_ID)
+    bridge.get(bridge.START_WORKFLOW_ON_COMMIT)(
+        workflow=HANDLE_WORKFLOW,
+        arg=HandleInboundWebhook(
+            inbound_webhook_id=str(received.pk), retry_floor=retry_floor_seconds()
+        ),
+        tenant=received.tenant,
+        id=build_id(
+            tenant=received.tenant, app="connections", noun="inbound_webhook", key=str(received.pk)
+        ),
+    )
 
-    **After** the store and after the spine hand-off, and never instead of
-    either: those two are what make the delivery survivable, and this is what
-    makes it *mean* something. A provider with no registered handler is the
-    ordinary case and is silent.
 
-    **A raising handler is caught and logged, and the 202 stands.** That is the
-    whole reason the store comes first. The receipt row is the durability — a
-    human can replay it, and the sender will retry anyway — so turning one
-    app's bad afternoon into a 500 on the shared inbound door would take every
-    *other* provider's deliveries down with it. `Exception` rather than a
-    narrower catch on purpose: this service cannot know what a handler it has
-    never seen might raise, and a `BaseException` (a cancellation, a
-    `KeyboardInterrupt`) still propagates.
+#: The activity's write once the handler answered: the clock it closes is the purge's.
+HANDLED_FIELDS = ["status", "handed_off_at", "updated_at"]
 
-    **The savepoint is what makes that promise true rather than nearly true.**
-    Catching an exception is not enough on Postgres: a handler whose failure was
-    a database error leaves the enclosing transaction aborted, and the receipt
-    this service just wrote would then fail to commit — a 500 arriving by the
-    back door, on the one route that must not have one. `atomic()` here rolls
-    the handler's work back to the point before it ran and leaves the receipt
-    intact.
+
+# door: only this tree's own hands reach it — the handler run's activity, nothing else
+@service
+def apply_inbound_webhook(
+    *, tenant: Tenant, actor: Actor, inbound_webhook_id: UUID
+) -> InboundWebhook:
+    """Hand one stored receipt to its provider's handler; the status says how it went.
+
+    A raise is caught so `handler_failed` commits, and the activity raises it again for the run.
     """
+    received = (
+        InboundWebhook.objects.for_tenant(tenant)
+        .select_related("connection")
+        .get(pk=inbound_webhook_id)
+    )
+    # hat-scoped: system-only caller, the run's activity, as `record_inbound_webhook` asks it
+    require(actor, "connection.receive_webhook", received.connection)
     handler = inbound_handler(received.connection.provider)
     if handler is None:
-        return
+        return received
     try:
         with transaction.atomic():
             handler(received=received, actor=actor)
@@ -413,42 +411,22 @@ def _hand_to_registered_handler(*, received: InboundWebhook, actor: Actor) -> No
             connection_id=str(received.connection_id),
             provider=received.connection.provider,
         )
+        received.status = InboundWebhook.Status.HANDLER_FAILED
+    else:
+        received.status = InboundWebhook.Status.HANDLED
+    received.handed_off_at = received.handed_off_at or timezone.now()
+    received.save(update_fields=HANDLED_FIELDS)  # authz-kind: same row, same act
+    return received
 
 
 # --- The hand-off to the event spine ----------------------------------------
 # `apps/events` sits beside this app rather than above it: the layer contract in
-# `pyproject.toml` makes the platform apps siblings, and a template has to keep
-# running — and this app's tests have to keep passing — in a tree where
-# `apps/events` has not landed. So the reach across is a **runtime lookup
-# through the app registry, never an import**, and its absence is an ordinary
-# branch rather than an ImportError at module load.
-
-
-def _events_attr(module: str, name: str) -> Any:
-    """`apps.events.<module>.<name>`, if the app is installed and has it, else `None`.
-
-    The one reach across the sibling border, and the only one this app has.
-    `api.py` uses it too, for the freshness half of the inbound signature check:
-    the window and the parse grammar for `X-Signature-V2` belong to
-    `apps.events.receivers`, which is where the scheme is *sent* from, and a
-    second copy of a five-minute number is a second copy that drifts. A value
-    and not only a callable, because a tolerance is a `timedelta`.
-    """
-    if not django_apps.is_installed("apps.events"):
-        return None
-    module_name = f"apps.events.{module}"
-    try:
-        if importlib.util.find_spec(module_name) is None:
-            return None
-        return getattr(importlib.import_module(module_name), name, None)
-    except ImportError:  # pragma: no cover - a broken sibling app, not our failure
-        return None
-
-
-def _events_callable(module: str, name: str) -> Callable[..., Any] | None:
-    """`apps.events.<module>.<name>`, if the app is installed and it is callable."""
-    found = _events_attr(module, name)
-    return found if callable(found) else None
+# `pyproject.toml` makes the platform apps siblings, so this app never imports
+# it. Every reach across is a `core.bridge` name `apps/events/apps.py` fills —
+# `EMIT`, `VERIFY_AND_STORE`, and the two verifiers `api.py` uses — looked up
+# with `get()`: in production a name nobody registered is `BridgeNotRegistered`
+# at the first call, never a silent second road; elsewhere the bridge's no-op
+# answers `None`, and `None` is read below as "nothing took it".
 
 
 def _accepts(fn: Callable[..., Any], **kwargs: Any) -> bool:
@@ -466,40 +444,13 @@ def _accepts(fn: Callable[..., Any], **kwargs: Any) -> bool:
 
 
 def _hand_off(*, received: InboundWebhook, actor: Actor) -> str:
-    """Give the stored delivery to the event spine. Returns what took it, or ``""``.
+    """Give the stored delivery to the event spine; answers what took it, or ``""``.
 
-    Two interfaces, in order of specificity:
-
-    1. `apps.events.receivers.verify_and_store` — the inbound receiver, if the
-       events app exposes one whose signature accepts what we have;
-    2. `apps.events.services.emit` — the documented spine interface
-       (`build-contract.md`), which fans out to the tenant's subscribers.
-
-    **Against the spine as it landed, (1) does not bind, and that is right.**
-    Its `verify_and_store(request_body, signature, *, source, name)` is a
-    *door-side* helper for a route that still has the raw bytes and an unchecked
-    signature in hand; by the time this function is reached the signature has
-    been checked — by `api.receive_webhook`, against this connection's own
-    secret — and the body stored, here, by the service above. Handing it over
-    again would verify twice and store twice. So the live path is (2), and it is
-    a decision the guard makes rather than a `TypeError` caught around a call —
-    see `_accepts`. The first branch stays because "an events app with a
-    receiver shaped for us" is a thing a product may well grow, and a checked
-    signature costs nothing to keep offering.
-
-    **The narrowing (ADR connections-1) is why the probe now offers the row.**
-    `verify_and_store` used to take `secret` and `tenant` as two loose values,
-    and this — its one discovered caller — was exactly the place a builder would
-    eventually pair connection A's secret with tenant B. It takes `source=` now:
-    one object, carrying both, and `received.connection` is the only thing this
-    function could sensibly pass. The mismatch is not refused; it cannot be
-    written.
-
-    Nothing else in this app knows `apps.events` exists.
+    `bridge.VERIFY_AND_STORE` when it binds a verified row (ADR connections-1), else `bridge.EMIT`.
     """
-    payload = {"v": V, **InboundWebhookOut.from_orm(received).model_dump(mode="json")}
+    payload = {"v": V, **event_payload(InboundWebhookOut.from_orm(received))}
 
-    receiver = _events_callable("receivers", "verify_and_store")
+    receiver = bridge.get(bridge.VERIFY_AND_STORE)
     receiver_kwargs: dict[str, Any] = {
         # The row, never a tenant-and-secret pair: whatever a product's events
         # app grows here, it gets both facts from one object or it does not bind.
@@ -509,13 +460,16 @@ def _hand_off(*, received: InboundWebhook, actor: Actor) -> str:
         "headers": received.headers,
         "verified": True,
     }
-    if receiver is not None and _accepts(receiver, **receiver_kwargs):
-        receiver(**receiver_kwargs)
+    # A hand-off that answered nothing did not happen: the bridge's no-op outside
+    # production binds any keywords and answers `None`, and must never be
+    # recorded as a receiver that took the delivery.
+    if _accepts(receiver, **receiver_kwargs) and receiver(**receiver_kwargs) is not None:
         return "events.verify_and_store"
 
-    emit = _events_callable("services", "emit")
-    if emit is not None:
-        emit(name=WEBHOOK_RECEIVED, tenant=received.tenant, payload=payload, actor=actor)
+    emitted = bridge.get(bridge.EMIT)(
+        name=WEBHOOK_RECEIVED, tenant=received.tenant, payload=payload, actor=actor
+    )
+    if emitted is not None:
         return "events.emit"
 
     log.info(
@@ -527,18 +481,9 @@ def _hand_off(*, received: InboundWebhook, actor: Actor) -> str:
 
 
 def _emit(name: str, *, tenant: Tenant, connection: Connection, actor: Actor) -> None:
-    """Say that something happened, if there is anything listening yet.
-
-    Called inside the service's transaction (the `@service` decorator opens it),
-    so the outbox row and the business row land together or not at all.
-    """
-    emit = _events_callable("services", "emit")
-    if emit is None:
-        return
-    payload = {"v": V, **ConnectionOut.from_orm(connection).model_dump(mode="json")}
-    # `name=`: the spine's `emit` is `@service` and therefore keyword-only,
-    # including the name (house rule 13).
-    emit(name=name, tenant=tenant, payload=payload, actor=actor)
+    """Say what happened to a connection, inside the service's transaction, in the REST shape."""
+    payload = {"v": V, **event_payload(ConnectionOut.from_orm(connection))}
+    bridge.get(bridge.EMIT)(name=name, tenant=tenant, payload=payload, actor=actor)
 
 
 # --- Housekeeping ------------------------------------------------------------
@@ -550,8 +495,9 @@ def _emit(name: str, *, tenant: Tenant, connection: Connection, actor: Actor) ->
 # finished.
 
 
+# door: only this tree's own hands reach this; the scheduled purge activity's own step
 @service
-def purge_inbound_webhooks(*, before: datetime, tenant: Tenant | None) -> Swept:
+def purge_inbound_webhooks(*, before: datetime, tenant: None) -> Swept:
     """Drop inbound webhooks handed off before `before`. Returns how many went.
 
     **What it returns is a `Swept`, not a bare count** (ADR core-22, L6). The
@@ -574,7 +520,7 @@ def purge_inbound_webhooks(*, before: datetime, tenant: Tenant | None) -> Swept:
     is the second half of the poller that was never built: nobody can tell it
     apart from one that never fired.
 
-    **Only handed-off rows, and the clock is the hand-off's.** A `received` row
+    **Only closed rows (`CLOSED_STATUSES`), and the clock is the hand-off's.** A `received` row
     is an open promise — the hand-off has not happened, or has not been retried
     to a conclusion — and a purge that swept by `created_at` would destroy a
     replayable delivery before its workflow ever consumed it. That is the one
@@ -598,6 +544,6 @@ def purge_inbound_webhooks(*, before: datetime, tenant: Tenant | None) -> Swept:
     # boundary: the rows are deleted, never returned, and the only value that
     # leaves is a count.
     deleted, _ = InboundWebhook.objects.filter(
-        status=InboundWebhook.Status.HANDED_OFF, handed_off_at__lt=before
+        status__in=CLOSED_STATUSES, handed_off_at__lt=before
     ).delete()
     return Swept(label=InboundWebhook._meta.label, count=int(deleted))

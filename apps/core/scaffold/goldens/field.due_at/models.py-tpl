@@ -1,0 +1,6 @@
+# golden-anchor: {"nth": 0, "scope": ["Widget"], "side": "before", "text": "class Meta(OrgScopedModel.Meta):"}
+    due_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When this widget is due, if it carries a due date.",
+    )

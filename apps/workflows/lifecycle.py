@@ -90,7 +90,7 @@ def register(registry: LifecycleRegistry) -> None:
     `PurgeExpiredSessionsWorkflow` -> `purge_expired_sessions`. What that check
     proves is that the chain is WRITTEN DOWN; whether the schedule is live on a
     server is the lifecycle census's job and never this rule's, which is why the daily
-    cadence is stated in `activities.PURGE_EVERY` where an operator can read it.
+    cadence is `core.schedules.daily_purge`'s, where an operator can read it.
 
     **What this closes**: `django_session` was never cleared
     anywhere in this tree — no cron entry, no management command in any

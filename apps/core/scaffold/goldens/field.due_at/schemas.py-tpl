@@ -1,0 +1,13 @@
+# golden-anchor: {"nth": 0, "scope": ["WidgetIn"], "side": "after", "text": "notes: str = Field(default=\"\", json_schema_extra=example(\"Needs the heavy-duty mount.\"))"}
+    # Timezone-aware or refused: a moment with no offset is somebody's assumption.
+    due_at: AwareDatetime | None = Field(
+        default=None, json_schema_extra=example("2026-11-02T17:00:00Z")
+    )
+# golden-anchor: {"nth": 0, "scope": ["WidgetPatch"], "side": "after", "text": "notes: str | None = Field(default=None, json_schema_extra=example(\"Moved to bay 3.\"))"}
+    # `null` leaves it alone, as everywhere in this grammar; `clear_due_at` removes it.
+    due_at: AwareDatetime | None = Field(
+        default=None, json_schema_extra=example("2026-12-01T09:30:00Z")
+    )
+    clear_due_at: bool | None = Field(default=None, json_schema_extra=example(False))
+# golden-anchor: {"nth": 0, "scope": ["WidgetOut"], "side": "after", "text": ")"}
+    due_at: datetime | None = Field(default=None, json_schema_extra=example("2026-11-02T17:00:00Z"))

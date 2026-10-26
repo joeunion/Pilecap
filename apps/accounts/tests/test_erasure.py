@@ -11,19 +11,20 @@ from django.test import Client
 from mcp.server.mcpserver.exceptions import ToolError
 
 from apps.accounts.models import ApiToken, User
+from apps.accounts.selectors import list_tenants_this_user_alone_owns
 from apps.accounts.services import (
     ERASED_EMAIL_DOMAIN,
     authenticate_token,
     erase_user,
     issue_token,
-    tenants_this_user_alone_owns,
 )
-from apps.accounts.tests.test_user_doors import context_for, tool
+from apps.accounts.tests.test_user_doors import tool
 from apps.core.actor import Actor, actor_for, system_actor
 from apps.core.audit import AuditEntry
 from apps.core.exceptions import Conflict, Forbidden, NotFound, refusal_message
 from apps.core.models import Membership, Organization, Tenant
 from apps.core.services import add_membership, root_organization, set_role
+from apps.core.tests.mcp_context import context_for
 
 pytestmark = pytest.mark.django_db
 
@@ -157,7 +158,7 @@ def test_erasing_an_owner_is_allowed_once_somebody_else_owns_it(
     tenant: Tenant, owner: User, second_owner: User
 ) -> None:
     """The refusal is about the tenant, not about the role."""
-    assert tenants_this_user_alone_owns(user=owner) == []
+    assert list_tenants_this_user_alone_owns(user=owner) == []
 
     acting = actor_for(user=second_owner, tenant=tenant)
     erased = erase_user(user=owner, actor=acting, tenant=tenant)
@@ -221,7 +222,9 @@ def test_a_user_in_two_tenants_is_erased_once_and_blocks_on_either(
         actor=system_actor(tenant=other_tenant),
     )
 
-    assert [one.slug for one in tenants_this_user_alone_owns(user=member)] == [other_tenant.slug]
+    assert [one.slug for one in list_tenants_this_user_alone_owns(user=member)] == [
+        other_tenant.slug
+    ]
     with pytest.raises(Conflict):
         erase_user(user=member, actor=system_actor(), tenant=tenant)
 

@@ -1,6 +1,6 @@
 """Every refusal on the sign-in road leaves the tree exactly as it found it.
 
-**A census, not a list.** The sign-in surface has three branches and a service
+**A census, not a list.** The sign-in surface has two branches and a service
 behind one of them, and between them they can turn somebody away for a dozen
 different reasons. Writing a case per reason by hand is how the thirteenth one
 ships with no case at all — nobody notices an absence — so the population here
@@ -54,11 +54,11 @@ from allauth.account.models import EmailAddress
 from allauth.core.exceptions import ImmediateHttpResponse
 from allauth.socialaccount.models import SocialAccount
 
-from apps.accounts.adapter import GOOGLE_PROVIDER, SocialAccountAdapter
+from apps.accounts.adapter import SocialAccountAdapter
 from apps.accounts.models import SsoConnection, SsoIdentity, User
 from apps.accounts.selectors import get_platform_provider_id
-from apps.accounts.services import create_user, provision_sso_identity
-from apps.accounts.tests.conftest import assertion
+from apps.accounts.services import create_user, disable_sso_connection, provision_sso_identity
+from apps.accounts.tests.conftest import assertion, join
 from apps.core.actor import system_actor
 from apps.core.exceptions import DomainError
 from apps.core.models import Invitation, Membership, Organization, Tenant
@@ -161,8 +161,10 @@ REFUSAL_SITES: frozenset[Site] = frozenset(SITE_SPANS)
 # --- the world each driver is given, and the snapshot taken around it ---------
 
 
+# does-not-cover: `build_world` builds no sign-in request or SSO connection — one consumer;
+# a second consumer is the trigger to lift it into `build_world` (principle 11).
 class World(NamedTuple):
-    """Everything a driver might need, built once per case."""
+    """A sign-in refusal's world: a request, a connection, two people and a second tenant."""
 
     request: Any
     tenant: Tenant
@@ -187,13 +189,18 @@ def snapshot() -> dict[str, Any]:
     """The rows a refusal must not have moved.
 
     Counts catch a creation; the two vectors catch an EDIT that keeps the count
-    — a re-pointed `zitadel_sub` and an invitation flipped to `accepted` are
+    — a re-pointed identity join and an invitation flipped to `accepted` are
     both changes a count alone would sleep through, and both are exactly what
     this surface got wrong.
     """
     return {
         **{model.__name__: model.objects.count() for model in WATCHED},
-        "users": sorted(User.objects.values_list("pk", "zitadel_sub", "is_active")),
+        "users": sorted(User.objects.values_list("pk", "is_active")),
+        "joins": sorted(
+            SsoIdentity.objects.filter(connection__isnull=True).values_list(
+                "user_id", "realm", "subject"
+            )
+        ),
         "invitations": sorted(Invitation.objects.values_list("pk", "status")),
     }
 
@@ -290,17 +297,25 @@ def _platform_unverified(world: World) -> Callable[[], object]:
     )
 
 
+def _platform_claim_dormant(world: World) -> Callable[[], object]:
+    """A staff-realm sign-in at a domain a switched-off connection still claims."""
+    disable_sso_connection(
+        tenant=world.tenant, actor=system_actor(world.tenant), connection=world.connection
+    )
+    return lambda: adapter(world).pre_social_login(
+        world.request, platform("someone@acme.com", subject="sub-dormant")
+    )
+
+
 def _platform_subject_address_disagree(world: World) -> Callable[[], object]:
-    world.resident.zitadel_sub = "sub-held"
-    world.resident.save(update_fields=["zitadel_sub"])
+    join(world.resident, "sub-held")
     return lambda: adapter(world).pre_social_login(
         world.request, platform(world.other.email, subject="sub-held")
     )
 
 
 def _platform_subject_mismatch(world: World) -> Callable[[], object]:
-    world.resident.zitadel_sub = "sub-original"
-    world.resident.save(update_fields=["zitadel_sub"])
+    join(world.resident, "sub-original")
     return lambda: adapter(world).pre_social_login(
         world.request, platform(world.resident.email, subject="sub-fresh")
     )
@@ -319,7 +334,7 @@ def _platform_writer_refused(world: World) -> Callable[[], object]:
 
     **The one live road, and it is a normalisation seam.** The door compares the
     subject exactly as the issuer asserted it — that is the string allauth would
-    match its own row on — while `record_zitadel_identity` strips before it
+    match its own row on — while `record_identity` strips before it
     writes and before it looks. So an assertion carrying `" sub-z "` for a
     subject stored as `"sub-z"` misses every lookup this door makes (our column
     holds no padded string; allauth holds no row for one), is introduced by the
@@ -330,39 +345,23 @@ def _platform_writer_refused(world: World) -> Callable[[], object]:
     refusal two branches earlier instead (V-R2F): it put the subject in our
     column, which the door resolves on first, so the service was never called.
     """
-    world.other.zitadel_sub = "sub-z"
-    world.other.save(update_fields=["zitadel_sub"])
+    join(world.other, "sub-z")
     return lambda: adapter(world).pre_social_login(
         world.request, platform(world.resident.email, subject=" sub-z ")
     )
 
 
-def _workforce_wrong_domain(world: World) -> Callable[[], object]:
+def _platform_domain_not_allowed(world: World) -> Callable[[], object]:
+    """The workforce wall: a stranger nobody vouched for, from nobody's domain.
+
+    Verified, holding no subject of ours, at an address no account and no
+    customer's `SsoDomain` claims, with no invitation standing — the one person
+    the platform would otherwise mint. It is the site the retired direct Google
+    road's wrong-domain refusal moved to; that road's unverified and inactive
+    refusals are the platform branch's own sites 0 and 4.
+    """
     return lambda: adapter(world).pre_social_login(
-        world.request,
-        assertion(provider=GOOGLE_PROVIDER, subject="g|1", email="stranger@gmail.com"),
-    )
-
-
-def _workforce_unverified(world: World) -> Callable[[], object]:
-    return lambda: adapter(world).pre_social_login(
-        world.request,
-        assertion(
-            provider=GOOGLE_PROVIDER,
-            subject="g|2",
-            email=f"someone@{WORKFORCE_DOMAIN}",
-            verified=False,
-        ),
-    )
-
-
-def _workforce_inactive(world: World) -> Callable[[], object]:
-    person = create_user(email=f"staff@{WORKFORCE_DOMAIN}", password=None)
-    person.is_active = False
-    person.save(update_fields=["is_active"])
-    return lambda: adapter(world).pre_social_login(
-        world.request,
-        assertion(provider=GOOGLE_PROVIDER, subject="g|3", email=person.email),
+        world.request, platform("stranger@gmail.com", subject="sub-stranger")
     )
 
 
@@ -387,8 +386,7 @@ def _customer_service_refused(world: World) -> Callable[[], object]:
 
 def _customer_writer_refused(world: World) -> Callable[[], object]:
     """The second refusal on the customer branch: the identity joined, the subject taken."""
-    world.other.zitadel_sub = "sub-c2"
-    world.other.save(update_fields=["zitadel_sub"])
+    join(world.other, "sub-c2")
     resident = create_user(email="person@acme.com", password=None)
     # SET-UP: the identity exists before the call that must refuse.
     provision_sso_identity(
@@ -460,13 +458,12 @@ def _service_elsewhere(world: World) -> Callable[[], object]:
 
 DRIVERS: dict[Site, Callable[[World], Callable[[], object]]] = {
     Site(A, "_platform_login", 0): _platform_unverified,
-    Site(A, "_platform_login", 1): _platform_subject_address_disagree,
-    Site(A, "_platform_login", 2): _platform_subject_mismatch,
-    Site(A, "_platform_login", 3): _platform_inactive,
-    Site(A, "_platform_login", 4): _platform_writer_refused,
-    Site(A, "_workforce_login", 0): _workforce_wrong_domain,
-    Site(A, "_workforce_login", 1): _workforce_unverified,
-    Site(A, "_workforce_login", 2): _workforce_inactive,
+    Site(A, "_platform_login", 1): _platform_claim_dormant,
+    Site(A, "_platform_login", 2): _platform_subject_address_disagree,
+    Site(A, "_platform_login", 3): _platform_subject_mismatch,
+    Site(A, "_platform_login", 4): _platform_domain_not_allowed,
+    Site(A, "_platform_login", 5): _platform_inactive,
+    Site(A, "_platform_login", 6): _platform_writer_refused,
     Site(A, "_customer_login", 0): _customer_service_refused,
     Site(A, "_customer_login", 1): _customer_writer_refused,
     Site(S, "provision_sso_identity", 0): _service_unverified,
@@ -508,7 +505,7 @@ def world(
     while proving nothing about the site it names.
     """
     settings.GOOGLE_OAUTH_CLIENT_ID = "google-client-id"
-    settings.GOOGLE_OAUTH_CLIENT_SECRET = "google-client-secret"  # pragma: allowlist secret
+    settings.GOOGLE_OAUTH_CLIENT_SECRET = "google-client-secret"  # noqa: S105 — a fake IdP client secret the test world configures  # pragma: allowlist secret
     settings.GOOGLE_WORKSPACE_DOMAINS = [WORKFORCE_DOMAIN]
     return World(
         request=login_request,

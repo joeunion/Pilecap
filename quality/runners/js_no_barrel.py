@@ -17,8 +17,8 @@ carries a line-level re-export — `export * from '...'` or
 local declarations (`export const X = ...`) is not a barrel and is the
 rule's own negative.
 
-WHY THIS RUNNER CANNOT REPEAT RULE 50'S MISTAKE (mid-rung finding, P16 R-a x
-SCAFFOLD merge — a name-based scan matched a framework's own vocabulary).
+WHY THIS RUNNER CANNOT REPEAT RULE 50'S MISTAKE (found when the
+scaffold merged — a name-based scan matched a framework's own vocabulary).
 This rule keys on a FILENAME (`index.*`) plus a fixed RE-EXPORT SYNTAX marker
 — never an English word in an identifier — so nothing a library or a
 framework names collides with it.
@@ -35,10 +35,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from quality.runners._kindscope import skip_dirs as _kind_skip_dirs  # noqa: E402
+from quality.runners import _kindscope  # noqa: E402
 
 SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
-SKIP_DIRS = _kind_skip_dirs(Path.cwd(), "js")
 
 INDEX_STEM = "index"
 
@@ -46,18 +45,6 @@ INDEX_STEM = "index"
 #: shape, whatever it names. Deliberately not distinguishing `default` from a
 #: named re-export: both create the same collision file.
 REEXPORT = re.compile(r"""^\s*export\s+(?:\*|\{[^}]*\})\s+from\s+(['"])[^'"]+\1""")
-
-
-def files_under(root: Path) -> list[Path]:
-    out: list[Path] = []
-    if not root.is_dir():
-        return out
-    for path in sorted(root.rglob("*")):
-        if SKIP_DIRS & set(path.parts):
-            continue
-        if path.is_file() and path.suffix in SUFFIXES:
-            out.append(path)
-    return out
 
 
 def findings_in(path: Path) -> list[dict]:
@@ -90,7 +77,7 @@ def main(argv: list[str]) -> int:
     findings: list[dict] = []
     scanned = 0
     for root in roots:
-        for path in files_under(root):
+        for path in _kindscope.files_under(root, SUFFIXES):
             scanned += 1
             findings.extend(findings_in(path))
     print(

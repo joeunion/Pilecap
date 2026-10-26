@@ -479,7 +479,7 @@ def _seed_people(spec: ScaleSpec, tenant: Any, tree: dict[str, Any]) -> list[Any
             email = hats["leaf"]
         else:
             email = f"perf-{tenant.slug}-{index:04d}@example.invalid"
-        users.append(User(email=email, password="!", is_active=True))
+        users.append(User(email=email, password="!", is_active=True))  # noqa: S106 — Django's unusable-password marker, so the seeded user cannot sign in
     User.objects.bulk_create(users, batch_size=BATCH)
 
     partner_list = partner_slugs(spec)
@@ -510,7 +510,7 @@ def _seed_people(spec: ScaleSpec, tenant: Any, tree: dict[str, Any]) -> list[Any
     # deployment (`membership_one_default_per_user`), so exactly the first hat
     # carries it and the rest are non-default — which is also the true shape:
     # a person has one home and several places they also work.
-    many = User(email=hats["many"], password="!", is_active=True)
+    many = User(email=hats["many"], password="!", is_active=True)  # noqa: S106 — Django's unusable-password marker, so the seeded user cannot sign in
     many.save()
     Membership.objects.bulk_create(
         [
@@ -887,7 +887,7 @@ def _seed_background(spec: ScaleSpec) -> list[Any]:
         tenants.append(tenant)
         root = Organization.objects.for_tenant(tenant).get(parent__isnull=True)
         users = [
-            User(email=f"bg-{tenant.slug}-{n}@example.invalid", password="!")
+            User(email=f"bg-{tenant.slug}-{n}@example.invalid", password="!")  # noqa: S106 — Django's unusable-password marker, so the seeded user cannot sign in
             for n in range(spec.background_members)
         ]
         User.objects.bulk_create(users)

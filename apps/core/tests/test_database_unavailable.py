@@ -294,7 +294,6 @@ def test_the_machine_door_says_the_same_thing(
         raise too_many_connections()
 
     monkeypatch.setattr("apps.example.api.list_widgets", boom)
-    monkeypatch.setattr("apps.example.mcp.list_widgets", boom)
 
     client.force_login(owner)
     rest = body_of(client.get(WIDGETS))

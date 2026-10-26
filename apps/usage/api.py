@@ -1,102 +1,32 @@
-"""The HTTP door onto usage: two routes, and both of them read.
+"""The HTTP door onto usage: the report and the meter vocabulary, both reads (ADR usage-1, § Doors).
 
-**There is no write capability here and there will not be one** (ADR usage-1,
-§ Doors). A client that could send a usage body could mint or dispute its own
-bill, so `services.record_usage` is reached from activities and services and
-from no route and no tool — `services.py` carries rule 42's `# door:` line with
-that reason, and `tests/test_api.py::test_there_is_no_write_door` is what keeps
-the absence a decision rather than a gap somebody fills in later. Disputes are
-the operator's: a customer who thinks a number is wrong asks a person, and the
-correction is a superseding row somebody made deliberately.
-
-**The second route is the vocabulary, and it arrived because the first one
-needed it.** `GET /usage/?meters=not.a.meter`
-answered `200` zero-filled while this operation's own contract promised the
-zero-filling existed "so you can tell none from I asked the wrong question" —
-which it did not, and could not, because there was nowhere to find out what the
-meters ARE. `apps/usage/meters.py` calls itself "declared vocabulary, exactly as
-event names are"; `/api/v1/event-types/` and `list_event_types` are what that
-sentence looks like when it is true, and `/api/v1/meters/` and `list_meters` are
-the same pair for meters. The two halves land together on purpose: refusing an
-undeclared name without publishing the declared ones would be a closed set
-nobody can read.
-
-The read goes through `selectors.get_usage`, which authorizes (`usage_entry.read`,
-the derived read of the row it totals — ADR core-27, a read is a permission) and
-narrows `.for_tenant(t).visible_to(actor)` — both halves, so a branch's report
-never tallies a sibling's consumption and an unresolved hat reads an empty
-ledger rather than the ledger. Nothing here re-decides any of that; the route
-resolves who is asking and what window they asked about, and that is all a door
-is allowed to be.
-
-`_window` below is shared with `mcp.py` rather than written twice, for the same
-reason `apps/exports/api.py::downloadable_export` is: the two doors would
-otherwise be free to come to different opinions about which month "this month"
-is, and a disagreement about a window is a disagreement about a bill.
+# why-not a write route: a client that could send usage could mint or dispute its own bill.
+# why-not `from __future__ import annotations`: ninja reads the route signatures at import.
 """
-
-# NOTE: no `from __future__ import annotations` in this module, and that is
-# deliberate. ninja builds a Pydantic model out of a route's signature at import
-# time; with postponed evaluation every annotation is a string, and a parameter
-# whose type it cannot resolve comes out as an unresolvable forward reference.
 
 from datetime import UTC, date, datetime, time
 from typing import Annotated
 
 from django.utils import timezone
 from ninja import Query, Router
-from ninja.errors import HttpError
 from ninja.params.functions import Query as QueryParam
 
 from apps.accounts.auth import API_AUTH
-from apps.core.actor import Actor, actor_from_request
+from apps.core.actor import Actor
+from apps.core.api.acting import acting
 from apps.core.api.docs import Tag, refuses
 from apps.core.api.pagination import MAX_LIMIT, cursor_page
-from apps.core.exceptions import Forbidden, Remedy
-from apps.core.middleware import ORG_HEADER
-from apps.core.models import Organization, Tenant
+from apps.core.models import Tenant
 from apps.core.requests import TenantRequest
 from apps.usage import meters as meter_registry
 from apps.usage.schemas import MeterOut, MeterPage, UsageReportOut
 from apps.usage.selectors import get_usage
 from apps.usage.types import Period, PeriodKind
 
-# **This app serves two resources, so it names neither in a `PREFIX`** — the
-# same shape `apps/events` uses (ADR api-2, the owner's ruling: the
-# first path segment names a RESOURCE, never an app). The report is at
-# `/api/v1/usage/` and the vocabulary it is read against is at
-# `/api/v1/meters/`, which is where a caller would look for it: a meter is not
-# a kind of usage, it is the thing usage is counted in, and hiding the
-# catalogue under the report's noun would be the URL saying which module of
-# ours serves it.
-#
-# The report's own path is unchanged and `tests/test_api.py::
-# test_the_route_is_mounted_where_the_document_says` is the pin: `usage` is a
-# declared coincidence in `quality/rules.yaml` under rule 32's
-# `allowed_label_paths` — a mass noun (rule 16's recorded app-name exception)
-# and also the word a caller already has for what the report returns — so
-# moving it would make the URL worse to satisfy a rule about URLs.
+#: Two resources, so no `PREFIX` (ADR api-2): `/api/v1/usage/` and `/api/v1/meters/`.
 PREFIX = ""
 
-# The scope family, and it is the ratified key from RUL-1 — `usage`, the same
-# string as the app label and as the first segment of the path. It follows the
-# EXCEPTION half of the choosing pattern (django-conventions §6) in the mildest
-# possible way: the default is the plural noun of the section's primary
-# resource, and this section's noun has no plural that means anything ("usages"
-# is a word about senses of a word). House rule 16 already carries that as this
-# app's recorded naming exception, and the family key inherits it rather than
-# inventing a second spelling — `usage:read` is what a token holding it is
-# trusted with, said to somebody reading the string with no API around it.
-#
-# The key FREEZES the day a token could name it, which is today: renaming it
-# later kills every ceiling that holds it, silently, while the token goes on
-# authenticating and starts being refused at every door. `FROZEN_FAMILIES` in
-# `apps/core/api/scopes.py` is the census this is written into in the same
-# commit.
-#
-# There is no `usage:write` anywhere in this deployment and there is no way to
-# ask for one: the vocabulary is families crossed with the two verb classes, so
-# the string exists — and nothing it could reach does.
+#: The scope family (ADR ident-7): `usage`, rule 16's recorded mass noun; there is no write half.
 TAGS = {
     "usage": Tag(
         "Usage",
@@ -119,95 +49,11 @@ TAGS = {
     ),
 }
 
-# `auth` is restated here rather than inherited from the API default, so that
-# reading this one file tells you what it takes to call this route.
 router = Router(tags=["usage"], auth=API_AUTH)
 
 
-def require_resolved_hat(*, requested_slug: str | None, org: Organization | None) -> None:
-    """A hat that was **sent** and did not resolve is refused. Shared by both doors.
-
-    **The zero-bill hazard, closed at this door.**
-    `core.middleware.resolve_org` fails closed to `None` for an unknown slug, a
-    slug in another tenant, and a node the caller holds no role over — which is
-    the right posture for a *read of rows*, because `visible_to(None)` then
-    returns nothing. On a **bill** it is the wrong answer said convincingly: a
-    fat-fingered `X-Org` came back `200 {"meters": {}}`, and "you consumed
-    nothing" is a sentence a customer acts on. Nothing anywhere noticed that a
-    hat had been sent and not honoured, because `None` is also what "no hat was
-    sent" looks like by the time a route sees it.
-
-    So the door reads the header itself — by its declared name (rule 40:
-    `core.middleware.ORG_HEADER`, imported, never re-spelled) — and asks the one
-    question the resolved value cannot answer: *was one asked for?* Sent and
-    unresolved is `403 forbidden`, which is what this operation's contract has
-    always promised. Not sent is untouched: the caller's default node, exactly
-    as before.
-
-    **Door-local, deliberately, and the sibling is booked rather than fixed.**
-    Every other door in the product inherits the same silence, and closing it
-    for all of them is a change to `resolve_org` — a core seam, in a wave where
-    the ingredient apps make zero core edits. That is a named residual for the
-    next core window and not this app's to take.
-
-    It is a module-level function rather than a branch inside `_acting` because
-    the MCP twin needs the same decision and a second copy of it is how two
-    doors come to disagree about the same header (rule 46's whole subject).
-    """
-    if requested_slug and requested_slug.strip() and org is None:
-        raise Forbidden(
-            f"The organization {requested_slug.strip()!r} is not one you can act as, so "
-            f"there is no report to give you. Send an {ORG_HEADER} naming an organization "
-            f"you hold a membership on or above, or send none and act as your default.",
-            remedies=(
-                Remedy("Name an organization you belong to", f"header:{ORG_HEADER}"),
-                Remedy("List the organizations you can act as", "route:organization-list"),
-            ),
-        )
-
-
-def _acting(request: TenantRequest) -> tuple[Actor, Tenant]:
-    """The actor and tenant this read happens as.
-
-    Authentication has already guaranteed the user. The tenant has not been
-    guaranteed by anything: a signed-in user with no membership resolves to
-    `None`, and a report with no tenant is refused rather than guessed at.
-
-    The hat rides on the actor, which is where `selectors.get_usage` reads it
-    from — there is no `organization=` argument for a caller to forge. What this
-    DOES ask about is the header, because the actor cannot: see
-    `require_resolved_hat`.
-    """
-    if request.tenant is None:
-        raise HttpError(403, "No tenant for this request.")
-    require_resolved_hat(
-        requested_slug=request.headers.get(ORG_HEADER), org=getattr(request, "org", None)
-    )
-    return actor_from_request(request), request.tenant
-
-
 def meter_catalogue() -> list[MeterOut]:
-    """Every meter this deployment declares — **one implementation, both doors**.
-
-    It lives here rather than in `selectors.py` because it does not return a
-    queryset: it reads no table at all. The population is the installed apps'
-    own `meters.py` declarations (`meters.declared_meters()`), which is the same
-    registry `record_usage` validates a write against and the same one the read
-    door refuses an unknown `?meters=` against — so the vocabulary a caller is
-    held to is the vocabulary it can read.
-
-    **Derived, so it cannot rot.** A hand-listed catalogue is wrong the morning
-    after the next app declares a meter, and nothing fails. This is a census, so
-    the day `apps/completions` declares `completions.tokens.input`, the
-    catalogue has it and no file here changed.
-
-    It is the same for every tenant on the deployment, deliberately: the
-    vocabulary is the product's, not a customer's data. What a given tenant has
-    actually SPENT is the report.
-
-    Sorted by name, so the page a client gets back is stable between calls and
-    two pages of it do not overlap.
-    """
+    """Every meter this deployment declares, by name — the vocabulary `record_usage` holds to."""
     return sorted(
         (
             MeterOut(name=name, app=app_label)
@@ -219,17 +65,9 @@ def meter_catalogue() -> list[MeterOut]:
 
 
 def _window(*, period: PeriodKind, on: date | None) -> Period:
-    """The window a report covers, from the two things a caller may say.
+    """The window a report covers; `on=None` is today in UTC (`types.Period`'s ruling).
 
-    **Shared by both doors, deliberately.** REST and MCP each hand it a period
-    kind and an optional day; neither is free to decide what "this month" means,
-    because two doors with two calendars is two answers to one question about
-    money.
-
-    `on=None` is *today in UTC*, and UTC rather than the tenant's timezone is
-    `types.Period`'s ruling carried up to the door: a total that moved when a
-    customer relocated would not be evidence. A caller who wants a local
-    calendar names the day they mean.
+    Shared by both doors: two calendars would be two answers to one question about money.
     """
     day = timezone.now().astimezone(UTC).date() if on is None else on
     return Period.containing(datetime.combine(day, time.min, tzinfo=UTC), period)
@@ -243,24 +81,9 @@ def report(
     on: date | None,
     meters: list[str] | None,
 ) -> UsageReportOut:
-    """One window's totals, in the shape both doors put on the wire.
+    """One window's totals, in the shape both doors put on the wire; an undeclared meter is refused.
 
-    The window and the body are built here rather than in each door, so that the
-    two cannot come to describe the same report differently — the disagreement
-    house rule 46's parity test exists to catch, prevented one layer earlier by
-    there being one place that builds it.
-
-    `ends_on` is the LAST day covered rather than the first day not covered:
-    `Period` is half-open internally because a closed window double-counts the
-    boundary instant, and a person reading a report expects the month to end on
-    the thirty-first.
-
-    **The vocabulary is checked here too, and that is the point of "here":**
-    a meter no installed app declares is refused rather than zero-filled,
-    so a typo and a real meter sitting at zero stop being the same answer. It is
-    checked in this function rather than in each door for the same reason the
-    window is — two doors free to hold two vocabularies is two answers to one
-    question about a bill.
+    `ends_on` is the last day covered: `Period` is half-open, a reader's month ends on the 31st.
     """
     if meters is not None:
         meter_registry.check_reported_meters(meters)
@@ -320,8 +143,9 @@ def usage_report_route(
     `X-Org` header, or your default organization if you send none. You get that
     organization's consumption and that of every organization beneath it. A
     branch alongside yours, or above it, is not in the total. **An `X-Org` you
-    send that we cannot resolve is refused** (`403 forbidden`) rather than
-    quietly ignored: a mistyped hat must never come back as a bill of zero.
+    send that we cannot resolve is refused** (`403 addressing_header_not_honoured`)
+    rather than quietly ignored: a mistyped hat must never come back as a bill of
+    zero.
 
     **There is no way to write usage here, and that is deliberate.** Consumption
     is recorded by the platform as it happens, so nothing you send could add to
@@ -335,29 +159,20 @@ def usage_report_route(
       was not a date, or a `meters` entry is not a meter this deployment
       declares. The response says which parameter, and for a meter it says what
       the vocabulary is and where to list it.
-    * `403 forbidden` — the request resolved no tenant, or the `X-Org` you sent
-      is not one you can act as, or this credential may not read usage. Send an
-      `X-Tenant` and an `X-Org` naming ones you belong to, or send neither and
-      act as your defaults.
+    * `403 no_acting_scope` — the request resolved no tenant. Send an `X-Tenant`
+      naming one you belong to.
+    * `403 addressing_header_not_honoured` — the `X-Tenant` or `X-Org` you sent
+      is not one you can act as. Name one you belong to, or send neither and act
+      as your defaults.
+    * `403 forbidden` — this credential may not read usage.
     * `403 insufficient_scope` — the token authenticated and its ceiling does
       not carry `usage:read`. Mint one that does.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
 
     ---
-    Not `@paginate`d, and that is not an omission house rule 3 should catch: the
-    answer is a single report object rather than a collection, and there is no
-    list shape anywhere in `selectors.py` to paginate — `get_usage` returns one
-    mapping of meter to total, computed by one grouped aggregate whose cost does
-    not grow with the number of days or meters (`tests/test_selectors.py`'s
-    `READ_QUERY_BUDGET`). The day a rung publishes the ENTRIES themselves, that
-    route is a list and owes `CursorPagination`; this one would be paginating a
-    dictionary with one key per meter.
-
-    `meters` is wrapped in `Query[...]` and the other two are not: ninja reads a
-    scalar with a default as a query parameter already, and a LIST needs saying
-    out loud or it would be looked for in the body of a `GET`.
+    why-not `@paginate`: one report object, one grouped aggregate — not a collection.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     return report(tenant=tenant, actor=actor, period=period, on=on, meters=meters)
 
 
@@ -371,14 +186,7 @@ def meter_page(
     limit: int | None,
     include_count: bool,
 ) -> MeterPage:
-    """One page of the vocabulary, in the shape both doors put on the wire.
-
-    The twin of `report` above, and it exists for the same reason: two doors free
-    to assemble one answer are two doors that will eventually assemble it
-    differently. `cursor_page` is the one paginator (ADR core-18) and this is the
-    one call to it, so the envelope, the cursor's signing and the tenant binding
-    are decided once for REST and MCP together.
-    """
+    """One page of the vocabulary, in the shape both doors put on the wire."""
     page = cursor_page(
         meter_catalogue(),
         tenant=tenant,
@@ -400,14 +208,7 @@ def meter_page(
 def list_meters_route(
     request: TenantRequest,
     cursor: str | None = None,
-    # The ceiling, PUBLISHED. This route takes its pagination
-    # controls as bare parameters rather than through
-    # `@paginate(CursorPagination)`, so it does not inherit the
-    # `Input` schema that declares them — which is why the derived pass in
-    # `apps/core/tests/test_pagination.py` found it. The refusal it already
-    # inherits: `cursor_page` refuses an over-limit page for every caller,
-    # both doors. `MAX_LIMIT` is imported rather than typed so the number
-    # is still spelled in exactly one place.
+    # The ceiling, published: bare parameters inherit no `Input` schema.
     limit: Annotated[int | None, QueryParam(None, ge=1, le=MAX_LIMIT)] = None,
     include_count: bool = False,
 ) -> MeterPage:
@@ -444,28 +245,8 @@ def list_meters_route(
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
 
     ---
-    Ordered by name in `meter_catalogue()`, which is what makes paging over it
-    stable; there is no ordering parameter because there is nothing else to
-    order by. **No query pin and no query budget**, and that is not an omission
-    rule 5 should catch: this route reads no table at all — the population is
-    the installed apps' own `meters.py` modules off the live app registry — so
-    there is no statement whose count could grow with the number of rows.
-
-    **There is no `@paginate` here either**, and that is the same decision
-    `apps/search/api.py` records for the same reason plus one of its own: there
-    is no queryset for the paginator to slice, so the CURSOR SEAM is used
-    directly (`meter_page` → `core.api.pagination.cursor_page`, where the
-    signing, the tenant binding and the ordering check live) and both doors
-    return the one `MeterPage`. `MeterPage`'s own docstring carries the second
-    reason — a `@paginate`d wrapper cannot carry a declared example on `items`,
-    and house rule 41's census counts every one of them.
-
-    No `_acting` here, unlike the report: the vocabulary is the deployment's and
-    not a tenant's, so there is nothing to scope and nothing a hat could narrow —
-    including a hat that did not resolve, which is why this route does not carry
-    the report's `403`. The credential is still required (the router's `auth=`)
-    because an anonymous caller learning which meters a product bills on is a
-    fact about the product we have not decided to publish.
+    why-not a query pin: this route reads no table — the population is the installed `meters.py`.
+    why-not `acting`: the vocabulary is the deployment's, not a tenant's — nothing to scope.
     """
     return meter_page(
         tenant=getattr(request, "tenant", None),

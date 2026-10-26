@@ -27,10 +27,10 @@ A driven audit found four hazards against the design's own criteria, and this
 design is shaped around them:
 
 1. **The discovery loophole is real and worse than predicted.** A planted
-   product app (`apps/orders/` with a `TAGS` dict) produced a **false red on
+   product app (`apps/<orders>/` with a `TAGS` dict) produced a **false red on
    three in-closure tests** — `apps/accounts/tests/test_scopes.py` ×2 and
    `apps/core/tests/test_contract_docs.py` ×1 — through
-   `apps/core/api/scopes.py::FROZEN_FAMILIES`. Not a stale green: a red the
+   `apps/core/api/frozen_families.py::FROZEN_FAMILIES`. Not a stale green: a red the
    clone cannot clear without editing in-closure files, so the closure hash
    moves on the product's first door. §5 answers it.
 2. **The closure cannot derive from the manifest's ship-set rule** — that rule
@@ -102,7 +102,7 @@ is **exit 2** — the closure never silently narrows.
 | # | file-class | members (derivation) | why it is an input |
 |---|---|---|---|
 | C1 | platform app code | `apps/<p>/**` for every `<p>` in the lockfile — including each app's `tests/` and `tests/conftest.py` | the partition's own tests and the code under them |
-| C2 | the `apps`-package boundary files | `apps/__init__.py`, `apps/conftest.py`, `apps/test_gate_liveness.py`, `apps/test_temporal_guard.py` | `apps/conftest.py` is the fixture module every platform test loads (and every product test too — it sits ON the boundary: a product that edits it invalidates the partition, which is correct, because it changed machinery the banked verdict ran on; a product extends fixtures in its own app's `tests/conftest.py`, which pytest scopes by directory ancestry and the platform tests never load). The two top-level test modules are platform tests outside any app directory |
+| C2 | the `apps`-package boundary files | `apps/__init__.py`, `apps/conftest.py`, `apps/testing/**`, `apps/conftest_local.py`, `apps/test_gate_liveness.py`, `apps/test_temporal_guard.py` | `apps/conftest.py` is the fixture module every platform test loads, and `apps/testing/**` the harness package behind it (and every product test too — it sits ON the boundary: a product that edits it invalidates the partition, which is correct, because it changed machinery the banked verdict ran on; a product extends fixtures in its own app's `tests/conftest.py`, which pytest scopes by directory ancestry and the platform tests never load). The two top-level test modules are platform tests outside any app directory |
 | C3 | `config/**` | all of it | settings (including `config/settings/test.py`, which neutralizes the environment the criteria worried about, and `config/settings/discovery.py`, which derives `INSTALLED_APPS`), the mounts, the URL map, the one exception mapper |
 | C4 | dependency truth | `pyproject.toml`, `uv.lock` | dependency behavior, and the pytest configuration itself — `DJANGO_SETTINGS_MODULE = "config.settings.test"`, addopts, the randomization policy — lives in `pyproject.toml` |
 | C5 | `compose.yaml` | the one file | read at test time (confirmed: the chaos drill's `_pinned_image` regexes the Meilisearch pin out of it; `test_health`, `test_settings`, `test_presign_matrix` read it) — and its postgres/redis/temporal/meilisearch pins name the services the suite runs against, which is the same class of input whether or not a test reads the text |
@@ -378,7 +378,7 @@ each killed by mechanism or named with its out-of-closure clearing path:**
   (:81) already computes both sides from discovery (families vs the
   document's tag walk) and stays green under healthy growth; a mismatch is a
   true red (a `TAGS` key with no mounted router, or the reverse — the planted
-  `apps/orders/` with a bare TAGS dict is precisely this shape, and the red
+  `apps/<orders>/` with a bare TAGS dict is precisely this shape, and the red
   is the test doing its job on a malformed app). No change; recorded so the
   census is complete.
 - **D4 — the exports pin scopes its population to the lockfile.**
@@ -646,7 +646,7 @@ semantics.
    exports pin scoped to the lockfile. Each with its census test still
    passing and — for D1 and D2 — a driven probe showing the product-shaped
    edit that clears the red is out-of-closure. *Absent:* the planted
-   `apps/orders/` still false-reds the trio, which is the regression drive
+   `apps/<orders>/` still false-reds the trio, which is the regression drive
    the freeze build must run.
 5. The AST seam census (§4) as a partition self-check: every discovery walk
    in platform apps belongs to a digest section, exit 1 naming the stray.

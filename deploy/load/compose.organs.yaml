@@ -1,0 +1,20 @@
+# The organs box of an envelope's production shape: each organ the web box dials, published on the private address only.
+#
+# Overlaid on deploy/compose.yaml (--profile laptop) by scripts/envelope.sh --shape prod; the security
+# group's self-referencing rule is what admits the web and drive boxes, and nothing else reaches these.
+services:
+  db:
+    ports: ["${DJB_ENVELOPE_ORGANS_IP:?scripts/envelope.sh names the organs box's private address}:5432:5432"]
+  redis:
+    ports: ["${DJB_ENVELOPE_ORGANS_IP}:6379:6379"]
+  meilisearch:
+    ports: ["${DJB_ENVELOPE_ORGANS_IP}:7700:7700"]
+  temporal:
+    ports: ["${DJB_ENVELOPE_ORGANS_IP}:7233:7233"]
+  minio:
+    ports: ["${DJB_ENVELOPE_ORGANS_IP}:9000:9000"]
+  otel-collector:
+    ports: ["${DJB_ENVELOPE_ORGANS_IP}:4318:4318"]
+  # On 443, the one port the group admits that no organ holds; the web box's relay dials it.
+  zitadel:
+    ports: ["${DJB_ENVELOPE_ORGANS_IP}:443:8080"]

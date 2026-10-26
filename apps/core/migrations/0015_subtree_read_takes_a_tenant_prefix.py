@@ -6,7 +6,7 @@ through a JOIN whose organization side carries no tenant predicate, and that is
 the index it takes.
 
 The measurement that justifies this, before it landed, is
-`quality/perf-realtime-measurement.md` §5 FINDING 1 — six hat shapes, three
+the retired `perf-realtime-measurement.md` §5 FINDING 1 (its history is git's) — six hat shapes, three
 seeded worlds, five candidate index shapes swept with the planner's own verdict
 read off `EXPLAIN`. No hat in any world plans worse with this index present.
 """

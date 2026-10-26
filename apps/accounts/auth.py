@@ -69,7 +69,7 @@ from ninja.errors import HttpError
 from ninja.security import HttpBearer, SessionAuth
 
 from apps.accounts.models import User
-from apps.accounts.services import authenticate_token
+from apps.accounts.services import Authenticated, authenticate_token
 from apps.core import context
 from apps.core.actor import TOKEN_ATTR, TOKEN_AUTH_ATTR
 from apps.core.exceptions import DomainError, Forbidden, Remedy, register_refusal
@@ -80,6 +80,7 @@ from apps.core.middleware import (
     resolve_org,
 )
 from apps.core.requests import TenantRequest
+from apps.core.surfaces import of_request
 
 __all__ = [
     "API_AUTH",
@@ -102,7 +103,7 @@ __all__ = [
 #: here rather than spelled inside the sentence that names it, for rule 40's
 #: reason: a refusal that points at a header is only useful if it points at the
 #: header the server actually reads, and one spelling is how that stays true.
-CSRF_TOKEN_HEADER = "X-CSRFToken"
+CSRF_TOKEN_HEADER = "X-CSRFToken"  # noqa: S105 — the name of Django's CSRF request header
 
 # The header a machine identifies itself with is declared ONCE, in
 # `core.middleware`, and imported downward — `accounts` sits on `core`. It was
@@ -382,6 +383,25 @@ class SessionOnly:
         return None
 
 
+#: Where a request keeps its bearer's resolution, so the scope seam and the door ask once.
+BEARER_RESOLUTION_ATTR = "_accounts_bearer_resolution"
+
+
+def resolve_bearer(request: HttpRequest, plaintext: str) -> Authenticated | None:
+    """This request's bearer resolved by `authenticate_token`, once per request and plaintext."""
+    plaintext = plaintext.strip()
+    cached: tuple[str, Authenticated | None] | None = getattr(request, BEARER_RESOLUTION_ATTR, None)
+    if cached is not None and cached[0] == plaintext:
+        return cached[1]
+    resolved = authenticate_token(
+        plaintext=plaintext,
+        requested_slug=request.headers.get(TENANT_HEADER),
+        surface=of_request(request),
+    )
+    setattr(request, BEARER_RESOLUTION_ATTR, (plaintext, resolved))
+    return resolved
+
+
 class ApiTokenAuth(HttpBearer):
     """`Authorization: Bearer <token>`.
 
@@ -400,10 +420,7 @@ class ApiTokenAuth(HttpBearer):
     openapi_name = "ApiToken"
 
     def authenticate(self, request: HttpRequest, token: str) -> User | None:
-        resolved = authenticate_token(
-            plaintext=token,
-            requested_slug=request.headers.get(TENANT_HEADER),
-        )
+        resolved = resolve_bearer(request, token)
         if resolved is None:
             # RAISED RATHER THAN DECLINED, and nothing about the status changes:
             # this was a 401 before and is a 401 now. What changes is the

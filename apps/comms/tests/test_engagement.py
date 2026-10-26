@@ -63,6 +63,7 @@ from apps.core.exceptions import Forbidden, Invalid, NotFound
 from apps.core.lifecycle import AppendOnlyViolation, LifecycleKind
 from apps.core.models import Tenant
 from apps.core.services import root_organization
+from apps.core.tests.wire import REQUEST_FIXED_QUERIES
 from apps.events.models import Event
 
 pytestmark = pytest.mark.django_db
@@ -469,7 +470,7 @@ def test_an_unknown_kind_is_refused_before_a_row_exists(
     product cannot read.
     """
     a_sent_message(tenant=tenant, actor=owner_actor, recipient=recipient, handle="esp-kind-1")
-    with pytest.raises(Invalid, match="engagement"):
+    with pytest.raises(Invalid) as refused:
         services.record_engagement(
             tenant=tenant,
             actor=webhook_actor(tenant),
@@ -477,6 +478,8 @@ def test_an_unknown_kind_is_refused_before_a_row_exists(
             kind="hovered",
             provider_event_id="evt-kind-1",
         )
+    assert refused.value.code == "invalid"
+    assert set(refused.value.errors) == {"kind"}
     assert MessageEngagement.objects.for_tenant(tenant).count() == 0
 
 
@@ -857,21 +860,8 @@ def test_an_open_naming_an_unknown_message_records_nothing(
 
 ENGAGEMENT_URL = "/api/v1/messages/{}/engagement/"
 
-# Measured, not guessed, at ten rows: the session row + the user row (session
-# authentication) + 1 SAVEPOINT (ATOMIC_REQUESTS) + the membership lookup
-# TenantMiddleware makes for the tenant + the membership lookup for the acting
-# org + the message the route resolves first + the page + 1 RELEASE SAVEPOINT.
-# The message read is the one this route has that the message list does not, and
-# it is deliberate: it is what makes a message this hat cannot see a `not_found`
-# before any engagement is touched.
-# PR4.b (ADR core-27) adds exactly THREE: a read is a permission now, so the
-# selector behind this door calls `require(actor, "<kind>.read", ...)` once,
-# and the first `require` of a request reads the actor's three permission
-# tables — the memberships on the chain, their grants, and the delta rows for
-# the role keys those name. Three and not six because PR0's memo rides on the
-# actor: a second `require` in the same request costs nothing, which is what a
-# route that fetches through a `get_` and then calls a service is standing on.
-ENGAGEMENT_LIST_QUERY_BUDGET = 11
+#: The engagement list: the fixed request cost, the message it resolves first, the page.
+ENGAGEMENT_LIST_QUERY_BUDGET = REQUEST_FIXED_QUERIES + 2
 
 
 def _engagement_body(response: Any) -> dict[str, Any]:
@@ -1173,12 +1163,15 @@ def test_the_machine_door_answers_the_same_rows(
     exists, it is thin over the same selector, and it refuses a message this
     principal cannot see with the same `NotFound` the route does.
     """
-    from apps.comms.tests.test_mcp import context_for, tool
+    from apps.comms.tests.test_mcp import tool
+    from apps.core.tests.mcp_context import context_for
 
     message = a_witnessed_message(
         tenant=tenant, actor=owner_actor, recipient=recipient, handle="mcp-1"
     )
-    page = tool("list_engagements")(context_for(owner, tenant), message_id=message.pk)
+    page = tool("list_engagements")(
+        context_for(owner, tenant, root_organization(tenant=tenant)), message_id=message.pk
+    )
 
     assert [row.id for row in page.items] == [
         row.pk

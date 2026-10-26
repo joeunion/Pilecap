@@ -1,0 +1,77 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "after", "text": "WIDGET_DELETED,"}
+    WIDGET_POLICY_ARCHIVED,
+    WIDGET_POLICY_RESTORED,
+# golden-anchor: {"nth": 0, "scope": [], "side": "imports", "text": ""}
+from apps.example.models import WidgetPolicy
+from apps.example.schemas import WidgetPolicyOut
+
+# golden-anchor: {"nth": 0, "scope": ["create_widget"], "side": "before", "text": "due_at: datetime | None = None,"}
+    policy: WidgetPolicy | None = None,
+# golden-anchor: {"nth": 0, "scope": ["create_widget"], "side": "before", "text": "if actor.user is None:"}
+    if policy is not None and not may_be_named(actor, policy):
+        raise NotFound()
+# golden-anchor: {"nth": 0, "scope": ["create_widget"], "side": "before", "text": "due_at=due_at.astimezone(UTC) if due_at is not None else None,"}
+        policy=policy,
+# golden-anchor: {"nth": 0, "scope": ["update_widget"], "side": "before", "text": "due_at: datetime | None = None,"}
+    policy: WidgetPolicy | None = None,
+# golden-anchor: {"nth": 0, "scope": ["update_widget"], "side": "before", "text": "if clear_due_at and due_at is not None:"}
+    if policy is not None and not may_be_named(actor, policy):
+        raise NotFound()
+# golden-anchor: {"nth": 0, "scope": ["update_widget"], "side": "before", "text": "if due_at is not None or clear_due_at:"}
+    if policy is not None:
+        locked.policy = policy
+        updated.append("policy")
+# golden-anchor: {"nth": 3, "scope": [], "side": "after", "text": "return widget"}
+@service
+def create_widget_policy(
+    *, tenant: Tenant, actor: Actor, name: str, body: str = ""
+) -> WidgetPolicy:
+    """Set a policy at the part of the tenant the actor is acting as."""
+    require(actor, "widget_policy.create")
+    if actor.org is None:
+        raise Invalid(
+            {"organization": ["This request resolved no acting organization to set a policy in."]}
+        )
+    policy = WidgetPolicy(tenant=tenant, organization=actor.org, name=name.strip(), body=body)
+    with as_invalid():
+        policy.full_clean()
+    policy.save()
+    return policy
+
+
+def _publish_widget_policy(
+    name: str, *, tenant: Tenant, policy: WidgetPolicy, actor: Actor
+) -> None:
+    """Say a policy left the book or came back — `_publish_widget`'s shape, for its `Out`."""
+    emit = listener(EMIT)
+    if emit is None:
+        log.info("example.event.unpublished", event_name=name, policy_id=str(policy.pk))
+        return
+    payload = event_payload(WidgetPolicyOut.from_orm(policy))
+    emit(name=name, tenant=tenant, payload=payload, actor=actor)
+
+
+@service
+def archive_widget_policy(*, tenant: Tenant, actor: Actor, policy: WidgetPolicy) -> WidgetPolicy:
+    """Take a policy out of the book — refused while a live widget still names it."""
+    if not may_be_named(actor, policy):
+        raise NotFound()
+    require(actor, "widget_policy.archive", policy)
+    policy, changed = archive_row(tenant=tenant, actor=actor, row=policy, noun="widget_policy")
+    if changed:
+        _publish_widget_policy(WIDGET_POLICY_ARCHIVED, tenant=tenant, policy=policy, actor=actor)
+    return policy
+
+
+@service
+def restore_widget_policy(*, tenant: Tenant, actor: Actor, policy: WidgetPolicy) -> WidgetPolicy:
+    """Put an archived policy back in the book, where it governs again."""
+    if not may_be_named(actor, policy):
+        raise NotFound()
+    require(actor, "widget_policy.restore", policy)
+    policy, changed = restore_row(tenant=tenant, actor=actor, row=policy, noun="widget_policy")
+    if changed:
+        _publish_widget_policy(WIDGET_POLICY_RESTORED, tenant=tenant, policy=policy, actor=actor)
+    return policy
+
+

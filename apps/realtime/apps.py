@@ -1,3 +1,5 @@
+from typing import ClassVar
+
 from django.apps import AppConfig
 
 
@@ -45,6 +47,12 @@ class RealtimeConfig(AppConfig):
     name = "apps.realtime"
     verbose_name = "Realtime"
     depends_on: tuple[str, ...] = ("core", "accounts")
+    ratchet_floors: ClassVar[dict[str, int]] = {
+        "91.block-tail": 272,
+        "91.docstring-tail": 1137,
+        "91.module-tail": 469,
+        "91.narrative": 12,
+    }
 
     def ready(self) -> None:
         from apps.core import bridge

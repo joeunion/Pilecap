@@ -37,19 +37,19 @@ under rule 3 (`allow_unauthenticated_views`) with that reason.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
 from django.conf import settings
+from django.contrib.auth.base_user import AbstractBaseUser
 from django.contrib.auth.decorators import login_required
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import render
-from django.urls import NoReverseMatch, URLPattern, URLResolver, get_resolver, reverse
+from django.urls import NoReverseMatch, URLResolver, get_resolver, reverse
 from django.views.decorators.csrf import ensure_csrf_cookie
 
-from apps.core.authz import effective_role
+from apps.core.authz import chain_over, memberships_in
 from apps.core.mcp import MCP_PATH
 from apps.core.middleware import ORG_HEADER, TENANT_HEADER
-from apps.core.models import Tenant
+from apps.core.models import Organization, Tenant
 from apps.core.requests import TenantRequest
 
 __all__ = [
@@ -66,12 +66,6 @@ __all__ = [
 #: read rather than assumed: `_api_mount()` returns None when nothing answers to
 #: it, and then the REST rows are simply absent instead of the page lying.
 API_NAMESPACE = "api"
-
-#: The file that says which template version this tree was cloned from. It is a
-#: file and not a setting because that is where the repository already keeps it
-#: (`apps/core/tests/test_settings.py` reads the same one); a product that
-#: prefers a setting may define `TEMPLATE_VERSION` and it wins.
-VERSION_FILE = "TEMPLATE_VERSION"
 
 
 @dataclass(frozen=True)
@@ -115,36 +109,27 @@ def _api_mount() -> URLResolver | None:
     return None
 
 
-def _api_route_names(mount: URLResolver) -> list[str]:
-    """Every named route under the API mount, namespace included.
+def _api_route_names() -> list[str]:
+    """Every named operation the API mounts, namespace included.
 
-    Recursive, because how deeply the mount nests its routers is the mount's
-    business and not something this page should depend on.
+    Read through `apps.core.api.mount.bound_operations`, the one mount reader
+    (imported inside the call: it imports `config.api` lazily), so this page
+    lists exactly what every other reader of the mount reads.
     """
-    found: list[str] = []
-    for entry in mount.url_patterns:
-        if isinstance(entry, URLResolver):
-            found.extend(_api_route_names(entry))
-        elif isinstance(entry, URLPattern) and entry.name:
-            found.append(f"{API_NAMESPACE}:{entry.name}")
-    return found
+    from apps.core.api.mount import bound_operations
+
+    return [f"{API_NAMESPACE}:{name}" for _path, name, _operation in bound_operations() if name]
 
 
 def template_version() -> str:
-    """What this deployment was cloned from — the setting, else the file.
+    """What this deployment was cloned from — `settings.TEMPLATE_VERSION`, the file's one reader.
 
-    Read on each request rather than cached at import: this page is asked for by
-    a person once in a while, a file read costs nothing at that rate, and a
-    cached module-level value is one more thing that can be stale on a box
-    somebody redeployed under.
+    The setting is unconditional (`config/settings/base.py::read_template_version`,
+    the `version` road, reads the `TEMPLATE_VERSION` file once at start), so this
+    page reads the setting and nothing else — a second reader of the file with a
+    fallback of its own would be a second answer to one question.
     """
-    configured = str(getattr(settings, "TEMPLATE_VERSION", "") or "")
-    if configured:
-        return configured
-    try:
-        return (Path(settings.BASE_DIR) / VERSION_FILE).read_text(encoding="utf-8").strip()
-    except OSError:
-        return ""
+    return str(settings.TEMPLATE_VERSION)
 
 
 def doors() -> tuple[Door, ...]:
@@ -210,7 +195,7 @@ def rest_resources() -> tuple[Resource, ...]:
     prefix = f"/{mount.pattern}"
     roots: set[str] = set()
     segments: set[str] = set()
-    for name in _api_route_names(mount):
+    for name in _api_route_names():
         url = _reverse(name)
         if url is None or not url.startswith(prefix):
             continue
@@ -240,6 +225,15 @@ def index(request: HttpRequest) -> HttpResponse:
     )
 
 
+def _roles_over(
+    user: AbstractBaseUser | None, tenant: Tenant | None, org: Organization | None
+) -> list[str]:
+    """The role keys this person holds on `org` or an ancestor of it, sorted; `[]` for none."""
+    if tenant is None or (org is not None and org.tenant_id != tenant.pk):
+        return []
+    return sorted({str(m.role) for m in chain_over(memberships_in(user, tenant), org)})
+
+
 @login_required
 @ensure_csrf_cookie
 def welcome(request: TenantRequest) -> HttpResponse:
@@ -257,8 +251,8 @@ def welcome(request: TenantRequest) -> HttpResponse:
     invisibly. *Who* you are, *whose* data you are in (`X-Tenant` resolved
     against your memberships), *which hat* you are wearing inside that tenant
     (`X-Org`, resolved by `core.middleware.resolve_org` — the one function all
-    four doors call), and *what that hat can do* (`effective_role`, which
-    inherits downwards). A person who signs in and reads "no organization
+    four doors call), and *what that hat can do* (the role keys held on it or
+    on an ancestor — roles inherit downwards). A person who signs in and reads "no organization
     resolved" has been told, on the first screen, the thing that would
     otherwise have shown up an hour later as an empty list with no explanation
     — because every org-scoped read fails closed on an unresolved hat, and
@@ -270,7 +264,7 @@ def welcome(request: TenantRequest) -> HttpResponse:
     disappears without anybody deleting it. It is SHADOWED, not configured.
 
     **It reads, and only reads.** No service call, no write, no `emit`. The
-    role lookup is one query through `effective_role`; the tenant and the hat
+    role lookup is one query over the person's memberships; the tenant and the hat
     were already resolved by `TenantMiddleware` before this function was
     reached, so the page reports what the request WAS rather than re-deriving
     it — which is the point of showing it at all.
@@ -308,7 +302,7 @@ def welcome(request: TenantRequest) -> HttpResponse:
             "tenant": request.tenant,
             "fresh_deployment": request.tenant is None and not Tenant.objects.exists(),
             "org": org,
-            "role": effective_role(user, request.tenant, org),
+            "roles": _roles_over(user, request.tenant, org),
             "tenant_header": TENANT_HEADER,
             "org_header": ORG_HEADER,
             "doors": doors(),

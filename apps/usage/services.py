@@ -1,26 +1,7 @@
-"""Writes for the usage app. **Two of them, and neither has a door.**
+"""Usage's writes — recording and correcting — door-less on purpose (ADR usage-1, § Doors).
 
-This module is the seam every other ingredient imports: `apps/files` calls
-`record_usage` when an upload finalises with the verified byte size,
-`apps/completions` calls it from the activity that ran a model. That is why this
-app lands first and alone — a seam is code, not prose.
-
-**Why there is no write door, stated where somebody would add one.** A REST or
-MCP route that recorded usage would let a client mint its own bill; one that
-edited an entry would let a client dispute it into nothing. So both services
-below carry rule 42's `# door:` valve, and the reason on each is the ADR's own.
-The read door reads `selectors.get_usage`.
-
-**Why recording does not ask permission.** `record_usage` takes an `actor` and
-never calls `require`. That is rule 13's `# authz:` escape hatch used with its
-reason: metering is the platform's witnessed side-effect of an action that was
-already authorized at the door that started it — the completion ran, the file was
-stored — and the actor is carried so the audit row `@service` writes says who
-caused it, not so anybody can be refused. A `usage.record` predicate would be a
-permission nobody could ever fail.
-
-Refusals are `apps.core.exceptions` and nothing else: no `HttpError`, no status
-code (house rule 14).
+# why-not a door: a client that could write usage could mint or dispute its own bill.
+# why-not `require`: metering is the witnessed side-effect of an act already authorized.
 """
 
 from __future__ import annotations
@@ -34,6 +15,7 @@ from apps.core.actor import Actor
 from apps.core.exceptions import Conflict, Invalid, as_invalid
 from apps.core.log import get_logger
 from apps.core.models import Organization, Tenant
+from apps.core.schemas import event_payload
 from apps.core.service import service
 from apps.core.services import root_organization
 from apps.core.time import now
@@ -111,28 +93,9 @@ def _announce_a_crossing(
 ) -> None:
     """Emit `usage.threshold.crossed` for each configured line this entry moved past.
 
-    **The fast path is the first line and it is a ratified criterion**: a tenant
-    with no thresholds configured issues **zero** aggregate queries here.
-    `list_thresholds` reads `Tenant.settings`, which the caller already holds, so
-    a deployment that never configures a threshold — the normal case — pays
-    nothing on the hottest write path in the product.
-
-    **The dedupe is the straddle, not a table.** A line fires only for the write
-    whose own contribution moved the total across it (`before < line <= after`),
-    and `delta` is that contribution — the entry's quantity, less whatever the
-    entry it supersedes was contributing to the same window. So the two cases ADR
-    usage-1 names never double-fire: a **retried activity** gets its first row
-    back before ever reaching here, and a **superseding correction** moves the
-    total by the difference, which straddles upward only if the correction was
-    upward.
-
-    DOES NOT COVER, declared: two concurrent recordings that each straddle the
-    same line can each read the same `before` under READ COMMITTED and both fire.
-    The window is one statement wide and the consequence is a duplicate
-    notification rather than a wrong number — no total moves — so it is recorded
-    here rather than paid for with a serialised read on every metered call.
-    Trigger: the first observed duplicate crossing, which turns this into the
-    uniqueness row ADR usage-1 sketches.
+    No threshold configured is zero aggregate queries — a ratified criterion on the hottest path.
+    A line fires only for the write whose own contribution straddles it (`before < line <= after`).
+    # does-not-cover: two concurrent recordings straddling one line under READ COMMITTED both fire.
     """
     lines = [line for line in list_thresholds(tenant=tenant) if line.meter == entry.meter]
     for line in lines:
@@ -141,23 +104,22 @@ def _announce_a_crossing(
         before = total.value - delta
         if not (before < line.quantity <= total.value):
             continue
-        crossing = ThresholdCrossingOut(
-            # The ENTRY's branch, not `root` and not the actor's hat: the two
-            # differ exactly when somebody writes downward, and a hat-stamped
-            # event is a WRONG branch rather than a wide one (ADR realtime-2a).
-            organization_id=entry.organization_id,
-            meter=entry.meter,
-            period=line.kind.value,
-            period_starts_on=period.starts_at.date(),
-            period_ends_on=period.days()[-1],
-            threshold=line.quantity,
-            total=total,
-            crossed_by=UsageEntryOut.from_orm(entry),
-        )
         emit(
             name=THRESHOLD_CROSSED,
             tenant=tenant,
-            payload=crossing.model_dump(mode="json"),
+            payload=event_payload(
+                ThresholdCrossingOut(
+                    # The entry's branch, never the actor's hat (ADR realtime-2a).
+                    organization_id=entry.organization_id,
+                    meter=entry.meter,
+                    period=line.kind.value,
+                    period_starts_on=period.starts_at.date(),
+                    period_ends_on=period.days()[-1],
+                    threshold=line.quantity,
+                    total=total,
+                    crossed_by=UsageEntryOut.from_orm(entry),
+                )
+            ),
             actor=actor,
         )
 
@@ -166,7 +128,7 @@ def _announce_a_crossing(
 # witnessed side-effect of an action a door already authorized, and a route or a
 # tool that reached this would let a client MINT ITS OWN BILL (ADR usage-1, §
 # Doors: "deliberately door-less: writes"). Its callers are the activities and
-# services that spend the money — `apps/files` at finalize, `apps/completions`
+# services that spend the money — `apps/files` at finalize, a completions app
 # after a run — and the read door reads the ledger it writes.
 @service
 def record_usage(

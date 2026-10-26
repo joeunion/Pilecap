@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Any
 
 from quality.checks import CheckResult, Finding
+from quality.could_not_look import CouldNotLook
 
 #: The one protocol version this engine speaks. A reply that names anything else
 #: is refused rather than guessed at: a runner built for a later protocol may be
@@ -108,7 +109,7 @@ def emitted_refusal_classes() -> frozenset[str]:
     return frozenset(re.findall(r'(?:RunnerRefused|_refuse)\(\s*"([a-z0-9-]+)"', source))
 
 
-class RunnerRefused(Exception):
+class RunnerRefused(CouldNotLook):
     """The runner could not be believed — enforcement broken, never a clean run.
 
     Carries the CLASS of the refusal as well as its prose, so the engine's
@@ -210,8 +211,8 @@ def invoke(
         raise _refuse(
             "runner-timeout",
             where,
-            f"the runner did not answer within {timeout}s — an instrument that hangs has "
-            "not looked, and a run that gave up waiting has no findings to report",
+            f"the runner did not answer within {timeout}s — an instrument that hangs could "
+            "not look, and a run that gave up waiting has no findings to report",
         ) from exc
     except OSError as exc:
         raise _refuse("runner-absent", where, f"the runner could not be started ({exc})") from exc

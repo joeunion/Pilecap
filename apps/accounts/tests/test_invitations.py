@@ -16,18 +16,18 @@ from apps.accounts.services import create_user
 from apps.core.actor import actor_for, system_actor
 from apps.core.exceptions import Conflict, Invalid
 from apps.core.models import Invitation, Membership, Tenant
+from apps.core.selectors import list_pending_invitations_for
 from apps.core.services import (
     accept_invitation,
     hash_invitation_token,
     invite_member,
-    pending_invitations_for,
     revoke_invitation,
 )
 from apps.core.time import now
 
 pytestmark = pytest.mark.django_db
 
-PASSWORD = "a-long-enough-password"  # pragma: allowlist secret
+PASSWORD = "a-long-enough-password"  # noqa: S105 — a throwaway password a test user is made with  # pragma: allowlist secret
 
 
 # --- The invitation itself ---------------------------------------------------
@@ -69,7 +69,7 @@ def test_inviting_again_supersedes_the_first(tenant: Tenant, owner: User) -> Non
     first.refresh_from_db()
     assert first.status == Invitation.Status.REVOKED
     assert second.is_pending
-    assert pending_invitations_for(email="again@example.com") == [second]
+    assert list_pending_invitations_for(email="again@example.com") == [second]
 
 
 def test_pending_invitations_ignore_the_expired_and_the_revoked(
@@ -82,7 +82,7 @@ def test_pending_invitations_ignore_the_expired_and_the_revoked(
         actor=system_actor(tenant=tenant),
     )
     Invitation.objects.filter(pk=invitation.pk).update(expires_at=now())
-    assert pending_invitations_for(email="stale@example.com") == []
+    assert list_pending_invitations_for(email="stale@example.com") == []
 
     fresh, _ = invite_member(
         tenant=tenant,
@@ -91,7 +91,7 @@ def test_pending_invitations_ignore_the_expired_and_the_revoked(
         actor=system_actor(tenant=tenant),
     )
     revoke_invitation(tenant=tenant, invitation=fresh, actor=system_actor(tenant=tenant))
-    assert pending_invitations_for(email="stale@example.com") == []
+    assert list_pending_invitations_for(email="stale@example.com") == []
 
 
 def test_an_invitation_is_scoped_like_every_other_row(
@@ -118,7 +118,7 @@ def test_an_invitation_is_scoped_like_every_other_row(
     assert Invitation.objects.for_tenant(None).count() == 0
     # Two tenants may both have a live invitation for one address — they are
     # different offers, and signing up accepts both.
-    assert len(pending_invitations_for(email="shared@example.com")) == 2
+    assert len(list_pending_invitations_for(email="shared@example.com")) == 2
 
 
 # --- Acceptance --------------------------------------------------------------
@@ -220,7 +220,7 @@ def test_the_second_membership_is_not_the_default(
 
 # --- Through the door somebody actually arrives at ---------------------------
 #
-# W2-R3 retired the local signup form (ADR ident-4): `SOCIALACCOUNT_ONLY` removes
+# ADR ident-4 retired the local signup form: `SOCIALACCOUNT_ONLY` removes
 # `account_signup` from the urlconf entirely, so the three tests that used to
 # post to it could not be re-pointed — the URL they named does not resolve.
 #

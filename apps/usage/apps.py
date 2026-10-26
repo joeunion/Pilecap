@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, ClassVar
 
 from django.apps import AppConfig
 
@@ -47,6 +47,12 @@ class UsageConfig(AppConfig):
     name = "apps.usage"
     verbose_name = "Usage"
     depends_on: tuple[str, ...] = ("core", "accounts", "events")
+    ratchet_floors: ClassVar[dict[str, int]] = {
+        "91.block-tail": 211,
+        "91.docstring-tail": 725,
+        "91.module-tail": 156,
+        "91.narrative": 6,
+    }
 
     def ready(self, **kwargs: Any) -> None:
         """Refuse a malformed meter name at boot, before anything can record one.

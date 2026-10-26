@@ -50,23 +50,32 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from quality.runners import _css, _source  # noqa: E402
+from quality.runners import (  # noqa: E402
+    _css,
+    _kindscope,  # noqa: E402
+    _source,
+)
 
 DOCUMENT = "frontend/openapi.json"
 SCREENS = ("frontend", "src", "screens")
 ROAD_FILE = "road.ts"
 
-#: operationId shape -> (the verb, the method it must be).
-DOORS: tuple[tuple[re.Pattern[str], str, str], ...] = (
-    (re.compile(r"_(archive|restore|move|duplicate|merge)_([a-z0-9_]+?)_route$"), "", "post"),
-    (re.compile(r"_(update)_([a-z0-9_]+?)_route$"), "", "patch"),
-    (re.compile(r"_list_([a-z0-9_]+?)_history_route$"), "history", "get"),
-)
-BULK = re.compile(r"_bulk_([a-z0-9_]+?)_route$")
+#: A door is named by its `x-url-name` — `<noun>-<verb>`, the one name the
+#: document publishes for every operation (and the name its MCP twin is derived
+#: from) — never by parsing an `operationId`, which is a function's name.
+#: verb -> the method its door must be.
+VERB_DOORS: dict[str, str] = {
+    "archive": "post",
+    "restore": "post",
+    "move": "post",
+    "duplicate": "post",
+    "merge": "post",
+    "update": "patch",
+}
+#: The history read: `<noun>_history-list` (GET).
+HISTORY_SUFFIX = "_history"
 #: The imports app's stage operation: its body's `kind` enum is every noun an importer takes.
-IMPORT_STAGE = re.compile(r"_create_import_route$")
-#: A noun's own detail read: its answer carrying `tags` is the noun's attach door.
-DETAIL = re.compile(r"_retrieve_([a-z0-9_]+)$")
+IMPORT_STAGE = re.compile(r"(?:^|_)import-create$")
 #: Verbs whose doors this runner does not read; a road may declare them unjudged. None today.
 UNMEASURED: frozenset[str] = frozenset()
 
@@ -108,15 +117,13 @@ def wire(root: Path) -> tuple[dict[str, set[str]], dict[str, set[str]], bool]:
         for method, operation in (item or {}).items():
             if not isinstance(operation, dict):
                 continue
-            op = str(operation.get("operationId") or "")
-            for pattern, fixed, wanted in DOORS:
-                m = pattern.search(op)
-                if m and method.lower() == wanted:
-                    verb = fixed or m.group(1)
-                    noun = m.group(1) if fixed else m.group(2)
-                    doors.setdefault(_kebab(noun), set()).add(verb)
-                    break
-            if IMPORT_STAGE.search(op) and method.lower() == "post":
+            url = str(operation.get("x-url-name") or "")
+            noun, _, verb = url.rpartition("-")
+            if noun and VERB_DOORS.get(verb) == method.lower():
+                doors.setdefault(_kebab(noun), set()).add(verb)
+            elif verb == "list" and noun.endswith(HISTORY_SUFFIX) and method.lower() == "get":
+                doors.setdefault(_kebab(noun.removesuffix(HISTORY_SUFFIX)), set()).add("history")
+            if IMPORT_STAGE.search(url) and method.lower() == "post":
                 body = _schema(
                     document,
                     (
@@ -130,8 +137,7 @@ def wire(root: Path) -> tuple[dict[str, set[str]], dict[str, set[str]], bool]:
                 for kind in kinds:
                     if isinstance(kind, str):
                         doors.setdefault(_kebab(kind), set()).add("import")
-            m = DETAIL.search(op)
-            if m and method.lower() == "get":
+            if noun and verb == "detail" and method.lower() == "get":
                 answer = _schema(
                     document,
                     (
@@ -143,9 +149,8 @@ def wire(root: Path) -> tuple[dict[str, set[str]], dict[str, set[str]], bool]:
                     ).get("schema"),
                 )
                 if "tags" in (answer.get("properties") or {}):
-                    doors.setdefault(_kebab(m.group(1)), set()).add("attach")
-            m = BULK.search(op)
-            if m and method.lower() == "post":
+                    doors.setdefault(_kebab(noun), set()).add("attach")
+            if noun and verb == "bulk" and method.lower() == "post":
                 schema = (
                     ((operation.get("requestBody") or {}).get("content") or {}).get(
                         "application/json"
@@ -153,7 +158,7 @@ def wire(root: Path) -> tuple[dict[str, set[str]], dict[str, set[str]], bool]:
                     or {}
                 ).get("schema") or {}
                 verbs = set(((schema.get("discriminator") or {}).get("mapping") or {}).keys())
-                bulk.setdefault(_kebab(_singular(m.group(1))), set()).update(verbs)
+                bulk.setdefault(_kebab(noun), set()).update(verbs)
     return doors, bulk, True
 
 
@@ -177,7 +182,9 @@ def faces(root: Path) -> list[tuple[Path, str]]:
     for directory in sorted(p for p in base.iterdir() if p.is_dir()):
         modules = [
             p
-            for p in _css.files_under(directory.relative_to(root))
+            for p in _kindscope.files_under(
+                directory.relative_to(root), _css.SUFFIXES, under=_css.SRC_ROOT
+            )
             if p.suffix in _source.SCRIPT_SUFFIXES and not _source.exempt(p)
         ]
         if not modules:

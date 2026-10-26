@@ -74,7 +74,8 @@ from apps.core.services import (
 from apps.realtime.bridge import user_group
 from apps.realtime.schemas import CLOSE_KICKED
 from apps.realtime.selectors import list_subtree_org_ids
-from apps.realtime.tests.test_consumers import opened, session_headers
+from apps.realtime.tests.sockets import opened
+from apps.realtime.tests.test_consumers import session_headers
 from apps.realtime.tests.test_hierarchy import (
     PASSWORD,
     Network,
@@ -640,9 +641,9 @@ async def test_the_seam_was_promoted_and_not_copied() -> None:
     An earlier fix had to seal exactly this shape when `SENDABLE` existed twice
     and the retry path drifted from the wall. A security seam with two
     implementations is that bug waiting to be written, so the promotion is
-    asserted as an identity rather than trusted to review — and the on-commit
-    survey in `apps/workflows/tests/test_services.py` is the other half, which
-    fails if a copy ever reappears.
+    asserted as an identity rather than trusted to review — and rule 92 (every
+    `transaction.on_commit(` site under apps/ is a declared seam) is the other
+    half, which fails if a copy ever reappears.
     """
     from apps.accounts import services as accounts_services
     from apps.core import services as core_services

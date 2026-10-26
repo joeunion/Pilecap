@@ -15,10 +15,10 @@ pytestmark = pytest.mark.django_db
 
 
 def test_create_user_normalises_the_email_and_hashes_the_password() -> None:
-    user = create_user(email="Person@Example.COM", password="a-long-enough-password")
+    user = create_user(email="Person@Example.COM", password="a-long-enough-password")  # noqa: S106 — a throwaway password a test user is made with
     assert user.email == "person@example.com"
     assert user.pk is not None
-    assert user.password != "a-long-enough-password"  # pragma: allowlist secret
+    assert user.password != "a-long-enough-password"  # noqa: S105 — the fake value the test planted, read back  # pragma: allowlist secret
     assert user.check_password("a-long-enough-password")
     assert user.is_active is True
     assert user.is_staff is False
@@ -26,7 +26,7 @@ def test_create_user_normalises_the_email_and_hashes_the_password() -> None:
 
 
 def test_create_user_is_the_configured_user_model() -> None:
-    user = create_user(email="who@example.com", password="a-long-enough-password")
+    user = create_user(email="who@example.com", password="a-long-enough-password")  # noqa: S106 — a throwaway password a test user is made with
     assert isinstance(user, get_user_model())
     assert get_user_model() is User
 
@@ -34,7 +34,7 @@ def test_create_user_is_the_configured_user_model() -> None:
 def test_create_superuser_sets_both_flags() -> None:
     user = create_user(
         email="boss@example.com",
-        password="a-long-enough-password",  # pragma: allowlist secret
+        password="a-long-enough-password",  # noqa: S106 — a throwaway password a test user is made with  # pragma: allowlist secret
         is_superuser=True,
     )
     assert user.is_staff is True
@@ -44,18 +44,18 @@ def test_create_superuser_sets_both_flags() -> None:
 def test_a_second_user_cannot_reuse_an_email() -> None:
     create_user(
         email="taken@example.com",
-        password="a-long-enough-password",  # pragma: allowlist secret
+        password="a-long-enough-password",  # noqa: S106 — a throwaway password a test user is made with  # pragma: allowlist secret
     )
     with pytest.raises(Invalid):
         create_user(
             email="TAKEN@example.com",
-            password="a-long-enough-password",  # pragma: allowlist secret
+            password="a-long-enough-password",  # noqa: S106 — a throwaway password a test user is made with  # pragma: allowlist secret
         )
 
 
 def test_an_empty_email_is_refused() -> None:
     with pytest.raises(ValueError):
-        create_user(email="", password="a-long-enough-password")  # pragma: allowlist secret
+        create_user(email="", password="a-long-enough-password")  # noqa: S106 — a throwaway password a test user is made with  # pragma: allowlist secret
 
 
 def test_deactivate_user_keeps_the_row(tenant: Tenant, owner: User) -> None:

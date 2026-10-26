@@ -12,7 +12,7 @@
 # instrument beside them.
 #
 # ---------------------------------------------------------------------------
-# WHY IT EXISTS AS ONE FILE. `quality/gate.py::check_budgets` prints three
+# WHY IT EXISTS AS ONE FILE. `quality/engine/run.py::check_budgets` prints three
 # shapes and only three, and two different instruments act on them:
 #
 #   LOWERING   `budget note: <section> … a human may commit the lower number:`
@@ -100,7 +100,7 @@ budget_notes_claimed() {
 # THE TWO PARSERS. Both anchored on a sentence that must END the line, and both
 # reading the record line that follows: two leading spaces, then `<key>: <n>`.
 # `match(..., /: [0-9]+[ \t]*$/)` finds the LAST `": N"`, so a key carrying `::`
-# (every `out_schema_fields` key does: `apps/x/schemas.py::ThingOut`) splits
+# (every `out_schema_fields` key does: `apps/<x>/schemas.py::ThingOut`) splits
 # correctly. Output is `<section>\t<key>\t<value>`, one per line.
 
 # budget_notes_lowerings <budget.out> <out.tsv> — the FOLD's half.

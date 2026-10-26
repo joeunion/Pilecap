@@ -1,82 +1,42 @@
-"""The widget's duplicate and merge over the REST door, and what each carries.
-
-Both are driven through the mounted API — `POST …/duplicate/`, `GET
-…/merge/?into=`, `POST …/merge/` — so `TenantMiddleware`, the strict body and
-the one error envelope all run. The machine door is held to the same answers on
-the wire in `test_doors_over_the_wire.py`; the copy a product takes is
-`test_golden_duplicate.py` and `test_golden_merge.py`.
-
-**"Nothing written" reads: no row change and no event.** A refused `@service`
-files its own refusal audit row, so the audit trail is not the measure; the
-row's columns and the recorded events are.
-
-The world is one tenant's tree — root, A beneath it, A1 beneath A — with the
-owner at the root, an ADMIN at A and the tenant's plain MEMBER at the root.
-"""
+"""The widget's duplicate and merge over the REST door, and what each carries."""
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from typing import Any
 
 import pytest
 from django.test import Client
 
-from apps.accounts.models import User
-from apps.accounts.services import create_user
-from apps.core.actor import Actor, actor_for, system_actor
-from apps.core.models import Membership, Organization, Tenant
-from apps.core.services import add_membership, create_organization, root_organization
-from apps.djb_notes.tests.attach_specimen import attach as note_one
-from apps.djb_tags.tests.attach_specimen import attach as tag_one
 from apps.example.models import Widget, WidgetEntry
 from apps.example.services import create_widget, record_widget_entry
-from apps.files.tests.attach_specimen import attach as file_one
+from pilecap import Actor
+from pilecap.tenancy import Organization, Tenant
+from pilecap.testing import World, actor_for, build_world
+from pilecap.testing import attach_file as file_one
+from pilecap.testing import attach_note as note_one
+from pilecap.testing import attach_tag as tag_one
 
 pytestmark = pytest.mark.django_db
 
 WIDGETS = "/api/v1/widgets/"
 JSON = "application/json"
-PASSWORD = "a-long-enough-password"  # pragma: allowlist secret
-
-
-@dataclass
-class World:
-    tenant: Tenant
-    root: Organization
-    a: Organization
-    a1: Organization
-    owner: User
-    manager: User  # ADMIN at A
-    member: User  # MEMBER at the root
-
-    def acting(self, user: User, node: Organization) -> Actor:
-        return actor_for(user=user, tenant=self.tenant, org=node)
 
 
 @pytest.fixture
-def world(tenant: Tenant, owner: User, member: User) -> World:
-    root = root_organization(tenant=tenant)
-    acting = actor_for(user=owner, tenant=tenant, org=root)
-    a = create_organization(tenant=tenant, parent=root, name="A", slug="a", actor=acting)
-    a1 = create_organization(tenant=tenant, parent=a, name="A1", slug="a1", actor=acting)
-    manager = create_user(email="manager@example.com", password=PASSWORD)
-    add_membership(
-        user=manager,
-        tenant=tenant,
-        organization=a,
-        is_default=True,
-        role=Membership.Role.ADMIN,
-        actor=system_actor(tenant=tenant),
-    )
-    return World(tenant=tenant, root=root, a=a, a1=a1, owner=owner, manager=manager, member=member)
+def world() -> World:
+    return build_world()
+
+
+def acting(world: World, who: Actor, node: Organization) -> Actor:
+    """`who` wearing the hat at `node`."""
+    return actor_for(user=who.user, tenant=world.tenant, org=node)
 
 
 def at(world: World, node: Organization, name: str, notes: str = "") -> Widget:
     """A widget the owner created at `node`."""
     return create_widget(
-        tenant=world.tenant, actor=world.acting(world.owner, node), name=name, notes=notes
+        tenant=world.tenant, actor=acting(world, world.owner, node), name=name, notes=notes
     )
 
 
@@ -119,16 +79,14 @@ def tag_names(response: Any) -> list[str]:
 # --- duplicate ---------------------------------------------------------------------
 
 
-def test_a_duplicate_lands_at_the_hat_with_its_tags_and_without_the_ledger(
-    api: Client, world: World
-) -> None:
+def test_a_duplicate_lands_at_the_hat_with_its_tags_and_without_the_ledger(world: World) -> None:
     """The copy is the presser's, at their hat; notes and tags carry, the ledger never does."""
     source = at(world, world.a1, "Bench press #4", notes="Needs the heavy-duty mount.")
     record_widget_entry(
-        tenant=world.tenant, actor=world.acting(world.owner, world.a1), widget=source, note="own"
+        tenant=world.tenant, actor=acting(world, world.owner, world.a1), widget=source, note="own"
     )
-    tag_one(tenant=world.tenant, actor=world.acting(world.owner, world.a1), subject=source)
-    api.force_login(world.manager)  # an ADMIN whose hat is A, one level above the source
+    tag_one(tenant=world.tenant, actor=acting(world, world.owner, world.a1), subject=source)
+    api = world.session(world.admin_at_a)  # an ADMIN whose hat is A, one level above the source
 
     made = api.post(f"{WIDGETS}{source.pk}/duplicate/")
 
@@ -137,7 +95,7 @@ def test_a_duplicate_lands_at_the_hat_with_its_tags_and_without_the_ledger(
     assert copy["id"] != str(source.pk)
     assert copy["duplicated_from_id"] == str(source.pk)
     assert copy["organization_id"] == str(world.a.pk)  # the ACTOR's hat, not the source's
-    assert copy["owner_id"] == str(world.manager.pk)
+    assert copy["owner_id"] == str(world.user(world.admin_at_a).pk)
     assert (copy["name"], copy["notes"]) == ("Copy of Bench press #4", source.notes)
     assert copy["onboarded_at"] is None
     assert WidgetEntry.objects.filter(widget_id=copy["id"]).count() == 0
@@ -149,10 +107,10 @@ def test_a_duplicate_lands_at_the_hat_with_its_tags_and_without_the_ledger(
 
 
 def test_a_repeated_key_answers_the_first_copy_and_a_second_copy_is_invalid_naming_name(
-    api: Client, world: World
+    world: World,
 ) -> None:
     source = at(world, world.root, "Rack")
-    api.force_login(world.owner)
+    api = world.session(world.owner)
 
     first = api.post(f"{WIDGETS}{source.pk}/duplicate/", HTTP_IDEMPOTENCY_KEY="press-1")
     again = api.post(f"{WIDGETS}{source.pk}/duplicate/", HTTP_IDEMPOTENCY_KEY="press-1")
@@ -169,12 +127,12 @@ def test_a_repeated_key_answers_the_first_copy_and_a_second_copy_is_invalid_nami
     assert len(events(world.tenant, "example.widget.duplicated")) == 1
 
 
-def test_an_archived_widget_is_not_copied(api: Client, world: World) -> None:
+def test_an_archived_widget_is_not_copied(world: World) -> None:
     from apps.example.services import archive_widget
 
     source = at(world, world.root, "Retired")
-    archive_widget(tenant=world.tenant, actor=world.acting(world.owner, world.root), widget=source)
-    api.force_login(world.owner)
+    archive_widget(tenant=world.tenant, actor=world.owner, widget=source)
+    api = world.session(world.owner)
 
     refused = api.post(f"{WIDGETS}{source.pk}/duplicate/")
 
@@ -191,11 +149,12 @@ def pair(world: World) -> tuple[Widget, Widget]:
     """A loser carrying a note, a tag, a file and a ledger line; a bare survivor."""
     loser = at(world, world.root, "Bench press (dup)")
     survivor = at(world, world.root, "Bench press")
-    acting = world.acting(world.owner, world.root)
-    note_one(tenant=world.tenant, actor=acting, subject=loser)
-    tag_one(tenant=world.tenant, actor=acting, subject=loser)
-    file_one(tenant=world.tenant, actor=acting, subject=loser)
-    record_widget_entry(tenant=world.tenant, actor=acting, widget=loser, note="kept on the loser")
+    note_one(tenant=world.tenant, actor=world.owner, subject=loser)
+    tag_one(tenant=world.tenant, actor=world.owner, subject=loser)
+    file_one(tenant=world.tenant, actor=world.owner, subject=loser)
+    record_widget_entry(
+        tenant=world.tenant, actor=world.owner, widget=loser, note="kept on the loser"
+    )
     return loser, survivor
 
 
@@ -212,10 +171,10 @@ def _merge(api: Client, loser: Widget, survivor: Widget) -> Any:
 
 
 def test_the_dry_run_names_what_would_leave_the_loser_and_writes_nothing(
-    api: Client, world: World, pair: tuple[Widget, Widget]
+    world: World, pair: tuple[Widget, Widget]
 ) -> None:
     loser, survivor = pair
-    api.force_login(world.owner)
+    api = world.session(world.owner)
 
     preview = api.get(f"{WIDGETS}{loser.pk}/merge/", {"into": str(survivor.pk)})
 
@@ -225,16 +184,18 @@ def test_the_dry_run_names_what_would_leave_the_loser_and_writes_nothing(
         "Notes": 1,
         "Tags": 1,
         "Files": 1,
+        # The worked customer surface re-points the requests about a widget.
+        "Portal requests": 0,
     }
     assert fresh(loser).merged_into_id is None
     assert events(world.tenant, "example.widget.merged") == []
 
 
 def test_a_merge_repoints_the_attachments_and_leaves_a_read_only_tombstone(
-    api: Client, world: World, pair: tuple[Widget, Widget]
+    world: World, pair: tuple[Widget, Widget]
 ) -> None:
     loser, survivor = pair
-    api.force_login(world.owner)
+    api = world.session(world.owner)
 
     merged = _merge(api, loser, survivor)
 
@@ -248,6 +209,8 @@ def test_a_merge_repoints_the_attachments_and_leaves_a_read_only_tombstone(
         "Notes": 1,
         "Tags": 1,
         "Files": 1,
+        # The worked customer surface re-points the requests about a widget.
+        "Portal requests": 0,
     }
     assert "allowed_acts" not in said[0]
     # One `<app>.<kind>.moved` per moved row — a note, a tag link, a file.
@@ -271,10 +234,10 @@ def test_a_merge_repoints_the_attachments_and_leaves_a_read_only_tombstone(
 
 
 def test_a_write_on_the_loser_is_merged_naming_the_survivor_and_nothing_changes(
-    api: Client, world: World, pair: tuple[Widget, Widget]
+    world: World, pair: tuple[Widget, Widget]
 ) -> None:
     loser, survivor = pair
-    api.force_login(world.owner)
+    api = world.session(world.owner)
     assert _merge(api, loser, survivor).status_code == 200
     before = fresh(loser)
     updated = len(events(world.tenant, "example.widget.updated"))
@@ -292,11 +255,11 @@ def test_a_write_on_the_loser_is_merged_naming_the_survivor_and_nothing_changes(
 
 
 def test_the_same_pair_again_is_unchanged_and_a_chain_is_compressed(
-    api: Client, world: World, pair: tuple[Widget, Widget]
+    world: World, pair: tuple[Widget, Widget]
 ) -> None:
     loser, survivor = pair
     last = at(world, world.root, "Bench press (final)")
-    api.force_login(world.owner)
+    api = world.session(world.owner)
     assert _merge(api, loser, survivor).status_code == 200
 
     again = _merge(api, loser, survivor)
@@ -308,28 +271,25 @@ def test_the_same_pair_again_is_unchanged_and_a_chain_is_compressed(
 
 
 def test_a_member_may_not_merge_and_a_widget_is_not_merged_into_itself(
-    api: Client, world: World, pair: tuple[Widget, Widget]
+    world: World, pair: tuple[Widget, Widget]
 ) -> None:
     loser, survivor = pair
-    api.force_login(world.member)
+    api = world.session(world.member)
     refused = _merge(api, loser, survivor)
     assert refused.status_code == 403, refused.content
     assert fresh(loser).merged_into_id is None
 
-    api.force_login(world.owner)
+    api = world.session(world.owner)
     itself = _merge(api, loser, loser)
     assert itself.status_code == 400, itself.content
     assert "into" in body(itself)["errors"], body(itself)
     assert events(world.tenant, "example.widget.merged") == []
 
 
-def test_deleting_a_survivor_refuses_merge_survivor_and_changes_nothing(
-    api: Client, world: World
-) -> None:
-    """The losers' tombstones name the survivor, so it cannot go: a typed refusal, not a
-    database PROTECT, with the survivor, the tombstone and the event log as they were."""
+def test_deleting_a_survivor_refuses_merge_survivor_and_changes_nothing(world: World) -> None:
+    """The losers' tombstones name the survivor, so it cannot go: a typed refusal."""
     loser, survivor = at(world, world.root, "L"), at(world, world.root, "S")
-    api.force_login(world.owner)
+    api = world.session(world.owner)
     assert _merge(api, loser, survivor).status_code == 200
     deleted_before = events(world.tenant, "example.widget.deleted")
 

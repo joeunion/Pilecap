@@ -98,7 +98,7 @@ _LABELS = {
 _WIDTH = max(len(label) for label in _LABELS.values())
 
 #: What an acknowledged stand-in is called, in the one place it is spelled. The
-#: release transcript, the runbook and `deploy/tests/test_release.sh` all read
+#: release transcript, the runbook and `quality/tests/deploy/test_release.py` all read
 #: this string, so it is a constant rather than four literals that can drift.
 #: Deliberately louder than the status labels above: it is the line an operator
 #: is meant to trip over on every single release, for as long as it is true.

@@ -26,7 +26,7 @@ from opentelemetry import trace
 from apps.accounts.models import User
 from apps.core import context
 from apps.core.log import get_logger
-from apps.core.middleware import ContextMiddleware
+from apps.core.middleware import CORRELATION_ID_HEADER, REQUEST_ID_HEADER, ContextMiddleware
 from apps.core.models import Tenant
 from apps.core.observability import _add_trace_ids, configure, get_tracer
 from apps.core.tests.tree_census import source_tree, vanishing_source_file
@@ -123,14 +123,21 @@ def test_a_child_continues_the_chain_and_names_its_parent() -> None:
     assert context.child_of_current() == {"correlation_id": "c-1", "causation_id": "c-1"}
 
 
-def test_a_chain_with_no_parent_starts_one() -> None:
-    chain = context.child_of_current()
-    assert chain["correlation_id"]
-    assert chain["causation_id"] is None
+def test_below_a_door_with_nothing_bound_the_chain_refuses_to_restart() -> None:
+    """House rule 20: a correlation id is minted at a door and nowhere else.
+
+    Work reached with no chain bound has no door above it, and minting one here
+    would restart the business chain the join key exists to join — so the
+    child-minter refuses, naming the doors that bind.
+    """
+    context.clear()
+    with pytest.raises(context.ContextUnbound) as refused:
+        context.child_of_current()
+    assert "door" in str(refused.value)
 
 
 def test_headers_are_honoured_so_one_trace_stays_one_trace() -> None:
-    bound = context.from_headers({"X-Request-Id": "r-1", "X-Correlation-Id": "c-1"})
+    bound = context.from_headers({REQUEST_ID_HEADER: "r-1", CORRELATION_ID_HEADER: "c-1"})
     assert bound["request_id"] == "r-1"
     assert bound["correlation_id"] == "c-1"
 
@@ -209,7 +216,7 @@ def test_a_request_hands_its_ids_back_to_the_client(api: Client, owner: User) ->
     api.force_login(owner)
     response = api.get(WIDGETS_URL, headers={"x-correlation-id": "c-from-the-caller"})
     assert response["X-Request-Id"]
-    assert response["X-Correlation-Id"] == "c-from-the-caller"
+    assert response[CORRELATION_ID_HEADER] == "c-from-the-caller"
 
 
 def test_the_admin_path_binds_a_different_door() -> None:
@@ -241,8 +248,110 @@ def test_the_context_does_not_survive_into_the_next_request() -> None:
 
         return HttpResponse("ok")
 
+    context.clear()
     ContextMiddleware(view)(RequestFactory().get(WIDGETS_URL))
     assert context.get() == {}
+
+
+def test_the_door_puts_back_the_chain_it_was_called_under() -> None:
+    """An in-process caller (a test, a command) keeps its own chain across a request."""
+
+    def view(request: Any) -> Any:
+        context.bind(tenant_id="t-1")
+        from django.http import HttpResponse
+
+        return HttpResponse("ok")
+
+    context.clear()
+    context.bind(correlation_id="the-callers-chain")
+    ContextMiddleware(view)(RequestFactory().get(WIDGETS_URL))
+    assert context.get() == {"correlation_id": "the-callers-chain"}
+
+
+async def _socket_door(scope_extra: dict[str, Any]) -> None:
+    """Drive the socket door's resolver once, with an inner app that binds a tenant."""
+    from django.contrib.auth.models import AnonymousUser
+
+    from apps.core.asgi_middleware import TenantMiddlewareASGI
+
+    async def inner(scope: Any, receive: Any, send: Any) -> None:
+        context.bind(tenant_id="t-1")
+
+    scope = {
+        "type": "websocket",
+        "path": "/ws/events/",
+        "headers": [(b"host", b"testserver")],
+        "query_string": b"",
+        "user": AnonymousUser(),
+        **scope_extra,
+    }
+    await TenantMiddlewareASGI(inner)(scope, None, None)
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_the_socket_door_leaves_an_empty_task_empty() -> None:
+    """The socket door's twin of the HTTP door's pin: nothing survives the connection."""
+    context.clear()
+    await _socket_door({})
+    assert context.get() == {}
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_the_socket_door_puts_back_the_chain_it_was_called_under() -> None:
+    """An in-process caller keeps its own chain across a socket connection.
+
+    RED on the baseline: the door `clear()`ed on the way out, so the caller's
+    `correlation_id` was gone after the connection closed.
+    """
+    context.clear()
+    context.bind(correlation_id="the-callers-chain")
+    await _socket_door({})
+    assert context.get() == {"correlation_id": "the-callers-chain"}
+    context.clear()
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_the_machine_door_puts_back_the_chain_it_was_called_under(
+    owner: Any, tenant: Any
+) -> None:
+    """The MCP door's twin: a resolved tool call leaves the caller's chain as it found it.
+
+    RED on the baseline: `config/mcp.py`'s token door `clear()`ed on the way out.
+    """
+    from apps.accounts.services import issue_token
+    from apps.core.actor import actor_for
+    from apps.core.asyncdb import run_db
+    from config.mcp import TokenAuthMiddleware
+
+    _, bearer = await run_db(
+        issue_token,
+        user=owner,
+        tenant=tenant,
+        name="chain",
+        actor=actor_for(user=owner, tenant=tenant),
+    )
+    reached: list[dict[str, Any]] = []
+
+    async def inner(scope: Any, receive: Any, send: Any) -> None:
+        reached.append(context.get())
+        context.bind(tenant_id="t-1")
+
+    scope = {
+        "type": "http",
+        "path": "/mcp",
+        "method": "POST",
+        "headers": [(b"host", b"testserver"), (b"authorization", f"Bearer {bearer}".encode())],
+        "query_string": b"",
+    }
+    context.clear()
+    context.bind(correlation_id="the-callers-chain")
+    await TokenAuthMiddleware(inner)(scope, None, None)
+    assert reached and reached[0]["door"] == "mcp", reached
+    assert context.get() == {"correlation_id": "the-callers-chain"}
+    context.clear()
 
 
 # --- House rule 19 ----------------------------------------------------------
@@ -283,13 +392,47 @@ def test_nothing_prints_or_builds_its_own_logger() -> None:
 
 
 def test_the_logging_census_tolerates_a_file_that_vanishes_at_open() -> None:
-    """The falsifier for the tolerant read, at the census that the race actually hit.
+    """The logging census skips a source file deleted between listing and open.
 
-    RED before RACE-1: `FileNotFoundError: apps/zzz_vanisher_<hex>.py`, raised
-    from the `ast.parse(source.read_text(...))` this census used to do. The
-    plant is inert — no `print`, no `getLogger` — so the only way past it is to
-    have skipped it.
+    The plant is inert — no `print`, no `getLogger` — so the only way past it is to have skipped it.
     """
     with vanishing_source_file() as planted:
         test_nothing_prints_or_builds_its_own_logger()
         assert not planted.exists(), "the census never opened the plant — this drove nothing"
+
+
+def test_the_workflow_door_mints_a_chain_for_a_run_that_carries_none() -> None:
+    """A run started with no headers (a Schedule's) is a door with no chain handed to it.
+
+    The workflow door is where the activity's work begins, so it mints exactly
+    one chain when its headers carry none — and an activity that emits or
+    starts work reaches `child_of_current` under it instead of `ContextUnbound`.
+    """
+    import asyncio
+    from types import SimpleNamespace
+
+    from apps.workflows.context import _ActivityInbound
+
+    seen: dict[str, object] = {}
+
+    class _Activity:
+        async def execute_activity(self, input: object) -> None:
+            seen.update(context.child_of_current())
+
+    context.clear()
+    door = _ActivityInbound(_Activity())  # type: ignore[arg-type]
+    asyncio.run(door.execute_activity(SimpleNamespace(headers={})))  # type: ignore[arg-type]
+    assert seen["correlation_id"], seen
+    assert context.get() == {}, "the door put back exactly what was there"
+
+
+def test_every_trace_carries_the_template_version_the_tree_ships() -> None:
+    """`service.version` is the `TEMPLATE_VERSION` file's line, never a typed default."""
+    from pathlib import Path
+
+    from django.conf import settings
+
+    from apps.core.observability import _resource
+
+    shipped = (Path(settings.BASE_DIR) / "TEMPLATE_VERSION").read_text().strip()
+    assert _resource().attributes["service.version"] == shipped

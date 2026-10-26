@@ -1,0 +1,133 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "imports", "text": ""}
+from pilecap.testing import WorkflowRun, finish_run
+from pilecap.workflows import workflow_id
+
+# golden-anchor: {"nth": 0, "scope": [], "side": "before", "text": "DUE_AT_WIRE = \"2026-11-02T17:00:00Z\""}
+
+
+# --- Approval: the door that ends a wait -------------------------------------
+
+
+def approve_url(widget: Widget) -> str:
+    return f"{LIST_URL}{widget.pk}/approve/"
+
+
+def onboarding_run(tenant: Tenant, widget: Widget) -> WorkflowRun:
+    """The visibility row `create_widget` wrote, found by the id it derived."""
+    return WorkflowRun.objects.for_tenant(tenant).get(
+        workflow_id=workflow_id(tenant=tenant, app="example", noun="widget", key=str(widget.pk))
+    )
+
+
+def test_approve_url_is_where_the_router_put_it() -> None:
+    assert reverse("api:widget-approve", args=["00000000-0000-0000-0000-000000000000"]) == (
+        f"{LIST_URL}00000000-0000-0000-0000-000000000000/approve/"
+    )
+
+
+def test_anonymous_cannot_approve(api: Client, tenant: Tenant, owner_actor: Actor) -> None:
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Guarded")
+    assert api.post(approve_url(widget)).status_code == 401
+
+
+def test_an_owner_approves_and_gets_the_row_back(
+    api: Client, tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    """The product can end its own wait."""
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Waiting on a person")
+    assert onboarding_run(tenant, widget).status == WorkflowRun.Status.RUNNING
+
+    api.force_login(owner)
+    response = api.post(approve_url(widget), content_type=JSON)
+
+    assert response.status_code == 200, response.content
+    assert _body(response)["id"] == str(widget.pk)
+
+
+def test_approving_twice_while_the_run_is_going_is_not_a_conflict(
+    api: Client, tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    """A client that retried a request it never saw the answer to is not punished."""
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Approved twice")
+    api.force_login(owner)
+
+    first = api.post(approve_url(widget), content_type=JSON)
+    second = api.post(approve_url(widget), content_type=JSON)
+
+    assert (first.status_code, second.status_code) == (200, 200), second.content
+    # And no second run: signalling starts nothing.
+    assert (
+        WorkflowRun.objects.for_tenant(tenant).filter(type="WidgetOnboardingWorkflow").count() == 1
+    )
+
+
+def test_approving_a_run_that_has_already_ended_is_a_409(
+    api: Client, tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    """The other half: once the run is over, an approval is a `conflict`."""
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Too late")
+    finish_run(
+        tenant=tenant,
+        workflow_id=onboarding_run(tenant, widget).workflow_id,
+        status=WorkflowRun.Status.COMPLETED,
+    )
+
+    api.force_login(owner)
+    response = api.post(approve_url(widget), content_type=JSON)
+
+    assert response.status_code == 409, response.content
+    assert _body(response)["code"] == "conflict"
+
+
+def test_a_widget_with_no_run_at_all_is_a_404(
+    api: Client, tenant: Tenant, owner: User, owner_actor: Actor
+) -> None:
+    """The honest answer when there is nothing to signal."""
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Runless")
+    onboarding_run(tenant, widget).delete()
+
+    api.force_login(owner)
+    response = api.post(approve_url(widget), content_type=JSON)
+
+    assert response.status_code == 404, response.content
+    assert _body(response)["code"] == "not_found"
+
+
+def test_a_stranger_tenants_widget_cannot_be_approved(
+    api: Client, tenant: Tenant, other_tenant: Tenant, owner: User, stranger_actor: Actor
+) -> None:
+    """404, not 403: a refusal that distinguished them would confirm the row."""
+    theirs = create_widget(tenant=other_tenant, actor=stranger_actor, name="Theirs")
+    api.force_login(owner)
+    response = api.post(approve_url(theirs), content_type=JSON)
+    assert response.status_code == 404, response.content
+
+
+def test_a_plain_member_may_not_approve(
+    api: Client, tenant: Tenant, member: User, owner_actor: Actor
+) -> None:
+    """403 rather than 404: the member can see the row, they just may not do this."""
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Not theirs to approve")
+    api.force_login(member)
+    response = api.post(approve_url(widget), content_type=JSON)
+    assert response.status_code == 403, response.content
+    assert _body(response)["code"] == "forbidden"
+
+
+def test_a_member_may_not_approve_even_their_own(
+    api: Client, tenant: Tenant, member: User, member_actor: Actor
+) -> None:
+    """The rule approval exists for, said as a test: nobody approves their own."""
+    widget = create_widget(tenant=tenant, actor=member_actor, name="Mine, unapproved")
+    api.force_login(member)
+    assert api.post(approve_url(widget), content_type=JSON).status_code == 403
+
+
+def test_an_admin_may_approve_anybodys(
+    api: Client, tenant: Tenant, admin_member: User, member_actor: Actor
+) -> None:
+    widget = create_widget(tenant=tenant, actor=member_actor, name="Somebody else's")
+    api.force_login(admin_member)
+    assert api.post(approve_url(widget), content_type=JSON).status_code == 200
+
+

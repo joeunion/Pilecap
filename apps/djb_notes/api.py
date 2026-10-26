@@ -1,32 +1,21 @@
-"""The REST door onto notes: write one about a row, list a row's notes, edit, archive.
+"""The REST door onto notes; each route resolves its row and calls the service its MCP twin calls.
 
-There are no per-noun routes. A note names its subject in the body
-(`{"subject": "widget:<id>", ...}`) and a list names it in the query
-(`?subject=widget:<id>`), so a noun that declares notes gets all of this
-without a line of its own.
+# why-not `from __future__ import annotations`: ninja reads the route signatures at import.
 """
-
-# NOTE: no `from __future__ import annotations` in this module — ninja reads the
-# route signatures at import to build the query and body models, and a string
-# annotation it cannot resolve there is a document that will not build.
 
 from uuid import UUID
 
 from django.db.models import QuerySet
 from ninja import Query, Router, Status
-from ninja.errors import HttpError
 from ninja.pagination import paginate
 
 from apps.accounts.auth import API_AUTH
-from apps.core.actor import Actor, actor_from_request
 from apps.core.api import CursorPagination
+from apps.core.api.acting import acting
 from apps.core.api.docs import Tag, refuses
-from apps.core.authz import may_be_named
-from apps.core.exceptions import NotFound
-from apps.core.models import Tenant
 from apps.core.requests import TenantRequest
 from apps.djb_notes.models import Note
-from apps.djb_notes.schemas import NoteFilter, NoteIn, NoteOut, NotePatch
+from apps.djb_notes.schemas import DjbNoteFilter, DjbNoteIn, DjbNoteOut, DjbNotePatch
 from apps.djb_notes.selectors import get_note, list_notes
 from apps.djb_notes.services import archive_note, create_note, restore_note, update_note
 
@@ -51,29 +40,9 @@ TAGS = {
 router = Router(tags=["djb_notes"], auth=API_AUTH)
 
 
-def _acting(request: TenantRequest) -> tuple[Actor, Tenant]:
-    """The actor and tenant a request acts as. Whether it MAY is the service's question."""
-    if request.tenant is None:
-        raise HttpError(403, "No tenant for this request.")
-    return actor_from_request(request), request.tenant
-
-
-def named_note(*, tenant: Tenant, actor: Actor, note_id: UUID) -> Note:
-    """The note an id names, for a write — fetched in scope, then reach-checked.
-
-    Shared with `mcp.py`, so the two doors resolve a note one way. The
-    `may_be_named` line is the reachability fence at the door (house rule 26);
-    each service asks it again, where the refusal lands on the audit trail.
-    """
-    note = get_note(tenant=tenant, actor=actor, note_id=note_id)
-    if not may_be_named(actor, note):
-        raise NotFound()
-    return note
-
-
-@router.get("/", response=list[NoteOut], url_name="djb_note-list")
+@router.get("/", response=list[DjbNoteOut], url_name="djb_note-list")
 @paginate(CursorPagination)
-def list_notes_route(request: TenantRequest, filters: Query[NoteFilter]) -> QuerySet[Note]:
+def list_notes_route(request: TenantRequest, filters: Query[DjbNoteFilter]) -> QuerySet[Note]:
     """List a record's notes
 
     List the notes about one record, newest first.
@@ -100,12 +69,12 @@ def list_notes_route(request: TenantRequest, filters: Query[NoteFilter]) -> Quer
       exactly as one that does not exist.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     return list_notes(tenant=tenant, actor=actor, subject=filters.subject, show=filters.show)
 
 
-@router.post("/", response={201: NoteOut}, url_name="djb_note-create")
-def create_note_route(request: TenantRequest, payload: NoteIn) -> Status[Note]:
+@router.post("/", response={201: DjbNoteOut}, url_name="djb_note-create")
+def create_note_route(request: TenantRequest, payload: DjbNoteIn) -> Status[DjbNoteOut]:
     """Write a note
 
     Write a note about a record.
@@ -130,13 +99,13 @@ def create_note_route(request: TenantRequest, payload: NoteIn) -> Status[Note]:
       has not finished. Resend the identical request, or use a new key.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     note = create_note(tenant=tenant, actor=actor, subject=payload.subject, body=payload.body)
-    return Status(201, note)
+    return Status(201, DjbNoteOut.model_validate(note))
 
 
-@router.get("/{note_id}/", response=NoteOut, url_name="djb_note-detail")
-def retrieve_note(request: TenantRequest, note_id: UUID) -> Note:
+@router.get("/{note_id}/", response=DjbNoteOut, url_name="djb_note-detail")
+def retrieve_note(request: TenantRequest, note_id: UUID) -> DjbNoteOut:
     """Retrieve a note
 
     Fetch one note by id — archived notes included, read-only.
@@ -152,13 +121,13 @@ def retrieve_note(request: TenantRequest, note_id: UUID) -> Note:
     * `404 not_found` — nothing with that id, about a record you can see.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    actor, tenant = _acting(request)
-    return get_note(tenant=tenant, actor=actor, note_id=note_id)
+    actor, tenant = acting(request)
+    return DjbNoteOut.model_validate(get_note(tenant=tenant, actor=actor, note_id=note_id))
 
 
-@router.patch("/{note_id}/", response=NoteOut, url_name="djb_note-update")
-@refuses("archived", "forbidden", "invalid", "invalid_body", "not_found")
-def update_note_route(request: TenantRequest, note_id: UUID, payload: NotePatch) -> Note:
+@router.patch("/{note_id}/", response=DjbNoteOut, url_name="djb_note-update")
+@refuses("archived", "forbidden", "invalid", "invalid_body", "no_acting_scope", "not_found")
+def update_note_route(request: TenantRequest, note_id: UUID, payload: DjbNotePatch) -> DjbNoteOut:
     """Update a note
 
     Change the words of a note you wrote.
@@ -177,14 +146,16 @@ def update_note_route(request: TenantRequest, note_id: UUID, payload: NotePatch)
     * `404 not_found` — nothing with that id, about a record you can see.
     * `409 archived` — the note is archived; restore it first.
     """
-    actor, tenant = _acting(request)
-    note = named_note(tenant=tenant, actor=actor, note_id=note_id)
-    return update_note(tenant=tenant, actor=actor, note=note, body=payload.body)
+    actor, tenant = acting(request)
+    note = get_note(tenant=tenant, actor=actor, note_id=note_id)
+    return DjbNoteOut.model_validate(
+        update_note(tenant=tenant, actor=actor, note=note, body=payload.body)
+    )
 
 
-@router.post("/{note_id}/archive/", response=NoteOut, url_name="djb_note-archive")
-@refuses("archive_blocked", "forbidden", "not_found")
-def archive_note_route(request: TenantRequest, note_id: UUID) -> Note:
+@router.post("/{note_id}/archive/", response=DjbNoteOut, url_name="djb_note-archive")
+@refuses("archive_blocked", "forbidden", "no_acting_scope", "not_found")
+def archive_note_route(request: TenantRequest, note_id: UUID) -> DjbNoteOut:
     """Archive a note
 
     Take a note out of its record's list. It is not deleted: it stays readable by
@@ -202,14 +173,14 @@ def archive_note_route(request: TenantRequest, note_id: UUID) -> Note:
     * `409 archive_blocked` — something an app declared still holds the note;
       the remedies name each blocker and where to clear it.
     """
-    actor, tenant = _acting(request)
-    note = named_note(tenant=tenant, actor=actor, note_id=note_id)
-    return archive_note(tenant=tenant, actor=actor, note=note)
+    actor, tenant = acting(request)
+    note = get_note(tenant=tenant, actor=actor, note_id=note_id)
+    return DjbNoteOut.model_validate(archive_note(tenant=tenant, actor=actor, note=note))
 
 
-@router.post("/{note_id}/restore/", response=NoteOut, url_name="djb_note-restore")
-@refuses("forbidden", "not_found", "restore_blocked")
-def restore_note_route(request: TenantRequest, note_id: UUID) -> Note:
+@router.post("/{note_id}/restore/", response=DjbNoteOut, url_name="djb_note-restore")
+@refuses("forbidden", "no_acting_scope", "not_found", "restore_blocked")
+def restore_note_route(request: TenantRequest, note_id: UUID) -> DjbNoteOut:
     """Restore a note
 
     Put an archived note back in its record's list.
@@ -226,6 +197,6 @@ def restore_note_route(request: TenantRequest, note_id: UUID) -> Note:
     * `409 restore_blocked` — something the note depends on is not there for
       it; the remedies name it.
     """
-    actor, tenant = _acting(request)
-    note = named_note(tenant=tenant, actor=actor, note_id=note_id)
-    return restore_note(tenant=tenant, actor=actor, note=note)
+    actor, tenant = acting(request)
+    note = get_note(tenant=tenant, actor=actor, note_id=note_id)
+    return DjbNoteOut.model_validate(restore_note(tenant=tenant, actor=actor, note=note))

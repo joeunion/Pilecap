@@ -46,13 +46,14 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from apps.accounts.models import SsoConnection, User
+from apps.accounts.models import STAFF_REALM, SsoConnection, User
 from apps.accounts.services import (
     create_user,
     erase_user,
     provision_sso_identity,
-    record_zitadel_identity,
+    record_identity,
 )
+from apps.accounts.tests.conftest import subject_of
 from apps.core.actor import Actor, actor_for, system_actor
 from apps.core.models import Membership
 from apps.core.services import add_membership, invite_member
@@ -64,8 +65,7 @@ from .conftest import CLIENT_SECRET, archive_bytes
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from apps.core.models import Tenant
-
-    from .conftest import World
+    from apps.core.tests.permissions_world import World
 
 pytestmark = pytest.mark.django_db
 
@@ -119,14 +119,18 @@ def target(world: World, sso_connection: SsoConnection) -> User:
         email_verified=True,
     )
     person = identity.user
-    record_zitadel_identity(
-        user=person, subject=TARGET_SUBJECT, tenant=None, actor=system_actor(tenant=None)
+    record_identity(
+        realm=STAFF_REALM,
+        user=person,
+        subject=TARGET_SUBJECT,
+        tenant=None,
+        actor=system_actor(tenant=None),
     )
     invite_member(
         tenant=world.tenant,
         email=TARGET_EMAIL,
         organization=world.root,
-        actor=world.owner_actor,
+        actor=world.owner,
     )
     return person
 
@@ -162,12 +166,8 @@ def archive_key(world: World, recorded_workflow_starts: None, archive_bucket: st
     """
 
     def build() -> str:
-        export = create_export(
-            tenant=world.tenant, actor=world.owner_actor, scope=Export.Scope.TENANT
-        )
-        version, _manifest = _write_the_archive(
-            export=export, hat=world.root, actor=world.owner_actor
-        )
+        export = create_export(tenant=world.tenant, actor=world.owner, scope=Export.Scope.TENANT)
+        version, _manifest = _write_the_archive(export=export, hat=world.root, actor=world.owner)
         return str(version.key)
 
     return build
@@ -222,9 +222,10 @@ def test_neither_identifier_survives_into_the_archive(
 ) -> None:
     """The other half: the IdP subject too, not just the address.
 
-    `accounts.User.zitadel_sub` is a DECLARED retention in the database
-    (`test_erasure_residue.py::RETAINED` — it is the collision fence that stops
-    somebody else's Zitadel account being re-linked to the erased row). It
+    The identity join's subject (`accounts.SsoIdentity.subject`) is a DECLARED
+    retention in the database (`test_erasure_residue.py::RETAINED` — it is the
+    collision fence that stops somebody else's Zitadel account being re-linked
+    to the erased row). It
     survives there and it must not survive HERE, and the reason it does not is
     structural rather than lucky: `accounts.User` carries no tenant, so it was
     never in the census at all. Asserted rather than assumed, because "not in
@@ -236,7 +237,7 @@ def test_neither_identifier_survives_into_the_archive(
     assert residue_in(archive_key(), TARGET_EMAIL, TARGET_SUBJECT) == {}
 
     target.refresh_from_db()
-    assert target.zitadel_sub == TARGET_SUBJECT, "the collision fence is still up in the database"
+    assert subject_of(target) == TARGET_SUBJECT, "the collision fence is still up in the database"
 
 
 def test_the_retained_event_payload_is_excluded_rather_than_swept(

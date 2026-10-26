@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "$(dirname -- "${BASH_SOURCE:-$0}")/../scripts/bash_only.sh" || exit 2
 # Put THIS tree on the box — the whole tree, and nothing that was there before.
 #
 #   deploy/ship.sh ec2-user@1.2.3.4                       ship HEAD to ~/$DJB_DEPLOY_NAMESPACE
@@ -14,7 +15,7 @@
 # `tar -x` OVERLAYS. It writes every file in the archive and DELETES NOTHING, so
 # a file removed upstream survives on the box while the `TREE` marker beside it
 # names the new tree. LOAD-1a measured it: the box held 1119 files carrying the
-# tag of a 1117-file tree, with `apps/core/storage.py` and its test — deleted two
+# tag of a 1117-file tree, with the core app's `storage.py` and its test — deleted two
 # commits earlier — still sitting there. The deployment's own "every image is
 # pinned to a tree" claim was false on the only machine it mattered on.
 #
@@ -61,36 +62,19 @@ HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd -- "$HERE/.." && pwd)"
 set +x  # never; see deploy/entrypoint.sh for the same line and the same reason
 
-# --- it refuses to be piped ---------------------------------------------------
-# release.sh's detection and release.sh's CI exemption, deliberately identical
-# (deploy/release.sh:85-90, scripts/check.sh:38-64). A pipe replaces this
-# script's exit status with the filter's, and the exit status is the difference
-# between "the box is running this tree" and "the box is running this tree plus
-# whatever was there before".
-if [ -z "${CI:-}" ] && { [ -p /dev/fd/1 ] || [ -p /dev/stdout ]; }; then
-    echo "!! ship refuses pipes — a filter replaces the exit status of the ship with" >&2
-    echo "   the filter's, and the exit status is the whole verdict. Run it" >&2
-    echo "   bare or redirect to a file." >&2
-    exit 2
-fi
-
-die() {
-    # 2 is "could not get as far as shipping", or "could not look". An archive
-    # that was never sent must never share an exit code with a tree that landed
-    # wrong.
-    echo "!! ship: $*" >&2
-    echo "   Nothing was shipped; the box is untouched." >&2
-    exit 2
-}
-
-say() { echo "ship: $*"; }
-
-usage() {
-    sed -n '2,8p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
-    echo ""
-    echo "The header of ${BASH_SOURCE[0]} says what it does and why."
-    exit 2
-}
+# THE SCAFFOLD is deploy/lib.sh's and the pipe guard is the seam's
+# `refuse_if_piped`: a pipe replaces the exit status with the filter's, and the
+# exit status is the difference between "the box is running this tree" and "the
+# box is running this tree plus whatever was there before". `die` is exit 2,
+# "could not get as far as shipping" or "could not look": an archive that was
+# never sent must never share an exit code with a tree that landed wrong.
+DEPLOY_NAME=ship
+DEPLOY_NOTHING="Nothing was shipped; the box is untouched."
+DEPLOY_USAGE_LINES=7
+DEPLOY_USAGE_TAIL="The header of ${BASH_SOURCE[0]} says what it does and why."
+# shellcheck source=deploy/lib.sh
+. "$HERE/lib.sh" || exit 2
+refuse_if_piped "$DEPLOY_NAME"
 
 DESTINATION=""
 KEY=""
@@ -105,10 +89,7 @@ REF="HEAD"
 DRY_RUN=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
-    -h | --help)
-        sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'
-        exit 0
-        ;;
+    -h | --help) usage 0 ;;
     --key)
         [ "$#" -ge 2 ] || die "--key needs a path"
         KEY="$2"

@@ -30,37 +30,46 @@
  */
 
 // golden: face begin
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef } from "react";
 
-import { WIDGET_COPY as C, widgetStateWord } from "@/copy/widget";
-import { RefusalPanel } from "@/screens/refusal-panel";
-import { pathFor } from "@/screens/routes";
-import type { Refusal, SurfaceState } from "@/screens/state";
-import { unhandledState } from "@/screens/state";
-import { actsFor, bulkActsFor, footAct, VERB_TABLE, type Verb } from "@/screens/verbs";
-import { dayOf, Pill, StillLine, type Widget, type WidgetPage } from "@/screens/widget/parts";
+import type { paths } from "@/api/generated/schema";
+import { WIDGET_COPY as C, widgetStateWord } from "@pilecap/copy/widget";
+import { RefusalPanel } from "@pilecap/ui/refusal-panel";
+import { pathFor, STAFF_SURFACE } from "@pilecap/ui/routes";
+import type { Refusal, SurfaceState } from "@pilecap/ui/state";
+import { unhandledState } from "@pilecap/ui/state";
+import { actsFor, VERB_TABLE } from "@pilecap/ui/verbs";
+import { Pill } from "@pilecap/ui/pill";
+import { StillLine } from "@pilecap/ui/still-line";
+import { dayOf, onboardedOf, type Widget, type WidgetPage } from "@/screens/widget/parts";
 import { ROAD } from "@/screens/widget/road";
 import "@/screens/widget/widget-face.css";
 // golden: face end
 // golden: import begin
-import { importingSentence } from "@/copy/widget";
-import { importHeadAct } from "@/screens/verbs";
+import { importingSentence } from "@pilecap/copy/widget";
+import { importHeadAct } from "@pilecap/ui/verbs";
 // golden: import end
 // golden: bulk begin
-import type { RefObject } from "react";
+import { type RefObject, useState } from "react";
 
-import { bulkSentence, moveManyTitle, selectedSentence, selectRowLabel } from "@/copy/widget";
+import { bulkActsFor, footAct, type Verb } from "@pilecap/ui/verbs";
+
+import { bulkSentence, moveManyTitle, selectedSentence, selectRowLabel } from "@pilecap/copy/widget";
 import type { Destination, WidgetBulk } from "@/screens/widget/parts";
 import { MoveSheet } from "@/screens/widget/widget-move";
 // golden: bulk+merge begin
-import { pairActsFor } from "@/screens/verbs";
+import { pairActsFor } from "@pilecap/ui/verbs";
 import { type MergePairPress, MergePairSheet } from "@/screens/widget/widget-merge";
 // golden: bulk+merge end
 // golden: bulk end
 
 // golden: face begin
-/** Which cut of the book the list shows: the wire's `show`, less `all`, which no face draws. */
-export type Cut = "live" | "archived";
+/**
+ * Which cut of the book the list shows: the wire's `show`, read from the
+ * generated client verbatim (fe-conventions §4, Law 3), less `all`, which no
+ * face draws. A cut the wire renames or drops stops compiling here.
+ */
+export type Cut = Exclude<NonNullable<NonNullable<paths["/api/v1/widgets/"]["get"]["parameters"]["query"]>["show"]>, "all">;
 
 /** *Show more*: the route reads the next page (it owns the cursor); `busy` while it does. */
 export type ShowMore = { readonly onShowMore: () => void; readonly busy: boolean };
@@ -120,6 +129,8 @@ export type WidgetListProps = {
     /** The cut the state was read under; the default cut spells no `show`. */
     readonly cut?: Cut;
     readonly more?: ShowMore;
+    /** The socket feed's state word (`useEvents`' `board`), said as the page's `data-board`; absent, the page says none. */
+    readonly board?: string;
     // golden: face end
     // golden: archive begin
     /** Presses the *Archived* chip: the route re-reads under the other cut. */
@@ -143,44 +154,47 @@ export type WidgetListProps = {
 export function WidgetList(props: WidgetListProps) {
     const { state, cut = "live" } = props;
     const focus = useListLanding(props);
-    let controls: ReactNode = null;
-    let rowLead: (widget: Widget, index: number) => ReactNode = () => null;
-    let rowTrail: (widget: Widget, index: number) => ReactNode = () => null;
-    let band: ReactNode = null;
-    let head: ReactNode = null;
+    /** The page's seats, each verb's block filling its own. */
+    const seats: { controls: ReactNode; band: ReactNode; head: ReactNode } & { -readonly [K in keyof RowParts]: RowParts[K] } = {
+        controls: null,
+        lead: () => null,
+        trail: () => null,
+        band: null,
+        head: null,
+    };
     // golden: face end
     // golden: archive begin
-    controls = <Controls cut={cut} onShow={props.onShow} />;
-    rowTrail = (widget, index) =>
+    seats.controls = <Controls cut={cut} onShow={props.onShow} />;
+    seats.trail = (widget, index) =>
         cut === "archived" ? <CutRowRestore widget={widget} restore={props.restore} focus={focus} index={index} /> : null;
     // golden: archive end
     // golden: bulk begin
     const selection = useSelection(props);
-    if (selection.bar !== null) controls = selection.bar;
-    const trail = rowTrail;
-    rowLead = selection.lead;
-    rowTrail = (widget, index) => (
+    if (selection.bar !== null) seats.controls = selection.bar;
+    const trail = seats.trail;
+    seats.lead = selection.lead;
+    seats.trail = (widget, index) => (
         <>
             {trail(widget, index)}
             {selection.trail(widget)}
         </>
     );
-    band = selection.band;
+    seats.band = selection.band;
     // golden: bulk end
     // golden: import begin
     const imported = importsHead(props);
-    head = imported.act;
-    if (imported.band !== null) band = imported.band;
+    seats.head = imported.act;
+    if (imported.band !== null) seats.band = imported.band;
     // golden: import end
     // golden: face begin
-    const rows = { lead: rowLead, trail: rowTrail };
+    const rows = { lead: seats.lead, trail: seats.trail };
     return (
         // The list is the page's width, not the measure: the measure caps prose, and rows are not prose (§8).
-        <main style={{ padding: "var(--space-4) var(--space-3)" }}>
-            <h1 style={{ fontSize: "var(--type-title)", margin: "0 0 var(--space-3)", color: "var(--ink)" }}>{C.title}</h1>
-            {head}
-            {controls}
-            {band}
+        <main className="widget-page" data-board={props.board}>
+            <h1 className="widget-title">{C.title}</h1>
+            {seats.head}
+            {seats.controls}
+            {seats.band}
             {body(state, cut, props.more, rows, focus)}
         </main>
     );
@@ -197,7 +211,7 @@ function body(state: SurfaceState<WidgetPage>, cut: Cut, more: ShowMore | undefi
         case "loading":
             return (
                 <div aria-busy="true" aria-live="polite">
-                    <p style={{ margin: "0 0 var(--space-2)", color: "var(--muted)" }}>{C.loadingList}</p>
+                    <p className="widget-reading">{C.loadingList}</p>
                     {[0, 1, 2].map((row) => (
                         <StillLine key={row} tall />
                     ))}
@@ -208,7 +222,7 @@ function body(state: SurfaceState<WidgetPage>, cut: Cut, more: ShowMore | undefi
             // create act, and there is no create face; in the archived cut the
             // pressed chip is the way back, so there is nothing to propose.
             return (
-                <p ref={focus.emptyLine} tabIndex={-1} style={{ margin: 0, color: "var(--ink)" }}>
+                <p ref={focus.emptyLine} tabIndex={-1} className="widget-sentence">
                     {cut === "archived" ? C.nothingArchived : C.empty}
                 </p>
             );
@@ -312,6 +326,24 @@ function useListLanding({ state, ...props }: WidgetListProps) {
     };
 }
 
+/** One of the noun's own facts on a row: a field of the generated `Widget`, its label, and how its value reads. */
+type Column = { readonly field: keyof Widget; readonly label: string; readonly reads: "day" | "word" };
+
+/**
+ * The noun's own facts a row shows, in the copy's order. Each key is a field of
+ * the generated `Widget` — a column the wire drops stops compiling here.
+ */
+const COLUMNS: readonly Column[] = Object.entries<Omit<Column, "field">>(C.columns).map(([field, column]) => ({
+    field: field as keyof typeof C.columns,
+    ...column,
+}));
+
+/** A fact as a row says it — its label and its value — or nothing when the row has none. */
+function factOf(value: unknown, label: string, reads: Column["reads"]): string {
+    if (typeof value !== "string" || value === "") return "";
+    return `${label} ${reads === "day" ? dayOf(value) : value}`;
+}
+
 /**
  * §8: the whole row is ONE pressable, the door to the record. The name block
  * first; the pill, when the row has departed its resting state, rides the
@@ -336,13 +368,19 @@ function WidgetRow({
     readonly lead: ReactNode;
     readonly trail: ReactNode;
 }) {
-    const door = pathFor("widget-detail", { id: widget.id });
-    const state = cut === "archived" ? null : widgetStateWord(widget.onboarded_at);
+    const door = pathFor("widget-detail", { id: widget.id }, undefined, STAFF_SURFACE);
+    const onboarded = onboardedOf(widget);
+    const state = cut === "archived" || onboarded === undefined ? null : widgetStateWord(onboarded);
     const content = (
         <>
             <span className="widget-name">
                 {state === null ? widget.name : <NameWithPill name={widget.name} word={state} />}
             </span>
+            {COLUMNS.map(({ field, label, reads }) => (
+                <span key={field} className="widget-fact">
+                    {factOf(widget[field], label, reads)}
+                </span>
+            ))}
             <span className="widget-fact">
                 {C.addedLabel} {dayOf(widget.created_at)}
             </span>
@@ -380,7 +418,7 @@ function NameWithPill({ name, word }: { readonly name: string; readonly word: st
             <span className="widget-pill-join">
                 {last}
                 {"\u00a0"}
-                <Pill word={word} />
+                <Pill word={word} className="widget-pill" />
             </span>
         </>
     );
@@ -453,7 +491,7 @@ function CutRowRestore({
             ))}
             {refused === null ? null : (
                 <div className="widget-refusal-seat">
-                    <RefusalPanel refusal={refused.refusal} seat="cut-row" words={{ label: words?.refused ?? C.errorLabel, remedies: C.remedies }} />
+                    <RefusalPanel surface={STAFF_SURFACE} refusal={refused.refusal} seat="cut-row" refused={words?.refused} />
                 </div>
             )}
         </>
@@ -502,19 +540,22 @@ function useSelection(props: WidgetListProps) {
     }, [answer]);
 
     const chosen = rows.filter((row) => checked.has(row.id));
-    let acts = bulk === undefined ? [] : bulkActsFor(chosen.map((row) => ({ allowed_acts: row.allowed_acts ?? [] })), ROAD).filter((act) => act.verb !== "move" || bulk.move !== undefined);
-    let pairSheet: ReactNode = null;
-    let openPair = () => undefined as void;
+    // The bar's seats, held in one object so a copy without merge (which fills two of them) binds nothing it never reassigns.
+    const seated: { acts: ReturnType<typeof bulkActsFor>; pairSheet: ReactNode; openPair: () => void } = {
+        acts: bulk === undefined ? [] : bulkActsFor(chosen.map((row) => ({ allowed_acts: row.allowed_acts ?? [] })), ROAD).filter((act) => act.verb !== "move" || bulk.move !== undefined),
+        pairSheet: null,
+        openPair: () => undefined,
+    };
     // golden: bulk end
     // golden: bulk+merge begin
     // Merge joins the bar at EXACTLY two checked rows that both allow it, in table order among the bulk verbs.
     const [pairing, setPairing] = useState(false);
     const pair = bulk?.merge === undefined ? [] : pairActsFor(chosen.map((row) => ({ allowed_acts: row.allowed_acts ?? [] })), ROAD);
     const order = VERB_TABLE.map((row) => row.verb);
-    acts = [...acts, ...pair].sort((x, y) => order.indexOf(x.verb) - order.indexOf(y.verb));
-    openPair = () => setPairing(true);
+    seated.acts = [...seated.acts, ...pair].sort((x, y) => order.indexOf(x.verb) - order.indexOf(y.verb));
+    seated.openPair = () => setPairing(true);
     const [one, two] = chosen;
-    pairSheet =
+    seated.pairSheet =
         pairing && bulk?.merge !== undefined && one !== undefined && two !== undefined && chosen.length === 2 ? (
             <MergePairSheet
                 rows={[one, two]}
@@ -561,7 +602,7 @@ function useSelection(props: WidgetListProps) {
             <>
                 <div data-seat="list-select" className="widget-select">
                     <span className="widget-count">{selectedSentence(chosen.length)}</span>
-                    {acts.map((act) => (
+                    {seated.acts.map((act) => (
                         <button
                             key={act.verb}
                             type="button"
@@ -574,7 +615,7 @@ function useSelection(props: WidgetListProps) {
                                     setSheet(true);
                                     return;
                                 }
-                                if (act.words.press === "confirm") return openPair();
+                                if (act.words.press === "confirm") return seated.openPair();
                                 press(act.verb, chosen.map((row) => row.id));
                             }}
                         >
@@ -587,10 +628,10 @@ function useSelection(props: WidgetListProps) {
                 </div>
                 {bulk.refused === null || bulk.refused === undefined ? null : (
                     <div className="widget-refusal-seat">
-                        <RefusalPanel refusal={bulk.refused} seat="list-select" words={{ label: C.errorLabel, remedies: C.remedies }} />
+                        <RefusalPanel surface={STAFF_SURFACE} refusal={bulk.refused} seat="list-select" />
                     </div>
                 )}
-                {pairSheet}
+                {seated.pairSheet}
                 {sheet && bulk.move !== undefined ? (
                     <BulkMoveSheet
                         rows={chosen}
@@ -634,9 +675,10 @@ function useSelection(props: WidgetListProps) {
             return (
                 <div className="widget-refusal-seat">
                     <RefusalPanel
+                        surface={STAFF_SURFACE}
                         refusal={refusal}
                         seat="list-select"
-                        words={{ label: words?.refused ?? C.errorLabel, remedies: C.remedies }}
+                        refused={words?.refused}
                     />
                 </div>
             );
@@ -732,7 +774,7 @@ function BulkBand({
  */
 function importsHead(props: WidgetListProps): { readonly act: ReactNode; readonly band: ReactNode } {
     const listActs = props.state.kind === "ready" ? (props.state.data.allowed_acts ?? []) : [];
-    const page = pathFor("djb_import-detail");
+    const page = pathFor("djb_import-detail", {}, undefined, STAFF_SURFACE);
     const act = props.imports === undefined || page === null ? null : importHeadAct(ROAD, listActs);
     const run = props.imports?.importing ?? null;
     return {
@@ -760,8 +802,8 @@ function importsHead(props: WidgetListProps): { readonly act: ReactNode; readonl
 function ListRefusal({ refusal }: { readonly refusal: Refusal }) {
     return (
         <RefusalPanel
+            surface={STAFF_SURFACE}
             refusal={refusal}
-            words={{ label: refusal.kind === "registry" ? C.errorLabel : C.transportLabel, remedies: C.remedies }}
         />
     );
 }

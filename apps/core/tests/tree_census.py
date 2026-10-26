@@ -1,64 +1,18 @@
 """The one tolerant read for every census that walks the source tree.
 
-**A census that walks `apps/**` is racing every other xdist worker's fixtures.**
-A test plants a real directory inside `apps/` on purpose, because what it
-proves is that a *directory listing* is the registration:
-`apps/core/tests/test_settings.py` builds and removes `apps/zzz_probe/`, so
-discovery can be asked whether a new directory is a new app.
-
-That plant cannot move: the claim under test is about the real `apps/`
-directory, and a plant under `tmp_path` would prove the opposite of what the
-test says. So the tolerance belongs on the reading side, and it belongs here
-rather than once per census.
-
-The meter registry's plant (`apps/usage/tests/conftest.py`) is NOT one of
-these any more, and the difference is the subject: `declared_meters()` asks
-the import system for a module by name, never lists a directory, so its plant
-joins `apps.example`'s search path in one process and never touches the shared
-tree. In the tree it raced production code rather than a census —
-`find_spec` then `import_module`, the file unlinked in between — and a
-tolerant read in a test helper could not reach that reader.
-
-**What actually races, measured.** `Path.rglob` is safe: it enumerates through
-`os.scandir` and a directory that vanishes mid-walk simply yields nothing more
-(checked on the CPython 3.12.14 this tree pins). The window is between the
-*listing* and the `open()` — `rglob` names a file, the planting worker's
-teardown removes it, and `read_text()` raises `FileNotFoundError`. Measured at
-the full gate's second pytest pass, seed 376820410, on
-`apps/zzz_probe/__init__.py`, where the exception was read as an earlier pass
-having left state behind and used to refuse a push; measured again later, in
-`test_observability.py`, after a test-count change reshuffled the schedule.
-
-**Why an empty answer is the honest one, and not a swallowed error.** A file
-that no longer exists holds no call sites, no imports and no hook
-registrations, so it cannot be in violation of anything — there is nothing
-there to be in violation. Returning "no source" is what the census always
-meant. Only `FileNotFoundError` is tolerated: a permission error, a decoding
-error or a syntax error is still a finding and still raises, so this is never a
-bare `except` wearing the shape of a fix.
-
-Excluding one planter's directory by name would close only that planter. This
-closes the CLASS — every census in the tree, and every planter that arrives
-later.
+A file listed by the walk and unlinked by another worker before `open()` reads as no source.
+Only `FileNotFoundError` is tolerated: an undecodable or unparseable file is still a finding.
 """
 
 from __future__ import annotations
 
 import ast
 import uuid
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
 from django.conf import settings
-
-#: Modules a test plants inside `apps/` and removes again. A *discovery* census
-#: — one that counts apps rather than reading files — has to take them out by
-#: name, because the alternative is asserting about the test suite instead of
-#: about the tree. That is a different job from the tolerant read below and is
-#: kept separate deliberately: the read tolerates ANY vanishing file, named or
-#: not, while this list is the small set a count has to know about.
-TRANSIENT_APP_MODULES: frozenset[str] = frozenset({"apps.zzz_probe"})
 
 
 def source_text(path: Path) -> str:
@@ -94,27 +48,6 @@ def source_tree(path: Path) -> ast.Module:
     return ast.parse(source_text(path), filename=str(path))
 
 
-def without_transient_apps(names: Iterable[str]) -> list[str]:
-    """A discovery census's answer with the throwaway probe apps taken out.
-
-    **The xdist race, found by E1 under seed 362519638** (1 failed / 1325
-    passed, not reproducible on re-run). `test_settings.py` creates a real
-    directory under `apps/` on the real disk, and every test that counts that
-    directory runs on some other worker at the same time — so a count can
-    legitimately see an app that `settings.LOCAL_APPS`, computed once at
-    startup, has never heard of.
-
-    **Why filtering and not serialising.** Putting the tests on one worker needs
-    `xdist_group`, which only binds under `--dist loadgroup`; the gate runs
-    plain `-n auto` (`scripts/check.sh`), so buying this would mean changing the
-    distribution mode for the entire suite. And the probe is not a real app — it
-    is a test artifact that exists for a few milliseconds — so a count that
-    included it would be asserting about the test suite rather than about the
-    tree. Excluding it by name is what these assertions always meant.
-    """
-    return [name for name in names if name not in TRANSIENT_APP_MODULES]
-
-
 # --- the drive, so a census can prove it tolerates rather than claim it -------
 
 #: Prefix of the inert module `vanishing_source_file` plants at the top of
@@ -143,12 +76,7 @@ def vanishing_source_file() -> Iterator[Path]:
                 my_census()
                 assert not planted.exists()
 
-    **The name is unique per call, and that is not decoration.** A single shared
-    name made this a planter racing itself: under `-n 10` one worker re-planted
-    between another's listing and its `assert not planted.exists()`, and the
-    drive reported "the census never opened the plant" on a census that had
-    opened it. Measured 2026-08-25, on RACE-1's first `-n 10` run — the class
-    biting the instrument written to close it.
+    The name is unique per call: a shared name races itself across xdist workers.
     """
     planted = Path(settings.BASE_DIR) / "apps" / f"{VANISHER_PREFIX}{uuid.uuid4().hex[:8]}.py"
     planted.write_text(VANISHER_SOURCE, encoding="utf-8")

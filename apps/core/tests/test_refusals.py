@@ -66,13 +66,16 @@ from apps.core.tests.tree_census import source_tree
 # The vocabulary the template ships with. A product adds to this; nothing
 # removes from it, because every one of the six is raised somewhere in `apps/`
 # and `config/api.py` maps five of them to a status code.
-SEEDED = ("error", "not_found", "conflict", "forbidden", "invalid", "rate_limited")
+#: The five class codes the vocabulary ships with. The sixth, the base's `error`,
+#: was retired: nothing raised it, `handler500` never composed through it, and the
+#: base now declares no code and cannot be raised (`DomainError.__init__`).
+SEEDED = ("not_found", "conflict", "forbidden", "invalid", "rate_limited")
 
 
 # --- The seed ----------------------------------------------------------------
 
 
-def test_the_six_class_codes_are_registered_with_a_boundary_and_a_remedy() -> None:
+def test_the_class_codes_are_registered_with_a_boundary_and_a_remedy() -> None:
     for code in SEEDED:
         refusal = refusal_for(code)
         assert refusal is not None, f"{code} is raised in this tree and not declared"
@@ -82,8 +85,10 @@ def test_the_six_class_codes_are_registered_with_a_boundary_and_a_remedy() -> No
 
 def test_every_shipped_exception_class_names_a_registered_code() -> None:
     """The other direction: no class refuses with a code the registry has not got."""
-    for cls in (DomainError, NotFound, Conflict, Forbidden, Invalid, RateLimited):
+    for cls in (NotFound, Conflict, Forbidden, Invalid, RateLimited):
         assert cls.code in REFUSALS, cls
+    # The base is not a refusal: it carries no code the registry could hold.
+    assert DomainError.code not in REFUSALS
 
 
 def test_the_boundary_says_which_layer_decided() -> None:
@@ -383,7 +388,7 @@ MIDDLEWARE = Path(idempotency.__file__)
 
 
 def _refusal_call_arguments(source: Path) -> list[tuple[int, ast.expr]]:
-    """Every `_refusal(...)` call in a module, and the code it would emit.
+    """Every `_refusal_response(...)` call in a module, and the code it would emit.
 
     Static rather than dynamic on purpose: a call site only reached on the
     unhappy path of a race is a call site no test run visits, and "the codes
@@ -394,11 +399,15 @@ def _refusal_call_arguments(source: Path) -> list[tuple[int, ast.expr]]:
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
-        if not (isinstance(node.func, ast.Name) and node.func.id == "_refusal"):
+        if not (isinstance(node.func, ast.Name) and node.func.id == "_refusal_response"):
             continue
         where = f"{source}:{node.lineno}"
-        assert not node.keywords, f"{where}: _refusal takes a detail, a refusal and a status"
-        assert len(node.args) == 3, f"{where}: _refusal takes a detail, a refusal and a status"
+        assert not node.keywords, (
+            f"{where}: _refusal_response takes a detail, a refusal and a status"
+        )
+        assert len(node.args) == 3, (
+            f"{where}: _refusal_response takes a detail, a refusal and a status"
+        )
         calls.append((node.lineno, node.args[1]))
     return calls
 
@@ -421,7 +430,7 @@ def test_the_two_edge_codes_are_registered_at_the_boundary_that_decided_them() -
 def test_every_code_the_middleware_can_emit_is_a_registered_row() -> None:
     """The class closed — enumerated, not spot-checked.
 
-    Every `_refusal(...)` in the module names a module-level `Refusal`, that row
+    Every `_refusal_response(...)` in the module names a module-level `Refusal`, that row
     is in `EMITTABLE`, and `EMITTABLE` is the registry's own rows rather than
     look-alikes. A third code cannot arrive by being typed at a call site: it
     would be a string, or a name that resolves to nothing, or a row nobody
@@ -465,7 +474,7 @@ def test_a_third_code_is_refused_at_the_moment_it_would_reach_a_client() -> None
     assert invented.code not in REFUSALS
 
     with pytest.raises(ValueError, match="invented_at_the_edge"):
-        idempotency._refusal("no", invented, 409)
+        idempotency._refusal_response("no", invented, 409)
 
 
 def test_the_middleware_scan_would_catch_one(tmp_path: Path) -> None:
@@ -478,7 +487,7 @@ def test_the_middleware_scan_would_catch_one(tmp_path: Path) -> None:
     planted = tmp_path / "idempotency.py"
     planted.write_text(
         "def refuse():\n"
-        '    return _refusal("That key was used for something else.", "invented_here", 409)\n',
+        '    return _refusal_response("That key was used elsewhere.", "invented_here", 409)\n',
         encoding="utf-8",
     )
     (lineno, argument), *rest = _refusal_call_arguments(planted)

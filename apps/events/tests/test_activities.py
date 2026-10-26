@@ -22,6 +22,7 @@ Two things live here rather than in `test_workflows.py`:
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import timedelta
 from typing import Any
 
@@ -30,13 +31,15 @@ import pytest
 from django.conf import settings as django_settings
 from django.db import transaction
 from django.test import override_settings
-from temporalio.client import Schedule, ScheduleAlreadyRunningError, ScheduleUpdate
+from temporalio.client import Schedule, ScheduleUpdate
+from temporalio.exceptions import ApplicationError
 from temporalio.service import RPCError, RPCStatusCode
 
 from apps.core import bridge
 from apps.core.actor import Actor, system_actor
 from apps.core.models import Tenant
 from apps.core.services import create_organization, root_organization
+from apps.core.tests.fakes import FakeScheduleServer
 from apps.core.time import now
 from apps.events import activities, services
 from apps.events.models import Delivery, Event, Outbox, WebhookEndpoint
@@ -51,7 +54,7 @@ from apps.events.types import (
 from apps.example.events import WIDGET_CREATED
 from apps.workflows.client import delete_schedule, ensure_declaration, ensure_schedules
 from apps.workflows.models import WorkflowRun
-from apps.workflows.services import finish_run, record_run, workflow_id
+from apps.workflows.services import check_workflow_id, finish_run, record_run, workflow_id
 
 # `transaction=True`: an activity calls `close_old_connections()` at both ends,
 # because out in the worker there is no request cycle to do it. Inside the
@@ -60,7 +63,7 @@ from apps.workflows.services import finish_run, record_run, workflow_id
 # real commits.
 pytestmark = pytest.mark.django_db(transaction=True)
 
-SECRET = "a-shared-secret"  # pragma: allowlist secret
+SECRET = "a-shared-secret"  # noqa: S105 — a signing secret the test both signs and verifies with  # pragma: allowlist secret
 
 
 @pytest.fixture
@@ -72,7 +75,7 @@ def acting(tenant: Tenant, monkeypatch: pytest.MonkeyPatch) -> Tenant:
     workflow, so the one function that reads it is replaced — which is also the
     proof that the tenant is read in exactly one place.
     """
-    monkeypatch.setattr(activities, "acting_tenant", lambda: tenant)
+    monkeypatch.setattr(activities, "current_actor", lambda **_: system_actor(tenant))
     return tenant
 
 
@@ -147,25 +150,23 @@ def test_which_answers_are_worth_retrying(code: int, retry: bool) -> None:
 def test_the_signature_is_over_the_bytes_that_were_sent() -> None:
     """Sign what is sent, not a re-serialisation of what was meant."""
     body = b'{"a":1}'
-    signature = activities.sign(secret="k", body=body)
+    signature = activities.sign(secret="k", body=body)  # noqa: S106 — a signing secret the test both signs and verifies with
     assert signature.startswith("sha256=")
-    assert activities.sign(secret="k", body=b'{"a": 1}') != signature
-    assert activities.sign(secret="other", body=body) != signature  # pragma: allowlist secret
+    assert activities.sign(secret="k", body=b'{"a": 1}') != signature  # noqa: S106 — a signing secret the test both signs and verifies with
+    assert activities.sign(secret="other", body=body) != signature  # noqa: S106 — a signing secret the test both signs and verifies with  # pragma: allowlist secret
 
 
 def test_the_schedule_this_app_declares() -> None:
     """Daily, on this deployment's queue, skipping a run it is late for."""
-    schedule = activities.purge_schedule(task_queue="djb-tests")
+    schedule = activities.PURGE.schedule("djb-tests")
 
     action: Any = schedule.action
     assert action.workflow == services.PURGE_WORKFLOW
-    assert action.id == activities.purge_workflow_id(task_queue="djb-tests")
+    assert action.id == "platform:events:purge:djb-tests"
     assert action.task_queue == "djb-tests"
     assert action.args == [
         PurgeExpired(
             outbox_retention_days=activities.outbox_retention_days(),
-            # The delivery window rides the same action: one sweep,
-            # one schedule, one payload, two populations with two windows.
             delivery_retention_days=activities.delivery_retention_days(),
         )
     ]
@@ -173,35 +174,25 @@ def test_the_schedule_this_app_declares() -> None:
 
 
 def test_two_queues_are_two_schedules_pointing_at_their_own_queue() -> None:
-    """The property this schedule-id scheme protects: one dev server, several deployments, no fight.
+    """One dev server, several deployments, no fight: both ids are per queue (ADR events-2)."""
+    one = activities.PURGE.schedule_id("djb-alpha")
+    two = activities.PURGE.schedule_id("djb-beta")
 
-    A schedule id is global to the Temporal namespace. While it was a constant,
-    every worker's startup re-pointed the one schedule at whatever queue that
-    worker happened to own — so the last worktree to start a worker took over
-    the purge for all of them and then went away. Both ids are suffixed now, so
-    the two schedules below cannot collide and neither can the runs they start.
-    """
-    one = activities.purge_schedule_id(task_queue="djb-alpha")
-    two = activities.purge_schedule_id(task_queue="djb-beta")
+    assert one == "platform:events:purge:djb-alpha"
+    assert two == "platform:events:purge:djb-beta"
 
-    assert one == "events-purge-expired:djb-alpha"
-    assert two == "events-purge-expired:djb-beta"
-    assert one != two
-
-    alpha: Any = activities.purge_schedule(task_queue="djb-alpha").action
-    beta: Any = activities.purge_schedule(task_queue="djb-beta").action
-    assert alpha.task_queue == "djb-alpha"
-    assert beta.task_queue == "djb-beta"
-    assert alpha.id == "system:events:purge:djb-alpha"
-    assert beta.id == "system:events:purge:djb-beta"
+    alpha: Any = activities.PURGE.schedule("djb-alpha").action
+    beta: Any = activities.PURGE.schedule("djb-beta").action
+    assert (alpha.task_queue, beta.task_queue) == ("djb-alpha", "djb-beta")
     assert alpha.id != beta.id
+    assert check_workflow_id(id=alpha.id, tenant=None) == alpha.id
 
 
 def test_the_legacy_global_id_is_the_one_that_used_to_ship() -> None:
     """What is being cleaned up, named — and distinct from every new id."""
-    assert activities.LEGACY_PURGE_SCHEDULE_ID == "events-purge-expired"
-    assert activities.LEGACY_PURGE_SCHEDULE_ID != activities.purge_schedule_id(
-        task_queue=str(django_settings.TEMPORAL_TASK_QUEUE)
+    assert activities.PURGE.legacy_ids == ("events-purge-expired",)
+    assert activities.LEGACY_PURGE_SCHEDULE_ID != activities.PURGE.schedule_id(
+        str(django_settings.TEMPORAL_TASK_QUEUE)
     )
 
 
@@ -224,50 +215,6 @@ def test_the_retention_window_comes_from_settings(settings: Any) -> None:
 deployment_machinery = override_settings(TEMPORAL_MACHINERY_LIFETIME="deployment")
 
 
-class FakeScheduleServer:
-    """A stand-in for the client's schedules API, recording what was asked of it.
-
-    A hand-written one, because the time-skipping test server has no schedules
-    API and pointing a test at the dev server is forbidden. What is under test
-    is the engine's own decisions for one declaration — drop the legacy id,
-    create, and on "already running" update — which is exactly what this
-    records.
-    `present` is the set of schedule ids the server holds, so a test can plant
-    the legacy one before the worker starts.
-    """
-
-    def __init__(self, *, present: set[str] | None = None) -> None:
-        self.present: set[str] = set(present or ())
-        self.created: list[tuple[str, Schedule]] = []
-        self.updated: list[tuple[str, Schedule]] = []
-        self.deleted: list[str] = []
-
-    async def create_schedule(self, schedule_id: str, schedule: Schedule) -> Any:
-        if schedule_id in self.present:
-            raise ScheduleAlreadyRunningError()
-        self.present.add(schedule_id)
-        self.created.append((schedule_id, schedule))
-        return self._handle(schedule_id)
-
-    def get_schedule_handle(self, schedule_id: str) -> Any:
-        return self._handle(schedule_id)
-
-    def _handle(self, schedule_id: str) -> Any:
-        server = self
-
-        class FakeHandle:
-            async def update(self, updater: Any) -> None:
-                server.updated.append((schedule_id, updater(None).schedule))
-
-            async def delete(self) -> None:
-                if schedule_id not in server.present:
-                    raise RPCError("schedule not found", RPCStatusCode.NOT_FOUND, b"")
-                server.present.discard(schedule_id)
-                server.deleted.append(schedule_id)
-
-        return FakeHandle()
-
-
 @deployment_machinery
 @pytest.mark.asyncio
 async def test_ensuring_the_schedule_twice_updates_rather_than_duplicates() -> None:
@@ -280,14 +227,14 @@ async def test_ensuring_the_schedule_twice_updates_rather_than_duplicates() -> N
     await ensure_declaration(client, activities.PURGE)
 
     assert [schedule_id for schedule_id, _ in server.created] == [
-        activities.purge_schedule_id(task_queue=queue)
+        activities.PURGE.schedule_id(queue)
     ]
     assert [schedule_id for schedule_id, _ in server.updated] == [
-        activities.purge_schedule_id(task_queue=queue)
+        activities.PURGE.schedule_id(queue)
     ]
     assert isinstance(server.updated[0][1], Schedule)
     assert isinstance(ScheduleUpdate(schedule=server.updated[0][1]).schedule, Schedule)
-    assert server.present == {activities.purge_schedule_id(task_queue=queue)}
+    assert server.present == {activities.PURGE.schedule_id(queue)}
 
 
 @deployment_machinery
@@ -310,7 +257,7 @@ async def test_a_planted_legacy_schedule_is_gone_after_startup(
 
     assert server.deleted == [activities.LEGACY_PURGE_SCHEDULE_ID]
     assert activities.LEGACY_PURGE_SCHEDULE_ID not in server.present
-    assert server.present == {activities.purge_schedule_id(task_queue=queue)}
+    assert server.present == {activities.PURGE.schedule_id(queue)}
     assert "events.schedule.deleted" in caplog.text
     assert activities.LEGACY_PURGE_SCHEDULE_ID in caplog.text
 
@@ -478,7 +425,10 @@ def test_a_row_whose_run_already_finished_is_named_not_re_run(
     event = stranded(tenant=tenant, age=activities.OUTBOX_GRACE + timedelta(minutes=1))
     dispatch_id = workflow_id(tenant=tenant, app="events", noun="event", key=str(event.pk))
     run = record_run(
-        tenant=tenant, workflow_id=dispatch_id, workflow_type=services.DISPATCH_WORKFLOW
+        tenant=tenant,
+        workflow_id=dispatch_id,
+        workflow_type=services.DISPATCH_WORKFLOW,
+        actor=system_actor(tenant),
     )
     finish_run(tenant=tenant, workflow_id=run.workflow_id, status=WorkflowRun.Status.COMPLETED)
     before = Outbox.objects.get(event=event)
@@ -563,7 +513,10 @@ def test_an_unresolved_head_does_not_block_the_batch_behind_it(
     behind = stranded(tenant=tenant, age=activities.OUTBOX_GRACE + timedelta(minutes=10))
     dispatch_id = workflow_id(tenant=tenant, app="events", noun="event", key=str(blocked.pk))
     run = record_run(
-        tenant=tenant, workflow_id=dispatch_id, workflow_type=services.DISPATCH_WORKFLOW
+        tenant=tenant,
+        workflow_id=dispatch_id,
+        workflow_type=services.DISPATCH_WORKFLOW,
+        actor=system_actor(tenant),
     )
     finish_run(tenant=tenant, workflow_id=run.workflow_id, status=WorkflowRun.Status.COMPLETED)
 
@@ -716,43 +669,33 @@ def test_a_domain_refusal_is_unresolved_and_never_a_fault(
 
 def test_the_relay_schedule_this_app_declares() -> None:
     """The value the worker hands Temporal, read directly."""
-    schedule = activities.reconcile_outbox_schedule(task_queue="djb-tests")
+    schedule = activities.RECONCILE_OUTBOX.schedule("djb-tests")
 
     action: Any = schedule.action
     assert action.workflow == services.RECONCILE_WORKFLOW
     assert action.task_queue == "djb-tests"
-    assert action.id == activities.reconcile_outbox_workflow_id(task_queue="djb-tests")
+    assert action.id == "platform:events:reconcile:djb-tests"
     assert action.args == [
         ReconcileOutbox(
             grace_seconds=activities.outbox_grace_seconds(),
             batch_size=activities.reconcile_batch_size(),
         )
     ]
-    assert activities.reconcile_batch_size() == activities.RECONCILE_BATCH, (
-        "the ceiling an operator reads off the schedule is the one the activity applies"
-    )
+    assert activities.reconcile_batch_size() == activities.RECONCILE_BATCH
     assert schedule.spec.intervals[0].every == activities.RECONCILE_EVERY
 
 
 def test_two_queues_are_two_relays_pointing_at_their_own_queue() -> None:
-    """House rule 18, and ADR events-2's lesson applied to the second schedule.
+    """Rule 18 on the second schedule: per queue, and never the purge's id."""
+    one = activities.RECONCILE_OUTBOX.schedule_id("djb-alpha")
+    assert one != activities.RECONCILE_OUTBOX.schedule_id("djb-beta")
 
-    A schedule id is global to the Temporal namespace. The purge learned this
-    the expensive way; the relay is born knowing it, so five worktrees
-    against one dev server each sweep their own outbox.
-    """
-    one = activities.reconcile_outbox_schedule_id(task_queue="djb-alpha")
-    two = activities.reconcile_outbox_schedule_id(task_queue="djb-beta")
-    assert one != two
-
-    alpha: Any = activities.reconcile_outbox_schedule(task_queue="djb-alpha").action
-    beta: Any = activities.reconcile_outbox_schedule(task_queue="djb-beta").action
+    alpha: Any = activities.RECONCILE_OUTBOX.schedule("djb-alpha").action
+    beta: Any = activities.RECONCILE_OUTBOX.schedule("djb-beta").action
     assert alpha.id != beta.id
     assert (alpha.task_queue, beta.task_queue) == ("djb-alpha", "djb-beta")
-
-    # And it cannot collide with the purge's, on any queue.
-    assert one != activities.purge_schedule_id(task_queue="djb-alpha")
-    assert alpha.id != activities.purge_workflow_id(task_queue="djb-alpha")
+    assert one != activities.PURGE.schedule_id("djb-alpha")
+    assert check_workflow_id(id=alpha.id, tenant=None) == alpha.id
 
 
 @deployment_machinery
@@ -777,8 +720,8 @@ async def test_the_worker_ensures_both_of_this_apps_schedules_at_startup() -> No
     client: Any = server
     queue = str(django_settings.TEMPORAL_TASK_QUEUE)
     ours = [
-        activities.purge_schedule_id(task_queue=queue),
-        activities.reconcile_outbox_schedule_id(task_queue=queue),
+        activities.PURGE.schedule_id(queue),
+        activities.RECONCILE_OUTBOX.schedule_id(queue),
     ]
 
     await ensure_schedules(client)
@@ -840,3 +783,110 @@ def test_the_push_hands_the_rows_organization_across_the_bridge(
             bridge.register(name, fn)
 
     assert pushed[0]["organization_id"] == str(branch.pk)
+
+
+# --- The delivery's half of the target check, before the POST ------------------
+
+
+def _recording(seen: list[httpx.Request]) -> Callable[[httpx.Request], httpx.Response]:
+    """A handler answering 200 that keeps every request it was sent."""
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200)
+
+    return handle
+
+
+def _deliver_to(tenant: Tenant, url: str) -> tuple[WebhookEndpoint, Event]:
+    endpoint = _endpoint(tenant, url=url)
+    event = services.record_event(
+        tenant=tenant, name=WIDGET_CREATED, payload={"v": 1}, actor=system_actor(tenant=tenant)
+    )
+    return endpoint, event
+
+
+@pytest.mark.parametrize(
+    ("url", "answers", "refused"),
+    [
+        ("https://169.254.169.254/latest/meta-data/", [], "link_local"),
+        ("https://rebound.example.com/hook", ["10.0.0.5"], "private"),
+    ],
+)
+def test_a_row_holding_a_refused_target_fails_closed_with_no_request(
+    acting: Tenant,
+    monkeypatch: pytest.MonkeyPatch,
+    resolved_hosts: dict[str, list[str]],
+    url: str,
+    answers: list[str],
+    refused: str,
+) -> None:
+    """A row planted past the doors, or a name that now resolves privately: no POST is made."""
+    if answers:
+        resolved_hosts["rebound.example.com"] = answers
+    endpoint, event = _deliver_to(acting, url)
+    seen: list[httpx.Request] = []
+    monkeypatch.setattr(
+        activities,
+        "http_client",
+        lambda: httpx.Client(transport=httpx.MockTransport(_recording(seen))),
+    )
+
+    with pytest.raises(ApplicationError) as caught:
+        activities.deliver_webhook(
+            DeliverWebhook(event_id=str(event.pk), endpoint_id=str(endpoint.pk))
+        )
+
+    assert caught.value.non_retryable is True
+    assert seen == []
+    delivery = Delivery.objects.get(event=event, endpoint=endpoint)
+    assert delivery.status == Delivery.Status.FAILED
+    assert delivery.last_error == f"private_target: {refused}"
+    assert delivery.last_code is None
+
+
+def test_a_redirect_into_private_space_is_not_followed(
+    acting: Tenant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 302 from a public host to the metadata address is one request and a failed attempt."""
+    endpoint, event = _deliver_to(acting, "https://subscriber.example/hook")
+    seen: list[httpx.Request] = []
+
+    def redirect(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(302, headers={"Location": "http://169.254.169.254/latest/"})
+
+    shipped = activities.http_client
+    monkeypatch.setattr(
+        activities,
+        "http_client",
+        lambda: shipped(transport=httpx.MockTransport(redirect)),
+    )
+
+    with pytest.raises(activities.DeliveryFailed):
+        activities.deliver_webhook(
+            DeliverWebhook(event_id=str(event.pk), endpoint_id=str(endpoint.pk))
+        )
+
+    assert [str(r.url) for r in seen] == ["https://subscriber.example/hook"]
+    assert shipped().follow_redirects is False
+    delivery = Delivery.objects.get(event=event, endpoint=endpoint)
+    assert (delivery.status, delivery.last_code) == (Delivery.Status.FAILED, 302)
+
+
+def test_the_laptop_valve_delivers_to_localhost(
+    acting: Tenant, monkeypatch: pytest.MonkeyPatch, settings: Any
+) -> None:
+    settings.WEBHOOK_PRIVATE_TARGETS_ALLOWED = True
+    endpoint, event = _deliver_to(acting, "http://localhost:9000/hook")
+    seen: list[httpx.Request] = []
+    monkeypatch.setattr(
+        activities,
+        "http_client",
+        lambda: httpx.Client(transport=httpx.MockTransport(_recording(seen))),
+    )
+
+    activities.deliver_webhook(DeliverWebhook(event_id=str(event.pk), endpoint_id=str(endpoint.pk)))
+
+    assert len(seen) == 1
+    assert Delivery.objects.get(event=event).status == Delivery.Status.DELIVERED

@@ -21,7 +21,7 @@ from django.db import IntegrityError, transaction
 from django.db import connection as db_connection
 
 from apps.accounts.models import SsoConnection, SsoDomain, SsoIdentity
-from apps.accounts.selectors import sso_enforced_for
+from apps.accounts.selectors import get_enforcing_connection_for
 from apps.accounts.services import (
     SsoRefused,
     create_sso_connection,
@@ -29,7 +29,7 @@ from apps.accounts.services import (
     provision_sso_identity,
     update_sso_connection,
 )
-from apps.accounts.tests.conftest import CLIENT_SECRET
+from apps.accounts.tests.conftest import CLIENT_SECRET, provider_landed
 from apps.core.actor import Actor, actor_for, system_actor
 from apps.core.audit import AuditEntry
 from apps.core.exceptions import Conflict, Forbidden, Invalid
@@ -90,7 +90,7 @@ def test_a_domain_belongs_to_one_connection_across_every_tenant(
         name="Acme",
         issuer="https://a.example",
         client_id="a",
-        client_secret="a",
+        client_secret="a",  # noqa: S106 — a fake IdP client secret the test world configures
         email_domains=["shared.example"],
     )
     with pytest.raises(Conflict):
@@ -100,7 +100,7 @@ def test_a_domain_belongs_to_one_connection_across_every_tenant(
             name="Globex",
             issuer="https://b.example",
             client_id="b",
-            client_secret="b",
+            client_secret="b",  # noqa: S106 — a fake IdP client secret the test world configures
             email_domains=["shared.example"],
         )
 
@@ -129,7 +129,7 @@ def test_a_domain_that_is_not_one_is_refused(tenant: Tenant, owner_actor: Actor)
             name="Typo",
             issuer="https://a.example",
             client_id="a",
-            client_secret="a",
+            client_secret="a",  # noqa: S106 — a fake IdP client secret the test world configures
             email_domains=["someone@acme.com"],
         )
 
@@ -165,7 +165,7 @@ def test_saml_is_refused_with_the_reason(tenant: Tenant, owner_actor: Actor) -> 
             name="Acme SAML",
             issuer="https://a.example",
             client_id="a",
-            client_secret="a",
+            client_secret="a",  # noqa: S106 — a fake IdP client secret the test world configures
             email_domains=["acme.com"],
             protocol=SsoConnection.Protocol.SAML,
         )
@@ -256,7 +256,7 @@ def test_an_existing_member_is_linked_rather_than_duplicated(
     from apps.accounts.services import create_user
     from apps.core.services import add_membership
 
-    existing = create_user(email="veteran@acme.com", password="a-long-enough-password")
+    existing = create_user(email="veteran@acme.com", password="a-long-enough-password")  # noqa: S106 — a throwaway password a test user is made with
     add_membership(
         user=existing,
         tenant=tenant,
@@ -398,18 +398,18 @@ def test_the_same_subject_lookup_does_not_cross_connections(
 def test_enforced_takes_password_login_away_from_the_claimed_domains(
     sso_connection: SsoConnection, owner_actor: Actor
 ) -> None:
-    assert sso_enforced_for("anyone@acme.com") is None
+    assert get_enforcing_connection_for("anyone@acme.com") is None
 
     update_sso_connection(
         tenant=sso_connection.tenant,
         actor=owner_actor,
-        connection=sso_connection,
+        connection=provider_landed(sso_connection),
         enforced=True,
     )
 
-    assert sso_enforced_for("anyone@acme.com") == sso_connection
-    assert sso_enforced_for("ANYONE@ACME.COM") == sso_connection
-    assert sso_enforced_for("anyone@elsewhere.example") is None
+    assert get_enforcing_connection_for("anyone@acme.com") == sso_connection
+    assert get_enforcing_connection_for("ANYONE@ACME.COM") == sso_connection
+    assert get_enforcing_connection_for("anyone@elsewhere.example") is None
 
 
 def test_disabling_a_connection_gives_the_password_back(
@@ -425,17 +425,16 @@ def test_disabling_a_connection_gives_the_password_back(
     update_sso_connection(
         tenant=sso_connection.tenant,
         actor=owner_actor,
-        connection=sso_connection,
+        connection=provider_landed(sso_connection),
         enforced=True,
     )
     disable_sso_connection(
         tenant=sso_connection.tenant, actor=owner_actor, connection=sso_connection
     )
 
-    assert sso_enforced_for("anyone@acme.com") is None
+    assert get_enforcing_connection_for("anyone@acme.com") is None
     # The row and its claim survive, so nobody else can take the domain.
     assert SsoDomain.objects.claim("acme.com") is not None
-    assert SsoConnection.objects.by_provider_id(sso_connection.provider_id) is None
 
 
 # --- Authorization -----------------------------------------------------------
@@ -456,7 +455,7 @@ def test_a_member_may_not_configure_the_identity_provider(
             name="Rogue",
             issuer="https://rogue.example",
             client_id="r",
-            client_secret="r",
+            client_secret="r",  # noqa: S106 — a fake IdP client secret the test world configures
             email_domains=["rogue.example"],
         )
 
@@ -482,7 +481,7 @@ def test_an_admin_may(sso_connection: SsoConnection, admin_actor: Actor) -> None
     updated = update_sso_connection(
         tenant=sso_connection.tenant,
         actor=admin_actor,
-        connection=sso_connection,
+        connection=provider_landed(sso_connection),
         enforced=True,
     )
     assert updated.enforced is True

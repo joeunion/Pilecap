@@ -1,23 +1,16 @@
-"""`Import` declares `purged` and something really purges it; `ImportRow` dies with it.
+"""`Import` declares `purged` and the sweep really purges it, audited; `ImportRow` dies with it.
 
-House rule 31 walks a `purged` declaration outwards — `purged_by` → an activity
-that references it → a workflow that executes that activity → a
-`ScheduleDeclaration` in `SCHEDULES` — and this module asserts that chain from
-inside the app, plus what a static walk cannot see: what the sweep deletes (a
-settled run and, by `CASCADE`, its rows — the copy of the file's data) and what
-it leaves (a run still being checked or applied, however old, and a run inside
-the window).
+Rule 31 walks the declaration's chain; this module drives what a static walk cannot see.
 """
 
 from __future__ import annotations
 
-import inspect
 from datetime import timedelta
 
 import pytest
 from temporalio.client import ScheduleActionStartWorkflow
 
-from apps.core.actor import system_actor
+from apps.core.audit import AuditEntry
 from apps.core.exceptions import Invalid
 from apps.core.lifecycle import LifecycleKind, lifecycle_of
 from apps.core.models import Organization, Tenant
@@ -25,7 +18,7 @@ from apps.core.time import now
 from apps.djb_imports import activities, services
 from apps.djb_imports.models import IMPORT_RETENTION_DAYS, Import, ImportRow
 from apps.djb_imports.types import PURGE_WORKFLOW, PurgeImports
-from apps.djb_imports.workflows import PurgeImportsWorkflow
+from apps.workflows.services import check_workflow_id
 
 pytestmark = pytest.mark.django_db
 
@@ -50,17 +43,17 @@ def test_import_is_purged_by_the_service_and_its_rows_are_bounded_by_it() -> Non
     assert parent.remote_field.on_delete is models.CASCADE
 
 
-def test_the_chain_rule_31_walks_is_whole() -> None:
-    """service ← activity ← workflow ← schedule declaration, link by link."""
-    assert "services.purge_imports" in inspect.getsource(activities.purge_expired_imports)
-    assert "purge_expired_imports" in inspect.getsource(PurgeImportsWorkflow)
+def test_the_sweep_is_one_platform_id_the_run_fence_accepts() -> None:
+    """The schedule and its run are `platform:djb_imports:purge:<queue>`; the window rides along."""
+    expected = f"platform:djb_imports:purge:{TASK_QUEUE}"
     assert activities.PURGE_IMPORTS in activities.SCHEDULES
-    schedule = activities.purge_imports_schedule(TASK_QUEUE)
-    action = schedule.action
+    assert activities.PURGE_IMPORTS.schedule_id(TASK_QUEUE) == expected
+    action = activities.PURGE_IMPORTS.schedule(TASK_QUEUE).action
     assert isinstance(action, ScheduleActionStartWorkflow)
     assert action.workflow == PURGE_WORKFLOW
     assert action.args == [PurgeImports(retention_days=IMPORT_RETENTION_DAYS)]
-    assert activities.purge_schedule_id(TASK_QUEUE).endswith(TASK_QUEUE)
+    assert action.id == expected
+    assert check_workflow_id(id=action.id, tenant=None) == expected
 
 
 def _run(tenant: Tenant, org: Organization, status: str, age_days: int, name: str) -> Import:
@@ -100,10 +93,13 @@ def test_the_sweep_takes_settled_runs_past_the_window_and_leaves_the_rest(
     ]
 
     outcome = services.purge_imports(
-        before=now() - timedelta(days=IMPORT_RETENTION_DAYS), tenant=None, actor=system_actor()
+        before=now() - timedelta(days=IMPORT_RETENTION_DAYS), tenant=None
     )
 
-    assert outcome.imports == 3
+    assert outcome.count == 3
+    audited = AuditEntry.objects.filter(tenant=None, action__endswith="purge_imports").get()
+    assert (audited.object_type, audited.object_id) == ("djb_imports.Import", None)
+    assert (audited.actor_kind, audited.actor_user_id) == ("system", None)
     assert not Import.objects.filter(pk__in=[run.pk for run in gone]).exists()
     assert not ImportRow.objects.filter(run_id__in=[run.pk for run in gone]).exists()
     assert set(Import.objects.values_list("pk", flat=True)) == {run.pk for run in kept}
@@ -112,4 +108,4 @@ def test_the_sweep_takes_settled_runs_past_the_window_and_leaves_the_rest(
 
 def test_the_sweep_refuses_to_be_narrowed_to_one_tenant(tenant: Tenant) -> None:
     with pytest.raises(Invalid):
-        services.purge_imports(before=now(), tenant=tenant, actor=system_actor())
+        services.purge_imports(before=now(), tenant=tenant)  # type: ignore[arg-type]  # the refusal under test

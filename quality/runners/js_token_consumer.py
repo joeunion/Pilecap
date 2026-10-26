@@ -21,8 +21,8 @@ dynamically (`style={{ '--progress': pct }}`) is parameterization, not a
 design-system token, and is outside this rule's declared population (see
 does_not_cover).
 
-WHY THIS RUNNER CANNOT REPEAT RULE 50'S MISTAKE (mid-rung finding, P16 R-a x
-SCAFFOLD merge — a name-based scan matched a framework's own vocabulary).
+WHY THIS RUNNER CANNOT REPEAT RULE 50'S MISTAKE (found when the
+scaffold merged — a name-based scan matched a framework's own vocabulary).
 Unlike rule 50, this rule's marker is CSS custom-property SYNTAX (`--name:`
 and `var(--name)`), not an English word — but a THIRD PARTY'S own custom
 properties (Tailwind's `--tw-*`, Radix's `--radix-*`, a UI library's own
@@ -43,14 +43,13 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from quality.runners._kindscope import skip_dirs as _kind_skip_dirs  # noqa: E402
+from quality.runners import _kindscope  # noqa: E402
 
 #: Wider than the `js` kind's own suffixes on purpose: a token is CSS, and a
 #: stylesheet is where most declarations and much consumption actually lives.
 #: `.css` is outside `kind: js`'s declared suffix list (see does_not_cover) —
 #: this runner's OWN population is wider than the valve-discovery walk's.
 SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".css")
-SKIP_DIRS = _kind_skip_dirs(Path.cwd(), "js")
 
 TOKENS_LAYER = ("frontend", "src", "tokens")
 SRC_ROOT = ("frontend", "src")
@@ -127,18 +126,6 @@ def strip_comments(lines: list[str], *, line_comments: bool) -> list[str]:
     return out
 
 
-def files_under(root: Path) -> list[Path]:
-    out: list[Path] = []
-    if not root.is_dir():
-        return out
-    for path in sorted(root.rglob("*")):
-        if SKIP_DIRS & set(path.parts):
-            continue
-        if path.is_file() and path.suffix in SUFFIXES:
-            out.append(path)
-    return out
-
-
 def _under_tokens_layer(path: Path) -> bool:
     return path.parts[: len(TOKENS_LAYER)] == TOKENS_LAYER
 
@@ -151,7 +138,7 @@ def main(argv: list[str]) -> int:
     roots = [Path(a) for a in argv]
     files: list[Path] = []
     for root in roots:
-        files.extend(files_under(root))
+        files.extend(_kindscope.files_under(root, SUFFIXES))
 
     #: name -> (path, line) of its FIRST declaration.
     declared: dict[str, tuple[str, int]] = {}

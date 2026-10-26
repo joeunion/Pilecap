@@ -1,32 +1,12 @@
-"""Writes for the imports app. Every door calls these; nothing else writes.
+"""Writes for the imports app: stage, preview, apply row by row, close, cancel, sweep.
 
-The run's life is five services and one sweep:
-
-* `create_import` — stage a file: authorize (`djb_import.create` AND the noun's own
-  `<kind>.create`), find the run these bytes already have or make one, start the
-  check on commit;
-* `record_import_preview` — the dry run's result: every row judged by the
-  importer's row schema and a read-only natural-key lookup, written as
-  `ImportRow`s with the counts — **and nothing written to the noun**;
-* `apply_import` — the person's press: `previewed → importing`, start the apply;
-* `apply_import_row` — ONE row, in ONE transaction with its outcome, which is
-  what makes the apply idempotent per row: a retried activity finds the row
-  settled and moves on, and a crash can never leave a noun row written without
-  the outcome that says so;
-* `finish_import` / `record_import_failure` / `cancel_import` — the ways out.
-
-**The file itself is never read here.** Streaming bytes out of the object store
-is I/O, and it is the check activity's (`activities.py`) — it hands this module
-the parsed lines. A service holding a transaction open across a network read
-would be principle 8's failure.
-
-Refusals are `apps.core.exceptions` only (house rule 14). `import_invalid` is
-this app's own and is registered below, beside the class that raises it.
+The file is never read here — streaming it is the check activity's I/O (principle 8).
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from django.db import IntegrityError, transaction
@@ -46,33 +26,26 @@ from apps.core.exceptions import (
 )
 from apps.core.log import get_logger
 from apps.core.models import Tenant
+from apps.core.retry import retry_floor_seconds
+from apps.core.schemas import event_payload
 from apps.core.service import service
 from apps.core.time import now
+from apps.core.types import Swept
 from apps.djb_imports.events import IMPORT_APPLIED, IMPORT_FAILED, IMPORT_PREVIEWED, IMPORT_STAGED
 from apps.djb_imports.models import MAX_IMPORT_ROWS, Import, ImportRow
-from apps.djb_imports.schemas import ImportOut
+from apps.djb_imports.schemas import DjbImportOut
 from apps.djb_imports.selectors import get_importer
-from apps.djb_imports.types import (
-    APPLY_WORKFLOW,
-    CHECK_WORKFLOW,
-    ApplyImport,
-    CheckImport,
-    PurgeOutcome,
-)
+from apps.djb_imports.types import APPLY_WORKFLOW, CHECK_WORKFLOW, ApplyImport, CheckImport
 from apps.events.services import emit
 from apps.workflows.services import start_workflow_on_commit, workflow_id
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from datetime import datetime
-
     from apps.core.verbs import Importer
     from apps.files.models import FileVersion
 
 log = get_logger("apps.djb_imports.services")
 
-#: What may appear un-redacted in this app's log lines and audit `input`: the
-#: kind is a word from a declared vocabulary and the key is the caller's own
-#: label. Row data is a customer's data and never logged.
+#: What may appear un-redacted in log lines and audit `input`; row data is never logged.
 LOG_KEYS: frozenset[str] = frozenset({"kind", "idempotency_key"})
 
 #: How many rows one `bulk_create` writes at a time.
@@ -109,14 +82,10 @@ class ImportInvalid(Invalid):
     default_detail = "This file cannot be imported as it is."
 
 
-def _publish(name: str, *, tenant: Tenant, import_: Import, actor: Actor) -> None:
+def _publish_import(name: str, *, tenant: Tenant, import_: Import, actor: Actor) -> None:
     """Say what happened, in the transaction it happened in, in the REST shape."""
-    emit(
-        name=name,
-        tenant=tenant,
-        payload=ImportOut.from_orm(import_).model_dump(mode="json"),
-        actor=actor,
-    )
+    payload = event_payload(DjbImportOut.from_orm(import_))
+    emit(name=name, tenant=tenant, payload=payload, actor=actor)
 
 
 def _importer_or_invalid(kind: str) -> Importer:
@@ -147,17 +116,10 @@ def create_import(
     file_version: FileVersion,
     idempotency_key: str = "",
 ) -> tuple[Import, bool]:
-    """Stage one file for one kind of row. `(the run, whether this call made it)`.
+    """Stage one file for one kind of row; idempotent by its measured digest (principle 16).
 
-    **Idempotent by the file's measured digest** (principle 16): the same bytes
-    staged again for the same kind at the same organization return the run they
-    already have — `(run, False)` — unless that run failed, in which case a new
-    one is made. The digest is the files seam's measurement, never a client's
-    claim. An `idempotency_key` the caller sent is honoured the same way.
-
-    **Two permissions, both asked here**: `djb_import.create`, and `<kind>.create` —
-    the noun's own key — so a person who may not make the rows may not stage a
-    file of them. The apply asks the second again, per row.
+    The same bytes (or key) at the same organization answer the run they have unless it failed.
+    Asks `djb_import.create` AND the noun's own `<kind>.create`; the apply asks the second per row.
     """
     if actor.org is None:
         raise Invalid({"organization": ["This request resolved no acting organization."]})
@@ -202,10 +164,10 @@ def create_import(
         if raced is None:
             raise
         return raced, False
-    _publish(IMPORT_STAGED, tenant=tenant, import_=run, actor=actor)
+    _publish_import(IMPORT_STAGED, tenant=tenant, import_=run, actor=actor)
     start_workflow_on_commit(
         workflow=CHECK_WORKFLOW,
-        arg=CheckImport(import_id=str(run.pk)),
+        arg=CheckImport(import_id=str(run.pk), retry_floor=retry_floor_seconds()),
         tenant=tenant,
         user=actor.user,
         org=actor.org,
@@ -302,7 +264,7 @@ def record_import_preview(
             "updated_at",
         ]
     )
-    _publish(IMPORT_PREVIEWED, tenant=tenant, import_=run, actor=actor)
+    _publish_import(IMPORT_PREVIEWED, tenant=tenant, import_=run, actor=actor)
     return run
 
 
@@ -341,7 +303,7 @@ def apply_import(*, tenant: Tenant, actor: Actor, import_: Import) -> Import:
     run.save(update_fields=["status", "applied_by", "updated_at"])
     start_workflow_on_commit(
         workflow=APPLY_WORKFLOW,
-        arg=ApplyImport(import_id=str(run.pk)),
+        arg=ApplyImport(import_id=str(run.pk), retry_floor=retry_floor_seconds()),
         tenant=tenant,
         user=actor.user,
         org=run.organization,
@@ -444,7 +406,7 @@ def finish_import(*, tenant: Tenant, actor: Actor, import_: Import) -> Import:
             "updated_at",
         ]
     )
-    _publish(IMPORT_APPLIED, tenant=tenant, import_=run, actor=actor)
+    _publish_import(IMPORT_APPLIED, tenant=tenant, import_=run, actor=actor)
     return run
 
 
@@ -452,9 +414,14 @@ def finish_import(*, tenant: Tenant, actor: Actor, import_: Import) -> Import:
 # check's answer to a file refused whole. A person ends a run with `cancel_import`.
 @service
 def record_import_failure(
-    *, tenant: Tenant, actor: Actor, import_: Import, failure: dict[str, Any]
+    *,
+    tenant: Tenant,
+    actor: Actor,
+    import_: Import,
+    failure: dict[str, Any],
+    cancelled: bool = False,
 ) -> Import:
-    """End a run as `failed`, with the refusal (or the complaint) that ended it.
+    """End a run `failed` with the refusal that ended it; a cancel stamps `cancelled_at` instead.
 
     Idempotent: a run already failed or imported is returned unchanged.
     """
@@ -471,8 +438,10 @@ def record_import_failure(
         return run
     run.status = Import.Status.FAILED
     run.failure = failure
-    run.save(update_fields=["status", "failure", "updated_at"])
-    _publish(IMPORT_FAILED, tenant=tenant, import_=run, actor=actor)
+    if cancelled:
+        run.cancelled_at = now()
+    run.save(update_fields=["status", "failure", "cancelled_at", "updated_at"])
+    _publish_import(IMPORT_FAILED, tenant=tenant, import_=run, actor=actor)
     return run
 
 
@@ -500,26 +469,18 @@ def cancel_import(*, tenant: Tenant, actor: Actor, import_: Import) -> Import:
     run.status = Import.Status.FAILED
     run.cancelled_at = now()
     run.save(update_fields=["status", "cancelled_at", "updated_at"])
-    _publish(IMPORT_FAILED, tenant=tenant, import_=run, actor=actor)
+    _publish_import(IMPORT_FAILED, tenant=tenant, import_=run, actor=actor)
     return run
 
 
 # door: deployment housekeeping, started by the declared schedule
-# (`activities.PURGE_IMPORTS`) as the system; there is no caller to give a door.
+# (`activities.PURGE_IMPORTS`); there is no caller to give a door.
 @service
-def purge_imports(*, before: datetime, tenant: Tenant | None, actor: Actor) -> PurgeOutcome:
-    """Delete settled runs last changed before `before`; their rows go with them.
+def purge_imports(*, before: datetime, tenant: None) -> Swept:
+    """Delete settled runs last changed before `before`, their rows with them (`CASCADE`).
 
-    **`tenant` is declared, must be `None`, and is refused otherwise** — the
-    shape `apps.exports.services.purge_exports` argues in full: the parameter is
-    what makes the audit row a platform action, and a caller who passed one
-    must not get a deployment-wide sweep in answer. A run still `checking` or
-    `importing` is never swept, however old: a worker is (or will be) on it.
-
-    `actor` is the system the schedule runs as, taken so the audit row names
-    who acted (house rule 49).
-
-    Idempotent by construction: it deletes by age.
+    `tenant` must be `None` — the platform population the audit row files (ADR core-8, core-22).
+    A run still `checking` or `importing` is never swept, however old: a worker is on it.
 
     # authz: deployment housekeeping, run by a schedule as the system. It names
     # no tenant and returns one count.
@@ -543,4 +504,4 @@ def purge_imports(*, before: datetime, tenant: Tenant | None, actor: Actor) -> P
         # rule-8: the same tenant-crossing sweep; CASCADE takes the rows.
         expired.delete()
     log.info("djb_imports.purge.done", imports=runs)
-    return PurgeOutcome(imports=runs)
+    return Swept(label="djb_imports.Import", count=runs)

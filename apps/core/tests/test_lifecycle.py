@@ -33,7 +33,9 @@ from typing import Any
 
 import pytest
 from django.apps import apps as django_apps
+from django.apps.registry import Apps
 from django.contrib.sites.models import Site
+from django.db import models
 
 from apps.core import lifecycle as lifecycle_module
 from apps.core.audit import AuditEntry
@@ -199,15 +201,26 @@ def test_a_declaration_knows_which_model_it_belongs_to() -> None:
 def test_an_attribute_named_lifecycle_that_is_not_one_is_not_a_declaration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The reader is TYPED, so a product's own `lifecycle` field is not mistaken.
+    """The reader is TYPED, so a model's own `lifecycle` column or attribute is no declaration.
 
-    `Site` is used because it is the one third-party table nothing here claims:
-    a model that happened to carry a column or a property called `lifecycle`
-    would otherwise be read as having declared one, and the census would
-    silently shrink.
+    why-not `Site`: `apps/accounts/lifecycle.py` declares it; a stand-in no declaration can claim.
     """
-    monkeypatch.setattr(Site, LIFECYCLE_ATTR, "quarterly", raising=False)
-    assert lifecycle_of(Site) is None
+
+    class StandIn(models.Model):
+        lifecycle = models.CharField(max_length=16)
+
+        class Meta:
+            app_label = "lifecycle_stand_in"
+            apps = Apps()
+
+        def __str__(self) -> str:
+            return self.lifecycle
+
+    assert getattr(StandIn, LIFECYCLE_ATTR) is not None
+    assert StandIn._meta.label not in third_party_lifecycles()
+    assert lifecycle_of(StandIn) is None
+    monkeypatch.setattr(StandIn, LIFECYCLE_ATTR, "quarterly")
+    assert lifecycle_of(StandIn) is None
 
 
 # --- core's own six ----------------------------------------------------------
@@ -292,10 +305,9 @@ def test_no_shared_file_exists_for_third_party_declarations() -> None:
     assert module_constants == set()
 
     # And the one surface there is, is composed from the app rather than listed:
-    # `<app>.lifecycle`, per installed app, found by `find_spec`.
+    # `<app>.lifecycle`, per installed app, found by the one discovery walk.
     walk = inspect.getsource(lifecycle_module._third_party_registry)
-    assert "get_app_configs()" in walk
-    assert 'f"{config.name}.{LIFECYCLE_ATTR}"' in walk
+    assert "imported(LIFECYCLE_ATTR)" in walk
 
 
 def test_a_third_party_module_is_discovered_and_read(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -357,9 +369,11 @@ def test_an_app_without_a_lifecycle_module_is_simply_skipped(
     class FakeConfig:
         name = bare
 
+    monkeypatch.setattr(django_apps, "get_app_configs", lambda: [])
+    core_only = third_party_lifecycles()
     monkeypatch.setattr(django_apps, "get_app_configs", lambda: [FakeConfig()])
 
-    assert third_party_lifecycles() == {}
+    assert third_party_lifecycles() == core_only
 
 
 def test_the_primitive_does_not_discover_itself() -> None:
@@ -484,3 +498,21 @@ def test_no_declared_population_is_also_a_table() -> None:
     """The live-tree half of the refusal above: the two censuses never overlap."""
     labels = {model._meta.label for model in django_apps.get_models()}
     assert set(declared_populations()) & labels == set()
+
+
+# --- the admin log, retained whole by declaration ---------------------------
+
+
+def test_the_admin_log_is_declared_retained_with_the_owners_reason() -> None:
+    """`admin.LogEntry` is kept whole by declaration, so erasure's silence on it is a decision."""
+    from django.contrib.admin.models import LogEntry
+
+    declared = lifecycle_of(LogEntry)
+
+    assert declared is not None, "admin.LogEntry declares no lifecycle; erasure skips it by silence"
+    assert declared.kind is LifecycleKind.UNBOUNDED
+    assert declared.reason == "the owner retains every admin log (2026-10-08)"
+    assert LogEntry not in undeclared_models()
+    assert lifecycle_module._third_party_registry().sources()[LogEntry._meta.label] == (
+        "apps/core/lifecycle.py"
+    )

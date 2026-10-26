@@ -11,7 +11,7 @@
  */
 
 import type { OrganizationPage } from "@/api/client";
-import type { SurfaceState, WireRefusal } from "@/screens/state";
+import type { SurfaceState, WireRefusal } from "@pilecap/ui/state";
 import { WELCOME_COPY as C } from "@/copy/welcome";
 import { WelcomeScreen } from "@/screens/welcome/welcome-screen";
 

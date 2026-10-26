@@ -1,40 +1,23 @@
-"""The HTTP door onto exports: ask for one, watch it, fetch it.
+"""The HTTP door onto exports: ask for one, watch it, fetch it — each route calls its twin's seam.
 
-Nothing here is implicit: the router restates `auth=`, the list paginates, every
-read goes through `selectors.py` (which narrows to `request.tenant` **and**
-`request.org`) and the one write goes through `services.py`. `request.org` is
-the acting hat `TenantMiddleware` resolved from `X-Org`, and every read passes
-it — a route that passed only the tenant would hand a sub-seller the whole
-tenant.
-
-The routes never say 404 either. `selectors.get_export` raises `NotFound` and
-`config/api.py` is the only module that turns that into a number, so the MCP
-tool over the same selector refuses identically without repeating the rule.
+# why-not `from __future__ import annotations`: ninja reads the route signatures at import.
 """
-
-# NOTE: no `from __future__ import annotations` in this module, and that is
-# deliberate. ninja builds a Pydantic model out of a route's signature at import
-# time; with postponed evaluation every annotation is a string, and a
-# `FilterSchema` parameter comes out as an unresolvable forward reference.
 
 from uuid import UUID
 
 from django.db.models import QuerySet
 from django.http import HttpResponseBase, HttpResponseRedirect
 from ninja import Query, Router, Status
-from ninja.errors import HttpError
 from ninja.pagination import paginate
 
 from apps.accounts.auth import API_AUTH
-from apps.core.actor import Actor, actor_from_request
 from apps.core.api import CursorPagination, ordered_by
+from apps.core.api.acting import acting
 from apps.core.api.docs import Tag
-from apps.core.exceptions import NotFound
-from apps.core.models import Tenant
 from apps.core.requests import TenantRequest
 from apps.exports.models import Export
 from apps.exports.schemas import ExportFilter, ExportIn, ExportOut
-from apps.exports.selectors import get_export, list_exports
+from apps.exports.selectors import get_downloadable_export, get_export, list_exports
 from apps.exports.services import create_export
 
 # The path says what the resource is, not which app holds it. `config.api` reads
@@ -82,26 +65,7 @@ TAGS = {
     ),
 }
 
-# `auth` is restated here rather than inherited from the API default, so that
-# reading this one file tells you what it takes to call these routes.
 router = Router(tags=["exports"], auth=API_AUTH)
-
-
-def _acting(request: TenantRequest) -> tuple[Actor, Tenant]:
-    """The actor and tenant a write happens as.
-
-    Authentication has already guaranteed the user. The tenant has not been
-    guaranteed by anything: a signed-in user with no membership resolves to
-    `None`, and a write with no tenant is refused rather than guessed at.
-
-    The hat rides on the actor rather than being returned beside the tenant,
-    because that is where the service reads it from — `create_export` takes no
-    `organization=` argument, so there is nothing for a route to pass and
-    nothing for a caller to forge.
-    """
-    if request.tenant is None:
-        raise HttpError(403, "No tenant for this request.")
-    return actor_from_request(request), request.tenant
 
 
 @router.get("/", response=list[ExportOut], url_name="export-list")
@@ -142,19 +106,14 @@ def list_exports_route(
 
     * `400 invalid` — `?ordering=` named a field this list does not accept, or
       a filter value was malformed. The response says what you may sort by.
-    * `403 forbidden` — the request resolved no tenant or no acting
-      organization (send `X-Tenant` and `X-Org` naming ones you belong to), or
-      your role does not include reading exports here.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
+      organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+    * `403 forbidden` — your role does not include reading exports here.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
 
-    ---
-    Scoped first and only narrowed after, which is why the type widens from
-    `ScopedQuerySet` to `QuerySet` here: filtering returns the plain one, and
-    narrowing a queryset cannot widen its tenant.
     """
-    exports: QuerySet[Export] = list_exports(
-        tenant=request.tenant, org=request.org, actor=actor_from_request(request)
-    )
+    actor, tenant = acting(request)
+    exports: QuerySet[Export] = list_exports(tenant=tenant, org=actor.org, actor=actor)
     exports = filters.filter(exports)
     return ordered_by(exports, ordering, allowed=ORDERING, default="-created_at")
 
@@ -195,6 +154,8 @@ def create_export_route(request: TenantRequest, payload: ExportIn) -> Status[Exp
     * `403 forbidden` — you asked for the whole account and you are not an
       owner or an administrator of it, or the request resolved no acting
       organization.
+    * `403 no_acting_scope` — the request resolved no tenant. Send `X-Tenant`
+      naming one you belong to.
     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
       `Idempotency-Key` header for a different request, or the first request
       under it has not finished. Resend the identical request, or use a new key.
@@ -207,7 +168,7 @@ def create_export_route(request: TenantRequest, payload: ExportIn) -> Status[Exp
     this app's own — it survives the 24-hour record window and is what stops a
     nightly job from making thirty archives in a month.
     """
-    actor, tenant = _acting(request)
+    actor, tenant = acting(request)
     export = create_export(
         tenant=tenant,
         actor=actor,
@@ -242,46 +203,14 @@ def retrieve_export(request: TenantRequest, export_id: UUID) -> Export:
 
     Refusals you can get here:
 
-    * `403 forbidden` — the request resolved no tenant or no acting
-      organization (send `X-Tenant` and `X-Org` naming ones you belong to), or
-      your role does not include reading exports here.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
+      organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+    * `403 forbidden` — your role does not include reading exports here.
     * `404 not_found` — nothing has that id where you can see.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    return get_export(
-        tenant=request.tenant,
-        export_id=export_id,
-        org=request.org,
-        actor=actor_from_request(request),
-    )
-
-
-def downloadable_export(*, tenant: Tenant, actor: Actor, export_id: UUID) -> Export:
-    """The export whose archive may be fetched right now — **one gate, both doors**.
-
-    Three refusals in one place: the row this hat cannot see is `not_found`, the
-    actor who may not read it is `forbidden`, and an export with no archive
-    behind it — pending, failed, or already swept — is `not_found` again,
-    because "there is no file here" and "there is no such export" are the same
-    answer to somebody holding a URL.
-
-    **The middle one is the SELECTOR's now** (§C6). `get_export` asks
-    `export.read` at the row's own node after the scoped fetch, so this function
-    no longer repeats the question: two `require`s for one key would be two
-    places for the answer to be decided, and the one that would eventually
-    disagree is the one a reviewer forgets is there. The refusal a caller sees
-    is byte-identical, because it is the same key and the same sentence.
-
-    It lives here rather than in `selectors.py` because it refuses rather than
-    narrowing, and here rather than being written twice because `mcp.py` imports
-    it: the two doors then cannot come to disagree about when an archive is
-    fetchable, which is the kind of disagreement no value-by-value test would
-    catch.
-    """
-    export = get_export(tenant=tenant, export_id=export_id, org=actor.org, actor=actor)
-    if not export.is_downloadable:
-        raise NotFound()
-    return export
+    actor, tenant = acting(request)
+    return get_export(tenant=tenant, export_id=export_id, org=actor.org, actor=actor)
 
 
 @router.get("/{export_id}/download/", url_name="export-download")
@@ -316,9 +245,9 @@ def download_export_route(request: TenantRequest, export_id: UUID) -> HttpRespon
 
     Refusals you can get here:
 
-    * `403 forbidden` — the request resolved no tenant or no acting
-      organization (send `X-Tenant` and `X-Org` naming ones you belong to), or
-      your role does not include reading exports here.
+    * `403 no_acting_scope` — the request resolved no tenant or no acting
+      organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+    * `403 forbidden` — your role does not include reading exports here.
     * `404 not_found` — nothing has that id where you can see, or there is no
       archive on it to fetch.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
@@ -336,10 +265,7 @@ def download_export_route(request: TenantRequest, export_id: UUID) -> HttpRespon
     why the paragraph above is written for a client to act on rather than left
     as a mechanism note.
     """
-    actor, tenant = _acting(request)
-    export = downloadable_export(tenant=tenant, actor=actor, export_id=export_id)
-    # `download_url` and not a second presign call: one property mints the link,
-    # so the record and this door cannot come to disagree about its lifetime or
-    # its shape. `downloadable_export` has already refused everything for which
-    # it would be `None`, which is what makes the cast honest rather than hopeful.
+    actor, tenant = acting(request)
+    export = get_downloadable_export(tenant=tenant, actor=actor, export_id=export_id)
+    # One property mints the link the record publishes; the selector refused every `None` case.
     return HttpResponseRedirect(str(export.download_url))

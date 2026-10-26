@@ -810,6 +810,9 @@ class ActsPagination(CursorPagination):
     ) -> Any:
         from apps.core.actor import actor_from_request
 
+        # The request's actor — the same instance the route took, kept on the
+        # request by `actor_from_request` — so the acts ask the memo the route's
+        # own authorization already filled, and pay no second read of it.
         page = cursor_page(
             queryset,
             tenant=getattr(request, "tenant", None),

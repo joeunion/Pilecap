@@ -263,6 +263,7 @@ lc_queue_base() {
 # residue — the absence of evidence, never a finding.
 #
 # $1 identity · $2 count of live-use evidence (0 or more)
+# road: drop_verdict — the one judge of REFUSED / live / IN USE / FOREIGN · example: quality/tests/test_reap.py::test_verdict_grammar_answers_all_four
 lc_verdict() {
     local identity="$1" inuse="${2:-0}"
     if ! db_valid_name "${identity#test_}" || ! lc_derived_shape "$identity"; then
@@ -681,7 +682,9 @@ lc_class "checkout-database" "database" "djb_<branch>_<8 hex of the checkout pat
 lc_class "test-database" "database" "test_ + the derived base + optional _gwN" "pg_catalog: datname LIKE test\\_djb\\_%" "pg_stat_activity sessions on it" "scripts/db_sweep.sh --sweep --name <n>" "no" "yes: per run, per worker; the next run creates and migrates its own" lc_claim_test_database
 lc_class "hot-path-cache" "database" "the derived base + _hp (rule 35's probe cache)" "pg_catalog: datname LIKE djb\\_%\\_hp" "pg_stat_activity sessions on it" "scripts/db_sweep.sh --sweep --hot-path --name <n>" "yes: --hot-path" "yes: rule 35 recreates it on demand" lc_claim_hot_path_cache
 lc_class "perf-world" "database" "the derived base + _perf (ADR perf-1's seeded world)" "pg_catalog: datname LIKE djb\\_%\\_perf" "pg_stat_activity sessions on it" "scripts/db_sweep.sh --sweep --perf --name <n>" "yes: --perf" "yes: re-seeded by scripts/perf.sh (minutes, not data)" lc_claim_perf_world
+lc_class "grants-pass-database" "database" "the derived base + _grants (the full gate's grants pass — scripts/check.sh gate_grants_db prepare mints it, teardown drops it)" "pg_catalog: datname LIKE djb\\_%\\_grants" "pg_stat_activity sessions on it — and the owning checkout's gate lock (scripts/check.sh gate_lock_path) is the fact a full gate mid-pass owns its template by, DECLARED here and read by no verdict yet: a template has no sessions between clones" "scripts/check.sh gate_grants_db teardown (DROP DATABASE … WITH (FORCE)), from the grants pass and from the full gate's EXIT trap" "no" "no: a checkout's own is its running gate's template, so nothing sweeps it while the checkout lives; a dead checkout's reads FOREIGN and --force-foreign takes it" "glob:djb_*_grants"
 lc_class "restore-drill-database" "database" "the derived base + _drill (restore_drill.sh's scratch)" "pg_catalog: datname LIKE djb\\_%\\_drill" "pg_stat_activity sessions on it" "scripts/db.sh::db_drop (DROP DATABASE)" "no" "yes: restore_drill.sh creates and drops it every run" lc_claim_restore_drill_database
+lc_class "identity-home-drive-database" "database" "the derived base + _idhome (scripts/tests/test_identity_home.sh's scratch world — the drive creates, migrates and drops it)" "pg_catalog: datname LIKE djb\\_%\\_idhome" "pg_stat_activity sessions on it" "the drive's own exit cleanup (scripts/db.sh::db_drop); a drive killed by SIGKILL leaves it to the sweep" "no" "yes: a drive's scratch world — every run makes its own" "glob:djb_*_idhome"
 lc_class "task-queue" "task-queue" "djb-<branch>_<8 hex> (the base with djb_ swapped for djb-)" "the queues named by every schedule and every open execution (Temporal exposes no ListTaskQueues)" "DescribeTaskQueue pollers (positive only)" "none: a queue is not an object; it is gone when its last schedule and execution are" "no" "no: nothing to dispose of; it has no destroy verb" lc_claim_task_queue
 lc_class "schedule" "schedule" "<prefix>:djb-<branch>_<8 hex> in the schedule id" "temporal schedule list" "DescribeTaskQueue pollers on its queue (positive only)" "temporal schedule delete --schedule-id <id>" "no" "yes: the worker re-declares it at startup (ADR platform-lifecycle-1)" lc_claim_schedule
 lc_class "open-execution" "open-execution" "djb-<branch>_<8 hex> as the execution's task queue" "temporal workflow list --query ExecutionStatus=Running" "DescribeTaskQueue pollers on its queue (positive only)" "temporal workflow terminate --workflow-id <id>" "no" "no: it is work that is RUNNING, not a leftover" lc_claim_open_execution
@@ -1030,17 +1033,48 @@ lc_scan_schedules() {
     # built on an empty scan is already `nothing known`. `sweep.sh` asks the
     # question in its own preconditions, where a refusal belongs.
     [ -n "${LC_PYTHON:-}" ] || return 1
-    lc_temporal schedule list -o json 2>/dev/null | "$LC_PYTHON" "$LC_TEMPORAL_PY" schedules
+    lc_temporal schedule list -o json | "$LC_PYTHON" "$LC_TEMPORAL_PY" schedules
 }
 
-# `<task queue>\t<workflow id>\t<age in seconds>\t<workflow type>` per open
-# execution. The QUEUE is the identity — a workflow id says which tenant and
-# which noun, never which checkout — and that is what makes a sweep-start
-# stranded on a dead queue visible here. The AGE is how stranded it is.
+# lc_scan_open_executions [<identity prefix>] — `<task queue>\t<workflow id>\t<age
+# in seconds>\t<workflow type>` per open execution. The QUEUE is the identity — a
+# workflow id says which tenant and which noun, never which checkout — and that is
+# what makes a sweep-start stranded on a dead queue visible here. The AGE is how
+# stranded it is.
+#
+# A `djb_` prefix is asked of the SERVER, as `TaskQueue STARTS_WITH`, on the
+# attribute every run already carries: the shared dev server holds thousands of
+# other checkouts' runs, and paging them all is the read that timed out (R2-DF-9).
+# The reader's own scope (`sweep.sh::in_scope`) still filters what comes back.
+#
+# A failed read is retried once after `LC_TEMPORAL_RETRY_SLEEP` seconds (2); the
+# CLI's words and exit go to stderr either way, and a final failure returns the
+# CLI's exit so the refusal can name it.
 lc_scan_open_executions() {
     [ -n "${LC_PYTHON:-}" ] || return 1
-    lc_temporal workflow list --query 'ExecutionStatus="Running"' -o json 2>/dev/null |
-        "$LC_PYTHON" "$LC_TEMPORAL_PY" executions
+    local query='ExecutionStatus="Running"' errf doc rc attempt
+    case "${1:-}" in
+    djb_*[!A-Za-z0-9_]*) ;;
+    djb_?*) query="${query} AND TaskQueue STARTS_WITH \"djb-${1#djb_}\"" ;;
+    esac
+    errf="$(mktemp "${TMPDIR:-/tmp}/djb-lc-executions.XXXXXX")" || {
+        echo "temporal workflow list: no read was attempted — no scratch file for its stderr" >&2
+        return 1
+    }
+    for attempt in 1 2; do
+        doc="$(lc_temporal workflow list --query "$query" -o json 2>"$errf")"
+        rc=$?
+        [ "$rc" -eq 0 ] && break
+        cat "$errf" >&2
+        printf 'temporal workflow list: exit %s (attempt %s of 2)\n' "$rc" "$attempt" >&2
+        [ "$attempt" -eq 1 ] && sleep "${LC_TEMPORAL_RETRY_SLEEP:-2}"
+    done
+    rm -f "$errf"
+    if [ "$rc" -ne 0 ]; then
+        return "$rc"
+    fi
+    [ "$attempt" -eq 2 ] && echo "temporal workflow list: retried once, and the second read answered" >&2
+    printf '%s' "$doc" | "$LC_PYTHON" "$LC_TEMPORAL_PY" executions
 }
 
 # `<pollers>|<backlog>|<backlog age in seconds>` for one queue, out of ONE

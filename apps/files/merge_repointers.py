@@ -22,7 +22,7 @@ from apps.files.models import StoredFile
 from apps.files.services import move_attached_files
 
 
-def _count(*, tenant: Any, loser: Any) -> int:
+def _count_files(*, tenant: Any, loser: Any) -> int:
     """How many documents are filed against `loser` — the merge's dry run."""
     kind = kind_of(type(loser))
     if kind is None:
@@ -39,11 +39,11 @@ def _count(*, tenant: Any, loser: Any) -> int:
     )
 
 
-def _repoint(*, tenant: Any, actor: Any, loser: Any, survivor: Any) -> int:
+def _repoint_files(*, tenant: Any, actor: Any, loser: Any, survivor: Any) -> int:
     """Move them, through this app's own service, and say how many moved."""
     return move_attached_files(tenant=tenant, actor=actor, loser=loser, survivor=survivor)
 
 
 REPOINTERS: dict[str, Repointer] = {
-    "*": Repointer(title="Files", count=_count, repoint=_repoint),
+    "*": Repointer(title="Files", count=_count_files, repoint=_repoint_files),
 }

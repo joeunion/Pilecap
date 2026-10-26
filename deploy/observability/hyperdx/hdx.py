@@ -51,6 +51,8 @@ from urllib.parse import urlsplit
 
 __all__ = ["Client", "HdxError", "client_from_env"]
 
+LOOPBACK = frozenset({"localhost", "127.0.0.1", "::1"})
+
 
 class HdxError(RuntimeError):
     pass
@@ -109,6 +111,11 @@ class Client:
         host, _, port = connect.partition(":")
         self._dial = (host or self._name, int(port) if port else self._port)
         self._wall = base64.b64encode(f"{wall_user}:{wall_password}".encode()).decode()
+        if insecure and self._dial[0] not in LOOPBACK:
+            raise HdxError(
+                f"DJB_O11Y_INSECURE skips certificate checks and is for a laptop stack only; "
+                f"{self._dial[0]!r} is not this machine (set DJB_O11Y_CONNECT=127.0.0.1:<port>)"
+            )
         self._insecure = insecure
         self._sid: str | None = None
         self._login(email, password)
@@ -118,7 +125,11 @@ class Client:
     def _connection(self) -> http.client.HTTPConnection:
         if not self._tls:
             return _Plain(self._name, self._port, timeout=30, dial=self._dial)
-        ctx = ssl._create_unverified_context() if self._insecure else ssl.create_default_context()
+        ctx = (
+            ssl._create_unverified_context()  # noqa: S323 — Caddy's internal CA on a laptop stack; __init__ refuses it off loopback
+            if self._insecure
+            else ssl.create_default_context()
+        )
         return _Tls(self._name, self._port, timeout=30, context=ctx, dial=self._dial)
 
     def _request(self, method: str, path: str, body: Any | None = None) -> tuple[int, bytes, Any]:

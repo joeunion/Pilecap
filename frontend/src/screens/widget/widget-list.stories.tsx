@@ -21,9 +21,9 @@
  */
 
 // golden: face begin
-import { useState } from "react";
+import { createContext, useState } from "react";
 
-import type { Refusal, SurfaceState, WireRefusal } from "@/screens/state";
+import type { Refusal, SurfaceState, WireRefusal } from "@pilecap/ui/state";
 import type { Widget, WidgetPage } from "@/screens/widget/parts";
 import { type Cut, WidgetList, type WidgetListProps } from "@/screens/widget/widget-list";
 // golden: face end
@@ -33,21 +33,23 @@ import type { Destination } from "@/screens/widget/parts";
 // golden: bulk end
 // golden: move end
 // golden: bulk begin
-import type { Verb } from "@/screens/verbs";
+import type { Verb } from "@pilecap/ui/verbs";
 import type { BulkAnswer } from "@/screens/widget/widget-list";
 // golden: bulk end
 // golden: bulk+merge begin
-import { createContext, useContext } from "react";
+import { useContext } from "react";
 
-import { pathFor } from "@/screens/routes";
+import { pathFor, STAFF_SURFACE } from "@pilecap/ui/routes";
+// golden: bulk+merge end
 
+// golden: face begin
 /**
  * How the walk goes to another page: the walk page hands its router down
  * (`app/example/widgets/walk-navigation.tsx`); a unit test hands nothing, and
  * a press that would navigate goes nowhere.
  */
 export const walkNavigation = createContext<(href: string) => void>(() => undefined);
-// golden: bulk+merge end
+// golden: face end
 
 // golden: face begin
 const TENANT = "0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f00";
@@ -72,7 +74,8 @@ export const ADMIN_ACTS = ["update", "move", "duplicate", "merge", "archive"];
 export const MEMBER_ACTS: string[] = [];
 
 function widget(id: string, name: string, notes: string, onboarded: string | null, created: string, updated: string): Widget {
-    return {
+    /** The worked row whole; a noun that serves fewer fields takes the ones it names. */
+    const row = {
         id,
         name,
         notes,
@@ -89,10 +92,12 @@ function widget(id: string, name: string, notes: string, onboarded: string | nul
         onboarded_at: onboarded,
         policy_id: null,
         external_ref: "",
+        status: "draft",
         allowed_acts: ADMIN_ACTS,
         archived_at: null,
         archived_by: null,
     };
+    return row;
 }
 
 // golden: face end
@@ -178,7 +183,7 @@ const TREADMILL: Widget = archivedOf(
 
 /** Archived, and held there: it names a policy that is archived too. */
 export const SPIN_BIKE: Widget = archivedOf(
-    { ...widget("0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f48", "Spin bike", "", null, "2026-06-11T12:00:00.000Z", "2026-09-25T17:40:00.000Z"), policy_id: POLICY },
+    Object.assign(widget("0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f48", "Spin bike", "", null, "2026-06-11T12:00:00.000Z", "2026-09-25T17:40:00.000Z"), { policy_id: POLICY }),
     "2026-09-25T17:40:00.000Z",
 );
 
@@ -391,7 +396,7 @@ function ListWalk(props: WalkProps) {
                 busy: pairBusy,
                 // The survivor's record: the dev walk's record page, standing on the arrival,
                 // through the router the walk page hands down (none in a unit test).
-                onMerged: (into) => navigate(`${pathFor("widget-detail", { id: into.id }) ?? ""}?story=ArrivedAfterMerge`),
+                onMerged: (into) => navigate(`${pathFor("widget-detail", { id: into.id }, undefined, STAFF_SURFACE) ?? ""}?story=ArrivedAfterMerge`),
                 onPick: () => undefined,
                 preview: { kind: "ready", data: { loser_id: BENCH.id, into_id: ROWING.id, repoints: [{ title: "Notes", left: 2 }] } },
                 onMerge: (loser) => {
@@ -478,6 +483,7 @@ export function RefusedRestore() {
         />
     );
 }
+RefusedRestore.door = "widget-restore";
 // golden: archive end
 
 // golden: bulk begin
@@ -494,6 +500,7 @@ export function Selected() {
 export function RefusedBulk() {
     return <ListWalk initial={{ kind: "ready", data: PAGE }} selected={[BENCH.id, ROWING.id]} batchRefused={BATCH_FORBIDDEN} />;
 }
+RefusedBulk.door = "widget-bulk";
 
 /**
  * §17: three archived, one held — the band *Archived 2 of 3 widgets.* and its
@@ -509,6 +516,8 @@ export function BulkPartial() {
         />
     );
 }
+// A batch's per-row refusal (`BulkRefusalOut`) is the row's own act's answer, never the bulk door's.
+BulkPartial.door = "widget-archive";
 // golden: bulk end
 
 // golden: import begin

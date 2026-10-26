@@ -1,0 +1,16 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "before", "text": "def can_create(actor: Actor, obj: Any = None) -> bool:"}
+#: The key that means "administers widgets in this branch".
+ADMINISTERS_WIDGETS = "widget_policy.create"
+# golden-anchor: {"nth": 0, "scope": [], "side": "before", "text": "\"widget.archive\": may_archive,"}
+    # A policy leaves the book the way a widget does: an administrator's press.
+    "widget_policy.archive": may_archive,
+    "widget_policy.restore": may_archive,
+# golden-anchor: {"nth": 0, "scope": [], "side": "before", "text": "\"widget.archive\": frozenset({\"member\"}),"}
+    "widget_policy.archive": frozenset({"member"}),
+    "widget_policy.restore": frozenset({"member"}),
+# golden-anchor: {"nth": 0, "scope": [], "side": "after", "text": "\"widget.delete\": \"You may not delete that widget.\","}
+    "widget_policy.create": "You may not set a widget policy for this organization.",
+
+
+    "widget_policy.archive": "You may not archive this widget policy.",
+    "widget_policy.restore": "You may not restore this widget policy.",

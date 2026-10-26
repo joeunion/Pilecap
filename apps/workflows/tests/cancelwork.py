@@ -9,9 +9,9 @@ activity, `SendEmailWorkflow` and `MoveOrganizationWorkflow` are one activity
 each, and a run that has already finished cannot be cancelled — so there was no
 execution a cancel test could point at. This is the smallest one there is: it
 waits on a condition that is never true, wrapped in the **production**
-`_finish`, which is the whole point. A test workflow with a hand-written
+`run_to_finish`, which is the whole point. A test workflow with a hand-written
 cancellation branch would prove the branch this file wrote; this one proves the
-branch `apps/workflows/workflows.py` ships, which is the seam every real
+branch `apps/core/determinism.py` ships, which is the seam every real
 workflow in the app goes through (ADR workflows-7).
 
 `owns_no_run` is deliberately absent: this run DOES own a `WorkflowRun` row —
@@ -23,12 +23,12 @@ from __future__ import annotations
 
 from temporalio import workflow
 
-from apps.workflows.workflows import _finish
+from apps.core.determinism import run_to_finish
 
 
 @workflow.defn(name="WaitForeverWorkflow")
 class WaitForeverWorkflow:
-    """Wait for a condition that never comes, and let `_finish` do the rest."""
+    """Wait for a condition that never comes, and let `run_to_finish` do the rest."""
 
     @workflow.run
     async def run(self, note: str) -> str:
@@ -36,5 +36,5 @@ class WaitForeverWorkflow:
             await workflow.wait_condition(lambda: False)
             return note
 
-        echoed, _tenant_slug = await _finish(wait)
+        echoed, _tenant_slug = await run_to_finish(wait)
         return echoed

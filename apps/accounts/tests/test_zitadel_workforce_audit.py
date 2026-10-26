@@ -17,7 +17,7 @@ that lets strangers in and that no row of ours would ever notice.
 
 The domain *list* is deliberately not in Zitadel at all (ADR ident-6:
 `GOOGLE_WORKSPACE_DOMAINS` stays ours, enforced by
-`selectors.is_workforce_email` when an assertion arrives, because a restriction
+`policies.is_workforce_email` when an assertion arrives, because a restriction
 expressed only in somebody else's console is a restriction we cannot test), so
 there is no per-domain set to diff. The report prints the list beside the
 provider and says where it is enforced, which is the honest thing to print.
@@ -47,7 +47,7 @@ CLIENT_ID = "google-client-id"
 def workforce(settings: Any) -> None:
     """A deployment whose workforce door is configured — both halves."""
     settings.GOOGLE_OAUTH_CLIENT_ID = CLIENT_ID
-    settings.GOOGLE_OAUTH_CLIENT_SECRET = "google-client-secret"  # pragma: allowlist secret
+    settings.GOOGLE_OAUTH_CLIENT_SECRET = "google-client-secret"  # noqa: S105 — a fake IdP client secret the test world configures  # pragma: allowlist secret
     settings.GOOGLE_WORKSPACE_DOMAINS = [WORKFORCE_DOMAIN]
 
 
@@ -55,18 +55,18 @@ def workforce(settings: Any) -> None:
 def door_off(settings: Any) -> None:
     """A deployment where the workforce door is switched off."""
     settings.GOOGLE_OAUTH_CLIENT_ID = CLIENT_ID
-    settings.GOOGLE_OAUTH_CLIENT_SECRET = "google-client-secret"  # pragma: allowlist secret
+    settings.GOOGLE_OAUTH_CLIENT_SECRET = "google-client-secret"  # noqa: S105 — a fake IdP client secret the test world configures  # pragma: allowlist secret
     settings.GOOGLE_WORKSPACE_DOMAINS = []
 
 
 def _materialise_the_workforce_provider(name: str = "") -> str:
     """Put a Google provider in the instance, the way the activity would."""
-    from apps.accounts.activities import WORKFORCE_IDP_NAME
+    from apps.accounts.zitadel import WORKFORCE_IDP_NAME
 
     resource = zitadel.ensure_google_identity_provider(
         name=name or WORKFORCE_IDP_NAME,
         client_id=CLIENT_ID,
-        client_secret="google-client-secret",  # pragma: allowlist secret
+        client_secret="google-client-secret",  # noqa: S106 — a fake IdP client secret the test world configures  # pragma: allowlist secret
     )
     return resource.id
 
@@ -212,16 +212,3 @@ def test_the_workforce_audit_changes_nothing(
     assert all(method == "GET" or path.endswith("_search") for method, path in instance.requests), (
         instance.requests
     )
-
-
-def test_the_audit_and_the_activity_agree_on_the_workforce_name() -> None:
-    """Two modules naming one provider is two chances to name it differently.
-
-    The same pin `test_the_audit_and_the_activity_agree_on_an_idps_name` puts on
-    a customer connection's name, for the constant that has no row to derive
-    from at all.
-    """
-    from apps.accounts.activities import WORKFORCE_IDP_NAME
-    from apps.accounts.management.commands.zitadel_audit import workforce_idp_name
-
-    assert workforce_idp_name() == WORKFORCE_IDP_NAME

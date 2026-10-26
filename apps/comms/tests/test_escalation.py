@@ -31,9 +31,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
-import json
 from datetime import timedelta
 from typing import Any
+from urllib.parse import urlencode
 
 import pytest
 from django.core import mail
@@ -75,7 +75,7 @@ SETTLE_TRIES = 200
 SETTLE_PAUSE = 0.05
 
 #: The secret the SMS provider's status webhooks are signed with.
-SMS_SECRET = "the-sms-provider-shares-this"  # pragma: allowlist secret
+SMS_SECRET = "the-sms-provider-shares-this"  # noqa: S105 — a signing secret the test both signs and verifies with  # pragma: allowlist secret
 
 
 def delivery_id(tenant: Tenant, message: Message) -> str:
@@ -320,6 +320,7 @@ async def test_a_delivered_status_on_the_text_means_the_email_never_goes(
                 provider="comms-sms",
                 name="Texts",
                 credentials={"webhook_secret": SMS_SECRET},
+                is_signature_v2_required=False,
             )
             first = await run_db(_send, tenant, owner_actor, escalation)
             handle = client.get_workflow_handle(
@@ -327,8 +328,9 @@ async def test_a_delivered_status_on_the_text_means_the_email_never_goes(
             )
             sent = await _settled(tenant, first, Message.Status.SENT)
 
-            payload = json.dumps(
-                {"event_type": "delivered", "message_id": sent.provider_message_id}
+            # Twilio's own receipt shape, form-encoded, as the shipped SMS transport reads it.
+            payload = urlencode(
+                {"MessageStatus": "delivered", "MessageSid": sent.provider_message_id}
             ).encode()
             signature = (
                 SIGNATURE_PREFIX
@@ -339,7 +341,7 @@ async def test_a_delivered_status_on_the_text_means_the_email_never_goes(
                 response = Client().post(
                     f"/api/v1/connections/{connection.pk}/webhook/",
                     data=payload,
-                    content_type="application/json",
+                    content_type="application/x-www-form-urlencoded",
                     headers={SIGNATURE_HEADER: signature},
                 )
                 return int(response.status_code)

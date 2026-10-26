@@ -26,7 +26,7 @@ from apps.core.schemas import MeasuredOut
 from apps.core.services import update_tenant_settings
 from apps.usage.selectors import ZERO, get_usage, list_thresholds
 from apps.usage.services import record_correction, record_usage
-from apps.usage.tests.conftest import METER, OTHER_METER, World
+from apps.usage.tests.conftest import METER, OTHER_METER, World, metered, owner_at, user_of
 from apps.usage.types import THRESHOLDS_SETTING, Period, PeriodKind
 
 pytestmark = pytest.mark.django_db
@@ -62,10 +62,10 @@ MEMOED_READ_QUERY_BUDGET = 1
 def _record(world: World, **overrides: Any) -> Any:
     call: dict[str, Any] = {
         "tenant": world.tenant,
-        "actor": world.north_actor,
+        "actor": world.admin_at_a,
         "meter": METER,
         "quantity": Decimal("100"),
-        "ref": world.widget,
+        "ref": metered(world),
         "idempotency_key": "run-1",
         "occurred_at": NOON,
     }
@@ -91,7 +91,7 @@ def test_the_value_is_the_sum_of_the_days_it_says_it_summed(
     _record(
         world, quantity=Decimal("12.5"), occurred_at=NOON + timedelta(days=1), idempotency_key="d2"
     )
-    measured = get_usage(tenant=world.tenant, actor=world.root_actor, period=MONTH, meters=[METER])[
+    measured = get_usage(tenant=world.tenant, actor=world.owner, period=MONTH, meters=[METER])[
         METER
     ]
     assert measured.value == Decimal("42.5")
@@ -106,7 +106,7 @@ def test_the_basis_carries_every_day_in_the_window_including_the_empty_ones(
 ) -> None:
     """A basis with the zeroes missing cannot be told from a basis with days lost."""
     _record(world, quantity=Decimal("30"), idempotency_key="d1")
-    measured = get_usage(tenant=world.tenant, actor=world.root_actor, period=MONTH, meters=[METER])[
+    measured = get_usage(tenant=world.tenant, actor=world.owner, period=MONTH, meters=[METER])[
         METER
     ]
     assert len(measured.basis.inputs) == 31
@@ -121,13 +121,13 @@ def test_a_correction_moves_the_total_and_leaves_both_rows_readable(
     original = _record(world, quantity=Decimal("100"))
     correction = record_correction(
         tenant=world.tenant,
-        actor=world.north_actor,
+        actor=world.admin_at_a,
         entry=original,
         quantity=Decimal("80"),
         because="the provider re-reported the run at a lower count",
         idempotency_key="run-1-corrected",
     )
-    measured = get_usage(tenant=world.tenant, actor=world.root_actor, period=MONTH, meters=[METER])[
+    measured = get_usage(tenant=world.tenant, actor=world.owner, period=MONTH, meters=[METER])[
         METER
     ]
     assert measured.value == Decimal("80")
@@ -144,7 +144,7 @@ def test_a_meter_that_was_asked_for_and_never_fired_reports_zero(
     """Zero is an answer; a missing key is a question the caller cannot tell apart."""
     _record(world, quantity=Decimal("30"))
     report = get_usage(
-        tenant=world.tenant, actor=world.root_actor, period=MONTH, meters=[METER, OTHER_METER]
+        tenant=world.tenant, actor=world.owner, period=MONTH, meters=[METER, OTHER_METER]
     )
     assert set(report) == {METER, OTHER_METER}
     assert report[OTHER_METER].value == ZERO
@@ -155,22 +155,20 @@ def test_a_branch_report_never_tallies_a_siblings_consumption(
     world: World, a_declared_meter: str
 ) -> None:
     """**The anti-oracle, one level down.** The sibling is what makes the zero a measurement."""
-    _record(world, quantity=Decimal("100"), actor=world.north_actor, idempotency_key="n-1")
-    _record(world, quantity=Decimal("40"), actor=world.south_actor, idempotency_key="s-1")
+    _record(world, quantity=Decimal("100"), actor=world.admin_at_a, idempotency_key="n-1")
+    _record(world, quantity=Decimal("40"), actor=owner_at(world, world.b), idempotency_key="s-1")
 
-    north = get_usage(tenant=world.tenant, actor=world.north_actor, period=MONTH, meters=[METER])[
+    north = get_usage(tenant=world.tenant, actor=world.admin_at_a, period=MONTH, meters=[METER])[
         METER
     ]
     assert north.value == Decimal("100")
 
-    root = get_usage(tenant=world.tenant, actor=world.root_actor, period=MONTH, meters=[METER])[
-        METER
-    ]
+    root = get_usage(tenant=world.tenant, actor=world.owner, period=MONTH, meters=[METER])[METER]
     assert root.value == Decimal("140")
 
-    south = get_usage(tenant=world.tenant, actor=world.south_actor, period=MONTH, meters=[METER])[
-        METER
-    ]
+    south = get_usage(
+        tenant=world.tenant, actor=owner_at(world, world.b), period=MONTH, meters=[METER]
+    )[METER]
     assert south.value == Decimal("40")
 
 
@@ -185,13 +183,11 @@ def test_another_tenants_usage_is_absent(
         actor=neighbour,
         meter=METER,
         quantity=Decimal("999"),
-        ref=world.widget,
+        ref=metered(world),
         idempotency_key="theirs-1",
         occurred_at=NOON,
     )
-    mine = get_usage(tenant=world.tenant, actor=world.root_actor, period=MONTH, meters=[METER])[
-        METER
-    ]
+    mine = get_usage(tenant=world.tenant, actor=world.owner, period=MONTH, meters=[METER])[METER]
     assert mine.value == Decimal("100")
     theirs = get_usage(tenant=other_tenant, actor=neighbour, period=MONTH, meters=[METER])[METER]
     assert theirs.value == Decimal("999")
@@ -200,7 +196,7 @@ def test_another_tenants_usage_is_absent(
 def test_an_actor_with_no_hat_reads_an_empty_ledger(world: World, a_declared_meter: str) -> None:
     """`visible_to(None)` fails closed, so an unresolved hat reads nothing at all."""
     _record(world, quantity=Decimal("100"))
-    hatless = actor_for(user=world.owner, tenant=world.tenant, org=None)
+    hatless = actor_for(user=user_of(world.owner), tenant=world.tenant, org=None)
     measured = get_usage(tenant=world.tenant, actor=hatless, period=MONTH, meters=[METER])[METER]
     assert measured.value == ZERO
 
@@ -224,7 +220,7 @@ def test_a_period_read_costs_one_query(
     number that matters is that the aggregate does not grow with the days — ten
     days, one statement — which is what the second measurement isolates.
 
-    **A FRESH actor**, deliberately: `world.root_actor` has already authorized a
+    **A FRESH actor**, deliberately: `world.owner` has already authorized a
     widget creation by the time this runs, so its memo is warm and a pin taken
     on it would read `1` and stay green with the read key never asked at all.
     """
@@ -235,7 +231,7 @@ def test_a_period_read_costs_one_query(
             occurred_at=NOON + timedelta(days=day),
             idempotency_key=f"day-{day}",
         )
-    reader = actor_for(user=world.owner, tenant=world.tenant, org=world.root)
+    reader = actor_for(user=user_of(world.owner), tenant=world.tenant, org=world.root)
     with django_assert_num_queries(READ_QUERY_BUDGET):
         measured = get_usage(tenant=world.tenant, actor=reader, period=MONTH, meters=[METER])[METER]
     assert measured.value == Decimal("10")

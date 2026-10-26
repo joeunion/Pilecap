@@ -1,0 +1,369 @@
+from uuid import UUID
+
+from django.db.models import QuerySet
+from ninja import Query, Router
+from ninja.pagination import paginate
+
+from apps.example.models import Widget
+from apps.example.schemas import WidgetDetailOut, WidgetFilter, WidgetOut
+from apps.example.selectors import get_widget, list_widgets
+from apps.example.services import archive_widget, restore_widget
+from pilecap import Actor, NotFound, Show, may_be_named, road, with_allowed_acts
+from pilecap.api import (
+    API_AUTH,
+    ActsPagination,
+    Tag,
+    TenantRequest,
+    acting,
+    also_refuses,
+    ordered_by,
+    searched,
+)
+from pilecap.tenancy import Tenant
+
+# golden: archive version move bulk history duplicate attach merge import end
+# isort: split
+# golden: version move bulk history duplicate attach merge import begin
+from typing import Any
+
+from apps.example.schemas import WidgetPatch
+from apps.example.services import update_widget
+from pilecap import AuditEntry, HistoryEntryOut
+from pilecap.api import CursorPagination
+from pilecap.tenancy import list_history
+
+
+from ninja import Status
+
+
+from apps.example.schemas import WidgetIn
+from apps.example.services import create_widget
+
+# golden: import end
+# isort: split
+from datetime import datetime
+
+
+from django.db.models import BooleanField, ExpressionWrapper, Q
+
+
+from apps.example.services import delete_widget
+
+
+# golden: archive version move bulk history duplicate attach merge import begin
+#: The path segment `config.api` mounts this router under.
+PREFIX = "widgets"
+
+#: What `?ordering=` may name — a column allow-list, never a relation.
+ORDERING: tuple[str, ...] = ("created_at", "updated_at", "name")
+# golden: archive version move bulk history duplicate attach merge import end
+# golden: ordering due_at begin
+ORDERING += ("due_at",)
+# golden: ordering due_at end
+# golden: archive version move bulk history duplicate attach merge import begin
+
+#: What `?q=` searches: this row's text columns, never a related table's.
+SEARCH_FIELDS = ("name", "notes")
+
+#: This app's tag, collected into the OpenAPI document's `tags` section (ADR api-1).
+TAGS = {
+    "widgets": Tag(
+        "Widgets",
+        "The worked example: one org-scoped resource end to end. Widgets show the "
+        "house shapes a product copies — a filtered, searched, ordered, paginated "
+        "list; a create that names a policy it must be able to reach; a verb on a "
+        "sub-path rather than a settable column; an append-only ledger; and a "
+        "measured count that travels with the arithmetic that produced it.",
+        plane="everyday",
+        plane_note=(
+            "the worked example resource, and the shape every product resource follows: list it, "
+            "filter it, create one, follow an id."
+        ),
+    ),
+}
+
+router = Router(tags=["widgets"], auth=API_AUTH)
+
+
+@road(
+    "widget_list",
+    example="apps/example/tests/test_doors_over_the_wire.py::test_both_doors_refuse_the_same_withheld_read_with_the_same_words",
+)
+def widget_list(
+    *,
+    tenant: Tenant,
+    actor: Actor,
+    filters: WidgetFilter,
+    q: str | None = None,
+    ordering: str = "-created_at",
+    show: Show = "live",
+) -> QuerySet[Widget]:
+    """The widgets this hat may see, narrowed, searched and ordered as allowed."""
+    # authz: `list_widgets` asks `widget.read` at the hat.
+    widgets: QuerySet[Widget] = filters.filter(
+        list_widgets(tenant=tenant, org=actor.org, actor=actor, show=show)
+    )
+    widgets = searched(widgets, q, fields=SEARCH_FIELDS)
+    widgets = ordered_by(widgets, ordering, allowed=ORDERING, default="-created_at")
+    # golden: archive version move bulk history duplicate attach merge import end
+    widgets = undated_last(widgets)
+    # golden: archive version move bulk history duplicate attach merge import begin
+    return widgets
+
+
+@router.get("/", response=list[WidgetOut], url_name="widget-list")
+@paginate(ActsPagination)
+def list_widgets_route(
+    request: TenantRequest,
+    filters: Query[WidgetFilter],
+    q: str | None = None,
+    ordering: str = "-created_at",
+    show: Show = "live",
+) -> QuerySet[Widget]:
+    """List widgets
+
+    List widgets, newest first; without the read, `403 forbidden`: ask an administrator.
+    """
+    actor, tenant = acting(request)
+    return widget_list(
+        tenant=tenant, actor=actor, filters=filters, q=q, ordering=ordering, show=show
+    )
+
+
+# golden: archive version move bulk history duplicate attach merge import end
+def undated_last(widgets: QuerySet[Widget]) -> QuerySet[Widget]:
+    """A list led by `due_at` keeps the undated widgets last, in either direction."""
+    leading = next(iter(widgets.query.order_by), None)
+    if not isinstance(leading, str) or leading.removeprefix("-") != "due_at":
+        return widgets
+    undated = ExpressionWrapper(Q(due_at__isnull=True), output_field=BooleanField())
+    return widgets.annotate(undated=undated).order_by("undated", *widgets.query.order_by)
+
+
+@road(
+    "widget_create",
+    example="apps/example/tests/test_mcp.py::test_create_widget_writes_the_row_and_owns_it",
+)
+def widget_create(
+    *,
+    tenant: Tenant,
+    actor: Actor,
+    name: str,
+    notes: str = "",
+    # golden: field due_at begin
+    due_at: datetime | None = None,
+    # golden: field due_at end
+    # golden: import begin
+) -> WidgetOut:
+    """Create a widget at the acting hat."""
+
+    widget = create_widget(
+        tenant=tenant,
+        actor=actor,
+        name=name,
+        notes=notes,
+        # golden: field due_at begin
+        due_at=due_at,
+        # golden: field due_at end
+        # golden: import begin
+    )
+    return WidgetOut.from_orm(with_allowed_acts([widget], actor)[0])
+
+
+@router.post("/", response={201: WidgetOut}, url_name="widget-create")
+def create_widget_route(request: TenantRequest, payload: WidgetIn) -> Status[WidgetOut]:
+    """Create a widget
+
+    Create a widget.
+    """
+    actor, tenant = acting(request)
+    created = widget_create(
+        tenant=tenant,
+        actor=actor,
+        name=payload.name,
+        notes=payload.notes,
+        # golden: field due_at begin
+        due_at=payload.due_at,
+        # golden: field due_at end
+        # golden: import begin
+    )
+    return Status(201, created)
+
+
+@road(
+    "widget_detail",
+    example="apps/example/tests/test_doors_over_the_wire.py::test_the_two_doors_put_the_same_key_set_on_the_wire",
+)
+def widget_detail(*, tenant: Tenant, actor: Actor, widget_id: UUID) -> WidgetDetailOut:
+    """One widget this hat reaches, archived or not, with what this viewer may press."""
+    # authz: `get_widget` asks `widget.read` at the row.
+    widget = get_widget(tenant=tenant, widget_id=widget_id, org=actor.org, actor=actor)
+
+    return WidgetDetailOut.from_orm(with_allowed_acts([widget], actor)[0])
+
+
+@router.get("/{widget_id}/", response=WidgetDetailOut, url_name="widget-detail")
+def retrieve_widget(request: TenantRequest, widget_id: UUID) -> WidgetDetailOut:
+    """Retrieve a widget
+
+    One widget and its `tags`; without the read, `403 forbidden`: ask an administrator.
+    """
+    actor, tenant = acting(request)
+    return widget_detail(tenant=tenant, actor=actor, widget_id=widget_id)
+
+
+@road(
+    "widget_archive",
+    example="apps/example/tests/test_doors_over_the_wire.py::test_one_press_is_one_body_on_rest_mcp_and_the_outbox",
+)
+def widget_archive(*, tenant: Tenant, actor: Actor, widget_id: UUID) -> WidgetOut:
+    """Take one widget this hat reaches out of the book."""
+    # authz: `archive_widget` asks `widget.archive` at the row's node.
+    widget = get_widget(tenant=tenant, widget_id=widget_id, org=actor.org, actor=actor)
+    if not may_be_named(actor, widget):
+        raise NotFound()
+    archived = archive_widget(tenant=tenant, actor=actor, widget=widget)
+    return WidgetOut.from_orm(with_allowed_acts([archived], actor)[0])
+
+
+@router.post("/{widget_id}/archive/", response=WidgetOut, url_name="widget-archive")
+@also_refuses("archive_blocked")
+def archive_widget_route(request: TenantRequest, widget_id: UUID) -> WidgetOut:
+    """Archive a widget
+
+    Archive one widget; `403 forbidden` unless you administer its organization.
+    """
+    actor, tenant = acting(request)
+    return widget_archive(tenant=tenant, actor=actor, widget_id=widget_id)
+
+
+@road(
+    "widget_restore",
+    example="apps/example/tests/test_doors_over_the_wire.py::test_one_press_is_one_body_on_rest_mcp_and_the_outbox",
+)
+def widget_restore(*, tenant: Tenant, actor: Actor, widget_id: UUID) -> WidgetOut:
+    """Put one archived widget this hat reaches back in the book."""
+    # authz: `restore_widget` asks `widget.restore` at the row's node.
+    widget = get_widget(tenant=tenant, widget_id=widget_id, org=actor.org, actor=actor)
+    if not may_be_named(actor, widget):
+        raise NotFound()
+    restored = restore_widget(tenant=tenant, actor=actor, widget=widget)
+    return WidgetOut.from_orm(with_allowed_acts([restored], actor)[0])
+
+
+@router.post("/{widget_id}/restore/", response=WidgetOut, url_name="widget-restore")
+@also_refuses("restore_blocked")
+def restore_widget_route(request: TenantRequest, widget_id: UUID) -> WidgetOut:
+    """Restore a widget
+
+    Put one archived widget back; `403 forbidden` unless you administer its organization.
+    """
+    actor, tenant = acting(request)
+    return widget_restore(tenant=tenant, actor=actor, widget_id=widget_id)
+
+
+# golden: archive end
+@road(
+    "widget_update",
+    example="apps/example/tests/test_doors_over_the_wire.py::test_each_family_verb_is_one_body_on_rest_mcp_and_the_outbox",
+)
+def widget_update(
+    *,
+    tenant: Tenant,
+    actor: Actor,
+    widget_id: UUID,
+    version: int,
+    name: str | None = None,
+    notes: str | None = None,
+    # golden: field due_at begin
+    due_at: datetime | None = None,
+    clear_due_at: bool = False,
+    # golden: field due_at end
+    # golden: version move bulk history duplicate attach merge import begin
+) -> WidgetOut:
+    """Change what was sent of one widget, at the version the caller read."""
+    # authz: `update_widget` asks `widget.update` at the row's node.
+    widget = get_widget(tenant=tenant, widget_id=widget_id, org=actor.org, actor=actor)
+    # Only what was sent reaches the service, so the history names what this edit changed.
+    changes: dict[str, Any] = {
+        field: value for field, value in {"name": name, "notes": notes}.items() if value is not None
+    }
+
+    # golden: field due_at begin
+    if due_at is not None:
+        changes["due_at"] = due_at
+    if clear_due_at:
+        changes["clear_due_at"] = True
+    # golden: field due_at end
+    # golden: version move bulk history duplicate attach merge import begin
+    updated = update_widget(tenant=tenant, actor=actor, widget=widget, version=version, **changes)
+    return WidgetOut.from_orm(with_allowed_acts([updated], actor)[0])
+
+
+@router.patch("/{widget_id}/", response=WidgetOut, url_name="widget-update")
+@also_refuses("archived", "stale_version")
+def update_widget_route(request: TenantRequest, widget_id: UUID, payload: WidgetPatch) -> WidgetOut:
+    """Update a widget
+
+    Change a widget; `403 forbidden` unless it is yours or you administer its node.
+    """
+    actor, tenant = acting(request)
+    return widget_update(
+        tenant=tenant,
+        actor=actor,
+        widget_id=widget_id,
+        version=payload.version,
+        name=payload.name,
+        notes=payload.notes,
+        # golden: field due_at begin
+        due_at=payload.due_at,
+        clear_due_at=bool(payload.clear_due_at),
+        # golden: field due_at end
+        # golden: version move bulk history duplicate attach merge import begin
+    )
+
+
+@road(
+    "widget_history_list",
+    example="apps/example/tests/test_doors_over_the_wire.py::test_each_family_verb_is_one_body_on_rest_mcp_and_the_outbox",
+)
+def widget_history_list(*, tenant: Tenant, actor: Actor, widget_id: UUID) -> QuerySet[AuditEntry]:
+    """What was done to one widget this hat reaches, newest first."""
+    widget = get_widget(tenant=tenant, widget_id=widget_id, org=actor.org, actor=actor)
+    return list_history(tenant=tenant, actor=actor, row=widget)
+
+
+@router.get("/{widget_id}/history/", response=list[HistoryEntryOut], url_name="widget_history-list")
+@paginate(CursorPagination)
+def list_widget_history_route(request: TenantRequest, widget_id: UUID) -> QuerySet[AuditEntry]:
+    """List a widget's history
+
+    What happened to one widget, newest first.
+    """
+    actor, tenant = acting(request)
+    return widget_history_list(tenant=tenant, actor=actor, widget_id=widget_id)
+
+
+@road(
+    "widget_delete",
+    example="apps/example/tests/test_mcp.py::test_delete_widget_removes_the_row_and_says_which",
+)
+def widget_delete(*, tenant: Tenant, actor: Actor, widget_id: UUID) -> WidgetOut:
+    """Delete one widget this hat reaches; answers the row that went, with no acts."""
+    # authz: `delete_widget` asks `widget.delete` at the row's node.
+    widget = get_widget(tenant=tenant, widget_id=widget_id, org=actor.org, actor=actor)
+    if not may_be_named(actor, widget):
+        raise NotFound()
+    return WidgetOut.from_orm(delete_widget(tenant=tenant, actor=actor, widget=widget))
+
+
+@router.delete("/{widget_id}/", response={204: None}, url_name="widget-delete")
+@also_refuses("archived", "merged", "merge_survivor")
+def delete_widget_route(request: TenantRequest, widget_id: UUID) -> Status[None]:
+    """Delete a widget
+
+    Delete a widget; `403 forbidden` unless it is yours or you administer its node.
+    """
+    actor, tenant = acting(request)
+    widget_delete(tenant=tenant, actor=actor, widget_id=widget_id)
+    return Status(204, None)

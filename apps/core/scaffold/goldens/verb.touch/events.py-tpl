@@ -1,0 +1,2 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "before", "text": "WIDGET_ARCHIVED = \"example.widget.archived\""}
+WIDGET_TOUCHED = "example.widget.touched"

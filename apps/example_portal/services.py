@@ -1,0 +1,109 @@
+"""Writes for portal requests. Every door calls these; nothing else writes the table.
+
+Each is `@service` (keyword-only, atomic, audited) and takes `tenant` and
+`actor`; **the service authorizes, not the door** — the door's reach check is
+the visible fence, this one is the audited one.
+"""
+
+from __future__ import annotations
+
+# golden: portal begin
+from apps.example.models import Widget
+from apps.example_portal.events import PORTAL_REQUEST_MOVED, PORTAL_REQUEST_SUBMITTED
+from apps.example_portal.models import PortalRequest
+from apps.example_portal.schemas import PortalRequestOut
+from apps.example_portal.selectors import list_portal_requests_about
+from pilecap import (
+    Actor,
+    Invalid,
+    NotFound,
+    as_invalid,
+    event_payload,
+    may_be_named,
+    require,
+    require_live,
+    service,
+)
+from pilecap.events import emit
+from pilecap.tenancy import Tenant
+
+# What may appear un-redacted in this app's log lines and audit `input`. The
+# note is somebody's prose and could be anything, so it is not on the list.
+LOG_KEYS: frozenset[str] = frozenset({"widget"})
+
+
+@service
+def submit_portal_request(
+    *, tenant: Tenant, actor: Actor, widget: Widget, note: str, priority: str | None = None
+) -> PortalRequest:
+    """Send a request about a widget, homed where the customer is acting.
+
+    Reach before capability (C8): a widget the customer could not have reached
+    is `not_found` before anybody asks whether they may send requests at all,
+    and an archived widget refuses `archived` like every other write on it.
+    """
+    if not may_be_named(actor, widget):
+        raise NotFound()
+    require_live(widget, noun="widget")
+    require(actor, "portal_request.submit")
+    if actor.user is None:  # a request is one person's words; the product acting has none
+        raise Invalid({"requester": ["A request needs somebody to have asked it."]})
+    if actor.org is None:
+        raise Invalid(
+            {"organization": ["This request resolved no acting organization to send from."]}
+        )
+    row = PortalRequest(
+        tenant=tenant,
+        organization=actor.org,
+        widget=widget,
+        note=note,
+        priority=priority or PortalRequest.Priority.NORMAL,
+        requester_id=actor.user.pk,
+    )
+    with as_invalid():
+        row.full_clean()
+    row.save()
+    emit(
+        name=PORTAL_REQUEST_SUBMITTED,
+        tenant=tenant,
+        payload=event_payload(PortalRequestOut.model_validate(row)),
+        actor=actor,
+    )
+    return row
+
+
+# door: only this tree's own hands reach it — a widget merge calls it through
+# this app's `merge_repointers.py`; no route or tool re-points a request by itself.
+@service
+def move_portal_requests(*, tenant: Tenant, actor: Actor, loser: Widget, survivor: Widget) -> int:
+    """Re-point every request about a merged `loser` at its `survivor`. Answers how many moved.
+
+    **It trusts no caller**: both widgets are reach-checked for this actor, and a
+    widget they could not have reached is `not_found` with nothing moved. Each
+    moved request keeps its organization — it lives where the customer asked it,
+    not where the widget lives — and says so: one
+    `example_portal.portal_request.moved` per request, inside the transaction. A
+    repeat finds nothing left on the loser, answers 0 and emits nothing.
+
+    # authz: the merge itself is the act, authorized by the widget's own
+    # `widget.merge` on both rows before any repointer is called; the requests
+    # follow their widget and a second permission here could only half-finish a
+    # merge the actor was allowed to make.
+    """
+    if not may_be_named(actor, loser) or not may_be_named(actor, survivor):
+        raise NotFound()
+    moved = 0
+    for row in list_portal_requests_about(tenant=tenant, widget=loser).select_for_update():
+        row.widget = survivor
+        row.save(update_fields=["widget", "updated_at"])
+        emit(
+            name=PORTAL_REQUEST_MOVED,
+            tenant=tenant,
+            payload=event_payload(PortalRequestOut.model_validate(row)),
+            actor=actor,
+        )
+        moved += 1
+    return moved
+
+
+# golden: portal end

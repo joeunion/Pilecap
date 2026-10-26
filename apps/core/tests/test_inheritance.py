@@ -4,7 +4,7 @@ Three primitives that arrived together because they are one idea seen from
 three sides (ADRs core-3 and core-4, both in `docs/product/architecture.md`,
 the ADR home):
 
-* **`governing(org)`** — the rows on the acting organization's
+* **`governing(org)`** — the rows on the hat's
   ancestor chain, nearest first, in one query. "Which policy governs me" is a
   question a branch must be able to answer about a row it can never list.
 * **`may_be_named(actor, obj)`** — could this actor have *reached*

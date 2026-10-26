@@ -13,10 +13,13 @@
  */
 
 import type { Organization, OrganizationPage } from "@/api/client";
-import type { Refusal, SurfaceState } from "@/screens/state";
-import { unhandledState } from "@/screens/state";
-import { RefusalPanel } from "@/screens/refusal-panel";
+import type { Refusal, SurfaceState } from "@pilecap/ui/state";
+import { unhandledState } from "@pilecap/ui/state";
+import { RefusalPanel } from "@pilecap/ui/refusal-panel";
+import { STAFF_SURFACE } from "@pilecap/ui/routes";
 import { WELCOME_COPY as C } from "@/copy/welcome";
+import { StillLine } from "@pilecap/ui/still-line";
+import "@/screens/welcome/welcome-face.css";
 
 export type WelcomeScreenProps = {
     /** The four states. A missing branch below is a `tsc` error, not a habit. */
@@ -27,38 +30,18 @@ export type WelcomeScreenProps = {
 
 export function WelcomeScreen({ state, hat }: WelcomeScreenProps) {
     return (
-        <main
-            style={{
-                maxWidth: "var(--measure)",
-                margin: "0 auto",
-                padding: "var(--space-4) var(--space-3)",
-                fontFamily: "var(--font-body)",
-            }}
-        >
-            <h1 style={{ fontSize: "var(--type-title)", margin: `0 0 var(--space-3)`, color: "var(--ink)" }}>{C.title}</h1>
-            <p style={{ color: "var(--muted)", margin: `0 0 var(--space-2)` }}>{C.placeholder}</p>
-            <p style={{ color: "var(--muted)", margin: `0 0 var(--space-4)` }}>{C.parity}</p>
+        <main className="welcome-page">
+            <h1 className="welcome-title">{C.title}</h1>
+            <p className="welcome-lede">{C.placeholder}</p>
+            <p className="welcome-lede welcome-lede-last">{C.parity}</p>
 
-            <section
-                aria-label={C.hatAsked}
-                style={{
-                    background: "var(--surface-raised)",
-                    border: `1px solid var(--faint)`,
-                    borderRadius: "var(--radius)",
-                    padding: "var(--space-3)",
-                    marginBottom: "var(--space-4)",
-                }}
-            >
-                <h2 style={{ fontSize: "var(--type-label)", textTransform: "uppercase", letterSpacing: "var(--type-label-tracking)", color: "var(--muted)", margin: `0 0 var(--space-1)` }}>
-                    {C.hatAsked}
-                </h2>
-                <p style={{ margin: `0 0 var(--space-2)`, fontFamily: "var(--font-mono)", color: "var(--ink)" }}>
-                    {hat === null ? C.hatDefault : hat}
-                </p>
-                <p style={{ margin: 0, fontSize: "var(--type-facts)", color: "var(--muted)" }}>{C.hatNote}</p>
+            <section aria-label={C.hatAsked} className="welcome-hat">
+                <h2 className="welcome-hat-label">{C.hatAsked}</h2>
+                <p className="welcome-hat-value">{hat === null ? C.hatDefault : hat}</p>
+                <p className="welcome-hat-note">{C.hatNote}</p>
             </section>
 
-            <h2 style={{ fontSize: "var(--type-section)", margin: `0 0 var(--space-2)`, color: "var(--ink)" }}>{C.organizations}</h2>
+            <h2 className="welcome-section">{C.organizations}</h2>
             {renderState(state)}
         </main>
     );
@@ -92,17 +75,9 @@ function renderState(state: SurfaceState<OrganizationPage>) {
 function WelcomeSkeleton() {
     return (
         <div aria-busy="true" aria-live="polite">
-            <p style={{ color: "var(--muted)", margin: `0 0 var(--space-2)` }}>{C.loading}</p>
+            <p className="welcome-reading">{C.loading}</p>
             {[0, 1, 2].map((row) => (
-                <div
-                    key={row}
-                    style={{
-                        height: "1.25rem",
-                        marginBottom: "var(--space-2)",
-                        background: "var(--faint)",
-                        borderRadius: "var(--radius)",
-                    }}
-                />
+                <StillLine key={row} />
             ))}
         </div>
     );
@@ -111,16 +86,9 @@ function WelcomeSkeleton() {
 /** `empty` PROPOSES the next act. Reporting emptiness alone says nothing new. */
 function NextActPrompt({ label, detail }: { readonly label: string; readonly detail: string | undefined }) {
     return (
-        <div
-            style={{
-                border: `1px dashed var(--faint)`,
-                borderRadius: "var(--radius)",
-                padding: "var(--space-3)",
-                background: "var(--surface-raised)",
-            }}
-        >
-            <p style={{ margin: `0 0 var(--space-1)`, color: "var(--ink)", fontWeight: 600 }}>{label}</p>
-            {detail === undefined ? null : <p style={{ margin: 0, color: "var(--muted)" }}>{detail}</p>}
+        <div className="welcome-next">
+            <p className="welcome-next-label">{label}</p>
+            {detail === undefined ? null : <p className="welcome-next-detail">{detail}</p>}
         </div>
     );
 }
@@ -129,44 +97,26 @@ function NextActPrompt({ label, detail }: { readonly label: string; readonly det
  * `error` carries the server's own `Refusal`, never a string — a component
  * holding a string can only make a sentence up, and it will.
  *
- * THE PANEL ITSELF IS `@/screens/refusal-panel`, the ONE refusal renderer
- * (design J4). This screen owns only the WORDS: which label goes over which
- * member of the union. The shape — registry shows the server's detail, code
- * and remedies verbatim; transport shows this client's own two words and no
- * code the server did not say — belongs to the panel, and a second copy of it
- * here would be a second account of one event.
+ * THE PANEL ITSELF IS `@pilecap/ui/refusal-panel`, the ONE refusal renderer
+ * (design J4), and so are its words: this screen says the refusal the way
+ * every surface does, so it passes none and the panel's defaults speak. The
+ * shape — registry shows the server's detail, code and remedies verbatim;
+ * transport shows this client's own words and no code the server did not say
+ * — belongs to the panel, and a second copy of it here would be a second
+ * account of one event.
  */
 function ScreenRefusal({ refusal }: { readonly refusal: Refusal }) {
-    return (
-        <RefusalPanel
-            refusal={refusal}
-            words={{
-                label: refusal.kind === "registry" ? C.errorLabel : C.transportLabel,
-                remedies: C.remedies,
-            }}
-        />
-    );
+    return <RefusalPanel surface={STAFF_SURFACE} refusal={refusal} />;
 }
 
 function OrganizationList({ items }: { readonly items: readonly Organization[] }) {
     return (
-        <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
+        <ul className="welcome-rows">
             {items.map((organization) => (
-                <li
-                    key={organization.id}
-                    style={{
-                        background: "var(--surface-raised)",
-                        border: `1px solid var(--faint)`,
-                        borderRadius: "var(--radius)",
-                        padding: "var(--space-2) var(--space-3)",
-                        marginBottom: "var(--space-2)",
-                    }}
-                >
-                    <span style={{ color: "var(--ink)", fontWeight: 600 }}>{organization.name}</span>{" "}
-                    <span style={{ fontFamily: "var(--font-mono)", fontSize: "var(--type-facts)", color: "var(--muted)" }}>
-                        {organization.slug}
-                    </span>{" "}
-                    <span style={{ fontSize: "var(--type-facts)", color: "var(--muted)" }}>
+                <li key={organization.id}>
+                    <span className="welcome-name">{organization.name}</span>{" "}
+                    <span className="welcome-slug">{organization.slug}</span>{" "}
+                    <span className="welcome-depth">
                         {C.columnDepth} {organization.depth}
                     </span>
                 </li>

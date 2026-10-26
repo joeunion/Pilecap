@@ -23,9 +23,11 @@ from django.test import Client
 
 from apps.accounts.models import User
 from apps.comms.models import Recipient
+from apps.comms.schemas import RecipientOut
 from apps.comms.services import archive_recipient
 from apps.core.actor import Actor
 from apps.core.models import Tenant
+from apps.core.schemas import without_personal
 from apps.events.models import Event
 
 pytestmark = pytest.mark.django_db
@@ -34,21 +36,15 @@ JSON = "application/json"
 RECIPIENTS_URL = "/api/v1/recipients/"
 ARCHIVED = "comms.recipient.archived"
 
-#: `comms.recipient.archived`'s payload keys, written out: the row as
-#: `RecipientOut` describes it, the spine's version stamp, and no per-viewer
-#: field. The list a subscriber received before the read shape learned
-#: `allowed_acts`, and the list it still receives.
+#: `comms.recipient.archived`'s payload keys, written out: the row as `RecipientOut`
+#: describes it less its `personal` fields, the spine's version stamp, no per-viewer field.
 ARCHIVED_PAYLOAD_KEYS = frozenset(
     {
         "v",
         "id",
-        "email",
-        "display_name",
         "user_id",
         "organization_id",
         "created_at",
-        "phone",
-        "chat_handle",
         "archived_at",
         "archived_by",
     }
@@ -150,5 +146,7 @@ def test_the_archived_payload_carries_no_per_viewer_field(
     # Everything else is the presser's own answer, value for value: the payload
     # IS the row, minus the one field that belongs to the viewer.
     assert payload.pop("v") == 1
-    row = {key: value for key, value in answered.items() if key != "allowed_acts"}
+    row = without_personal(
+        RecipientOut, {key: value for key, value in answered.items() if key != "allowed_acts"}
+    )
     assert payload == row, (payload, row)

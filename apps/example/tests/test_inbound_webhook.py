@@ -1,0 +1,322 @@
+# golden: webhook-in onboarding begin
+"""The onboarding webhook over the wire: signed, stored, handled once by its run."""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+import logging
+import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Any
+from uuid import uuid4
+
+import pytest
+from django.test import Client
+from temporalio.client import Client as TemporalClient
+from temporalio.client import WorkflowFailureError
+from temporalio.testing import WorkflowEnvironment
+
+from apps.example.events import WIDGET_ONBOARDING_CONFIRMED
+from apps.example.integrations import ONBOARDING_SLUG, handle_onboarding_delivery
+from apps.example.models import Widget
+from apps.example.services import create_widget
+from pilecap import Actor
+from pilecap.connections import (
+    create_connection,
+    get_provider,
+    list_inbound_webhooks,
+    register_inbound_handler,
+)
+from pilecap.events import EMIT
+from pilecap.tenancy import Tenant
+from pilecap.testing import (
+    WorkflowRun,
+    attach_interceptors,
+    bridge_registry,
+    build_worker,
+    replace_workflow_client,
+    run_db,
+)
+from pilecap.workflows import workflow_id
+
+pytestmark = pytest.mark.django_db
+
+SECRET = "onboarding-test-secret"  # noqa: S105 — a signing secret the test both signs and verifies with  # pragma: allowlist secret
+FORGED = "not-the-secret"  # pragma: allowlist secret
+JSON = "application/json"
+
+
+def _signed(body: bytes, secret: str = SECRET) -> str:
+    """The `X-Signature-V2` value a sender holding `secret` puts on `body`, now."""
+    stamp = int(time.time())
+    digest = hmac.new(secret.encode(), f"{stamp}.".encode() + body, hashlib.sha256).hexdigest()
+    return f"t={stamp},sha256={digest}"
+
+
+def _deliver(
+    api: Client, connection: Any, widget_id: Any, *, delivery: str = "", secret: str = SECRET
+) -> Any:
+    """POST one signed delivery naming `widget_id` to the inbound route."""
+    body = json.dumps({"widget_id": str(widget_id)}).encode()
+    return api.post(
+        f"/api/v1/connections/{connection.pk}/webhook/",
+        data=body,
+        content_type=JSON,
+        headers={
+            "X-Signature-V2": _signed(body, secret),
+            "X-Delivery-Id": delivery or str(uuid4()),
+        },
+    )
+
+
+@pytest.fixture
+def emitted(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, Any]]]:
+    """Every event the services say, in order, captured at the bridge."""
+    said: list[tuple[str, dict[str, Any]]] = []
+
+    def spy(name: str, *, tenant: Tenant, payload: dict[str, Any], actor: Any = None) -> None:
+        said.append((name, payload))
+
+    monkeypatch.setitem(bridge_registry, EMIT, spy)
+    return said
+
+
+@pytest.fixture
+def onboarding(tenant: Tenant, owner_actor: Actor) -> Any:
+    """This tenant's onboarding connection, holding its webhook secret."""
+    return create_connection(
+        tenant=tenant,
+        actor=owner_actor,
+        provider=ONBOARDING_SLUG,
+        name="Onboarding",
+        credentials={"webhook_secret": SECRET},
+    )
+
+
+@asynccontextmanager
+async def _worker(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Any]:
+    """A worker on a time-skipping server; every Temporal dial, the receiver's too, reaches it."""
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        target = env.client.service_client.config.target_host
+
+        async def connect() -> TemporalClient:
+            return attach_interceptors(
+                await TemporalClient.connect(target, namespace=env.client.namespace)
+            )
+
+        replace_workflow_client(monkeypatch, connect)
+        client = attach_interceptors(env.client)
+        async with build_worker(client):
+            yield client
+
+
+def _run_id(tenant: Tenant, receipt_id: str) -> str:
+    """The id the receiver starts a receipt's handler run under — derived, never remembered."""
+    return workflow_id(tenant=tenant, app="connections", noun="inbound_webhook", key=receipt_id)
+
+
+def _run(tenant: Tenant, receipt_id: str) -> Any:
+    return WorkflowRun.objects.for_tenant(tenant).get(workflow_id=_run_id(tenant, receipt_id))
+
+
+def _status(tenant: Tenant, actor: Actor, receipt_id: str) -> str:
+    return str(list_inbound_webhooks(tenant=tenant, actor=actor).get(pk=receipt_id).status)
+
+
+def _confirmed(said: list[tuple[str, dict[str, Any]]]) -> list[str]:
+    return [payload["id"] for name, payload in said if name == WIDGET_ONBOARDING_CONFIRMED]
+
+
+def _handler_failed(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """The receipts whose registered handler ran and raised, read off the structured log."""
+    lines = [json.loads(r.getMessage()) for r in caplog.records if r.getMessage().startswith("{")]
+    return [
+        line["inbound_webhook_id"]
+        for line in lines
+        if line.get("event") == "connections.webhook.handler_failed"
+        and line.get("provider") == ONBOARDING_SLUG
+    ]
+
+
+def test_the_provider_is_registered_from_ready() -> None:
+    assert get_provider(ONBOARDING_SLUG).slug == ONBOARDING_SLUG
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_a_signed_delivery_confirms_the_widget_through_its_run_and_says_so(
+    api: Client,
+    tenant: Tenant,
+    owner_actor: Actor,
+    onboarding: Any,
+    emitted: list[tuple[str, dict[str, Any]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with _worker(monkeypatch) as client:
+        widget = await run_db(create_widget, tenant=tenant, actor=owner_actor, name="Signed for")
+        response = await run_db(_deliver, api, onboarding, widget.pk)
+        assert response.status_code == 202, response.content
+        receipt = response.json()["id"]
+        await client.get_workflow_handle(_run_id(tenant, receipt)).result()
+
+    confirmed = await run_db(lambda: Widget.objects.for_tenant(tenant).get(pk=widget.pk))
+    assert confirmed.onboarding_confirmed_at is not None
+    assert _confirmed(emitted) == [str(widget.pk)]
+    assert (await run_db(_run, tenant, receipt)).status == WorkflowRun.Status.COMPLETED
+    assert await run_db(_status, tenant, owner_actor, receipt) == "handled"
+
+
+def test_a_bad_signature_is_the_receivers_refusal_and_nothing_moves(
+    api: Client,
+    tenant: Tenant,
+    owner_actor: Actor,
+    onboarding: Any,
+    emitted: list[tuple[str, dict[str, Any]]],
+) -> None:
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Forged for")
+
+    response = _deliver(api, onboarding, widget.pk, secret=FORGED)
+
+    assert response.status_code == 401
+    assert response.json()["code"] == "invalid_signature"
+    assert Widget.objects.for_tenant(tenant).get(pk=widget.pk).onboarding_confirmed_at is None
+    assert _confirmed(emitted) == []
+
+
+def test_a_delivery_without_the_providers_headers_is_refused_by_its_verifier(
+    api: Client, tenant: Tenant, owner_actor: Actor, onboarding: Any
+) -> None:
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Unstamped")
+    body = json.dumps({"widget_id": str(widget.pk)}).encode()
+
+    response = api.post(
+        f"/api/v1/connections/{onboarding.pk}/webhook/",
+        data=body,
+        content_type=JSON,
+        headers={"X-Signature-V2": _signed(body)},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["code"] == "invalid_signature"
+    assert Widget.objects.for_tenant(tenant).get(pk=widget.pk).onboarding_confirmed_at is None
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_a_redelivery_is_one_receipt_and_one_confirmation(
+    api: Client,
+    tenant: Tenant,
+    owner_actor: Actor,
+    onboarding: Any,
+    emitted: list[tuple[str, dict[str, Any]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with _worker(monkeypatch) as client:
+        widget = await run_db(create_widget, tenant=tenant, actor=owner_actor, name="Twice told")
+        first = await run_db(_deliver, api, onboarding, widget.pk, delivery="delivery-1")
+        await client.get_workflow_handle(_run_id(tenant, first.json()["id"])).result()
+        again = await run_db(_deliver, api, onboarding, widget.pk, delivery="delivery-1")
+        later = await run_db(_deliver, api, onboarding, widget.pk, delivery="delivery-2")
+        await client.get_workflow_handle(_run_id(tenant, later.json()["id"])).result()
+
+    assert (first.status_code, again.status_code, later.status_code) == (202, 202, 202)
+    assert first.json()["id"] == again.json()["id"] != later.json()["id"]
+    receipts = await run_db(lambda: list(list_inbound_webhooks(tenant=tenant, actor=owner_actor)))
+    assert len(receipts) == 2
+    assert _confirmed(emitted) == [str(widget.pk)]
+
+
+async def _failed_run(
+    api: Client, connection: Any, widget_id: Any, tenant: Tenant, client: Any
+) -> str:
+    """Deliver one body the handler raises on; answers the receipt once its run has failed."""
+    response = await run_db(_deliver, api, connection, widget_id)
+    assert response.status_code == 202, response.content
+    receipt = str(response.json()["id"])
+    with pytest.raises(WorkflowFailureError):
+        await client.get_workflow_handle(_run_id(tenant, receipt)).result()
+    return receipt
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_a_handler_that_raises_fails_its_run_and_the_receipt_says_so(
+    api: Client,
+    tenant: Tenant,
+    owner_actor: Actor,
+    onboarding: Any,
+    emitted: list[tuple[str, dict[str, Any]]],
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with caplog.at_level(logging.ERROR):
+        async with _worker(monkeypatch) as client:
+            receipt = await _failed_run(api, onboarding, uuid4(), tenant, client)
+
+    assert receipt in _handler_failed(caplog)
+    assert (await run_db(_run, tenant, receipt)).status == WorkflowRun.Status.FAILED
+    assert await run_db(_status, tenant, owner_actor, receipt) == "handler_failed"
+    assert _confirmed(emitted) == []
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_another_tenants_widget_is_not_reached_by_this_connection(
+    api: Client,
+    tenant: Tenant,
+    other_tenant: Tenant,
+    stranger_actor: Actor,
+    onboarding: Any,
+    emitted: list[tuple[str, dict[str, Any]]],
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with caplog.at_level(logging.ERROR):
+        async with _worker(monkeypatch) as client:
+            theirs = await run_db(
+                create_widget, tenant=other_tenant, actor=stranger_actor, name="Not this one's"
+            )
+            receipt = await _failed_run(api, onboarding, theirs.pk, tenant, client)
+
+    assert receipt in _handler_failed(caplog)
+    reread = await run_db(lambda: Widget.objects.for_tenant(other_tenant).get(pk=theirs.pk))
+    assert reread.onboarding_confirmed_at is None
+    assert _confirmed(emitted) == []
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_a_failed_run_is_the_tenant_admins_to_replay_over_the_ledger(
+    api: Client,
+    tenant: Tenant,
+    owner: Any,
+    owner_actor: Actor,
+    onboarding: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The run ledger is the replay; the reset itself is the live drive's (no test-server reset)."""
+
+    def not_ready(*, received: Any, actor: Actor) -> None:
+        raise RuntimeError("the onboarding handler is not ready")
+
+    register_inbound_handler(ONBOARDING_SLUG, not_ready)
+    try:
+        async with _worker(monkeypatch) as client:
+            widget = await run_db(create_widget, tenant=tenant, actor=owner_actor, name="Again")
+            receipt = await _failed_run(api, onboarding, widget.pk, tenant, client)
+    finally:
+        register_inbound_handler(ONBOARDING_SLUG, handle_onboarding_delivery)
+    failed = await run_db(_run, tenant, receipt)
+    assert failed.started_by_id is None
+
+    await run_db(api.force_login, owner)
+    replayed = await run_db(api.post, f"/api/v1/runs/{failed.pk}/replay/", content_type=JSON)
+
+    assert replayed.status_code == 200, replayed.content
+    assert replayed.json()["status"] == WorkflowRun.Status.RUNNING
+
+
+# golden: webhook-in onboarding end

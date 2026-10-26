@@ -1,0 +1,30 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "imports", "text": ""}
+from apps.example.services import approve_widget
+
+# golden-anchor: {"nth": 0, "scope": [], "side": "after", "text": "return widget_history_list(tenant=tenant, actor=actor, widget_id=widget_id)"}
+@road(
+    "widget_approve",
+    example="apps/example/tests/test_mcp.py::test_both_doors_leave_audit_rows_that_differ_only_in_the_door",
+)
+def widget_approve(*, tenant: Tenant, actor: Actor, widget_id: UUID) -> WidgetOut:
+    """Approve the onboarding under way for one widget this hat reaches."""
+    widget = get_widget(tenant=tenant, widget_id=widget_id, org=actor.org, actor=actor)
+    if not may_be_named(actor, widget):
+        raise NotFound()
+    approved = approve_widget(tenant=tenant, actor=actor, widget=widget)
+    return WidgetOut.from_orm(with_allowed_acts([approved], actor)[0])
+
+
+@router.post("/{widget_id}/approve/", response=WidgetOut, url_name="widget-approve")
+
+
+@also_refuses("archived")
+def approve_widget_route(request: TenantRequest, widget_id: UUID) -> WidgetOut:
+    """Approve a widget
+
+    Approve a widget that is waiting to be onboarded.
+    """
+    actor, tenant = acting(request)
+    return widget_approve(tenant=tenant, actor=actor, widget_id=widget_id)
+
+

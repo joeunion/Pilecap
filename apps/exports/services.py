@@ -1,24 +1,6 @@
-"""Writes for the exports app.
+"""Writes for the exports app: every door and the build activity call these; each authorizes.
 
-Services own writes. A route calls a service; a tool calls the same one; the
-activity that spends twenty minutes streaming a zip calls the two at either end
-of it. Each is `@service`, which makes it keyword-only, atomic, traced, logged
-and audited, and each takes `tenant` and `actor` explicitly — `tenant` because a
-write must never read the tenant from global state, and `actor` because **the
-service authorizes, not the door**.
-
-**What is deliberately NOT in here: the archive itself.** Building it is minutes
-of streaming reads and one large object written to storage, and `@service` wraps
-its body in `transaction.atomic()` — so an archive built inside a service would
-hold a database transaction open for the whole of it, on a connection somebody
-else needs, for a job whose whole point is that it takes a while. The work lives
-in `activities.py`, which is where I/O lives; what comes back here is the
-RESULT, in one short transaction that also emits the event. `mark_export_running`
-and `finish_export` are the two ends of that seam, and `record_export_failure` is
-the third way out.
-
-Refusals are `apps.core.exceptions` and nothing else: no `HttpError`, no
-`Http404`, no status code (house rule 14).
+The archive is built in `activities.py`: a service's transaction must not span minutes of I/O.
 """
 
 from __future__ import annotations
@@ -32,6 +14,8 @@ from apps.core.authz import may_be_named, require
 from apps.core.exceptions import Invalid, NotFound, as_invalid
 from apps.core.log import get_logger
 from apps.core.models import Tenant
+from apps.core.retry import retry_floor_seconds
+from apps.core.schemas import event_payload
 from apps.core.service import service
 from apps.core.time import now
 from apps.events.services import emit
@@ -49,32 +33,13 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 log = get_logger("apps.exports.services")
 
-#: What may appear un-redacted in this app's log lines and audit `input`
-#: (`core.service`). An allow-list, not a blocklist. `scope` is a word from a
-#: closed vocabulary and `idempotency_key` is the caller's own label for their
-#: own request — neither is a fact about a person. Nothing else here is small
-#: enough to log: a manifest is a document, and an artifact key names an object.
+#: What may appear un-redacted in log lines and audit `input`: an allow-list of non-personal words.
 LOG_KEYS: frozenset[str] = frozenset({"scope", "idempotency_key"})
 
 
-def _publish(name: str, *, tenant: Tenant, export: Export, actor: Actor) -> None:
-    """Say that something happened, in the transaction it happened in.
-
-    The payload is the **schema** and not the model: `ExportOut` is what a REST
-    client gets, so a webhook subscriber and a socket client see the same shape
-    for the same fact rather than a third one invented here.
-
-    A direct `emit` rather than a `core.bridge` lookup, and that is the ordinary
-    downward call: `apps.comms` records the reasoning and it is the same here —
-    the bridge exists so a *lower* layer can reach a higher one, and a domain app
-    already sits above the spine.
-    """
-    emit(
-        name=name,
-        tenant=tenant,
-        payload=ExportOut.from_orm(export).model_dump(mode="json"),
-        actor=actor,
-    )
+def _publish_export(name: str, *, tenant: Tenant, export: Export, actor: Actor) -> None:
+    """Say what happened, in the transaction it happened in, in the REST shape."""
+    emit(name=name, tenant=tenant, payload=event_payload(ExportOut.from_orm(export)), actor=actor)
 
 
 @service
@@ -164,7 +129,7 @@ def create_export(
     with as_invalid():
         export.full_clean()
     export.save()
-    _publish(EXPORT_REQUESTED, tenant=tenant, export=export, actor=actor)
+    _publish_export(EXPORT_REQUESTED, tenant=tenant, export=export, actor=actor)
     # Streaming a customer's whole database into a zip is exactly the shape that
     # must survive a deploy, so it is a workflow and not the rest of this
     # function. The start is registered on this transaction's commit: a request
@@ -172,7 +137,7 @@ def create_export(
     # the row (house rule 18), so a retried request starts one run, not two.
     start_workflow_on_commit(
         workflow="ExportTenantDataWorkflow",
-        arg=BuildExport(export_id=str(export.pk)),
+        arg=BuildExport(export_id=str(export.pk), retry_floor=retry_floor_seconds()),
         tenant=tenant,
         user=actor.user,
         # The hat rides along, so the activity that runs an hour later reads as
@@ -183,6 +148,7 @@ def create_export(
     return export
 
 
+# door: only this tree's own hands reach it — the build activity's first step.
 @service
 def mark_export_running(*, tenant: Tenant, actor: Actor, export: Export) -> Export:
     """Say that the walk has started. **Idempotent, because Temporal retries.**
@@ -191,13 +157,7 @@ def mark_export_running(*, tenant: Tenant, actor: Actor, export: Export) -> Expo
     finished is left alone — a retry that landed after the first attempt
     completed must not reopen a finished export.
     """
-    # **REACH BEFORE CAPABILITY** (rule 26's order, `core.services.revoke_membership`'s
-    # shape). `may_be_named` FIRST: an export in a branch this actor holds no hat
-    # over is `NotFound`, never a wall's sentence, because a `Forbidden` quoting
-    # "you may not build that export" about a row they cannot see would confirm
-    # the row exists — and this service takes an `Export` INSTANCE, so a caller
-    # holding one fetched outside their subtree is exactly the shape the order
-    # protects against. The two lines were the other way round until P20 PR4.e.
+    # Reach before capability (rule 26): a refusal about an unreachable row would confirm it exists.
     if not may_be_named(actor, export):
         raise NotFound()
     require(actor, "export.build", export)
@@ -208,6 +168,7 @@ def mark_export_running(*, tenant: Tenant, actor: Actor, export: Export) -> Expo
     return export
 
 
+# door: only this tree's own hands reach it — the build activity's last step.
 @service
 def finish_export(
     *,
@@ -248,13 +209,7 @@ def finish_export(
     politeness, it is the difference between an orphaned object in a bucket and
     an object the purge can still find.
     """
-    # **REACH BEFORE CAPABILITY** (rule 26's order, `core.services.revoke_membership`'s
-    # shape). `may_be_named` FIRST: an export in a branch this actor holds no hat
-    # over is `NotFound`, never a wall's sentence, because a `Forbidden` quoting
-    # "you may not build that export" about a row they cannot see would confirm
-    # the row exists — and this service takes an `Export` INSTANCE, so a caller
-    # holding one fetched outside their subtree is exactly the shape the order
-    # protects against. The two lines were the other way round until P20 PR4.e.
+    # Reach before capability (rule 26): a refusal about an unreachable row would confirm it exists.
     if not may_be_named(actor, export):
         raise NotFound()
     require(actor, "export.build", export)
@@ -298,10 +253,11 @@ def finish_export(
             "updated_at",
         ]
     )
-    _publish(EXPORT_COMPLETED, tenant=tenant, export=export, actor=actor)
+    _publish_export(EXPORT_COMPLETED, tenant=tenant, export=export, actor=actor)
     return export
 
 
+# door: only this tree's own hands reach it — the build workflow's way out once retries are spent.
 @service
 def record_export_failure(*, tenant: Tenant, actor: Actor, export: Export, error: str) -> Export:
     """Say that the walk did not finish, and why. **No partial artifact.**
@@ -318,23 +274,18 @@ def record_export_failure(*, tenant: Tenant, actor: Actor, export: Export, error
     chain by the workflow. A row that said "Activity task failed" would be true
     and useless to whoever reads it six weeks later.
     """
-    # **REACH BEFORE CAPABILITY** (rule 26's order, `core.services.revoke_membership`'s
-    # shape). `may_be_named` FIRST: an export in a branch this actor holds no hat
-    # over is `NotFound`, never a wall's sentence, because a `Forbidden` quoting
-    # "you may not build that export" about a row they cannot see would confirm
-    # the row exists — and this service takes an `Export` INSTANCE, so a caller
-    # holding one fetched outside their subtree is exactly the shape the order
-    # protects against. The two lines were the other way round until P20 PR4.e.
+    # Reach before capability (rule 26): a refusal about an unreachable row would confirm it exists.
     if not may_be_named(actor, export):
         raise NotFound()
     require(actor, "export.build", export)
     export.status = Export.Status.FAILED
     export.error = error[:2000]
     export.save(update_fields=["status", "error", "updated_at"])
-    _publish(EXPORT_FAILED, tenant=tenant, export=export, actor=actor)
+    _publish_export(EXPORT_FAILED, tenant=tenant, export=export, actor=actor)
     return export
 
 
+# door: only this tree's own hands reach it — deployment housekeeping, run by its declared schedule.
 @service
 def purge_exports(*, before: datetime, tenant: Tenant | None) -> PurgeOutcome:
     """Delete the archives older than `before`, from storage AND from the table.

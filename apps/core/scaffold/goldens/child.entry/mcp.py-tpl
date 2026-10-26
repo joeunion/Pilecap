@@ -1,0 +1,52 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "imports", "text": ""}
+from apps.example.api import (
+    list_widget_entries_route,
+    record_widget_entry_route,
+    widget_entries_list,
+    widget_entry_record,
+)
+from apps.example.schemas import WidgetEntryOut, WidgetEntryPage
+
+# golden-anchor: {"nth": 0, "scope": ["register"], "side": "before", "text": "@server.tool(name=\"archive_widget\", description=contract_of(archive_widget_route))"}
+    @server.tool(name="list_widget_entries", description=contract_of(list_widget_entries_route))
+    def list_widget_entries_tool(
+        ctx: Context[Any],
+        widget_id: UUID | None = None,
+        cursor: str | None = None,
+        limit: int | None = None,
+        include_count: bool = False,
+    ) -> WidgetEntryPage:
+        with tool_call(ctx) as acting:
+            tenant = acting_tenant(acting)
+            page = cursor_page(
+                widget_entries_list(tenant=tenant, actor=acting.actor(), widget_id=widget_id),
+                tenant=tenant,
+                cursor=cursor,
+                limit=limit,
+                include_count=include_count,
+            )
+            return WidgetEntryPage(
+                items=[WidgetEntryOut.from_orm(entry) for entry in page.items],
+                has_more=page.has_more,
+                next_cursor=page.next_cursor,
+                count=page.count,
+            )
+
+    @server.tool(name="record_widget_entry", description=contract_of(record_widget_entry_route))
+    def record_widget_entry_tool(
+        ctx: Context[Any],
+        widget_id: UUID,
+        kind: str = "note",
+        note: str = "",
+        organization_slug: str | None = None,
+    ) -> WidgetEntryOut:
+        with tool_call(ctx) as acting:
+            return widget_entry_record(
+                tenant=acting_tenant(acting),
+                actor=acting.actor(),
+                widget_id=widget_id,
+                kind=kind,
+                note=note,
+                organization_slug=organization_slug,
+            )
+

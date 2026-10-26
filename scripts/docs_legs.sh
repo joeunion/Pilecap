@@ -5,13 +5,14 @@
 # implementation, and the two new ones that had no home at all.
 #
 #   docs_adr_census <root> <file-list-file>      · publish.sh + check.sh --fast
-#   docs_dangling_docs <root> <file-list-file>   · publish.sh + check.sh --fast
+#   docs_dangling_docs <root> <file-list-file> [<trimmed> <measured>]   · publish.sh + check.sh --fast (both classes)
 #   docs_adr_census_loop / docs_dangling_docs_loop  · check.sh's per-rung bodies
-#   docs_loop_names_leg                          · check.sh --fast
+#   docs_derived_check <root>                    · docs_dangling_docs_loop, the whole tree
+#   docs_current_state_check <root> <list>       · docs_dangling_docs_loop, the changed SHIP pages
 #   docs_ci_env_leg                              · check.sh --fast
 #
 # Sourced by scripts/publish.sh, scripts/check.sh and
-# scripts/tests/test_fast_censuses.sh's drive. The two `_loop` bodies also need
+# quality/tests/test_docs_legs.py's worlds. The two `_loop` bodies also need
 # `bucket_for_path` from scripts/archaeology_lib.sh, which every one of those
 # three sources FIRST; they refuse (exit 2) rather than scan unfiltered if it is
 # absent.
@@ -63,26 +64,17 @@ fi
 # THE SCOPE NOUN, set by the caller around its own call. `publish.sh` asks the
 # question of an exported ARTIFACT; `check.sh` asks it of the TREE. The finding
 # lines are otherwise identical, and the wording of publish.sh's is a published
-# contract (`scripts/tests/test_publish.sh` greps it), so it is the default and
+# contract (`quality/tests/test_publish.py` reads it), so it is the default and
 # a caller that means something else says so.
 DOCS_LEGS_SCOPE_NOUN=${DOCS_LEGS_SCOPE_NOUN:-the artifact}
 
-# THE TWO ADR HOMES, ASSEMBLED RATHER THAN SPELLED. This file SHIPS (bucket
-# R3), so a `docs/…` path ending in the markdown suffix written out in full
-# here is a POINTER SITE the `dangling-docs` census below then counts — and
-# publish.sh's printed "N pointer sites read" line would move by the very act
-# of extracting the leg that prints it, which is the one thing the extraction
-# may not do. Halves no pattern can join, the discipline archaeology_lib.sh
-# uses for the same reason.
-_docs_legs_d="docs/product/"
-DOCS_ADR_HOMES=${DOCS_ADR_HOMES:-"${_docs_legs_d}architecture.md ${_docs_legs_d}adrs-ingredients.md"}
-unset _docs_legs_d
+# THE ADR DIRECTORY: one file per id, `<id>.md`, headed `# ADR <id>`. This file
+# SHIPS (bucket R3), so the directory is named without the markdown suffix and is no pointer site.
+DOCS_ADR_DIR=${DOCS_ADR_DIR:-docs/product/adrs}
 
-# The two greps, in one place. Both are the shapes `publish.sh` has always
-# read; neither matches its own text (after the id keyword and after `docs/`
-# comes `[`, which is in neither character class), which is why they can be
-# spelled here at all.
-DOCS_ADR_RE='ADR [a-z0-9]+-[a-z0-9]+'
+# The two greps, in one place. Neither matches its own text (after the id keyword and after
+# `docs/` comes `[`), which is why they can be spelled here at all.
+DOCS_ADR_RE='ADR [a-z][a-z0-9_]*(-[a-z][a-z0-9_]*)*-[0-9]+[a-z]?'
 DOCS_REF_RE='docs/[A-Za-z0-9._/-]+\.md'
 
 # Set by the two scans; the caller prints them. `publish.sh`'s two count lines
@@ -90,6 +82,13 @@ DOCS_REF_RE='docs/[A-Za-z0-9._/-]+\.md'
 DOCS_ADR_SITES=0
 DOCS_ADR_IDS=0
 DOCS_DANGLING_SITES=0
+DOCS_DANGLING_PATH_SITES=0
+
+# The checkout this library sits in: the `dangling-paths` reader and its interpreter are its own, never the scanned root's.
+case "${BASH_SOURCE[0]:-}" in
+*/*) DOCS_LEGS_HOME=$(cd "${BASH_SOURCE[0]%/*}/.." && pwd) ;;
+*) DOCS_LEGS_HOME=$(cd .. && pwd) ;;
+esac
 
 # docs_legs_read_list <root> <file-list-file> — fills the global array
 # DOCS_LEGS_FILES with the paths in a NUL-separated list that name an EXISTING
@@ -112,42 +111,45 @@ docs_legs_read_list() {
 
 # docs_adr_census <root> <file-list-file>
 #
-# Every `ADR <app>-<n>` id cited by any file in the list must resolve in one of
-# the two ADR homes under <root>. Prints one
-# `adr-census: <id> resolves nowhere in <noun> — cited in <file>` per finding
-# TO STDOUT AND NOTHING ELSE; the caller counts those lines and owns the
-# verdict (archaeology_scan_tree's contract, and for its reason: a `$(...)`
-# capture would swallow the very lines it is meant to let through).
+# Every `ADR <id>` cited by any file in the list must resolve to `$DOCS_ADR_DIR/<id>.md` under
+# <root>, and every file there must be headed `# ADR <its own name>`. Prints one
+# `adr-census: <id> resolves nowhere in <noun> — cited in <file>` per dead citation and one
+# `adr-census: <file> is headed "<line>", not "# ADR <id>" — the filename is the id` per
+# mismatched file, TO STDOUT AND NOTHING ELSE; the caller counts those lines and owns the verdict.
 #
-# Sets DOCS_ADR_SITES and DOCS_ADR_IDS. Returns 0 once every file has been
-# read, 2 if it could not look — a missing ADR home, homes that name no ids at
-# all, or a `grep` that could not read the set. Never 1: a finding is a line,
-# not a status, here.
+# Sets DOCS_ADR_SITES and DOCS_ADR_IDS. Returns 0 once every file has been read, 2 if it could
+# not look — no directory, a directory holding no ADR file, or a `grep` that could not read the
+# set. Never 1: a finding is a line, not a status, here.
 docs_adr_census() {
-    local root=$1 list=$2 h homes cited rc line id file
+    local root=$1 list=$2 f stem head homes cited rc line id file
     DOCS_ADR_SITES=0
     DOCS_ADR_IDS=0
 
+    if [ ! -d "$root/$DOCS_ADR_DIR" ]; then
+        gate_refuse "adr-census: $DOCS_ADR_DIR is not in ${DOCS_LEGS_SCOPE_NOUN} — the decision log does"
+        echo "   not ship, so no citation can resolve. That is the ruling broken, not a violation." >&2
+        return 2
+    fi
     homes=$(mktemp "${TMPDIR:-/tmp}/djb-docs-homes.XXXXXX") || return 2
-    for h in $DOCS_ADR_HOMES; do
-        if [ ! -f "$root/$h" ]; then
-            gate_refuse "adr-census: $h is not in ${DOCS_LEGS_SCOPE_NOUN} — the ADR home does not"
-            echo "   ship, so no citation in it can resolve. That is the ruling broken, not a" >&2
-            echo "   violation." >&2
-            rm -f "$homes"
-            return 2
+    for f in "$root/$DOCS_ADR_DIR"/*.md; do
+        [ -f "$f" ] || continue
+        stem=${f##*/}
+        stem=${stem%.md}
+        [ "$stem" != "README" ] || continue
+        IFS= read -r head <"$f" || head=""
+        if [ "$head" != "# ADR $stem" ]; then
+            printf 'adr-census: %s is headed "%s", not "# ADR %s" — the filename is the id\n' \
+                "$DOCS_ADR_DIR/$stem.md" "$head" "$stem"
         fi
+        printf '%s\n' "$stem" >>"$homes"
     done
-    for h in $DOCS_ADR_HOMES; do
-        grep -hoE "$DOCS_ADR_RE" "$root/$h" || true
-    done | LC_ALL=C sort -u >"$homes"
     if [ ! -s "$homes" ]; then
-        gate_refuse "adr-census: the ADR homes named no ids at all — the grammar this leg reads"
-        echo "   is the id keyword followed by <app>-<n>, and a home with none of them is this" >&2
-        echo "   leg looking at the wrong thing." >&2
+        gate_refuse "adr-census: $DOCS_ADR_DIR holds no ADR file — the grammar this leg reads is one"
+        echo "   file per id, <id>.md, and a directory with none is this leg looking at the wrong thing." >&2
         rm -f "$homes"
         return 2
     fi
+    LC_ALL=C sort -u -o "$homes" "$homes"
     DOCS_ADR_IDS=$(wc -l <"$homes" | tr -d ' ')
 
     if ! docs_legs_read_list "$root" "$list"; then
@@ -185,9 +187,10 @@ docs_adr_census() {
     while IFS= read -r line; do
         [ -n "$line" ] || continue
         id=${line#*:}
+        id=${id#ADR }
         file=${line%%:*}
         if ! grep -qxF "$id" "$homes"; then
-            printf 'adr-census: %s resolves nowhere in %s — cited in %s\n' \
+            printf 'adr-census: ADR %s resolves nowhere in %s — cited in %s\n' \
                 "$id" "$DOCS_LEGS_SCOPE_NOUN" "$file"
         fi
     done <"$cited"
@@ -195,300 +198,28 @@ docs_adr_census() {
     return 0
 }
 
-# docs_dangling_docs <root> <file-list-file>
-#
-# INVARIANT 2'S SIBLING, FOR ORDINARY POINTERS. Trimming is exactly the
-# operation that turns a live citation into a dead one, and a first builder
-# reading a plan path in a docstring finds nothing there and cannot tell
-# whether the claim was ever true. Closed question, discoverable population:
-# every markdown path under `docs/` spelled anywhere in the file set must exist
-# under <root>.
-#
-# Same output contract, same exit semantics, and sets DOCS_DANGLING_SITES.
+# docs_dangling_docs <root> <file-list-file> [<trimmed> <measured>] — `quality.djb.legs.dangling_docs` (both classes); findings on stdout, 2 when it could not look.
+# Sets DOCS_DANGLING_SITES and DOCS_DANGLING_PATH_SITES from the module's sites file.
 docs_dangling_docs() {
-    local root=$1 list=$2 refs rc line ref file
+    local root=$1 list=$2 py sites rc=0
+    local -a excuse=()
+    [ -z "${3:-}" ] || excuse+=(--trimmed "$3")
+    [ -z "${4:-}" ] || excuse+=(--measured "$4")
     DOCS_DANGLING_SITES=0
-
-    if ! docs_legs_read_list "$root" "$list"; then
-        gate_refuse "dangling-docs: the file list could not be read — nothing was scanned"
-        return 2
-    fi
-    refs=$(mktemp "${TMPDIR:-/tmp}/djb-docs-refs.XXXXXX") || return 2
-    if [ "${#DOCS_LEGS_FILES[@]}" -gt 0 ]; then
-        set +e
-        (cd "$root" && grep -HIoE "$DOCS_REF_RE" -- "${DOCS_LEGS_FILES[@]}") >"${refs}.raw" 2>/dev/null
-        rc=$?
-        set -e
-        if [ "$rc" -gt 1 ]; then
-            gate_refuse "dangling-docs: the pointer scan could not read ${DOCS_LEGS_SCOPE_NOUN}"
-            echo "   (grep exited $rc). A tree nobody looked at is not a clean tree." >&2
-            rm -f "$refs" "${refs}.raw"
-            return 2
-        fi
-        sed 's|^\./||' "${refs}.raw" | LC_ALL=C sort -u >"$refs"
-        rm -f "${refs}.raw"
-    else
-        : >"$refs"
-    fi
-
-    DOCS_DANGLING_SITES=$(wc -l <"$refs" | tr -d ' ')
-    local drawers=0
-    while IFS= read -r line; do
-        [ -n "$line" ] || continue
-        ref=${line#*:}
-        file=${line%%:*}
-        [ -f "$root/$ref" ] && continue
-        # A DRAWER IS A PATH THIS TREE MAY NAME AND MAY NEVER SHIP. `*.local.md`
-        # is a reserved glob (`scripts/divergence_census.sh`'s `DRAWER_GLOBS`,
-        # `scripts/publish.sh` § R0): a product writes it, the template never
-        # does, and R0 exits 2 if a release ever carries one. So the template's
-        # own documentation of the drawer —
-        # `docs/product/instruments.local.md`, named in `build-contract.md`,
-        # `instruments.md`, `CHANGELOG.md` and the reader that opens it — points
-        # at a file that is CORRECTLY absent here, and a census that called
-        # that dangling would make the drawer undocumentable in the one
-        # repository that has to explain it.
-        #
-        # IT IS ONE EXACT PATH AND IT IS COUNTED (found in review). A GLOB would have
-        # exempted every `*.local.md` a product ever writes about, including
-        # the typo'd ones; what the template actually needs is to be able to
-        # name the ONE drawer it documents. A typo in any other pointer is
-        # still a finding, the number is printed, and in a PRODUCT's tree the
-        # drawer exists and is checked like any other file — this exemption
-        # only ever fires where the file is legitimately not there.
-        # A SECOND EXACT PATH, for the second `.local.md` drawer the template
-        # documents: the pattern book's (`build-contract.md`'s drawers row, and
-        # its one reader). Still one path per drawer, never a glob.
-        case "$ref" in
-        docs/product/instruments.local.md | docs/product/design/patterns.local.md)
-            drawers=$((drawers + 1))
-            continue
-            ;;
-        esac
-        printf 'dangling-docs: %s does not exist in %s — spelled in %s\n' \
-            "$ref" "$DOCS_LEGS_SCOPE_NOUN" "$file"
-    done <"$refs"
-    if [ "$drawers" -gt 0 ]; then
-        # TO STDERR, because this body's STDOUT is its findings: every line of
-        # it is printed by the caller with a `VIOLATION` in front. A note that
-        # arrived on stdout would be a clean tree reported as a red one.
-        printf '  %s pointer(s) exempt: docs/product/instruments.local.md and docs/product/design/patterns.local.md are product-owned drawers this template documents and never ships (publish.sh R0)\n' \
-            "$drawers" >&2
-    fi
-    rm -f "$refs"
-    return 0
-}
-
-# docs_changelog_flags <root> <version>
-#
-# THE RELEASE SECTION'S FLAG CLAIMS ARE CHECKED AGAINST THE SCRIPTS THEY NAME.
-# `CHANGELOG.md`'s release section is the one page a consumer reads before
-# merging a tag, and the thing it is mostly made of is `<script> --flag`
-# invocations a reader is expected to type. A flag that was renamed, moved to
-# another script, or never existed reads exactly like one that works — and the
-# reader finds out at a terminal, not here. Closed question over a discoverable
-# population, the shape every leg in this library has: the population is the
-# backticked spans of ONE section, the question is "is this flag a literal in
-# the script this span names".
-#
-# THE UNIT IS THE BACKTICKED SPAN, AND NOTHING WIDER. A span carrying a
-# `--flag` token AND a script name is a CLAIM and is judged. A span carrying a
-# flag and no script name is COUNTED and never judged — the prose around it may
-# make the script obvious to a human, but inferring it is naming a cause this
-# leg has not proven, which is the one thing an instrument here may not do. The
-# count is printed so the size of what is not judged is visible rather than
-# implied.
-#
-# WHICH SECTION. `## [<version>]` and only that section. OLDER SECTIONS ARE
-# HISTORY AND ARE NOT READ: a shipped [2.0.0] entry describes the tree of
-# 2.0.0, and a flag that has since been renamed makes that sentence a true
-# record of a past release, not a defect. Correcting a past section rewrites
-# history; the correction belongs in the section being released. This is why
-# the leg takes the version as an argument rather than scanning the file.
-#
-# WHAT IT DOES NOT COVER, declared rather than discovered:
-#   · IT READS TEXT PRESENCE, NOT AN ARM. A flag spelled anywhere in the named
-#     script — in a usage header, in a comment, inside a string the script
-#     echoes about a DIFFERENT script — satisfies it. The measured instance is
-#     `verifier_box.sh`, which contains the token `--plan` only inside the
-#     string `./deploy/verifier/bake.sh --plan` it prints: a CHANGELOG claim
-#     that `verifier_box.sh bake` takes `--plan` is FALSE and this leg cannot
-#     see it. Proving a flag is parsed needs an arm walk, which is a different
-#     instrument.
-#   · An unscripted span is invisible to the judgment, by the design above.
-#   · One direction only: a flag a script grew and the section never mentioned
-#     is not a finding here.
-#   · `manage.py <cmd>` resolves only against `apps/*/management/commands/`.
-#     A framework command (`manage.py check --deploy`) has no module in this
-#     tree, so it is counted as unresolved rather than judged against a source
-#     this leg cannot read.
-#
-# Sets DOCS_CHANGELOG_CLAIMS and DOCS_CHANGELOG_UNRESOLVED. Prints one
-# `changelog-flags: …` finding per line TO STDOUT, the same output contract the
-# two censuses above have. Returns 0 no finding · 1 findings printed · 2 could
-# not look (no CHANGELOG.md, no such section, unbalanced backticks in it, or a
-# named script under scripts/** or deploy/** that is not in the tree).
-DOCS_CHANGELOG_CLAIMS=0
-DOCS_CHANGELOG_UNRESOLVED=0
-docs_changelog_flags() {
-    local root=$1 version=$2 file sec rows unres kind name flag span path hits found
-    DOCS_CHANGELOG_CLAIMS=0
-    DOCS_CHANGELOG_UNRESOLVED=0
-    found=0
-    file="$root/CHANGELOG.md"
-    if [ ! -r "$file" ]; then
-        gate_refuse "changelog-flags: there is no readable CHANGELOG.md in ${DOCS_LEGS_SCOPE_NOUN}"
-        echo "   — the release's own reading material. Could-not-look, not a violation." >&2
-        return 2
-    fi
-    sec=$(mktemp "${TMPDIR:-/tmp}/djb-docs-clsec.XXXXXX") || return 2
-    # THE HEADER IS MATCHED AS A LITERAL PREFIX, never as a regex: a version is
-    # made of dots, and `## \[2.1.0\]` as a pattern also matches `## [2X1X0]`.
-    awk -v hdr="## [$version]" '
-        index($0, hdr) == 1 { on = 1; next }
-        on && index($0, "## [") == 1 { exit }
-        on { print }
-    ' "$file" >"$sec"
-    if [ ! -s "$sec" ]; then
-        gate_refuse "changelog-flags: ${DOCS_LEGS_SCOPE_NOUN}'s CHANGELOG.md has no \`## [$version]\` section"
-        echo "   to read, so this leg looked at nothing. Could-not-look, not a violation —" >&2
-        echo "   an absent section is the \`changelog\` leg's finding, not this one's." >&2
-        rm -f "$sec"
-        return 2
-    fi
-
-    rows=$(mktemp "${TMPDIR:-/tmp}/djb-docs-clrows.XXXXXX") || {
-        rm -f "$sec"
+    DOCS_DANGLING_PATH_SITES=0
+    py=$(checkout_python "$DOCS_LEGS_HOME") || {
+        gate_refuse "dangling-docs: no interpreter at $DOCS_LEGS_HOME/.venv — nothing was scanned"
         return 2
     }
-    # THE UNRESOLVED COUNT IS PER SPAN, NOT PER FLAG. The rows below are one
-    # per (span, flag), so a span spelling three alternatives would otherwise
-    # be reported as three unjudged spans — a number a reader would compare
-    # against the section's own prose and find wrong. The spans are collected
-    # and deduplicated at the end instead.
-    unres=$(mktemp "${TMPDIR:-/tmp}/djb-docs-clunres.XXXXXX") || {
-        rm -f "$sec" "$rows"
-        return 2
-    }
-    # ONE AWK, AND IT DECIDES NOTHING — it parses the section into claim rows
-    # and leaves every judgment to the shell below, which is where the file
-    # reads happen. Spans may cross lines (this CHANGELOG wraps at 76 columns
-    # and its command spans wrap with it), so the whole section is accumulated
-    # and split on the backtick: with balanced backticks the even-numbered
-    # fields ARE the spans. An ODD count means the section's own markup is
-    # broken and every span after the break is mis-paired, so it is exit 2
-    # rather than a scan of garbage.
-    awk '
-        { buf = buf $0 "\n" }
-        END {
-            # THE SEPARATOR IS A REGEX CONSTANT, NOT A STRING, and that is a
-            # portability scar rather than a style choice. Measured on this
-            # machine (awk version 20200816, the stock macOS onetrueawk):
-            # handed the separator as a ONE-CHARACTER STRING, split() splits on
-            # that character AND on the newline — a section carrying 1714 of
-            # them came back as 2848 fields, and the balance test below then
-            # reported the section broken. The POSIX regex-constant form,
-            # below, answers 1715.
-            n = split(buf, part, /`/)
-            if (n % 2 == 0) { print "UNBALANCED\t-\t-\t-"; exit }
-            for (i = 2; i <= n; i += 2) {
-                span = part[i]
-                gsub(/[ \t\n]+/, " ", span)
-                sub(/^ /, "", span); sub(/ $/, "", span)
-                rest = span
-                nf = 0
-                while (match(rest, /--[a-z][a-z0-9-]+/)) {
-                    nf++
-                    fl[nf] = substr(rest, RSTART, RLENGTH)
-                    rest = substr(rest, RSTART + RLENGTH)
-                }
-                if (nf == 0) continue
-                kind = "UNRESOLVED"; name = "-"
-                if (match(span, /[A-Za-z0-9_.\/-]*[A-Za-z0-9_-]\.sh/)) {
-                    kind = "SCRIPT"; name = substr(span, RSTART, RLENGTH)
-                } else if (match(span, /manage\.py +[a-z_]+/)) {
-                    kind = "CMD"
-                    name = substr(span, RSTART, RLENGTH)
-                    sub(/^manage\.py +/, "", name)
-                }
-                for (j = 1; j <= nf; j++)
-                    printf "%s\t%s\t%s\t%s\n", kind, name, fl[j], span
-            }
-        }
-    ' "$sec" | LC_ALL=C sort -u >"$rows"
-    rm -f "$sec"
-
-    if grep -q '^UNBALANCED	' "$rows"; then
-        gate_refuse "changelog-flags: \`## [$version]\` in ${DOCS_LEGS_SCOPE_NOUN} has an ODD number of"
-        echo "   backticks, so every code span after the break is mis-paired and this leg" >&2
-        echo "   would be reading prose as commands. Could-not-look, not a violation." >&2
-        rm -f "$rows" "$unres"
+    sites=$(mktemp "${TMPDIR:-/tmp}/djb-docs-sites.XXXXXX") || return 2
+    "$py" -c 'import sys; sys.path.insert(0, sys.argv.pop(1)); from quality.djb.legs.dangling_docs import main; sys.exit(main())' \
+        "$DOCS_LEGS_HOME" "$root" "$list" --noun "$DOCS_LEGS_SCOPE_NOUN" --sites-file "$sites" ${excuse[@]+"${excuse[@]}"} || rc=$?
+    if [ "$rc" != "0" ]; then
+        rm -f "$sites"
         return 2
     fi
-
-    while IFS="	" read -r kind name flag span; do
-        [ -n "$kind" ] || continue
-        case "$kind" in
-        SCRIPT)
-            path=${name#./}
-            case "$path" in
-            scripts/* | deploy/*) ;;
-            *)
-                # Outside the two trees this leg is scoped to read. Counted,
-                # never judged — the scoping is E4's own, and widening it
-                # silently would be this leg growing a population nobody
-                # declared.
-                printf '%s\n' "$span" >>"$unres"
-                continue
-                ;;
-            esac
-            if [ ! -f "$root/$path" ]; then
-                gate_refuse "changelog-flags: \`## [$version]\` names $path, which is not in ${DOCS_LEGS_SCOPE_NOUN}"
-                echo "   — the leg cannot read the script the claim is about. Could-not-look," >&2
-                echo "   not a violation." >&2
-                rm -f "$rows" "$unres"
-                return 2
-            fi
-            DOCS_CHANGELOG_CLAIMS=$((DOCS_CHANGELOG_CLAIMS + 1))
-            if ! grep -qF -- "$flag" "$root/$path"; then
-                found=1
-                printf 'changelog-flags: %s is not a literal in %s — claimed in `%s`\n' \
-                    "$flag" "$path" "$span"
-            fi
-            ;;
-        CMD)
-            # A GLOB LOOP AND NOT `ls | head`: under `set -o pipefail` — which
-            # every caller of this library runs with — a pipeline whose first
-            # member found nothing exits nonzero, and a command substitution
-            # in an ASSIGNMENT propagates that straight into `set -e`. The
-            # library would then kill its caller instead of counting an
-            # unresolved span.
-            hits=""
-            for path in "$root"/apps/*/management/commands/"$name".py; do
-                if [ -f "$path" ]; then
-                    hits=$path
-                    break
-                fi
-            done
-            if [ -z "$hits" ]; then
-                printf '%s\n' "$span" >>"$unres"
-                continue
-            fi
-            DOCS_CHANGELOG_CLAIMS=$((DOCS_CHANGELOG_CLAIMS + 1))
-            if ! grep -qF -- "$flag" "$hits"; then
-                found=1
-                printf 'changelog-flags: %s is not a literal in %s — claimed in `%s`\n' \
-                    "$flag" "${hits#"$root"/}" "$span"
-            fi
-            ;;
-        *)
-            printf '%s\n' "$span" >>"$unres"
-            ;;
-        esac
-    done <"$rows"
-    DOCS_CHANGELOG_UNRESOLVED=$(LC_ALL=C sort -u "$unres" | wc -l | tr -d ' ')
-    rm -f "$rows" "$unres"
-    [ "$found" -eq 0 ] || return 1
+    read -r DOCS_DANGLING_SITES DOCS_DANGLING_PATH_SITES <"$sites" || true
+    rm -f "$sites"
     return 0
 }
 
@@ -589,6 +320,62 @@ _docs_legs_changed() {
     return 0
 }
 
+# docs_adr_trigger_paragraphs <file> — `<id><TAB>rejected<TAB>trigger` (1/0) per
+# ADR paragraph: from a line carrying `**ADR <id>` to the next blank line, the
+# next such line, or a table row's end.
+docs_adr_trigger_paragraphs() {
+    awk '
+        function flush() { if (id != "") printf "%s\t%d\t%d\n", id, rej, trig; id = ""; rej = 0; trig = 0 }
+        {
+            if ($0 ~ /^[ \t]*$/) { flush(); next }
+            if (match($0, /\*\*ADR [a-z0-9]+-[a-z0-9]+/)) {
+                flush(); id = substr($0, RSTART + 6, RLENGTH - 6)
+            }
+            if (id == "") next
+            l = tolower($0)
+            if (l ~ /rejected:/) rej = 1
+            if (l ~ /trigger to revisit:/) trig = 1
+            if ($0 ~ /^\|/) flush()
+        }
+        END { flush() }' "$1"
+}
+
+# docs_adr_triggers <root> <file-list-file> <base-commit|""> — one
+# `adr-census: ADR <id> carries rejected: and no trigger to revisit: — <file>` line per ADR
+# paragraph in a CHANGED file of the ADR directory that records a rejection without its trigger,
+# unless that paragraph stood without one at <base> in the directory or in a `docs/product/*.md`
+# (decision content predating the field is the owner's, wherever it was written; a paragraph born
+# or touched now is born to standard). Base empty: HEAD is the reference.
+docs_adr_triggers() {
+    local root=$1 list=$2 rev=${3:-HEAD} h id rej trig was
+    docs_legs_read_list "$root" "$list" || return 2
+    was=$(
+        cd "$root" || exit 0
+        git ls-tree --name-only "$rev" docs/product/ "$DOCS_ADR_DIR/" 2>/dev/null | grep '\.md$' |
+            while IFS= read -r h; do
+                git show "$rev:$h" 2>/dev/null
+                echo
+            done | docs_adr_trigger_paragraphs /dev/stdin 2>/dev/null
+    ) || was=""
+    for h in "${DOCS_LEGS_FILES[@]}"; do
+        case "$h" in "$DOCS_ADR_DIR"/*.md) ;; *) continue ;; esac
+        while IFS="$(printf '\t')" read -r id rej trig; do
+            [ -n "$id" ] && [ "$rej" = 1 ] && [ "$trig" = 0 ] || continue
+            case "
+${was}
+" in
+            *"
+${id}	1	0
+"*) continue ;;
+            esac
+            printf 'adr-census: ADR %s carries rejected: and no trigger to revisit: — %s\n' "$id" "$h"
+        done <<EOF
+$(docs_adr_trigger_paragraphs "$root/$h")
+EOF
+    done
+    return 0
+}
+
 docs_adr_census_loop() {
     local rc bad out line
     DOCS_LEGS_SCOPE_NOUN="the tree"
@@ -606,6 +393,7 @@ docs_adr_census_loop() {
     set +e
     docs_adr_census "$PWD" "$DOCS_LEGS_LIST" >"$out"
     rc=$?
+    [ "$rc" = "2" ] || docs_adr_triggers "$PWD" "$DOCS_LEGS_LIST" "${SECRETS_SCAN_BASE:-}" >>"$out" || rc=2
     set -e
     rm -f "$DOCS_LEGS_LIST"
     if [ "$rc" = "2" ]; then
@@ -613,7 +401,7 @@ docs_adr_census_loop() {
         return 2
     fi
 
-    echo "  $DOCS_ADR_SITES citation site(s) in the changed set · $DOCS_ADR_IDS ids resolvable in the two homes"
+    echo "  $DOCS_ADR_SITES citation site(s) in the changed set · $DOCS_ADR_IDS ids resolvable in the ADR directory"
     bad=0
     while IFS= read -r line; do
         [ -n "$line" ] || continue
@@ -622,7 +410,7 @@ docs_adr_census_loop() {
     done <"$out"
     rm -f "$out"
     if [ "$bad" = "0" ]; then
-        echo "  ok — every ADR id the active rung cites resolves in one of the two homes"
+        echo "  ok — every ADR id the active rung cites resolves to its file in the ADR directory"
         echo "  (publish.sh's whole-artifact scan stays the belt: a dead citation in a file"
         echo "  the active rung did not touch is invisible here by design)"
         return 0
@@ -630,31 +418,93 @@ docs_adr_census_loop() {
     return 1
 }
 
+# _docs_legs_measured <out> — publish's R12 arm (`rules_for`), NUL-separated: the measured files
+# every release trims, so a product tree never holds them. 2 when the arm yields none.
+_docs_legs_measured() {
+    local p hit n=0
+    : >"$1"
+    for p in $(declare -f rules_for | grep -B1 'hit="$hit R12"' | head -1 | tr '|)' '  '); do
+        hit=$(rules_for "$p")
+        [ "${hit// /}" = "R12" ] || continue
+        printf '%s\0' "$p" >>"$1"
+        n=$((n + 1))
+    done
+    if [ "$n" = "0" ]; then
+        gate_refuse "dangling-docs: rules_for's R12 arm named no measured file — nothing was scanned"
+        return 2
+    fi
+}
+
+# docs_derived_check <root> — every derived block under <root> is its generator's output; 0 · 1 · 2.
+# Whole tree, not the changed set: a block goes stale when its INPUT changes (an `apps.py`), not its page.
+docs_derived_check() {
+    local py
+    py=$(checkout_python "$DOCS_LEGS_HOME") || {
+        gate_refuse "derived-blocks: no interpreter at $DOCS_LEGS_HOME/.venv — nothing was checked"
+        return 2
+    }
+    echo "  derived blocks (quality/docs_derived.py --check, the whole tree):"
+    "$py" -c 'import sys; sys.path.insert(0, sys.argv.pop(1)); from quality.docs_derived import main; sys.exit(main())' \
+        "$DOCS_LEGS_HOME" --root "$1" --check
+}
+
+# docs_current_state_check <root> <nul-list> — no listed SHIP page names a ledger id, a trimmed path
+# or a future the tree passed (scripts/current_state_census.py); 0 · 1 · 2.
+docs_current_state_check() {
+    local py
+    py=$(checkout_python "$DOCS_LEGS_HOME") || {
+        gate_refuse "current-state: no interpreter at $DOCS_LEGS_HOME/.venv — nothing was checked"
+        return 2
+    }
+    echo "  current state (scripts/current_state_census.py, the changed SHIP pages):"
+    "$py" "$DOCS_LEGS_HOME/scripts/current_state_census.py" "$1" "$2" | while IFS= read -r line; do
+        echo "  VIOLATION  $line"
+    done
+    return "${PIPESTATUS[0]}"
+}
+
 docs_dangling_docs_loop() {
-    local rc bad out line
+    local rc bad out line measured derived=0
     DOCS_LEGS_SCOPE_NOUN="the tree"
+    docs_derived_check "$PWD" || derived=$?
+    [ "$derived" != "2" ] || return 2
     _docs_legs_changed || return 2
     if [ "$DOCS_LEGS_SHIP_N" = "0" ]; then
         rm -f "$DOCS_LEGS_LIST"
         echo "  NOTHING TO SCAN: the active rung changed no bucket-SHIP file."
-        return 0
+        return "$derived"
     fi
+    rc=0
+    docs_current_state_check "$PWD" "$DOCS_LEGS_LIST" || rc=$?
+    if [ "$rc" = "2" ]; then
+        rm -f "$DOCS_LEGS_LIST"
+        return 2
+    fi
+    [ "$rc" = "0" ] || derived=1
 
-    out=$(mktemp "${TMPDIR:-/tmp}/djb-docs-dang-out.XXXXXX") || {
+    measured=$(mktemp "${TMPDIR:-/tmp}/djb-docs-measured.XXXXXX") || {
         rm -f "$DOCS_LEGS_LIST"
         return 2
     }
+    out=$(mktemp "${TMPDIR:-/tmp}/djb-docs-dang-out.XXXXXX") || {
+        rm -f "$DOCS_LEGS_LIST" "$measured"
+        return 2
+    }
+    if ! _docs_legs_measured "$measured"; then
+        rm -f "$DOCS_LEGS_LIST" "$measured" "$out"
+        return 2
+    fi
     set +e
-    docs_dangling_docs "$PWD" "$DOCS_LEGS_LIST" >"$out"
+    docs_dangling_docs "$PWD" "$DOCS_LEGS_LIST" "" "$measured" >"$out"
     rc=$?
     set -e
-    rm -f "$DOCS_LEGS_LIST"
+    rm -f "$DOCS_LEGS_LIST" "$measured"
     if [ "$rc" = "2" ]; then
         rm -f "$out"
         return 2
     fi
 
-    echo "  $DOCS_DANGLING_SITES pointer site(s) in the changed set"
+    echo "  $DOCS_DANGLING_SITES pointer site(s) and $DOCS_DANGLING_PATH_SITES path site(s) in the changed set"
     bad=0
     while IFS= read -r line; do
         [ -n "$line" ] || continue
@@ -663,198 +513,43 @@ docs_dangling_docs_loop() {
     done <"$out"
     rm -f "$out"
     if [ "$bad" = "0" ]; then
-        echo "  ok — every docs pointer the active rung spells exists in this tree"
-        return 0
+        echo "  ok — every docs pointer and repository path the active rung spells exists in this tree"
+        return "$derived"
     fi
     return 1
 }
 
 # --------------------------------------------------------------------------
-# docs_loop_names_leg — the `LOOP_*` name census.
-#
-# WHAT IT ASKS, and why the naive form of the question is worse than no
-# question at all. A fork of this platform that kept a `check.sh` refusal block
-# reading a `LOOP_*` variable the platform no longer sets does not fail at the
-# line that reads it: it fails minutes later, at the pytest banner, under
-# `set -u`, with an unbound-variable message naming a variable nobody has heard
-# of. The consumer paid four `--loop` runs finding that out.
-#
-# THE INSTRUMENT THAT WAS PROPOSED FOR IT IS FALSE ON THIS TREE, measured: the
-# two-file difference between the LOOP_* names in `scripts/loop_tier.sh` and
-# those in `scripts/check.sh` returns 23 names here, every one of them a
-# variable `check.sh` legitimately assigns itself. A census that reds a correct
-# tree teaches its reader to ignore it.
-#
-# THE HONEST FORM, and the whole of it: the names `check.sh` READS minus the
-# names ANY OF THE THREE FILES ASSIGNS. `check.sh` is the only reader because
-# it is the only file whose `set -u` death is the symptom; the three assigners
-# are the three files a `--loop` sources into one shell — `check.sh` itself,
-# `scripts/loop_tier.sh` and `scripts/gate_ledger.sh` — and they are NAMED
-# here, in the leg's own text, because a fourth sourced library that set a
-# `LOOP_*` name would red this census honestly until it was added to the list.
-#
-# WHAT A "READ" IS, and the one exclusion, which is the difference between an
-# honest empty and a dishonest one. `${NAME:-default}` and `${NAME-default}`
-# CANNOT die under `set -u` — the default is what the shell substitutes when
-# the name is unset, so a defaulted read is exactly the shape this census
-# exists to permit. `check.sh` has one name it reads ONLY that way today —
-# `LOOP_LEDGER_CENSUS`, which nothing anywhere in this tree assigns — and the
-# plan that commissioned this leg predicted it would be found assigned by
-# `gate_ledger.sh`. It is not. Excluding defaulted reads is therefore
-# load-bearing rather than tidy: without it this census reds the platform's own
-# tree on a line that is correct.
-#
-# DECLARED BLIND SPOT: a name read only with a default is invisible here, which
-# is the paragraph above read the other way — this leg proves a `--loop` cannot
-# die of an unbound `LOOP_*`, never that every `LOOP_*` is meaningful.
-#
-# Exit: 0 every read name is assigned · 1 one is not, each named with the three
-# files that should set it · 2 could-not-look.
 # --------------------------------------------------------------------------
-DOCS_LOOP_NAMES_READER=${DOCS_LOOP_NAMES_READER:-scripts/check.sh}
-DOCS_LOOP_NAMES_ASSIGNERS=${DOCS_LOOP_NAMES_ASSIGNERS:-"scripts/check.sh scripts/loop_tier.sh scripts/gate_ledger.sh"}
-
-docs_loop_names_leg() {
-    local reader=${1:-$DOCS_LOOP_NAMES_READER}
-    local assigners=${2:-$DOCS_LOOP_NAMES_ASSIGNERS}
-    local f read_f asg_f bad n name
-
-    if [ ! -f "$reader" ]; then
-        gate_refuse "loop-names: $reader is not in this tree — the census reads it and nothing else"
-        return 2
-    fi
-    for f in $assigners; do
-        if [ ! -f "$f" ]; then
-            gate_refuse "loop-names: $f is not in this tree — one of the files that may assign a"
-            echo "   LOOP_* name is missing, so READ − ASSIGNED would name every read name as a" >&2
-            echo "   violation. Could-not-look, not a finding." >&2
-            return 2
-        fi
-    done
-
-    read_f=$(mktemp "${TMPDIR:-/tmp}/djb-loopnames-read.XXXXXX") || return 2
-    asg_f=$(mktemp "${TMPDIR:-/tmp}/djb-loopnames-asg.XXXXXX") || return 2
-
-    # THE READ SET, in two passes because the two syntaxes carry different
-    # information. An UNBRACED `$LOOP_X` can never carry a default, so every
-    # one is a read that can die. A BRACED one can, so the character right
-    # after the name is read too and the `-` forms are dropped: `${LOOP_X:-y}`
-    # and `${LOOP_X-y}` substitute rather than die. Doing this in ONE grep
-    # would mis-drop `"$LOOP_X-suffix"`, an unbraced read followed by a literal
-    # hyphen, which is a read that dies.
-    {
-        grep -ohE '\$LOOP_[A-Z0-9_]+' "$reader" | sed -E 's/^\$//' || true
-        grep -ohE '\$\{LOOP_[A-Z0-9_]+(:?[-+])?' "$reader" |
-            grep -vE '[-+]$' |
-            sed -E 's/^\$\{//' || true
-    } | LC_ALL=C sort -u >"$read_f"
-
-    # THE ASSIGNED SET: `LOOP_X=` anywhere (a bare assignment, a `local`, an
-    # `export`, a `declare`) and `for LOOP_X in` — a loop variable is assigned
-    # by the loop, which the naive instrument's residual names were the proof
-    # of.
-    {
-        for f in $assigners; do
-            grep -ohE 'LOOP_[A-Z0-9_]+=' "$f" | sed 's/=$//' || true
-            grep -ohE 'for[[:space:]]+LOOP_[A-Z0-9_]+[[:space:]]+in' "$f" |
-                sed -E 's/^for[[:space:]]+//; s/[[:space:]]+in$//' || true
-        done
-    } | LC_ALL=C sort -u >"$asg_f"
-
-    n=$(wc -l <"$read_f" | tr -d ' ')
-    if [ "${n:-0}" -eq 0 ]; then
-        gate_refuse "loop-names: $reader reads no LOOP_* name at all — this census is looking at"
-        echo "   the wrong file, or at a shape it no longer recognises. A grep that found" >&2
-        echo "   nothing is not a tree with nothing in it." >&2
-        rm -f "$read_f" "$asg_f"
-        return 2
-    fi
-
-    echo "  $n LOOP_* name(s) read by $reader, defaulted reads excluded (they cannot die"
-    echo "  under set -u) · $(wc -l <"$asg_f" | tr -d ' ') assigned across: $assigners"
-
-    bad=0
-    while IFS= read -r name; do
-        [ -n "$name" ] || continue
-        echo "  VIOLATION  loop-names: $name is read by $reader and assigned by none of:"
-        echo "             $assigners"
-        bad=$((bad + 1))
-    done < <(LC_ALL=C comm -23 "$read_f" "$asg_f")
-    rm -f "$read_f" "$asg_f"
-
-    if [ "$bad" = "0" ]; then
-        echo "  ok — READ − ASSIGNED is empty: no --loop can die at the pytest banner on an"
-        echo "  unbound LOOP_* name"
-        return 0
-    fi
-    return 1
-}
-
+# docs_ci_env_leg [readers] [workflows] [example] [test-settings] — the `ci-env`
+# census: every name the settings read whose development value differs from the
+# code's default is supplied by every workflow that runs the stack, or pinned by
+# the test settings — and never both.
+#
+# Population: every `env.<type>("NAME"`, `os.environ.get`, `os.getenv` and
+# `os.environ["NAME"]` under the readers (default `config/`, the test settings
+# excluded), narrowed to the names `.env.example` gives a non-empty value that is
+# not a spelling of the code's default; a default that is not a literal counts as
+# different (the census cannot evaluate it).
+# Workflows: every `*.yml`/`*.yaml` under the workflows directory (or the one
+# file named) that runs `scripts/check.sh` or `scripts/ci_stack.sh` — each is
+# censused on its own, since a key in one workflow supplies nothing to another.
+# An empty value is a clearing (house rule 62), never a supply and never a
+# second authority.
+# The reader census is `quality/partition.py::environment_reads`'s grammar
+# re-read here because that one is fixed to its own checkout's root.
+# does-not-cover: VALUES — a wrong endpoint port is a green census and a red run.
+# does-not-cover: a read whose name is computed (the `ANYMAIL_*` prefix scan).
+# does-not-cover: a workflow that runs the suite by a script this selection does not name.
+# Exit: 0 clean, or no workflow runs the stack (PRINTED) · 1 a name is missing
+# from a workflow's env maps, or a supplied name is pinned by the test settings ·
+# 2 could-not-look.
 # --------------------------------------------------------------------------
-# docs_ci_env_leg — the `ci-env` census, tri-state.
-#
-# WHAT IT ASKS: the runner's stack is the one the settings describe. One CI run
-# ended `27 failed, 3283 passed, 9 skipped, 110 errors` and all 110 errors were
-# botocore's no-credentials exception — boto3 finding no credentials anywhere,
-# in the one environment that had a healthy object store on its own port,
-# because the workflow's `env:` block named none of the keys
-# `config/settings/base.py` reads. 39 of 40 runs red and nothing said why.
-#
-# THE POPULATION IS DERIVED FROM TWO FILES, and each half is load-bearing:
-#
-#   1. `config/settings/base.py` — every `AWS_[A-Z0-9_]+` read from the
-#      environment through `env.str(...)`. THE DIGIT IS IN THE CHARACTER CLASS
-#      and that is not a detail: `AWS_[A-Z_]+` stops dead at `AWS_S` and is
-#      blind to every one of the `AWS_S3_*` names — measured on this tree,
-#      where the digit-blind grep yields the bogus token `AWS_S` and four real
-#      names vanish. `env.bool`/`env.int` reads are deliberately NOT in the
-#      population: their default is a typed value, and "is the environment's
-#      text the same as that default" is a question about Python types that a
-#      shell census has no business answering.
-#   2. `.env.example` — of those, the names it gives a NON-EMPTY value. That
-#      file is what a laptop copies, and `base.py`'s `default=""` idiom means
-#      "unset is off". A name the development stack leaves empty is off on a
-#      laptop and off on a runner, and there is nothing to census; a name it
-#      fills is a value the compose stack needs, and CI runs the same compose
-#      stack.
-#
-# AND ONE SUBTRACTION, which is the mirror lens: a key `config/settings/test.py`
-# PINS is inert whatever the workflow supplies — the suite reads the pin. So a
-# pinned key is not required in the workflow, AND a pin of a key the workflow
-# DOES supply is a finding of its own: TWO AUTHORITIES for one value, printed
-# as `file:line` each, because the `env:` line looks like it is doing
-# something and is doing nothing. THE STORE UNDER TEST HAS ONE AUTHORITY:
-# `test.py` pins its endpoint, region and published pair, and the workflow
-# supplies none of them — the side an exporter could overwrite was the
-# workflow's, and on the first CI attempt it was.
-#
-# AN EMPTY VALUE IS A PIN, NOT A SUPPLY. House rule 62 has every step after a
-# credential exporter set the exported names to `""` so the exported value
-# never reaches it; that line CLEARS a name rather than supplying one. It is
-# said out loud on every run and it satisfies neither half: it does not count
-# as the workflow supplying a population name, and it is not a second
-# authority beside a test-settings pin.
-#
-# DECLARED BLIND SPOTS, printed by the leg itself on every clean run:
-#   · KEYS, NOT VALUES. A wrong endpoint port is a green census and a red run.
-#   · A product whose runner takes credentials from a secret store the YAML
-#     never names would red here wrongly; the escape is that ANY value
-#     satisfies the census, a `secrets.` expression included, and a product
-#     that needs more records a `# rule` valve with its reason.
-#   · AWS NAMES ONLY. Another organ the tests dial (a search key, a workflow
-#     engine's address) is not censused; the trigger is the next
-#     credentials-shaped red for one of them.
-#
-# Exit: 0 clean, or the workflow file is absent (a product without Actions —
-# PRINTED, never silent) · 1 a name is missing from every `env:` map, or a
-# supplied name is pinned by the test settings · 2 could-not-look.
-# --------------------------------------------------------------------------
-DOCS_CI_ENV_SETTINGS=${DOCS_CI_ENV_SETTINGS:-config/settings/base.py}
+DOCS_CI_ENV_READERS=${DOCS_CI_ENV_READERS:-config}
 DOCS_CI_ENV_TEST_SETTINGS=${DOCS_CI_ENV_TEST_SETTINGS:-config/settings/test.py}
 DOCS_CI_ENV_EXAMPLE=${DOCS_CI_ENV_EXAMPLE:-.env.example}
-_docs_legs_wf=".github/workflows/"
-DOCS_CI_ENV_WORKFLOW=${DOCS_CI_ENV_WORKFLOW:-${_docs_legs_wf}ci.yml}
-unset _docs_legs_wf
+DOCS_CI_ENV_WORKFLOWS=${DOCS_CI_ENV_WORKFLOWS:-.github/workflows}
+
 
 # docs_ci_env_keys <workflow-file> — prints every key under any `env:` map in
 # the file, one per line. A real (small) indentation parse rather than a grep
@@ -950,132 +645,253 @@ docs_ci_env_entries() {
     ' "$1"
 }
 
+# docs_ci_env_population <readers> <test-settings> <example> — `R <name>` for
+# every environment read and `P <name>` for every population member; exit 2
+# when a reader does not parse.
+docs_ci_env_population() {
+    command -v python3 >/dev/null 2>&1 || {
+        gate_refuse "ci-env: no python3 on PATH — the reader census parses the settings"
+        return 2
+    }
+    python3 - "$1" "$2" "$3" <<'PY'
+import ast
+import os
+import sys
+
+readers, test_settings, example = sys.argv[1:4]
+UNKNOWN = object()
+
+
+def literal(node):
+    try:
+        return ast.literal_eval(node)
+    except (ValueError, SyntaxError):
+        return UNKNOWN
+
+
+def read_call(node):
+    target = node.func
+    if not isinstance(target, ast.Attribute):
+        return None, UNKNOWN
+    base = target.value
+    is_env = isinstance(base, ast.Name) and base.id == "env"
+    is_getenv = isinstance(base, ast.Name) and base.id == "os" and target.attr == "getenv"
+    is_get = isinstance(base, ast.Attribute) and base.attr == "environ" and target.attr == "get"
+    if not (is_env or is_getenv or is_get):
+        return None, UNKNOWN
+    if not node.args or not isinstance(node.args[0], ast.Constant):
+        return None, UNKNOWN
+    name = node.args[0].value
+    if not isinstance(name, str):
+        return None, UNKNOWN
+    for keyword in node.keywords:
+        if keyword.arg == "default":
+            return name, literal(keyword.value)
+    if len(node.args) > 1:
+        return name, literal(node.args[1])
+    return name, UNKNOWN
+
+
+paths = []
+if os.path.isfile(readers):
+    paths = [readers]
+else:
+    for top, _dirs, files in os.walk(readers):
+        paths.extend(os.path.join(top, f) for f in files if f.endswith(".py"))
+skip = os.path.normpath(test_settings)
+found = {}
+for path in sorted(paths):
+    if os.path.normpath(path) == skip:
+        continue
+    try:
+        with open(path) as handle:
+            tree = ast.parse(handle.read(), filename=path)
+    except SyntaxError as error:
+        print(f"!! ci-env: {path} does not parse ({error.msg}, line {error.lineno})", file=sys.stderr)
+        sys.exit(2)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            name, default = read_call(node)
+            if name is not None:
+                found.setdefault(name, default)
+        elif (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.value, ast.Attribute)
+            and node.value.attr == "environ"
+            and isinstance(node.slice, ast.Constant)
+            and isinstance(node.slice.value, str)
+        ):
+            found.setdefault(node.slice.value, UNKNOWN)
+
+values = {}
+with open(example) as handle:
+    for line in handle.read().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        values[key.strip()] = value.strip().strip('"').strip("'")
+
+
+def is_default(value, default):
+    if default is UNKNOWN:
+        return False
+    if isinstance(default, bool):
+        truthy = value.lower() in {"1", "true", "yes", "on"}
+        falsy = value.lower() in {"0", "false", "no", "off"}
+        return truthy if default else falsy
+    if isinstance(default, (int, float)):
+        try:
+            return float(value) == float(default)
+        except ValueError:
+            return False
+    if isinstance(default, (list, tuple)):
+        return value == ",".join(str(item) for item in default)
+    if default is None:
+        return False
+    return value == str(default)
+
+
+for name in sorted(found):
+    print(f"R {name}")
+for name in sorted(found):
+    value = values.get(name, "")
+    if value and not is_default(value, found[name]):
+        print(f"P {name}")
+PY
+}
+
 docs_ci_env_leg() {
-    local settings=${1:-$DOCS_CI_ENV_SETTINGS}
-    local wf=${2:-$DOCS_CI_ENV_WORKFLOW}
+    local readers=${1:-$DOCS_CI_ENV_READERS}
+    local wfs=${2:-$DOCS_CI_ENV_WORKFLOWS}
     local example=${3:-$DOCS_CI_ENV_EXAMPLE}
     local test_settings=${4:-$DOCS_CI_ENV_TEST_SETTINGS}
-    local pop keys pinned bad name n entries tline wlines
+    local pop keys pinned bad name n nread entries tline wlines wf census rc
 
-    if [ ! -f "$settings" ]; then
-        gate_refuse "ci-env: $settings is not in this tree — the population is derived from it"
+    if [ ! -e "$readers" ]; then
+        gate_refuse "ci-env: $readers is not in this tree — the population is derived from it"
         return 2
     fi
     if [ ! -f "$example" ]; then
-        gate_refuse "ci-env: $example is not in this tree — the census's second half is the"
-        echo "   development stack's own values, and there is no other file that carries them." >&2
+        gate_refuse "ci-env: $example is not in this tree — the population's second half is the"
+        echo "   development stack's own values, and no other file carries them." >&2
         return 2
     fi
 
     pop=$(mktemp "${TMPDIR:-/tmp}/djb-cienv-pop.XXXXXX") || return 2
-    # THE ENVIRONMENT READS, string-valued, DIGIT CLASS INCLUDED.
-    {
-        grep -ohE 'env\.str\("AWS_[A-Z0-9_]+"' "$settings" |
-            sed -E 's/^env\.str\("//; s/"$//' || true
-    } | LC_ALL=C sort -u >"${pop}.read"
-    # NARROWED TO THE ONES THE DEVELOPMENT STACK ACTUALLY SUPPLIES.
-    : >"$pop"
-    while IFS= read -r name; do
-        [ -n "$name" ] || continue
-        if grep -qE "^${name}=.+$" "$example"; then
-            printf '%s\n' "$name" >>"$pop"
-        fi
-    done <"${pop}.read"
-    n=$(wc -l <"$pop" | tr -d ' ')
-    if [ "${n:-0}" -eq 0 ]; then
-        gate_refuse "ci-env: the population is EMPTY — $settings named no string-valued AWS_ read"
-        echo "   that $example gives a value. A census with nothing in its population is a" >&2
-        echo "   green over nothing, which is the one verdict this leg may never print." >&2
-        rm -f "$pop" "${pop}.read"
+    set +e
+    docs_ci_env_population "$readers" "$test_settings" "$example" >"${pop}.all"
+    rc=$?
+    set -e
+    if [ "$rc" != "0" ]; then
+        rm -f "$pop" "${pop}.all"
         return 2
     fi
+    sed -n 's/^R //p' "${pop}.all" >"${pop}.read"
+    sed -n 's/^P //p' "${pop}.all" >"$pop"
+    nread=$(wc -l <"${pop}.read" | tr -d ' ')
+    n=$(wc -l <"$pop" | tr -d ' ')
+    if [ "${n:-0}" -eq 0 ]; then
+        gate_refuse "ci-env: the population is EMPTY — $readers read $nread name(s) and $example"
+        echo "   gives none of them a value that differs from the code's default. A green over" >&2
+        echo "   nothing is the one verdict this leg may never print." >&2
+        rm -f "$pop" "${pop}.all" "${pop}.read"
+        return 2
+    fi
+    echo "  read: $nread name(s) from the environment under $readers ($test_settings excluded)"
     echo "  population ($n): $(tr '\n' ' ' <"$pop" | sed 's/ $//')"
-    echo "  derived from $settings's string-valued environment reads — THE DIGIT IS IN THE"
-    echo "  CLASS: AWS_[A-Z_]+ stops at AWS_S and is blind to every AWS_S3_* name — then"
-    echo "  narrowed to the names $example gives a non-empty value"
-    echo "  read but out of the population: $(LC_ALL=C comm -23 "${pop}.read" "$pop" | tr '\n' ' ' | sed 's/ $//')"
-    rm -f "${pop}.read"
+    echo "  — the reads $example gives a non-empty value that is not the code's default"
+    rm -f "${pop}.all"
 
-    if [ ! -f "$wf" ]; then
-        echo "  SKIP: $wf is not in this tree. A product that runs no GitHub Actions has no"
-        echo "  workflow env for this census to read — printed rather than silent, because a"
-        echo "  skip nobody sees reads exactly like a pass."
-        rm -f "$pop"
+    census=$(mktemp "${TMPDIR:-/tmp}/djb-cienv-wfs.XXXXXX") || {
+        rm -f "$pop" "${pop}.read"
+        return 2
+    }
+    if [ -f "$wfs" ]; then
+        printf '%s\n' "$wfs" >"$census"
+    elif [ -d "$wfs" ]; then
+        for wf in "$wfs"/*.yml "$wfs"/*.yaml; do
+            [ -f "$wf" ] || continue
+            if grep -qE 'scripts/(check|ci_stack)\.sh' "$wf"; then
+                printf '%s\n' "$wf" >>"$census"
+            else
+                echo "  not censused: $wf runs neither scripts/check.sh nor scripts/ci_stack.sh"
+            fi
+        done
+    fi
+    if [ ! -s "$census" ]; then
+        echo "  SKIP: no workflow under $wfs runs the stack. A product that runs no GitHub Actions"
+        echo "  has no workflow env for this census to read — printed, because a skip nobody"
+        echo "  sees reads exactly like a pass."
+        rm -f "$pop" "${pop}.read" "$census"
         return 0
     fi
 
-    keys=$(mktemp "${TMPDIR:-/tmp}/djb-cienv-keys.XXXXXX") || {
-        rm -f "$pop"
-        return 2
-    }
-    if ! docs_ci_env_keys "$wf" >"$keys"; then
-        rm -f "$pop" "$keys"
-        return 2
-    fi
-    echo "  $(wc -l <"$keys" | tr -d ' ') key(s) under the env: maps of $wf (any level; any NON-EMPTY"
-    echo "  value satisfies the census — this leg reads keys, and of values only whether one is empty)"
-    # AN EMPTY VALUE CLEARS A NAME; IT SUPPLIES NOTHING. The supplied set is
-    # the keys with a non-empty value on at least one line, and every clearing
-    # of an AWS_ name is printed with its line.
-    entries=$(docs_ci_env_entries "$wf")
-    printf '%s\n' "$entries" | awk -F '\t' 'NF >= 2 && $3 != "" { print $2 }' |
-        LC_ALL=C sort -u >"$keys"
-    printf '%s\n' "$entries" | awk -F '\t' -v wf="$wf" \
-        'NF >= 2 && $3 == "" && $2 ~ /^AWS_/ { printf "  cleared: %s at %s:%s — empty is a pin, not a supply\n", $2, wf, $1 }'
-
-    bad=0
-    while IFS= read -r name; do
-        [ -n "$name" ] || continue
-        if grep -qxF "$name" "$keys"; then
-            continue
-        fi
-        # A key the TEST SETTINGS pin is inert whatever the workflow says, so
-        # its absence is correct rather than missing — and it is said out loud,
-        # because a name silently dropped from a population is how a census
-        # stops looking.
-        if [ -f "$test_settings" ] && grep -qE "^${name}[[:space:]]*(:[^=]*)?=" "$test_settings"; then
-            echo "  exempt: $name is pinned by $test_settings, so a workflow value would be"
-            echo "          overridden and misleading — the suite reads the pin"
-            continue
-        fi
-        echo "  VIOLATION  ci-env: $name is read from the environment by $settings and is a key"
-        echo "             under no env: map in $wf — the runner's stack is not the one the"
-        echo "             settings describe (this is the no-credentials shape)"
-        bad=$((bad + 1))
-    done <"$pop"
-
-    # THE MIRROR LENS (the second half, and the one a green first half hides):
-    # a key the workflow DOES supply that the test settings then pin is an
-    # `env:` line doing nothing at all, while every criterion about the block
-    # passes.
+    pinned=""
     if [ -f "$test_settings" ]; then
-        pinned=$({ grep -ohE '^AWS_[A-Z0-9_]+[[:space:]]*(:[^=]*)?=' "$test_settings" || true; } |
-            sed -E 's/[[:space:]]*(:[^=]*)?=$//' | LC_ALL=C sort -u)
         while IFS= read -r name; do
             [ -n "$name" ] || continue
-            if grep -qxF "$name" "$keys"; then
-                tline=$(grep -nE "^${name}[[:space:]]*(:[^=]*)?=" "$test_settings" | sed -n '1p' | cut -d: -f1)
-                wlines=$(printf '%s\n' "$entries" |
-                    awk -F '\t' -v k="$name" -v wf="$wf" '$2 == k && $3 != "" { printf "%s%s:%s", sep, wf, $1; sep = ", " }')
-                echo "  VIOLATION  ci-env: $name has TWO authorities — $test_settings:${tline:-?} and $wlines."
-                echo "             $test_settings pins $name, which $wf also supplies as an env: key — the"
-                echo "             pin wins, so the workflow line is inert and the runner is not dialling"
-                echo "             what the block says it dials. The test settings are the one authority:"
-                echo "             delete the workflow line"
-                bad=$((bad + 1))
+            if grep -qE "^${name}[[:space:]]*(:[^=]*)?=" "$test_settings"; then
+                pinned="${pinned}${name}"$'\n'
             fi
-        done <<<"$pinned"
+        done <"${pop}.read"
     else
-        echo "  note: $test_settings is not in this tree, so the override half of this census"
-        echo "        did not run — a pin that makes a workflow key inert would be invisible"
+        echo "  note: $test_settings is not in this tree, so no name is exempt by a pin and"
+        echo "        the two-authorities half did not run"
     fi
 
-    rm -f "$pop" "$keys"
+    rm -f "${pop}.read"
+
+    bad=0
+    keys=$(mktemp "${TMPDIR:-/tmp}/djb-cienv-keys.XXXXXX") || {
+        rm -f "$pop" "$census"
+        return 2
+    }
+    while IFS= read -r wf; do
+        if ! docs_ci_env_keys "$wf" >"$keys"; then
+            rm -f "$pop" "$keys" "$census"
+            return 2
+        fi
+        entries=$(docs_ci_env_entries "$wf")
+        printf '%s\n' "$entries" | awk -F '\t' 'NF >= 2 && $3 != "" { print $2 }' |
+            LC_ALL=C sort -u >"$keys"
+        echo "  $wf: $(wc -l <"$keys" | tr -d ' ') supplied key(s) under its env: maps"
+        printf '%s\n' "$entries" | awk -F '\t' -v wf="$wf" \
+            'NF >= 2 && $3 == "" && $2 ~ /^AWS_/ { printf "  cleared: %s at %s:%s — empty is a pin, not a supply\n", $2, wf, $1 }'
+
+        while IFS= read -r name; do
+            [ -n "$name" ] || continue
+            grep -qxF "$name" "$keys" && continue
+            if grep -qxF "$name" <<<"$pinned"; then
+                echo "  exempt: $name is pinned by $test_settings, so a workflow value would be"
+                echo "          overridden and misleading — the suite reads the pin"
+                continue
+            fi
+            echo "  VIOLATION  ci-env: $name is read from the environment under $readers and is a key"
+            echo "             under no env: map in $wf — $example gives it a value the code's"
+            echo "             default is not, so the runner's stack is not the one the settings describe"
+            bad=$((bad + 1))
+        done <"$pop"
+
+        while IFS= read -r name; do
+            [ -n "$name" ] || continue
+            grep -qxF "$name" "$keys" || continue
+            tline=$(grep -nE "^${name}[[:space:]]*(:[^=]*)?=" "$test_settings" | sed -n '1p' | cut -d: -f1)
+            wlines=$(printf '%s\n' "$entries" |
+                awk -F '\t' -v k="$name" -v wf="$wf" '$2 == k && $3 != "" { printf "%s%s:%s", sep, wf, $1; sep = ", " }')
+            echo "  VIOLATION  ci-env: $name has TWO authorities — $test_settings:${tline:-?} and $wlines."
+            echo "             $test_settings pins $name, which $wf also supplies as an env: key — the"
+            echo "             pin wins, so the workflow line is inert. The test settings are the one"
+            echo "             authority: delete the workflow line"
+            bad=$((bad + 1))
+        done <<<"$pinned"
+    done <"$census"
+
+    rm -f "$pop" "$keys" "$census"
     if [ "$bad" = "0" ]; then
-        echo "  ok — every name the settings read from the environment is supplied by the"
-        echo "  workflow or pinned by the test settings, and no name has two authorities"
-        echo "  blind spot: KEYS, NOT VALUES — a wrong endpoint or a stale credential is a"
-        echo "  green census and a red run; the run is the belt. AWS names only."
+        echo "  ok — every population name is supplied by every censused workflow or pinned by"
+        echo "  the test settings, and no name has two authorities"
+        echo "  blind spot: KEYS, NOT VALUES — a wrong endpoint is a green census and a red run"
         return 0
     fi
     return 1

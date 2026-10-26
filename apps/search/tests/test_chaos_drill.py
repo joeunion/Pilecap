@@ -38,6 +38,7 @@ push against the real stack, never in a builder's `--loop`.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -130,8 +131,12 @@ class Chaos:
 
 
 def _docker(*args: str, check: bool = True) -> str:
-    out = subprocess.run(
-        ["docker", *args], capture_output=True, text=True, check=check, timeout=120
+    out = subprocess.run(  # noqa: S603 — argv list built here from constants and paths; `docker`, no shell
+        ["docker", *args],  # noqa: S607 — `docker` resolved on PATH, as the gate's own legs run it
+        capture_output=True,
+        text=True,
+        check=check,
+        timeout=120,
     )
     return out.stdout.strip()
 
@@ -198,9 +203,13 @@ def _pinned_image() -> str:
     """
     root = Path(__file__).resolve().parents[3]
     text = (root / "compose.yaml").read_text(encoding="utf-8")
-    found = re.search(r"^\s*image:\s*(getmeili/meilisearch:\S+)\s*$", text, re.MULTILINE)
+    found = re.search(
+        r"^\s*image:\s*(?:\$\{DJB_STACK_REGISTRY:-docker\.io\}/)?(getmeili/meilisearch:\S+)",
+        text,
+        re.MULTILINE,
+    )
     assert found, "compose.yaml no longer pins a getmeili/meilisearch image"
-    return found.group(1)
+    return f"{os.environ.get('DJB_STACK_REGISTRY') or 'docker.io'}/{found.group(1)}"
 
 
 def _await_health(url: str) -> None:
@@ -209,7 +218,7 @@ def _await_health(url: str) -> None:
     last: Exception | None = None
     while time.monotonic() < deadline:
         try:
-            with urllib.request.urlopen(f"{url}/health", timeout=2) as answer:
+            with urllib.request.urlopen(f"{url}/health", timeout=2) as answer:  # noqa: S310 — the drill's own local engine URL, http by construction
                 if answer.status == 200:
                     return
         except (urllib.error.URLError, OSError, TimeoutError) as error:  # noqa: PERF203
@@ -257,7 +266,7 @@ def chaos(monkeypatch: pytest.MonkeyPatch, settings: Any, live_meili: str) -> It
         yield chaos
     finally:
         # By id, always, and `-f` because the drill may have left it stopped.
-        subprocess.run(["docker", "rm", "-f", container], capture_output=True, check=False)
+        subprocess.run(["docker", "rm", "-f", container], capture_output=True, check=False)  # noqa: S603, S607 — argv list built here; `docker` on PATH, as the gate runs it; no shell
 
 
 @pytest.fixture
@@ -302,7 +311,7 @@ def test_the_production_cooldown_is_the_one_the_drill_shortens() -> None:
 
 
 def test_stopping_the_index_degrades_and_starting_it_recovers(
-    api: Any, world: World, chaos: Chaos, indexed: str
+    world: World, chaos: Chaos, indexed: str
 ) -> None:
     """The whole drill, in one test, because the halves only mean anything together.
 
@@ -314,7 +323,7 @@ def test_stopping_the_index_degrades_and_starting_it_recovers(
     Every leg goes through the REST door rather than through the selector, so
     "zero 5xx" is a statement about what a client received.
     """
-    api.force_login(world.owner)
+    api = world.session(world.owner)
 
     # --- healthy: the real index answers, and says so ------------------------
     healthy = api.get(SEARCH_URL, {"q": "Widget", "kinds": indexed})
@@ -362,7 +371,7 @@ def test_stopping_the_index_degrades_and_starting_it_recovers(
 
 
 def test_the_announcements_carry_the_engine_names_an_operator_reads(
-    api: Any, world: World, chaos: Chaos, indexed: str
+    world: World, chaos: Chaos, indexed: str
 ) -> None:
     """The payload says which engine went and which one took over — and nothing else.
 
@@ -370,7 +379,7 @@ def test_the_announcements_carry_the_engine_names_an_operator_reads(
     infrastructure vocabulary on a customer's webhook. The reason lives in the
     structured log line the circuit writes, where operators are.
     """
-    api.force_login(world.owner)
+    api = world.session(world.owner)
     chaos.stop()
     assert api.get(SEARCH_URL, {"q": "Widget", "kinds": indexed}).status_code == 200
 

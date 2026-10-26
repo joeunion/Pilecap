@@ -1,0 +1,85 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "imports", "text": ""}
+from apps.example.api import (
+    archive_widget_policy_route,
+    create_widget_policy_route,
+    get_governing_widget_policy_route,
+    governing_widget_policy_detail,
+    list_widget_policies_route,
+    restore_widget_policy_route,
+    widget_policies_list,
+    widget_policy_archive,
+    widget_policy_create,
+    widget_policy_restore,
+)
+from apps.example.schemas import WidgetPolicyOut, WidgetPolicyPage
+
+# golden-anchor: {"nth": 0, "scope": ["register", "list_widgets_tool"], "side": "before", "text": "due_before: AwareDatetime | None = None,"}
+        policy: UUID | None = None,
+# golden-anchor: {"nth": 0, "scope": ["register", "list_widgets_tool"], "side": "before", "text": "filters.due_before = due_before"}
+            filters.policy = policy
+# golden-anchor: {"nth": 0, "scope": ["register", "create_widget_tool"], "side": "before", "text": "due_at: AwareDatetime | None = None,"}
+        policy_id: UUID | None = None,
+# golden-anchor: {"nth": 0, "scope": ["register", "create_widget_tool"], "side": "before", "text": "due_at=due_at,"}
+                policy_id=policy_id,
+# golden-anchor: {"nth": 0, "scope": ["register", "update_widget_tool"], "side": "before", "text": "due_at: AwareDatetime | None = None,"}
+        policy_id: UUID | None = None,
+# golden-anchor: {"nth": 0, "scope": ["register", "update_widget_tool"], "side": "before", "text": "due_at=due_at,"}
+                policy_id=policy_id,
+# golden-anchor: {"nth": 0, "scope": ["register"], "side": "before", "text": "@server.tool(name=\"archive_widget\", description=contract_of(archive_widget_route))"}
+    @server.tool(name="list_widget_policies", description=contract_of(list_widget_policies_route))
+    def list_widget_policies_tool(
+        ctx: Context[Any],
+        show: Show = "live",
+        cursor: str | None = None,
+        limit: int | None = None,
+        include_count: bool = False,
+    ) -> WidgetPolicyPage:
+        with tool_call(ctx) as acting:
+            tenant = acting_tenant(acting)
+            page = cursor_page(
+                widget_policies_list(tenant=tenant, actor=acting.actor(), show=show),
+                tenant=tenant,
+                cursor=cursor,
+                limit=limit,
+                include_count=include_count,
+            )
+            return WidgetPolicyPage(
+                items=[WidgetPolicyOut.from_orm(policy) for policy in page.items],
+                has_more=page.has_more,
+                next_cursor=page.next_cursor,
+                count=page.count,
+            )
+
+    @server.tool(
+        name="get_governing_widget_policy",
+        description=contract_of(get_governing_widget_policy_route),
+    )
+    def get_governing_widget_policy_tool(ctx: Context[Any]) -> WidgetPolicyOut:
+        with tool_call(ctx) as acting:
+            return governing_widget_policy_detail(
+                tenant=acting_tenant(acting), actor=acting.actor()
+            )
+
+    @server.tool(name="create_widget_policy", description=contract_of(create_widget_policy_route))
+    def create_widget_policy_tool(ctx: Context[Any], name: str, body: str = "") -> WidgetPolicyOut:
+        with tool_call(ctx) as acting:
+            return widget_policy_create(
+                tenant=acting_tenant(acting), actor=acting.actor(), name=name, body=body
+            )
+
+
+
+    @server.tool(name="archive_widget_policy", description=contract_of(archive_widget_policy_route))
+    def archive_widget_policy_tool(ctx: Context[Any], policy_id: UUID) -> WidgetPolicyOut:
+        with tool_call(ctx) as acting:
+            return widget_policy_archive(
+                tenant=acting_tenant(acting), actor=acting.actor(), policy_id=policy_id
+            )
+
+    @server.tool(name="restore_widget_policy", description=contract_of(restore_widget_policy_route))
+    def restore_widget_policy_tool(ctx: Context[Any], policy_id: UUID) -> WidgetPolicyOut:
+        with tool_call(ctx) as acting:
+            return widget_policy_restore(
+                tenant=acting_tenant(acting), actor=acting.actor(), policy_id=policy_id
+            )
+

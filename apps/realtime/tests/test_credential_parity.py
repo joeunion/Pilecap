@@ -42,13 +42,11 @@ from apps.core import context
 from apps.core.actor import actor_for
 from apps.core.asyncdb import run_db
 from apps.core.models import Organization, Tenant
+from apps.core.tests.wire import socket_bearer
 from apps.realtime.schemas import CLOSE_NO_TENANT
 from apps.realtime.selectors import list_subtree_org_ids
-from apps.realtime.tests.test_consumers import (
-    bearer_headers,
-    opened,
-    session_headers,
-)
+from apps.realtime.tests.sockets import a_ticket, opened
+from apps.realtime.tests.test_consumers import session_headers
 from apps.realtime.tests.test_hierarchy import (
     ORG_LESS_EVENT,
     Network,
@@ -118,7 +116,7 @@ async def by_bearer(
     *, user: User, tenant: Tenant, org: Organization | None = None, name: str = "header-socket"
 ) -> AsyncIterator[tuple[Socket, Handshake]]:
     """The machine door: `Authorization: Bearer <token>`, plus `X-Org`."""
-    headers = bearer_headers(await a_token(user=user, tenant=tenant, name=name))
+    headers = socket_bearer(await a_token(user=user, tenant=tenant, name=name))
     if org is not None:
         headers = [*headers, (b"x-org", org.slug.encode())]
     async with opened(headers=headers) as pair:
@@ -129,14 +127,14 @@ async def by_bearer(
 async def by_query(
     *, user: User, tenant: Tenant, org: Organization | None = None, name: str = "query-socket"
 ) -> AsyncIterator[tuple[Socket, Handshake]]:
-    """The browser's machine door: `?token=` and `?org=`.
+    """The browser's machine door: `?ticket=` and `?org=`.
 
     A browser's `WebSocket` constructor cannot set request headers, so both the
     credential and the hat have to travel in the URL or a browser client can
-    never wear either. Same two values, same two readers, one transport down.
+    never wear either. The credential travels as a one-use ticket.
     """
-    plaintext = await a_token(user=user, tenant=tenant, name=name)
-    path = f"{PATH}?token={plaintext}"
+    ticket = await a_ticket(user=user, tenant=tenant, name=name)
+    path = f"{PATH}?ticket={ticket}"
     if org is not None:
         path = f"{path}&org={org.slug}"
     async with opened(path=path) as pair:
@@ -328,7 +326,7 @@ async def test_a_bearer_socket_naming_an_org_that_does_not_exist_is_refused_alik
     """
     for value in (b"no-such-branch", b""):
         headers = [
-            *bearer_headers(
+            *socket_bearer(
                 await a_token(
                     user=network.rival,
                     tenant=network.tenant,
@@ -357,7 +355,7 @@ async def test_a_pinned_token_naming_another_tenant_is_refused_before_any_hat(
     credential is live and it is the ADDRESS that was refused.
     """
     headers = [
-        *bearer_headers(await a_token(user=owner, tenant=tenant, name="pinned")),
+        *socket_bearer(await a_token(user=owner, tenant=tenant, name="pinned")),
         (b"x-tenant", other_tenant.slug.encode()),
         (b"x-org", b"anything"),
     ]
@@ -444,7 +442,7 @@ async def test_a_token_that_resolves_no_hat_leaves_no_hat_bound(
     """
     headers = [
         *await session_headers(network.manager),
-        *bearer_headers(await a_token(user=network.rival, tenant=network.tenant, name="both")),
+        *socket_bearer(await a_token(user=network.rival, tenant=network.tenant, name="both")),
     ]
 
     async with opened(headers=headers) as (_, handshake):

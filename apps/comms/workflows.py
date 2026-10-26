@@ -1,64 +1,4 @@
-"""Delivery, as durable work — because a mail host is a thing that blinks.
-
-Nothing sends inside a request. `send()` writes the row, says
-`comms.message.queued`, and starts this: one run per message, started on the
-sending transaction's commit, with an id derived from the message's primary key
-so a retried send starts one run and not two.
-
-House rule 9, visible: this module imports `timedelta`, `temporalio`, and its
-own `types.py` — and nothing else. **No ORM, no network, no clock, no
-randomness, and no import of `activities.py`** — the activities are invoked by
-name, because importing them would drag the ORM into a module that has to
-replay identically years from now.
-
-**A message that could not be delivered does not fail the run.** The attempts
-are spent, the terminal activity records `failed` and emits
-`comms.message.failed`, and the run completes having done its whole job. A run
-left `failed` for an outcome the product handled correctly is an alert somebody
-has to triage every time an address is wrong. What *does* fail the run is the
-bookkeeping failing — that is a real fault, and it should look like one.
-
-**And it walks a plan** (C2-comms-b). One run per `send()`, whether that send
-was one message or an escalation of four: the run is the only orchestrator, so
-"they answered, stop chasing them" has exactly one place to be true. The plan is
-a **snapshot** taken when the send started (`DeliverMessage.steps`) and this
-module never reads a row — revising a policy mid-flight changes the next send
-and not this one, which is house rule 9 doing the work it exists for rather than
-a promise in a docstring.
-
-A plain send is the same walk with no plan: `steps` empty becomes one implicit
-step that delivers, waits `STATUS_WAIT` for a provider status, and ends. That is
-byte-for-byte what the earlier single-step workflow did, expressed as the general case rather than
-preserved as a special one.
-
-**And it knows when it was refused** (ADR comms-10). The edge wall
-speaks back through `DeliveryAttempt` now, so the two things the interpreter
-used to be blind to are things it can act on. A **permanent** refusal —
-suppression, consent withdrawn — ends the step immediately: no `STATUS_WAIT`,
-because no provider ever saw the message and no status is coming, and a run
-sitting open for three days about a refusal decided in milliseconds is the run
-ledger lying by laziness. A **temporal** refusal — quiet hours — is not a
-refusal at all but a *later*: the run sleeps out the window on Temporal's clock
-and then re-enters the same activity, which re-runs the whole wall against
-whatever is true in the morning. Killing an evening's marketing because it was
-judged two minutes after ten was throwing away sends nobody objected to.
-
-**And it waits** (ADR comms-5). Handing a message to a transport is not
-the end of the story: hours later the provider says whether it arrived, and
-that report has to land somewhere. It lands here, as a signal, on a run that is
-still alive to receive it — which is the entire reason the wait is in *this*
-rung and not deferred. A run that completed the moment the SMTP conversation
-ended would `Conflict` on every status webhook that followed, and the seam
-would be untestable in principle rather than merely untested.
-
-Each wait is bounded and ends the same way either way: a status arrives, or the
-step's `wait_seconds` runs out. **Silence is not a bounce.** A provider that
-never reports leaves a `sent` message saying `sent`, which is the honest record;
-marking it failed would invent a fact, and waiting for ever would leave a run
-open per message for the life of the deployment. What silence *does* mean, when
-a step says `escalate_when="delivered"`, is that the next rung is tried — which
-is the entire product feature.
-"""
+"""Delivery as durable work: one run per send walks its snapshot plan (ADR comms-5, comms-7)."""
 
 from __future__ import annotations
 
@@ -73,42 +13,19 @@ from apps.comms.types import (
     DeliveryStatus,
     MessageOutcome,
     PolicyStep,
-    RunFinished,
     SendStep,
     StepStarted,
 )
+from apps.core.determinism import reason_of, run_to_finish
 
-# How long one attempt at handing the message to a transport may take. Thirty
-# seconds is already generous for an SMTP conversation; a provider that has not
-# answered in that time is a provider having a day, and the retry is the answer.
+#: One attempt at handing the message to a transport; a provider silent this long is retried.
 ATTEMPT_TIMEOUT = timedelta(seconds=30)
 
-# And how long the whole conversation may go on for. This is the number that
-# matters: a mail host down for ten minutes costs retries, and one that will
-# never accept this message stops being asked within the hour rather than at
-# midnight.
+#: The whole conversation: a host that will never accept it stops being asked within the hour.
 DELIVERY_DEADLINE = timedelta(hours=1)
 
-# Declared here, at the call site, rather than inside the activity: the retry
-# behaviour is a property of *this* delivery, and an activity that decided its
-# own could not be reused by a caller that wanted a different answer.
-#: The refusals that are **already true at attempt 1** and cannot become false
-#: by waiting. Retrying one of these is not caution, it is the run
-#: telling the message log a lie for a minute: a push to a contact with no
-#: registered device showed `sending` for about sixty seconds — five attempts
-#: and their backoff — before failing with the reason it had on the first.
-#:
-#: Both members are **caller-fault, decided before any transport was reached**.
-#: `Invalid` is bad input (no device, no address, an unknown platform);
-#: `NotFound` is a reference this hat cannot reach, which a retry cannot change
-#: either — and the reachability answer must not be re-asked five times, because
-#: an actor's hat moving mid-run is a different bug and this would hide it.
-#:
-#: **What is deliberately NOT here** is everything that can succeed later: a
-#: transport raising, a timeout, a gateway's 500, `Conflict`. Those are the
-#: retry policy's whole reason to exist. The names are the class names Temporal
-#: matches on, which is why they are strings rather than the types — the
-#: workflow module may not import `core.exceptions` (house rule 9).
+#: Refusals true at attempt 1 that waiting cannot change — caller-fault, before any transport.
+#: Class names as strings: Temporal matches names, and `core.exceptions` is not importable (rule 9).
 NON_RETRYABLE: tuple[str, ...] = ("Invalid", "NotFound")
 
 DELIVERY_RETRY = RetryPolicy(
@@ -119,91 +36,35 @@ DELIVERY_RETRY = RetryPolicy(
     non_retryable_error_types=list(NON_RETRYABLE),
 )
 
-# Recording the outcome is a local database write: fast, and worth retrying
-# briefly rather than for ever.
+#: Recording the outcome is a local write: retried briefly, never for ever.
 BOOKKEEPING_TIMEOUT = timedelta(seconds=30)
 BOOKKEEPING_RETRY = RetryPolicy(maximum_attempts=5)
 
-# How long to hold the run open waiting for the provider to say what became of
-# a message it accepted. **A named guess**, and worth naming as one: three days
-# is comfortably past every ESP's own retry window for a tracking webhook, and
-# well short of a run that is really a leak. The cost of getting it wrong is
-# bounded in one direction only — too short and a very late status lands on the
-# row and the event but not on a run; too long and a run per message sits open.
-# It is a number to revisit with real provider telemetry, not a constant to
-# defend.
+#: How long the run waits for a provider's status — a named guess past every ESP's own retry window.
 STATUS_WAIT = timedelta(hours=72)
 
-# Closing out the `WorkflowRun` row the starting service wrote. A visibility row
-# saying `running` beside an execution Temporal has finished is a row that lies
-# (queue V6), so every path through `run` closes it.
-FINISH_ACTIVITY = "mark_run_finished"
-
-# The two terminal values of `apps.workflows.models.WorkflowRun.Status`, and the
-# two of `apps.comms.models.Message.Status` this workflow can reach. Strings,
-# because this module may import its own `types.py` and nothing else.
-RUN_COMPLETED = "completed"
-RUN_FAILED = "failed"
+#: The `Message.Status` values this run reaches, as strings (rule 9).
 MESSAGE_QUEUED = "queued"
 MESSAGE_SENT = "sent"
 MESSAGE_FAILED = "failed"
 MESSAGE_DELIVERED = "delivered"
 MESSAGE_SUPPRESSED = "suppressed"
 
-# The one kind of edge refusal this module waits for (ADR comms-10). A string,
-# for the same reason every other value in this module is one: `services` owns
-# the definitions — `services.LEVER_TEMPORAL` is the original — and this module
-# may import its own `types.py` and nothing else.
-#
-# **Only `temporal` sleeps, and everything else ends the message.** Written as
-# "not temporal" rather than "is permanent" on purpose: a lever kind this module
-# has never heard of — a newer service, an older worker replaying — must fall to
-# the ending that stops, not to the one that waits. Fail closed is the direction
-# a comms product wants when it is unsure whether it is allowed to mail somebody.
+#: The one edge refusal this run waits out (ADR comms-10); any other lever ends the message.
 LEVER_TEMPORAL = "temporal"
 
-# How many times one step may wait out a temporal lever before it stops trying.
-#
-# **One**, and the ADR says one: the wall is re-run once after the sleep, and by
-# then the window it slept out is over. A second temporal refusal means the
-# window MOVED while the run was asleep — the person widened it — and the honest
-# answers are "sleep again, possibly for ever" or "stop and say so". This picks
-# the second: a deferral that cannot converge is recorded as a failure with its
-# reason on the row, where support can see it, rather than a run that quietly
-# re-arms itself every morning.
+#: One deferral per step (ADR comms-10): a window that moved while asleep ends as `failed`.
 MAX_DEFERRALS = 1
 
-# What the row's `error` says when that happens. Not a refusal code and not a
-# new word for the wall: the message genuinely did not go out, and `failed` is
-# this app's existing vocabulary for that.
+#: The row's `error` when the one deferral is spent.
 DEFERRAL_SPENT = "quiet hours were still in force after the deferral; not sent"
 
-# What a step says to do when it did not land. Restated as strings for the same
-# reason every other value here is: this module may import its own `types.py`
-# and nothing else, and `services.ESCALATE_*` is where the set is enforced.
+#: A step's escalation word, restated from `services.ESCALATE_*` (rule 9).
 ESCALATE_DELIVERED = "delivered"
 
-# Starting a later step is a local database write behind one service call: fast,
-# and worth retrying briefly rather than for ever, exactly like the bookkeeping.
+#: Starting a later step is one local write: retried briefly, like the bookkeeping.
 STEP_TIMEOUT = timedelta(seconds=30)
 STEP_RETRY = RetryPolicy(maximum_attempts=5)
-
-
-def failure_reason(error: BaseException) -> str:
-    """The transport's own words, not the wrapper's.
-
-    Temporal wraps an activity failure in an `ActivityError` whose `str()` is
-    "Activity task failed" — true, and useless on a `Message.error` somebody is
-    reading to find out why a customer never got their receipt. The chain is
-    walked to the innermost cause, which is what the provider actually said.
-
-    Pure string handling, so it is safe in a module that has to replay
-    identically (house rule 9).
-    """
-    cause: BaseException = error
-    while cause.__cause__ is not None:
-        cause = cause.__cause__
-    return str(cause) if cause is not error else str(error)
 
 
 @workflow.defn(name="DeliverMessageWorkflow")
@@ -234,15 +95,7 @@ class DeliverMessageWorkflow:
 
     @workflow.run
     async def run(self, delivery: DeliverMessage) -> MessageOutcome:
-        try:
-            outcome = await self._walk(delivery)
-        except Exception as error:
-            # The bookkeeping itself failed. The row says so, and then the run
-            # still fails — a `WorkflowRun` left at `running` beside an
-            # execution that ended is worse than no row at all.
-            await self._finish(status=RUN_FAILED, error=str(error))
-            raise
-        await self._finish(status=RUN_COMPLETED)
+        outcome, _ = await run_to_finish(lambda: self._walk(delivery), retry=BOOKKEEPING_RETRY)
         return outcome
 
     async def _walk(self, delivery: DeliverMessage) -> MessageOutcome:
@@ -420,7 +273,7 @@ class DeliverMessageWorkflow:
                     MessageOutcome(
                         message_id=message_id,
                         status=MESSAGE_FAILED,
-                        error=failure_reason(error),
+                        error=reason_of(error),
                     )
                 )
 
@@ -467,25 +320,6 @@ class DeliverMessageWorkflow:
             result_type=str,
         )
         return outcome
-
-    async def _finish(self, *, status: str, error: str = "") -> None:
-        """Close the run's visibility row, whichever way the delivery ended.
-
-        The same activity every other app's workflows call, reached **by name**
-        from an app that does not import the one that defines it. Idempotent, so
-        a retry rewrites the same terminal state.
-        """
-        await workflow.execute_activity(
-            FINISH_ACTIVITY,
-            RunFinished(
-                workflow_id=workflow.info().workflow_id,
-                status=status,
-                error=error,
-            ),
-            start_to_close_timeout=BOOKKEEPING_TIMEOUT,
-            retry_policy=BOOKKEEPING_RETRY,
-            result_type=str,
-        )
 
 
 WORKFLOWS: list[type] = [DeliverMessageWorkflow]

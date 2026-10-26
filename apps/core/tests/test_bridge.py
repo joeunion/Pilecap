@@ -94,13 +94,22 @@ def test_emit_is_reachable_from_core_through_the_bridge(tenant: Tenant) -> None:
 # --- Absent registrations ----------------------------------------------------
 
 
-def test_an_absent_name_is_a_logged_no_op_outside_production(clean_bridge: None) -> None:
+def test_an_absent_name_is_a_logged_no_op_outside_production(
+    clean_bridge: None, settings: Any
+) -> None:
     """A template without the platform apps still has to run."""
+    settings.BRIDGE_STRICT = False  # opt-out: this test is the no-op path itself
     bridge.clear()
     assert bridge.find("workflows.start_on_commit") is None
 
     start = bridge.get(bridge.START_WORKFLOW_ON_COMMIT)
     assert start(workflow="Whatever", arg=None, tenant=None, id="x") is None
+
+
+def test_an_unregistered_name_refuses_under_the_test_settings() -> None:
+    """The suite's own settings, untouched: a name nobody registered refuses, as in production."""
+    with pytest.raises(bridge.BridgeNotRegistered):
+        bridge.get("cq_test_1.never_registered")
 
 
 def test_an_absent_name_raises_in_production(clean_bridge: None, settings: Any) -> None:
@@ -115,6 +124,7 @@ def test_an_absent_name_raises_in_production(clean_bridge: None, settings: Any) 
 
 def test_production_settings_are_strict_without_being_told(settings: Any) -> None:
     """`BRIDGE_STRICT` is the override; the settings module is the default."""
+    del settings.BRIDGE_STRICT  # opt-out: the module-name default is the subject
     settings.SETTINGS_MODULE = "config.settings.production"
     assert bridge.strict() is True
 
@@ -182,13 +192,14 @@ def test_no_module_in_core_imports_an_app_above_it() -> None:
         for path in scanned
         if _upward_imports(path)
     }
-    # `introspect` and the `djb` system checks are the two modules whose whole
-    # job is reading what the mounts found (routes, tools — house rules 3 and
-    # 17 diff the live registries); both are exempted by name in the
-    # import-linter contract for the same stated reason, and both import
-    # lazily, inside the function that needs each mount.
+    # `introspect`, the `djb` system checks and the one mount reader are the
+    # three modules whose whole job is reading what the mounts found (routes,
+    # tools — house rules 3 and 17 diff the live registries); each is exempted
+    # by name in the import-linter contracts for the same stated reason, and
+    # each imports lazily, inside the function that needs the mount.
     offences.pop("management/commands/introspect.py", None)
     offences.pop("checks.py", None)
+    offences.pop("api/mount.py", None)
 
     assert offences == {}, f"core reaches upward: {offences}"
 

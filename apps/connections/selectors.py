@@ -106,35 +106,17 @@ def get_connection(*, tenant: Tenant | None, connection_id: UUID, actor: Actor) 
     return connection
 
 
-def get_connection_for_webhook(*, connection_id: UUID) -> Connection:
-    """The connection an inbound webhook names, before any tenant is known.
+def get_connection_for_webhook(*, connection_id: UUID) -> Connection | None:
+    """The connected connection an inbound webhook names, or `None` — before any tenant is known.
 
-    **The one read in this app that is not `for_tenant`,** and the reason is
-    structural: an inbound webhook arrives unauthenticated from somebody else's
-    server — no session, no token, no `X-Tenant` — so there is no tenant to scope
-    by until this row has been found. The tenant is a property of the connection,
-    and the connection is what is being looked up.
+    `None` rather than `NotFound`: the receiver answers no row exactly as a bad signature.
 
-    What stands in for the scoping is checked immediately afterwards by the
-    receiver: the path carries an unguessable UUID, and the body carries an HMAC
-    made with this connection's own secret. `ConnectionManager.for_webhook` also
-    refuses anything that is not `connected`, so a revoked connection is a 404
-    here rather than a signature check against a secret that has been cleared.
-
-    # read-open: there is nobody to ask. This read runs BEFORE any principal
-    # exists — an inbound webhook arrives unauthenticated from somebody else's
-    # server, and the tenant it belongs to is a property of the row being looked
-    # up. What stands in for `connection.read` is the HMAC the receiver checks
-    # immediately afterwards with this connection's own secret; a door that
-    # called this with a person behind it would be asking the wrong question,
-    # and there is no such caller (`api.receive_webhook` is the only one).
+    # read-open: there is nobody to ask — the read runs before any principal exists, and the
+    # HMAC the receiver checks with this connection's own secret stands in for `connection.read`.
     """
     # rule-8: an inbound webhook has no tenant until this row resolves one; the
     # signature check in `api.receive_webhook` is what authorises the read.
-    connection = Connection.objects.for_webhook(connection_id)
-    if connection is None:
-        raise NotFound()
-    return connection
+    return Connection.objects.for_webhook(connection_id)
 
 
 def list_inbound_webhooks(*, tenant: Tenant | None, actor: Actor) -> ScopedQuerySet[InboundWebhook]:

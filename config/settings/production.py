@@ -26,7 +26,10 @@ from .base import (
     SIGN_IN_DOOR,
     SOCIALACCOUNT_PROVIDERS,
     STORAGES,
+    SURFACE_HOSTS,
     _parts_database_password,
+    _surface_names,
+    _surface_origins,
     env,
     machinery_lifetime,
 )
@@ -101,17 +104,13 @@ MIDDLEWARE = [*MIDDLEWARE, "csp.middleware.CSPMiddleware"]
 # per-environment literal**, and never wider than the doors this deployment
 # actually opened. `_authorize_origins` reads the provider blocks `base`
 # already built: an `APPS` list is empty exactly when the provider is
-# unconfigured (no client id, no workspace domain, no issuer), which is also
-# exactly when no button offers that door. A deployment that moves its identity
-# host moves `ZITADEL_ISSUER` and this moves with it.
-
-# Google's authorize endpoint is a constant of the *provider*, not of this
-# deployment: `accounts.google.com` is where allauth's Google adapter sends the
-# browser, for every client id in the world. It is a literal here rather than a
-# read of `GoogleOAuth2Adapter.authorize_url` because importing an allauth
-# provider view drags `socialaccount.models` in, and a settings module cannot
-# touch the app registry while it is still being built.
-_GOOGLE_AUTHORIZE_ORIGIN = "https://accounts.google.com"
+# unconfigured (no client id, no issuer), which is also exactly when no button
+# offers that door. A deployment that moves its identity host moves
+# `ZITADEL_ISSUER` and this moves with it.
+#
+# **Google is not in it.** The workforce's Google is an identity provider inside
+# Zitadel, so our form's redirect chain ends at Zitadel; the hop onwards to
+# Google starts on Zitadel's own page, under Zitadel's policy, not ours.
 
 
 def _origin(url: str) -> str:
@@ -133,10 +132,6 @@ def _authorize_origins(providers: dict[str, Any]) -> list[str]:
     between restarts and a reader can diff two deployments' policies.
     """
     origins: list[str] = []
-
-    google: dict[str, Any] = providers.get("google", {})
-    if google.get("APPS"):
-        origins.append(_GOOGLE_AUTHORIZE_ORIGIN)
 
     # Zitadel, and any other statically configured OpenID Connect app: the
     # origin of the `server_url` allauth builds every endpoint from — the same
@@ -196,7 +191,16 @@ def _declared_redirect_origins() -> list[str]:
         f"{base}{zitadel_seed.BROWSER_LOGOUT_PATH}",
         *zitadel_seed.MCP_CALLBACK_URIS,
     ]
-    return list(dict.fromkeys(origin for origin in map(_origin, declared) if origin))
+    # And every surface's origin: the seed registers a browser callback on each
+    # surface's host (`core.surfaces.surface_base_urls`), so a sign-in completed
+    # on the customer host comes back to the customer host, and a `form-action`
+    # that knew only `PUBLIC_BASE_URL` refused that hop. Settings may not import
+    # `apps`, so the origins are this module's own derivation of the same map —
+    # `base.py`'s `_surface_origins`, the settings-side twin of `absolute_url`.
+    surfaces = _surface_origins(_surface_names(SURFACE_HOSTS), base)
+    return list(
+        dict.fromkeys([*(origin for origin in map(_origin, declared) if origin), *surfaces])
+    )
 
 
 CONTENT_SECURITY_POLICY = {

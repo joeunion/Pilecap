@@ -28,7 +28,7 @@ time.
 
 `TEMPLATE_VERSION` records which release a checkout is on. There is
 deliberately **no sync tooling** beyond that (`docs/product/architecture.md`);
-the trigger for building `scripts/template_sync.sh` is three products existing.
+the trigger for building a `template_sync.sh` under `scripts/` is three products existing.
 
 So an entry here answers one question — *would somebody who cloned this last
 month want to pull this, and what would it change under them?* — and nothing
@@ -46,9 +46,1086 @@ and ignore every one, but the release exists because the first real fold of
 2.1.0 was not the thing it was meant to be, and the number says that rather
 than advertising the drawers.
 
-## [Unreleased]
+## [2.5.0] — A product built only on the SDK pays for none of the platform's tests and touches none of it — proven from zero
 
-Nothing yet.
+### SDK
+
+- added: 518 names — quality/sdk_surface.json is the record
+
+### Changed — the late landings of 2026-10-24, met by a product on its first day
+
+- **`newapp` and every `scaffold` write regenerate the derived blocks** of `docs/product/architecture.md` (the app map) and print `wrote: … — commit it with the app`; a product's first commit passes the hook from zero — the proof from zero was red on the tree before this (`apps/core/scaffold/arms/_common.py`, `quality/docs_derived.py`).
+- **The proof from zero runs nightly and at the release, not on every merge**: `publish.sh --release` dispatches the proof on the source commit — the proof clones `publish.sh --to`'s EXPORT of that commit (what a product clones), pulls the stack as CI's gate does (logged in to the one rationed mirror, ECR Public's, when the repository carries `AWS_ECR_ROLE_ARN`; anonymously otherwise, as a fork does — the road the clean-room drives prove from a real address), runs `setup.sh` twice, and its record (`proof-from-zero/3`) is keyed by the export tree the release consults by — and waits for a green record before anything is tagged; a source with no proof workflow, or a commit not on origin, is refused (`.github/workflows/proof-from-zero.yml` — the template's own workflow, which R14 trims from a product's clone — and `quality/djb/rituals/publish.py`).
+- **CI measures once per PR and narrows what a diff reaches**: the PR-side consult honours a PR's own green run; the selftest and app-test units narrow by the diff's closure and print why, and fail closed when the map cannot vouch (`quality/djb/scope.py`, `quality/djb/ledger.py`); `scripts/ci_cost.py` prints the runner-minutes per merged PR, all-in.
+- **The dispatch ledger is derived and landing is one command**: `scripts/ledger_derive.py` prints the dispatch table from briefs, reports and pull requests; `scripts/pm_land.sh <pr>` merges, reaps the worktree and its database, strikes and books the queue rows a report names (`quality/djb/rituals/land.py`, `scripts/queue_index.py --strike/--book`).
+
+### Changed — the clean-room fixes of 2026-10-25: two developer drives and a DX survey, met before the tag was pushed
+
+- **`setup.sh` reuses a running stack honestly** (#245): the one-shot organs are read from compose's `service_completed_successfully` edges in ONE `ps -a`; a refused image pull prints Docker's first line and the remedy (`docker logout <host>` for an expired stored login); the reuse line names the stack from compose's rendered `name:` and published ports, or is could-not-look — never `<unnamed>` as fact (`scripts/setup.sh`, `scripts/ci_stack.sh::compose_once_members`).
+- **A fresh clone of the release commits** (#248): the derived ledger's hook step prints "no cycle yet" and exits 0 on a tree with no `docs/product/reports/` (`scripts/ledger_derive.py`).
+- **CI's narrowing never reaches a spawned gate** (#247, #248): `quality/djb/env.py::STEERS` is the one list of steering names — the test harness strips them before every test, the proof's child environment derives from it, and the drive preamble's shell copy is held equal to it by a test (`quality/tests/fixtures/env_strip.py`, `quality/djb/rituals/proof_from_zero.py`, `scripts/tests/drive_preamble.sh`); the gate itself reads the narrowing PLAN it was handed, never the steering names.
+- **`build_server()` refuses an MCP tool that would answer without a structured result** (#248): a tool whose return type is a class of this tree with no output schema is refused at boot by name, so the door's `structuredContent` no longer depends on import order (`apps/core/mcp.py::refuse_unstructured_results`, called from `config/mcp.py`).
+- **The proof from zero proves the export, not the source** (#249): the proof line above; records before `proof-from-zero/3` are counted and never honoured.
+- **Twelve day-one refusals say the tool's own cause** (#251): the README's Quickstart declares before it tests, and an undeclared clone's `quality/tests` refuses in one line naming `declare` (`apps/testing/template_only.py`); the frozen-lockfile leg tells pnpm's lockfile-drift family from a fetch failure and prints pnpm's line (`scripts/fe_gate.sh`); `tool_said` and its shell twin `gate_tool_said` quote the tool's last lines under every could-not-look of the first day — `setup.sh`'s sign-in door, the drive doors, `declare`, the gate legs, five `git ls-files` sites (`quality/could_not_look.py`, `scripts/gate_refuse.sh`); `provision.sh up` never starts the compose-run door; `teardown.sh` stops with AWS's line on a probe it cannot read instead of skipping a deletion; **`publish.sh --release` on a product tree is refused once, at the top**, naming the template's ritual and the product's road `deploy/release.sh` (`quality/djb/rituals/publish.py`); shipped pages say whose path a trimmed citation names.
+
+### Fixed before the tag — the third clean-room drive and its code review, 2026-10-26
+
+- **`scaffold child` lands a two-word child** (#255): the child golden's prose (docstrings, strings, comments) says the child in words, so `GerminationTest` is titled `Record a ledger germination test` while its names stay `germination_test`. Every additive shape also refuses before any write when a route it adds would carry a title house rule 41 refuses (`apps/core/scaffold/arms/child.py::prose_held`, `apps/core/scaffold/arms/_common.py::refuse_titles`).
+- **`feature.sh` is green only when the checkout is migrated and the app's own tests pass** (#255): the road is makemigrations · tidy · `--fast` · `migrate --noinput` · `test.sh apps/<app>` (the loop runs the tests itself), and a `green:` line before `next:` says what green vouches for; the one-path steps 5–6 say the same (`quality/djb/rituals/feature.py`).
+- **Rule 16 knows the irregular pasts, and the scaffold conjugates through the same table** (#255): one lexicon, `quality/engine/lexicon.py::IRREGULAR_PAST`, read by rule 16 and by the `verb`/`event` shapes, so `lend` writes `lent`; rule 16 admits every tabled form and refuses an `-ed` spelling of a tabled verb (`lended` → "its past is `lent`"), with a canary and a negative (`quality/checks/rule_16.py`, `apps/core/scaffold/arms/_common.py::past_tense`).
+- **`scaffold verb` adopts the line `scaffold event` wrote** (#255): after an `event` of the same verb, `verb` takes that exact `events.py` line (`adopted:`) instead of refusing it, and refuses only the same string under another constant; `--list` and `shapes.md` say `event` writes `events.py` alone (`apps/core/scaffold/arms/verb.py::adopts_event`).
+- **The workflow shape copies the door that ends its wait** (#255): the approve service, `POST /{id}/approve/` with its route, the MCP twin `approve_<noun>`, the `<noun>.approve` policy lines and the approval tests are fenced `workflow onboard`, so a scaffolded approval wait is signalled from a door; a copy's approve bar is an administrator at the row's node (`may_archive`), and `drive_doors.sh` presses `<noun>-approve` over REST and the run ends approved (`apps/example/services.py`, `apps/core/scaffold/arms/workflow.py::APPROVE_REWRITES`).
+- **Every flag a scaffold ARM reads is on its page** (#255): a census holds each scaffold arm's parser flags to its shape's listed grammar; it found `verb … --transition <from>-><to>` and `workflow … --before <d>`, both now listed in `--list`, `shapes.md` and the developer's hand (`apps/core/scaffold/shapes.py`, `apps/core/tests/test_scaffold.py::test_every_flag_an_arm_reads_is_in_its_shapes_listed_arguments`). The top-level `scaffold` command's own flags (`--role`, `--permissions`, `--families`, read for `surface` and `role`) are not yet censused and are on no page — booked for 2.5.1.
+
+### Changed — rules 91 and 98 say what they are: ratchets over recorded debt
+
+- **Rules 91 (`a-comment-is-the-contract-line`) and 98 (`the-harness-fits-its-budget`) are ratchets over the debt the template shipped with, and the explain reader now says so in their own figures** — "a ratchet over recorded debt: <N> lines across <m> members, down-only since <sha>; a standard for NEW files", summed from the floors (`debt:` on the rule). They bind a new file in full: a file of a recorded member that `quality/ratchet_population.yaml` does not list is judged at zero, and `newapp` and `scaffold` record no rule-91 floor for what they write — a new tail is a line to delete. The recorded debt falls by a step every release: `./scripts/publish.sh --release` refuses a release whose summed floors did not fall from the previous release's line below — by max(5 % of the remaining sum, 2,000 lines) for a minor, by one line for a patch — and the line below is the first baseline. A minor also ships only after the five-lens critique re-read of its own export (`.claude/skills/product-manager/references/critique-brief.md`); a patch is advised. **At the merge:** nothing to do — a product app whose rule-91 floor it recorded itself is judged as a whole, as before.
+
+ratchet-debt: 91=71538 98=3090
+
+### Added — the measured envelope
+
+- **The acceptable tier, measured:** the ship line is `docs/runbooks/capacity.md` § 9's entry dated 2026-10-23 at sha `60b4bc6c820c` (the production shape: one ladder, the 2-hour soak at half its knee, the 50-socket run under that load and idle); `scripts/envelope.sh <sha>` is the road that takes it.
+
+### Added — the bank's bodies in Python
+
+- **`DJB_BANK_CHECKOUT`** names the checkout whose `quality.djb.box.bank` `pm_push.sh`'s 26 `bank_boxes_*` wrapper lines run (then `$ROOT`, then `$PWD`); a product never sets it — a drive that copies `pm_push.sh` out of the checkout does.
+
+### Added — the operator's list of domain claims that route nobody
+
+- **`manage.py sso_domains --unverified`** lists every tenant's email-domain
+  claim no operator has verified, each with the `manage.py verify_sso_domain
+  --tenant <slug> --domain <domain>` line that makes it route. The operator
+  step at the merge: a deployment whose claims predate
+  `accounts.0009_ssodomain_verified_at` (ADR ident-10) runs it once and
+  verifies each live claim; until then those claims route nobody — fail
+  closed, by the owner's ruling of 2026-10-21. Read-only; no audit row.
+
+### Changed — the gate, the box client and the rituals are Python; the valve grammar's verdicts
+
+- **The gate is Python.** `./scripts/check.sh` is a shim onto `python -m
+  quality.djb gate`; every mode, flag, refusal and exit status is the
+  package's (`quality/djb/`), the spellings unchanged. A checkout with no
+  `.venv` is exit 2, except `--list-legs`, which runs on any `python3`.
+- **The verifier-box client is a package.** `scripts/verifier_box.sh` and
+  `scripts/verify_start.sh` are shims onto `quality/djb/box/` and
+  `quality/djb/rituals/verify_start.py`; subcommands and flags unchanged.
+- **The PM rituals are Python.** `pm_merge.sh`, `pm_push.sh`, `pm_fold.sh`,
+  `pm_main_loop.sh`, `publish.sh`, `rung_tidy.sh` and `divergence_census.sh`
+  are shims onto `quality.djb.rituals.<module>`. A product drive that sourced
+  one of them for a function calls the module instead.
+- **A dated valve is enforced.** A valve whose reason ends `— until
+  <YYYY-MM-DD>` past today is exit 2 naming its line; a future date prints
+  its own `until <date>` line under the standing section's `dated:` count; a
+  valve whose reason names a plan coordinate is a violation naming the id. A
+  valve whose trigger is a sentence is unchanged.
+- **The prose bound.** `quality/rules.yaml` `prose: prose_over_code:` records
+  prose lines over code lines, in thousandths, for `scripts/`, `quality/djb/`,
+  `quality/tests/` and `deploy/`; every plain engine run prints them with the
+  worst three files per root, and a root past its number is a violation with
+  the line to paste. A product's `local/` drawers are not measured.
+- **Rule 84's `exit2_helper` is held, not zero,** at its survivors in the
+  shell bootstrap family, declared with its trigger (2.6).
+
+### Changed — one audit row per door call, the core tool names, the ceiling's words
+
+- **One `AuditEntry` per door call (ADR core-29).** `emit`, `record_event`,
+  `enqueue_dispatch` and `record_run` are `@service(witness=False)`: under a
+  service that writes a row they write none, so one archive over REST is one
+  row, not five. Called straight from a door they still write theirs. A
+  product's own service takes `witness=False` only for the same shape.
+- **Three core MCP tools take their derived names** (ADR api-2):
+  `set_flags` → `update_flags`, `set_grant` → `update_grant`,
+  `set_role_permissions` → `update_role_permissions`. An MCP client calling the
+  old names is refused; rename the call.
+- **The hand-out wall names keys, not ranks.** "your own effective role there
+  is …" is gone: a refused grant or take-back names the sentences of the keys
+  the actor is short of, and the route documentation speaks keys at a node.
+- **A workflow is handed the retry floor in its argument.** The reader is
+  `apps.core.retry.retry_floor_seconds` (was `apps.workflows.client`); no
+  workflow module reads settings. A product workflow built on a settings read
+  through `imports_passed_through` moves the number into its argument.
+- **Moved:** the Temporal header names to `apps.core.headers`; the test fake
+  `FakeScheduleServer` to `apps.core.tests.fakes`; the socket bearer header to
+  `apps.core.tests.wire.socket_bearer`. The re-exports at
+  `apps.workflows.determinism` and `apps.workflows.context.current_actor` are
+  deleted — import `apps.core.determinism` and `apps.core.context`.
+- **Added:** the tenant admin's suspend, resume and close actions.
+- **djb_imports: `purge_imports` takes the one purge signature** (ADR core-22): `(*, before, tenant: None) -> Swept`, no `actor`; its audit row is the system's, as every other sweep's is. A caller passing `actor=` drops it.
+- **connections: three route descriptions say what the code does.** On
+  `GET /connections/`, `GET /connections/{id}/` and
+  `POST /connections/{id}/credentials/`, `last_error` is the reason given at
+  revocation, not a provider's error, and `status` is `connected` or
+  `revoked`. `error` is still a reserved `status` value, and nothing sets it.
+  No field or status code changed.
+- **comms: a Twilio status callback on a `{tenant}` staff host** is built
+  with the connection's tenant. Before this it raised `ValueError`.
+- **Eleven reads take rule 16's names** (no route, tool, schema or event
+  moves). Selectors: `accounts.selectors.realm_for_email` →
+  `get_realm_for_email`, `sso_enforced_for` → `get_enforcing_connection_for`,
+  `workforce_domains` → `get_workforce_domains`; `events.selectors.endpoints_for`
+  → `list_endpoints_for`, `dead_lettered` → `list_dead_letters`,
+  `outbox_to_replay` → `list_outbox_to_replay`, `undispatched` →
+  `list_undispatched_outbox`; `search.selectors.search` → `get_search_page`.
+  Moved: `accounts.selectors.is_workforce_email` → `accounts.policies`;
+  `accounts.services.tenants_this_user_alone_owns` →
+  `accounts.selectors.list_tenants_this_user_alone_owns`;
+  `core.services.pending_invitations_for` →
+  `core.selectors.list_pending_invitations_for`. A product importing the old
+  name renames the import.
+- **accounts: a connection's sign-in link on a `{tenant}` staff host** is
+  built with the connection's tenant (`get_platform_login_url` takes
+  `tenant=`). Before this it raised `ValueError`. **The identity home's event
+  refuses in production with no event bus registered** (`BridgeNotRegistered`),
+  as core's own events do, instead of logging that it went unpublished.
+- **The test world gains its clerk.** `apps.core.tests.permissions_world.build_world()`
+  now carries `clerk` (a `member` at A and nowhere else) and `World.user(who)`;
+  a product test counting the world's memberships or a role's holders counts one
+  more. `BranchWorld` and `build_branch_world` are aliases of `World` and
+  `build_world` for this release; import the plain names.
+
+### What a product on the direct Google road does at the merge
+
+**The direct-allauth Google provider is removed; the workforce's Google is an
+identity provider inside Zitadel, and the domain wall is the platform door's.**
+A product whose login page shows a "Continue with Google" button beside
+Zitadel's today — `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` and
+`GOOGLE_WORKSPACE_DOMAINS` set — loses that button at the merge. Its staff
+keep signing in through Google by materialising the same three values as a
+Google IdP inside Zitadel FIRST, so the button moves onto Zitadel's hosted
+page before the direct one goes. And one rule changes for everybody: **the
+platform door mints a new person only at a workforce domain or on an
+invitation** — an empty `GOOGLE_WORKSPACE_DOMAINS` admits no stranger at all.
+
+**The consumer's own order, as they gave it**: *staging
+reconcile → a walker-proven Google sign-in → production → the fold; their
+owner approves the identity change first.*
+
+**The template's steps, on each environment — two before the fold, one after:**
+
+1. **Reconcile the provider.** With the three `GOOGLE_*` values set and the
+   worker up, run `uv run python manage.py zitadel_reconcile` (or the
+   workforce door alone: `uv run python manage.py sync_workforce_idp`). It
+   asks `SyncIdentityConfigWorkflow` for the workforce provider; the worker's
+   activity creates an org-level Google IdP named `Workforce Google` in
+   Zitadel, idempotently. Then `uv run python manage.py zitadel_audit` must
+   print the green shape:
+
+   ```
+   agrees      workforce — idp <id>, domains <your domains> (enforced by this deployment's sign-in door at sign-up, not in Zitadel — ADR ident-6)
+   ```
+
+   Observably: Zitadel's hosted login page now offers Google beside the
+   username and password; the direct button on this deployment's own page is
+   still there. Nothing on this side has changed.
+2. **Take the release.** The direct button goes; one door remains. A person
+   who signed in by the direct road signs in through Zitadel's Google button
+   and is **joined, not duplicated**: their row holds no Zitadel subject yet,
+   so the door's existing rule — the subject resolves the person, the address
+   only introduces one, and only while nothing already speaks for either —
+   links the Zitadel subject to the account at their verified address. Their
+   memberships, roles and history are the same row's.
+
+3. **Retire the direct road's links, after a staff sign-in through Zitadel's
+   Google button is proven.** Every person the direct road created still holds
+   an allauth `SocialAccount(provider="google")`. With the provider no longer
+   installed, each is **a row no provider serves**: it signs nobody in, the
+   connections page under `/accounts/3rdparty/` leaves it out without saying
+   so, and any code that asks it for its provider account
+   (`SocialAccount.get_provider_account()`) gets an error. Printing one still
+   works — `str()` of the row is the person's address.
+   Run `uv run python manage.py retire_direct_google_links --dry-run`, then
+   without `--dry-run`. It deletes the `google` rows only when EVERY holder
+   already carries a Zitadel identity. Otherwise it exits 2 naming the people
+   who have not signed in through Zitadel yet, and deletes nothing: each of
+   them signs in once, and you run it again. Green shape:
+
+   ```
+   retired      <n> direct Google link(s)
+   ```
+
+**Why the order.** Merge first and reconcile second, and nothing is lost — but
+the deployment has a login page with no Google door for the minutes between.
+Retire before everybody has crossed, and the command refuses rather than guess.
+
+**Two things to know after the fold.** A person the direct road created is a
+`User` row and keeps signing in; a NEW person from outside the workspace
+domains, with no invitation and no customer's claimed domain, is refused at
+sign-up with *"That account is not part of this organisation"* and writes no
+row (`accounts.platform.refused reason=domain_not_allowed`). **A disabled
+customer connection counts as no connection**: it resolves nothing, so a NEW
+person from that customer's domain meets the same wall and is refused, and
+nothing is written — where before they landed as an account with no
+membership. People who already have an account still sign in. And the release
+deletes no identity row of yours: the direct road's `SocialAccount` rows stay
+until step three removes them.
+
+### What a product does at the merge
+
+Each part below is read from the tree it names. **The base the census reads**
+is first, because every step after it compares against that base. **The fold
+map** is how a product reads what its rule numbers became. **The roads** are
+the one new collision class and the one new ratchet. **The modified seam** is
+the step per file class for a template-owned file both sides changed. **Your
+own drives** meet a sentinel that is now on. **The member floors** of the
+comment rules move into each app. **The old schedules** are one operator
+paragraph for a long-lived deployment. What one app's merge asks — the
+realm re-seed, the direct Google road, the platform schemas' new names — is
+under that app in **What a client and a product see, by app**. The road
+assumes a product already on 2.2.x or later, whose divergences are named
+`divergence:` lines the divergence census reads.
+
+#### The base the census reads
+
+The collision census and the clone a verifier makes both compare your tree
+against the release you merged, and a product's CI checkout and a box push
+carry no `template` remote. So the fold step WRITES the drawer
+`scripts/local/template-base` — one line, the release's commit sha — and
+commits it; it is the one base declaration that survives a clone, a CI
+checkout and a box push. **The drawer holds the release's commit sha (the
+tag's commit), never the tag name**, because the tag is not fetchable by a
+product's CI or clones and not pushable past the product's own wall. Read the
+sha where the tag is fetched — a laptop with the `template` remote, after
+`git fetch template --tags` — with `git rev-parse '<tag>^{commit}'`, then
+commit the drawer. Typed where the tag does not resolve, `git rev-parse`
+echoes its own argument, and a redirect puts that unresolved string in the
+drawer, which the census then refuses as a base. Two lines of CI a product
+owns meet the same release:
+
+- **The identity shape is declared in the tracked drawer**: `declare` writes
+  `identity_shape: platform_apps=own` into `quality/local/rules.yaml` the day
+  the product has an app of its own under `apps/`, and the census reads the
+  drawer when `DJB_IDENTITY_SHAPE` is unset — so a product's CI needs nothing
+  set (the ignored `.env` line alone never reached CI; IDENT-1, DF-62).
+- **A product whose derive drive predates the walls must hand
+  `DJB_MEMBER_WALLS_OUT` to the legs block**, or every legs case fails at the
+  block's `mkdir` before the gate runs (`.github/workflows/ci.yml` names it
+  under `runner.temp`; supply it in the drive beside `GITHUB_OUTPUT`, outside
+  the scratch checkout).
+
+#### The fold map
+
+Run it with BOTH files, every time. Its one-argument form refuses at exit 2,
+correctly and at length, because it cannot tell which side is the release's;
+a fold note that says only "run the fold map" lands on that refusal. The
+FIRST file is your product's own rules before the merge — the previous rules
+are yours, not the tag's — and the second is the release's. Before the merge,
+from the product's checkout, with the tag fetched:
+
+```sh
+git show HEAD:quality/rules.yaml > /tmp/prev-rules.yaml
+git show v2.5.0:quality/rules.yaml > /tmp/next-rules.yaml
+uv run python -m quality.gate --fold-map /tmp/prev-rules.yaml /tmp/next-rules.yaml
+```
+
+`HEAD` is your pre-merge commit, so the map sees every rule of yours. Only a
+product with no rules of its own may take the tag it is on in that first line
+(`git show v2.4.1:quality/rules.yaml`), because there the two files are one
+and the map has nothing of yours to place. It prints one line per rule, matched by name and never by
+number, and exits 0 with the map or 2 could-not-look. Skip it and a rule of
+yours that shares a number with a template rule is read as the template's.
+
+#### The roads
+
+A **road** is the one mechanism that does a job this platform does exactly
+one way; each carries a marker where it lives, and `manage.py roads` reads
+them off the tree.
+
+1. **Before the merge, the collision census reads roads too.** Take the census
+   and its classifier from the tag, as [2.4.1]'s rename road says, and run
+   `./scripts/divergence_census.sh --against <tag>`. A marker of yours naming
+   a job a release road marks is a `collision: road <job>` line naming both
+   files, exit 2, with the remedy under it: adopt the platform's road (call
+   it, and delete yours), or keep yours and DECLARE it with a comment line
+   directly above your marker, `rule-84` followed by a colon and why your
+   road stays. A declared one prints `kept:` beside the release's and is not
+   counted. `./scripts/divergence_census.sh --roads` prints your checkout's
+   own markers, one line each. Skip it and the merged tree fails house rule
+   84 at your first gate, naming both roads.
+2. **After the merge, read the door.** `uv run python manage.py roads` prints
+   every job with its road, its contract and a worked example, the platform's
+   and yours in two partitions; `roads <job>` prints one, and
+   `roads --json` is the `roads/1` document a brief cites. Step zero writes
+   it to `.rung/roads.json` in every rung worktree.
+3. **Record your own copies once.** Rule 84 also counts, by shape, the copies
+   no marker names — private helpers defined in two apps, shell functions that
+   print a could-not-look banner and exit 2 outside the one refusal seam,
+   discovery walks, hand-typed reason floors. Your first gate prints, per
+   class over the template's recorded number, the line to paste into
+   `quality/local/rules.yaml` under `ratchets:` and `"84":`, stamped
+   `recorded-at <sha> [fold]`. Paste it as printed; the number is added to the
+   template's and moves down only. Skip it and every gate is red on a backlog
+   that was already yours.
+
+#### The modified seam
+
+The files a release MODIFIES that your product also changed are where every
+hand conflict of a fold lands. The rule, per path: a template-owned file with
+no `divergence:` line is yours to take whole from the tag
+(`git checkout <tag> -- <path>`); a file WITH one takes its side by class.
+
+1. **The gate and its rituals take the tag's side, then re-apply your named
+   divergences** — the rule blocks of `quality/rules.yaml`, `quality/checks/`,
+   `scripts/check.sh`, `scripts/gate_ledger.sh`, `scripts/pm_push.sh`,
+   `.github/workflows/ci.yml`, `.github/workflows/nightly-proof.yml`,
+   `quality/tests/test_ci_derive.py` and `deploy/release.sh`. Take the file
+   whole, then apply each named hunk from `git diff <tag you were on>
+   ORIG_HEAD -- <path>` by hand. A hunk-by-hunk merge of a file this long is
+   how a fold carried `gate_ledger.sh`'s CI-verdict section twice, the later
+   copy reading a different record format. Your own rules, checks, legs, drives
+   and CI steps belong in the drawers (`docs/product/build-contract.md`, the
+   `drawers` block), which a fold never touches. Then run the fold map above.
+2. **A template service or its test under `apps/` takes the REVERSE: keep
+   your side, apply the tag's hunks** — `git diff <tag you were on> <tag> --
+   <path>` through `git apply --3way`, or by hand for a short hunk. A
+   whole-file take of a template service drops the guard your product added
+   to it: the measured instance is a product's system-only guard on
+   `archive_emptied_file` in `apps/files/services.py`, gone after a
+   whole-file take, with nothing red. Then read `git diff <tag> -- <path>`:
+   it must show exactly your named hunks. An empty diff on a path you named
+   is a divergence the merge lost.
+3. **Prove it.** `./scripts/divergence_census.sh` (no `--against`) exit 0 —
+   every divergence still named — and `./scripts/check.sh --loop` exit 0.
+
+#### Your own drives
+
+The drive preamble's finished-sentinel is now on by default: a product drive
+in `scripts/local/drives/` that sources `scripts/tests/drive_preamble.sh` and
+exits 0 without calling `drive_finished` — green until now — exits 2
+(`DIED BEFORE REPORTING`) on any bash. The remedy is one line,
+`drive_finished`, immediately after the drive's summary line (or
+`DRIVE_OPTED_IN_TO_FINISH=0` after the source line, with a comment saying
+why).
+
+#### The member floors: rule 91
+
+House rule 91 counts comment lines past the contract line in four classes per
+member (`docstring-tail`, `module-tail`, `block-tail`, `narrative`), recorded
+at the measured count and down-only. The per-member floors of rules 86–89 and
+91 now live with the member: a template app's in its `AppConfig.ratchet_floors`
+(keyed `"<rule>.<class>"`), the platform's other members' in
+`quality/ratchet_floors.yaml`; `quality/rules.yaml` keeps no member number. A
+product app's finding in one of these classes prints the line to paste into
+ITS OWN `apps.py`, never into a drawer; a drawer row for an app class on these
+rules is refused with the same line.
+
+#### The old schedules: a long-lived deployment deletes eleven ids by hand, once
+
+Every platform sweep and reconcile is now declared through
+`apps.core.schedules` (`platform_schedule`, `daily_purge`), under house rule
+18's `platform:` shape, one id for the schedule and the run it starts. The old
+ids are keyed by the task queue, so they cannot be `legacy_ids` constants and
+the worker does not remove them: **a deployment whose worker ran an earlier
+release deletes each old schedule once** — in the Temporal UI, or
+`temporal schedule delete --schedule-id <old id>` — or both schedules run and
+each sweep or probe runs twice. A fresh deployment has nothing to do. Old →
+new, per app (`<queue>` is the deployment's task queue):
+
+| App | Old id | New id |
+|---|---|---|
+| `connections` | `connections-purge-inbound-webhooks:<queue>` | `platform:connections:purge:<queue>` |
+| `core` | `system:core:integrations:<queue>` | `platform:core:integrations:<queue>` |
+| `djb_imports` | `imports-purge-expired:<queue>` | `platform:djb_imports:purge:<queue>` |
+| `events` | `events-purge-expired:<queue>` | `platform:events:purge:<queue>` |
+| `events` | `events-reconcile-outbox:<queue>` | `platform:events:reconcile:<queue>` |
+| `exports` | `exports-purge-expired:<queue>` | `platform:exports:purge:<queue>` |
+| `files` | `files-sweep-pending-uploads:<queue>` | `platform:files:sweep-pending:<queue>` |
+| `search` | `system:search:reconcile:<queue>` | `platform:search:reconcile:<queue>` (the run it starts kept its `platform:` id) |
+| `workflows` | `workflows-reconcile-runs:<queue>` | `platform:workflows:reconcile:<queue>` |
+| `workflows` | `workflows-purge-finished-runs:<queue>` | `platform:workflows:purge-runs:<queue>` |
+| `workflows` | `workflows-purge-expired-sessions:<queue>` | `platform:workflows:purge-sessions:<queue>` |
+
+### What a client and a product see, by app
+
+Apps in the platform partition's order (`quality/partition.yaml`). One change
+reaches every app with a door, and it is said once here:
+
+- **A request that resolved no tenant (or no acting organisation) is
+  `403 no_acting_scope`**, with the registry's remedies, on every route and
+  MCP tool of `connections`, `djb_imports`, `djb_notes`, `djb_tags`, `events`
+  (webhook endpoints, deliveries, dead letters), `example`, `example_portal`,
+  `exports`, `files`, `search`, `usage` and `workflows` (the run ledger). It
+  was a bare `403 forbidden` with a sentence — or, on some reads, an empty
+  answer; the per-app lines below name those. Every route that publishes its
+  refusal set now lists `no_acting_scope`.
+
+#### `accounts`
+
+- **`zitadel_first_admin` prints staff-surface links** — its three links are
+  built by `absolute_url(…, surface=STAFF)`. They differ from before only
+  where `staff` is bound to a host other than the public base URL's.
+- **The identity declarations and the MCP door's resource URLs read
+  `core.surfaces.surface_base_urls()[0]`** — the value they read before, on
+  every surface shape; nothing declared to the identity platform moves.
+- **Operator refusal messages say "the deployment's public base URL"** where
+  they named the setting — rule 84 counts the name in prose.
+- **`RealmOut`'s published description lost a planning coordinate** (the
+  document and the client moved by that one line).
+- **Four membership reads go through the fail-closed manager**
+  (`for_tenant(t)` / `.of(user)`); every answer is the same row set.
+
+##### The direct Google road is retired: what a product on it does at the merge
+
+**The direct-allauth Google provider is removed; the workforce's Google is an
+identity provider inside Zitadel, and the domain wall is the platform door's.**
+A product whose login page shows a "Continue with Google" button beside
+Zitadel's today — `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` and
+`GOOGLE_WORKSPACE_DOMAINS` set — loses that button at the merge. Its staff
+keep signing in through Google by materialising the same three values as a
+Google IdP inside Zitadel FIRST, so the button moves onto Zitadel's hosted
+page before the direct one goes. And one rule changes for everybody: **the
+platform door mints a new person only at a workforce domain or on an
+invitation** — an empty `GOOGLE_WORKSPACE_DOMAINS` admits no stranger at all.
+
+**The consumer's own order, as they gave it**: *staging
+reconcile → a walker-proven Google sign-in → production → the fold; their
+owner approves the identity change first.*
+
+**The template's steps, on each environment — two before the fold, one after:**
+
+1. **Reconcile the provider.** With the three `GOOGLE_*` values set and the
+   worker up, run `uv run python manage.py zitadel_reconcile` (or the
+   workforce door alone: `uv run python manage.py sync_workforce_idp`). It
+   asks `SyncIdentityConfigWorkflow` for the workforce provider; the worker's
+   activity creates an org-level Google IdP named `Workforce Google` in
+   Zitadel, idempotently. Then `uv run python manage.py zitadel_audit` must
+   print the green shape:
+
+   ```
+   agrees      workforce — idp <id>, domains <your domains> (enforced by this deployment's sign-in door at sign-up, not in Zitadel — ADR ident-6)
+   ```
+
+   Observably: Zitadel's hosted login page now offers Google beside the
+   username and password; the direct button on this deployment's own page is
+   still there. Nothing on this side has changed.
+2. **Take the release.** The direct button goes; one door remains. A person
+   who signed in by the direct road signs in through Zitadel's Google button
+   and is **joined, not duplicated**: their row holds no Zitadel subject yet,
+   so the door's existing rule — the subject resolves the person, the address
+   only introduces one, and only while nothing already speaks for either —
+   links the Zitadel subject to the account at their verified address. Their
+   memberships, roles and history are the same row's.
+
+3. **Retire the direct road's links, after a staff sign-in through Zitadel's
+   Google button is proven.** Every person the direct road created still holds
+   an allauth `SocialAccount(provider="google")`. With the provider no longer
+   installed, each is **a row no provider serves**: it signs nobody in, the
+   connections page under `/accounts/3rdparty/` leaves it out without saying
+   so, and any code that asks it for its provider account
+   (`SocialAccount.get_provider_account()`) gets an error. Printing one still
+   works — `str()` of the row is the person's address.
+   Run `uv run python manage.py retire_direct_google_links --dry-run`, then
+   without `--dry-run`. It deletes the `google` rows only when EVERY holder
+   already carries a Zitadel identity. Otherwise it exits 2 naming the people
+   who have not signed in through Zitadel yet, and deletes nothing: each of
+   them signs in once, and you run it again. Green shape:
+
+   ```
+   retired      <n> direct Google link(s)
+   ```
+
+**Why the order.** Merge first and reconcile second, and nothing is lost — but
+the deployment has a login page with no Google door for the minutes between.
+Retire before everybody has crossed, and the command refuses rather than guess.
+
+**Two things to know after the fold.** A person the direct road created is a
+`User` row and keeps signing in; a NEW person from outside the workspace
+domains, with no invitation and no customer's claimed domain, is refused at
+sign-up with *"That account is not part of this organisation"* and writes no
+row (`accounts.platform.refused reason=domain_not_allowed`). **A disabled
+customer connection counts as no connection**: it resolves nothing, so a NEW
+person from that customer's domain meets the same wall and is refused, and
+nothing is written — where before they landed as an account with no
+membership. People who already have an account still sign in. And the release
+deletes no identity row of yours: the direct road's `SocialAccount` rows stay
+until step three removes them.
+
+##### Every tenant gets a realm of its own: the re-seed
+
+Each tenant now signs in at its own realm, an organisation at the identity
+platform. The realm is made when the tenant is created, the platform's
+project is granted to it, and it carries its own login policy. The
+deployment's existing organisation stays the **staff realm**. There is no
+migration road. A deployment with no production users takes the release and
+runs three commands, in this order:
+
+```sh
+uv run python manage.py migrate
+uv run python manage.py zitadel_seed
+uv run python manage.py zitadel_reconcile
+```
+
+- **`migrate`** takes the `accounts` leaf. `0011` moves every
+  `User.zitadel_sub` into the identity join as a staff-realm row, and its
+  reverse writes them back. The column stays until a later release drops it.
+  **`0012` is a no-op forward on a database that never rolled back**; it
+  matters only to a rollback: its reverse records a tenant-realm person's realm
+  and tenant in `User.zitadel_sub`, so a round trip to `0010` and back keeps
+  them in their realm. A `staff` row a rollback through `0011` alone left
+  beside a realm row is retired by `zitadel_reconcile`, printed.
+- **`zitadel_seed`** records the staff realm and turns the project check on,
+  so a realm the project was not granted to cannot sign in. It asserts
+  `IAM_OWNER` on the credential, and registers a browser callback for every
+  surface in `SURFACE_HOSTS`.
+- **`zitadel_reconcile`** homes every tenant that has no realm, through the
+  same run `create_tenant` starts. `manage.py zitadel_audit` then prints
+  `n of n tenants homed` on its orgs line, both numbers counted from your
+  own tenants.
+
+Who sees it:
+
+- **A connection with `enforced` on.** `enforced` is now the tenant realm's
+  login policy: the password is off and the provider is required.
+  `SsoConnectionOut.enforced` reads `true` only once that policy has landed,
+  and `sync_state` sits beside it. Switching `enforced` on before the
+  connection's provider has reached the identity platform is refused with
+  `409 enforced_without_provider`.
+- **Code that read `User.zitadel_sub`** reads the identity join instead:
+  `SsoIdentity` rows with no connection, one per realm a person holds a
+  subject in. The one writer is `services.record_identity`, which replaces
+  `record_zitadel_identity`.
+- **Code that read the `created` flag of an identity result.**
+  `IdentityConfigApplied.created`, `InvitedIdentity.created` and
+  `InvitedPersonProvisioned.created` are gone: the realm port's answers never
+  say whether a call made a thing or found it, so each read `false` on a
+  thing just made — a value that is always false is a lie on the wire. A
+  product that needs "was it created" reads it at the activity, where the
+  identity client's own `Resource.created` (`apps/accounts/zitadel.py`) is in
+  hand, and logs it there.
+- **An invitation's set-your-password link follows the sign-in door.** Under
+  `SIGN_IN_DOOR=ours` it is the surface's own entrance, on the host of the
+  surface the invited role belongs to — a customer's mail lands on the
+  customer host. Under `hosted`, the default, it is Zitadel's own page on
+  Zitadel's host, carrying Zitadel's `userID` and `code` and nothing of ours;
+  the person's realm is read when they sign in.
+- **The identity-home drive needs Zitadel and Mailpit.**
+  `quality/tests/test_identity_home.py` drives a real worker, a real Zitadel
+  and a second host, so the self-test unit's needs carry `zitadel,mailpit`
+  and CI starts both for that unit. A product's own CI that lists the
+  template's units takes the line as it is; one that pins its own services
+  starts the two beside them, or the drive reads could-not-look.
+
+#### `comms`
+
+- **No `comms.message.*` event carries `recipient_email`, and no
+  `comms.recipient.*` event carries `email`, `display_name`, `phone` or
+  `chat_handle`** — `MessageOut` and `RecipientOut` mark them `personal`: the
+  message events name the contact by `recipient_id`, `archived`/`restored` carry
+  `id`, `user_id`, `organization_id`, `created_at` and the archive pair; the
+  doors still answer every field. No `v` moves; a replay of a row stored before
+  this still carries them.
+- **`GET /messages/{id}/engagement/` publishes its `400 invalid`** — the
+  refusal the route always answered and the document never listed.
+- **The SMS status callback URL is built on the `staff` surface's host**
+  through `absolute_url`, where it read the public base URL by hand. With
+  `staff` bound to another host, a message sent before the deploy fails its
+  callback signature after it (fail-closed; in-flight messages only).
+- **Eleven keys (`device.create`, `device.retire` among them) are declared to
+  `member`** in `apps/comms/policies.py`'s `DEFAULT_ROLES`. Every `allows`
+  answer is unchanged; what moves is under `core` below.
+
+- **`GET /api/v1/recipients/` refuses `?archived=`** in the declared sentence
+  of the archive family (`core`'s retired-query line below); comms' own wording
+  ("no longer accepted") is gone.
+
+#### `connections`
+
+- **`record_failure` is gone** — nothing called it. `Connection.Status.ERROR`
+  has no writer; it had none in production before.
+
+- **The inbound webhook receiver's `401` carries a code**, `invalid_signature`
+  with its remedy, where it was `unauthenticated` with the sentence "Invalid
+  signature."; the route's published refusals now list it.
+- **An inbound webhook to a connection id that names nothing (or a revoked
+  connection) is `401 invalid_signature`**, byte-equal to a bad signature,
+  where it was `404 not_found` — which told a sender the id did not exist.
+- **The OAuth callback's spent or foreign `state` is `400 invalid` naming
+  `state`** in `errors`, where it was a `400` with a sentence alone.
+
+#### `core`
+
+- **A field that names a person is marked `personal` on its `Out`, and no
+  event carries one.** `core.schemas.personal()` sits beside `example()`
+  (`Field(json_schema_extra=personal(example("dana@example.com")))`); the doors
+  keep answering the field and OpenAPI shows `x-personal: true` on it;
+  `event_payload` strips every marked field at any depth, by the `Out`'s
+  declarations; `events.emit` refuses a payload its `Out` marks with the field
+  put back. Marked in core: `MembershipOut.user_email` and `ArchivedByOut.name`
+  — an event of an archived row carries `archived_by` as `{"id"}` alone (`name` was `null` in the template; a
+  product whose user carries `full_name` published it). No `v` moves; a replay
+  of a row stored before this still carries the field. `MembershipEventOut` is
+  gone — `core.membership.updated`'s keys are unchanged.
+- **Core's six hand-out events carry the row as the doors answer it, at
+  `v: 1`.** Each payload is the row's `Out` through `event_payload`; no `v`
+  moves, because no product has consumed the old shape yet (ADR core-26).
+  - `core.role.created`, `core.role.updated`, `core.role.deleted` carry
+    `RoleOut`: `key` (it was `role_key`), `name`, `description`, `kind`,
+    `permissions`, `default_permissions`, `added`, `removed`,
+    `is_default_for_new_members`, `created_at`, `updated_at`. `updated`
+    carries the whole role on a rename and on a collection change alike;
+    `deleted` carries the role as it stood before the delete.
+  - `core.membership.updated` carries `MembershipOut` less its `personal`
+    field (`user_email`): `id`
+    (it was `membership_id`), `user_id`, `organization_id`, `role`,
+    `is_default`, `created_at`, `updated_at` — no `user_email` (principle 18);
+    a subscriber reads the person through the API, and a replay of a row
+    stored before this carries `user_email`.
+  - `core.grant.created` and `core.grant.deleted` carry `GrantOut`: `id`,
+    `membership_id`, `organization_id`, `permission`, `sentence`, `effect`,
+    `created_at`; `deleted` carries the grant as it stood.
+  - **`tenant_id` is no longer a payload key** on any of the six; the event
+    itself belongs to the tenant.
+  - **A subscriber** reading `role_key`, `tenant_id` or (on the membership
+    name) `membership_id` reads `key`, the event's tenant and `id`.
+    **A replay** re-sends a stored event as it was emitted: an event of these
+    six names recorded before this release still carries the old flat keys
+    under the same `v: 1`, so a subscriber that replays history reads both
+    shapes.
+  - `events.endpoint.registered`, the seventh event whose payload moved this
+    release, is the `events` bullet below.
+
+- **`DELETE /roles/{key}/` no longer lists `invalid`** — a key the tenant
+  did not make has no `Role` row, so the route answers `not_found`; the 404
+  bullet says so. `MeasuredOut`'s description moved by a comment trim.
+
+- **Declaring a key to `member` moves two published answers, for every key
+  this release declares** (comms 11, workflows 3, example and the two `djb_`
+  nouns 20, exports, files and imports 8). The token mint's
+  `effective_scopes` echo now names the family's write scope — a member
+  minting `widgets:write` sees it echoed; the token could already do the
+  write, authority is unchanged. And the role editor's take-away is now
+  effective: an owner removing such a key from `member` stored nothing before
+  and the member kept it; now it stores an exclusion and the member is
+  refused. Default answers and a tenant's stored rows are unchanged.
+
+##### A retired query parameter
+
+**A list that no longer takes a query parameter declares it once, beside
+`PREFIX` and `TAGS`, and every reader defers to that declaration.** The
+grammar is `RETIRED_QUERY: dict[str, RetiredQuery]` in the app's `api.py`,
+keyed by the retired name — `RetiredQuery(instead=<the live parameter>,
+reason=<the one sentence a caller reads>)`, from `apps/core/api/query.py`; a
+module with nothing retired declares nothing, as with `TAGS`. The list route
+calls `refuse_retired_query(request, RETIRED_QUERY)` first: `400 invalid`
+naming the live parameter, in the declared sentence. The two template lists
+that retired `?archived=` in favour of `?show=` — files' `GET /api/v1/files/`
+and comms' `GET /api/v1/recipients/` — declare the archive family's one value,
+`ARCHIVED_SWITCH`, so the refusal is one sentence now: comms' wording ("no
+longer accepted") moved to files' ("`archived` is not a parameter of this
+list …").
+
+Who sees it:
+
+- **A product with a strict-query seam** — one that refuses any query
+  parameter a route does not take — calls
+  `apps.core.api.query.retired_query_of(operation)` before refusing, and lets
+  the route answer the parameters it names (`manage.py roads retired_query`).
+  A seam that does not ask it answers `?archived=` in its own words, and the
+  template's archive tests on those two lists, which assert the declared
+  sentence, go red on your tree.
+- **The published document** carries each retired parameter on each list
+  that takes its successor, as a query parameter with `deprecated: true` and
+  the sentence as its description. A generated client gains an optional,
+  deprecated `archived` on those two lists' query types; it is refused if
+  sent, so a screen never sends it.
+
+##### Surfaces: a second audience on the same records
+
+**A product answers at several hosts with one set of records**: staff at one
+host, customers at another, one database, one set of services, different
+doors and roles at each. A host's SURFACE is declared by the app that owns
+the audience — `apps/<label>/surfaces.py` exporting `SURFACES`, found by
+discovery — and bound to a host by the environment, `SURFACE_HOSTS` (deploy:
+`SURFACE_ADDRESSES`, from which `deploy/provision.sh` derives the rest). The
+worked second surface is the template's own: `apps/example_portal` declares
+`customer` (the `widgets` and `portal_requests` families, the `read` act, the
+`customer` role, the tenant chosen by the person's one membership), with its
+noun `PortalRequest` and its face at `frontend/src/screens/customer/` and
+`frontend/src/app/(customer)/`.
+
+**A product that declares no surface is what it was.** The platform's
+`staff` surface is implicit and total, and with `SURFACE_HOSTS` unset every
+admitted host is that surface — nothing new is refused and nothing on the
+wire moves. A product on one host folds and declares nothing.
+
+Who sees it:
+
+- **Every audit row carries `surface`** beside `door` (one expand-only
+  `core` leaf; existing rows read `staff`), and so does the actor and every
+  log line's bound context.
+- **A role a declared surface admits holds exactly what its declaration
+  says.** A predicate that says "any member" grants it nothing; the
+  platform's own roles keep the un-swept residue until the consolidation's
+  sweep, and the flat census's `residue` section is that count. A product
+  whose surface role relied on a residue key declares the pattern in the
+  role's `roles.py`.
+- **Every link the system sends is built for its surface**
+  (`manage.py roads absolute_url`, with `roads surface_for_role`): a
+  customer's invitation lands on the customer host. House rule 85 holds a
+  declaration to the tree, and house rule 84's `hand_url` class counts a link
+  built from `PUBLIC_BASE_URL` outside that builder — your first gate prints
+  its ratchet line with the other classes'.
+- **The face asks which surface it is on** (`GET /api/v1/surface/`) and draws
+  that surface's pages; a staff page at a customer host is the face's own
+  seat with `noindex`, a customer page at the staff host a server 404.
+- **A deployment with a second host** lists every name in
+  `SURFACE_ADDRESSES` — each `host` or `key=host`, `SITE_ADDRESS` always the
+  staff surface, an unkeyed second name the `customer` one — and
+  `provision.sh env-file` writes `SURFACE_HOSTS` and the Caddy site block's
+  names from it; a hand edit of the list re-runs `provision.sh surfaces
+  <file>`. A `{tenant}` host is refused at the edge (it would need a wildcard
+  certificate). The derivation runs on the box's system Python, 3.7 or later.
+- **Sessions are per host.** A person who is staff on one host and a
+  customer on another signs in twice; a passkey enrolled on one host is not
+  offered on the other.
+
+#### `djb_imports`, `djb_notes`, `djb_tags`
+
+- **No `djb_notes.note.*` event carries `author_email`** — `DjbNoteOut` marks
+  it `personal`: `created`, `updated`, `archived`, `restored` and `moved` name
+  the author by `author_id` alone; the doors still answer it. No `v` moves; a
+  replay of a row stored before this still carries it. An erased author's
+  address now survives in no event payload.
+
+##### The platform schemas' names
+
+**Every schema class of `djb_notes`, `djb_tags` and `djb_imports` carries the
+platform's word, `Djb`, as those apps' labels, tables and mounts already do.**
+Two classes of one name in the one OpenAPI document do not both survive: the
+document keeps ONE component, the last-discovered class's, and describes the
+other app's routes with it. So a product with its own `NoteOut` had the
+platform's `/api/v1/djb_notes/` routes described by the product's fields, with
+nothing red. Now the platform's names cannot meet a product's. The map, old →
+new, per app:
+
+| App | Old | New |
+|---|---|---|
+| `djb_notes` | `NoteFilter` · `NoteIn` · `NotePatch` · `NoteOut` · `NotePage` | `DjbNoteFilter` · `DjbNoteIn` · `DjbNotePatch` · `DjbNoteOut` · `DjbNotePage` |
+| `djb_tags` | `TagIn` · `TagPatch` · `TagOut` · `TagPage` · `TagLinkIn` · `TagLinkOut` · `TagLinkPage` | `DjbTagIn` · `DjbTagPatch` · `DjbTagOut` · `DjbTagPage` · `DjbTagLinkIn` · `DjbTagLinkOut` · `DjbTagLinkPage` |
+| `djb_imports` | `ImportIn` · `ImportFilter` · `ImportCountsOut` · `ImportOut` · `ImportStagedOut` · `ImportPage` · `ImportRowOut` · `ImportRowPage` | `DjbImportIn` · `DjbImportFilter` · `DjbImportCountsOut` · `DjbImportOut` · `DjbImportStagedOut` · `DjbImportPage` · `DjbImportRowOut` · `DjbImportRowPage` |
+House rule 91 counts comment lines past the contract line in four classes per
+member (`docstring-tail`, `module-tail`, `block-tail`, `narrative`), recorded
+at the measured count and down-only. The per-member floors of rules 86–89 and
+91 now live with the member: a template app's in its `AppConfig.ratchet_floors`
+(keyed `"<rule>.<class>"`), the platform's other members' in
+`quality/ratchet_floors.yaml`; `quality/rules.yaml` keeps no member number. A
+product app's finding in one of these classes prints the line to paste into
+ITS OWN `apps.py`, never into a drawer; a drawer row for an app class on these
+rules is refused with the same line.
+#### Rule 92, rule 47's bullets, and the engine's blind spots
+
+House rule 92: every `transaction.on_commit(` registration under `apps/` sits
+inside a function marked `@road(...)` (rule 84), or carries `# rule-92:
+<reason>`; the template's own unmarked sites are a recorded, down-only backlog.
+A product's new registration outside a marked seam is a red. Rule 47 now reads
+a route's docstring refusal bullets (`* `<status> <code>``) against its
+`x-refusal-codes`: a bullet the document does not publish is a finding
+(`@also_refuses(...)` naming the code, or drop the bullet). Rule 49 reads a
+service on `core.schedules.daily_purge`'s one sweep signature (`(*, before:
+datetime, tenant: None) -> Swept`) as ADR core-22's absence 1 without a list
+entry. Rule 89 no longer reads a linter's `noqa:` codes or a
+`does-not-cover:` line; rule 9 reads `from apps.core import determinism` as
+the admitted seam; rule 84's `exit2_helper` reads no heredoc text. The
+house-rules leg runs its unmemoised scans across processes and its runners on
+threads (`DJB_RULES_WORKERS=1` scans in order, in one process); the self-test
+prints the append fixtures whose names lean on their plant site's imports.
+#### A long-lived deployment's old imports-sweep schedule
+
+The names the document derives follow: `PagedNoteOut` is `PagedDjbNoteOut`,
+and so for every paginated `Out`. Who sees it:
+
+- **A product that imports a platform schema class by name** re-spells the
+  import — `from apps.djb_tags.schemas import TagOut` is
+  `from apps.djb_tags.schemas import DjbTagOut`, as `apps/example/schemas.py`
+  now reads.
+- **A product whose generated client aliases a platform component** —
+  `components["schemas"]["NoteOut"]` — regenerates the client
+  (`./frontend/scripts/pin_client.sh --write`) and points the alias at the
+  new name. The alias keeps its own word: the worked face's `Note`, `Tag`,
+  `ImportRun` and `ImportRow` now read `DjbNoteOut`, `DjbTagOut`,
+  `DjbImportOut` and `DjbImportRowOut`.
+- **A product whose OWN schema is named `Note*`, `Tag*` or `Import*`** no
+  longer collides and may keep its name. A rename made to dodge the collision
+  (a `FieldNote*`, say) stands or reverts at the product's choice.
+
+What does not move: the REST bodies, the MCP tool results, the routes and
+their `url_name`s, the tool names and the refusals are byte-identical, and so
+is every MCP tool's output schema at its root but for its name. What does:
+the document's component names, the generated types, and, in each MCP tool's
+published output schema, both the `title` (the class's name) and the `$defs`
+names of every nested schema it reaches — a non-platform tool included where
+its `Out` nests a platform one (`get_widget`'s `TagOut` is `DjbTagOut`,
+through `WidgetDetailOut.tags`).
+Each of those apps' `schemas.py`, and `apps/example/schemas.py`, carries
+a `rule-17` valve saying so, because house rule 17's breaking-`Out` clause
+reads a renamed class as a removed one.
+
+##### What a client of notes, tags and imports sees
+
+- **An import run that broke records `run_failed`** in `failure` — `code`,
+  `detail`, `remedies` — where it recorded `{"detail": …}` alone. **A cancelled
+  run records no refusal**: `failure` is `{}` and `cancelled_at` is set.
+- **`list_tags(show=...)` refuses an unknown cut** below the door as both
+  doors already did, `invalid` naming `show`.
+
+#### `events`
+
+- **`events.endpoint.registered` carries `WebhookEndpointOut` at `v: 1`.**
+  `endpoint_id` is gone; `id`, `url`, `is_active`, `event_names`,
+  `description`, `created_at` and `updated_at` are there (still no secret).
+  No `v` moves, because no product has consumed the old shape yet. A replay
+  re-sends a stored event as it was emitted, so a stored row still carries
+  `endpoint_id` under the same `v: 1`.
+- **`POST /dead-letters/{id}/replay/` publishes its `400 invalid`** — the
+  refusal for a delivery that was never given up on, which the route always
+  answered and the document never listed.
+- **The webhook routes' MCP read tools** (`list_endpoints`, `get_endpoint`,
+  `list_deliveries`, `list_dead_letters`) answer `no_acting_scope` where they
+  answered `forbidden`.
+- **The dispatch workflow's argument carries the retry floor.**
+  `DispatchEventWorkflow` is started with `DispatchEvent(event_id,
+  retry_floor)`: the deployment's `TEMPORAL_RETRY_INITIAL_INTERVAL_SECONDS`,
+  read on the Django side, so the workflow module reads no settings. A dispatch
+  recorded before the upgrade and resumed after it hashes a different
+  argument; the relay counts it `unresolved`, and `manage.py replay_events`
+  re-dispatches it.
+
+#### `example`, `example_portal`
+
+- **No `example.widget.*` event carries `owner_email` or `owner_name`** —
+  `WidgetOut` marks both `personal` (the worked example of `core`'s mark):
+  `created`, `updated`, `deleted`, `onboarded`, `archived`, `restored`,
+  `moved`, `duplicated` and `merged` name the owner by `owner_id` alone; the
+  doors still answer both fields. No `v` moves; a replay of a row stored before
+  this still carries them.
+- **No `example_portal.portal_request.*` event carries `requester_email`** —
+  `PortalRequestOut` marks it `personal`: `submitted` and `moved` name the
+  customer by `requester_id` alone; the doors still answer it. No `v` moves; a
+  replay of a row stored before this still carries it.
+- **A widget outside the acting hat is `not_found` on update, delete and
+  onboard** — the three services ask `may_be_named` before the capability,
+  where they reached the row first.
+- **`POST /widgets/{id}/duplicate/` and `GET /widgets/{id}/merge/` publish
+  their `400 invalid`** — refusals the routes always answered.
+- **Twenty keys across `example`, `djb_notes` and `djb_tags` are declared to
+  `member`** in each app's `DEFAULT_ROLES`. Every `allows` answer is
+  unchanged; what moves is under `core` below.
+
+- **The worked example's two doors call one capability function each.**
+  Every widget route and its MCP twin resolve the caller and call one
+  keyword-only `(tenant, actor, …)` function in `apps/example/api.py` that
+  returns the `Out` — the shape a product copies from the golden fences. Who
+  sees it: a caller with no membership. The REST door's no-tenant refusal is
+  the registered `403 no_acting_scope` body (it was `forbidden`, its `detail`
+  and remedies), and the machine door's list tools answer it too where they answered `forbidden`;
+  `GET /api/v1/widgets/policies/governing/` publishes `no_acting_scope` among
+  its refusals. The `example.widget.moved`, `.merged` and `.onboarded` payloads
+  carry the same keys, now built from an event `Out` each. A product that
+  copied the example's `_acting` replaces it with `apps.core.api.acting`.
+- **The worked portal's doors resolve the caller through `acting`.**
+  `/api/v1/portal-requests/` and its three MCP twins refuse a request that
+  resolved no tenant with `403 no_acting_scope`, and both doors read the widget a
+  request names through the example's selector and leave the reach fence to
+  `submit_portal_request` — the door-side `named_widget` is gone. A product that
+  copied the portal replaces `named_widget` with its noun's own `get_<noun>`.
+
+#### `exports`, `files`
+
+- **`GET /files/{id}/versions/` publishes its `400 invalid`** — the refusal
+  for an ordering the list does not accept, which the route always answered.
+- **Eight keys across `exports`, `files` and `djb_imports` are declared to
+  `member`.** `file.archive` and `file.restore` are among them while
+  `may_archive` still refuses every member: `introspect` shows a member
+  holding two keys no member can use. Every `allows` answer is unchanged.
+
+- **The files and exports reads** answered a request with no tenant or hat an
+  empty page or `forbidden`; they answer `no_acting_scope` now.
+- **`GET /api/v1/files/` refuses `?archived=`** in the archive family's
+  declared sentence (`core`'s retired-query line above).
+- **`?subject=` on the files list and `subject` on a filing judge the kind
+  first:** a kind that takes no files is `400 invalid` naming `subject` even
+  when its row is out of reach, where it was `404 not_found` — the order every
+  other attachment owner already answered in.
+
+#### `search`
+
+- **`GET /api/v1/search/` and `GET /api/v1/search/kinds/`** refuse a request
+  with no tenant with `no_acting_scope` (it was `forbidden`), and their MCP
+  twins `search_query` and `list_search_kinds` now refuse it too —
+  `search_query` used to answer an empty page.
+
+#### `usage`
+
+- **`GET /api/v1/usage/`** answers a request with no tenant with
+  `no_acting_scope` (it was a bare `forbidden` body). An `X-Org` that does not
+  resolve was already refused by the addressing law before the route ran
+  (`addressing_header_not_honoured`); the route's own copy of that check is
+  gone.
+
+#### `workflows`
+
+- **`workflow_run.signal`, `.replay` and `.cancel` are declared to `member`**
+  in `apps/workflows/policies.py`'s `DEFAULT_ROLES`. Every `allows` answer is
+  unchanged — `member` held the three keys before, undeclared. The token
+  mint's `effective_scopes` echo is not: a member's declared write keys backed
+  `auth, tokens, users` and now back `auth, runs, tokens, users`, so a member
+  minting a token with `runs:write` sees it echoed. Authority is unchanged.
+- **The run ledger's replay and cancel** answered a request with no tenant a
+  bare `403`, and its reads `forbidden`; every run-ledger route and tool
+  answers `no_acting_scope` now.
+- **A start whose on-commit hook meets a caller's bug raises out of the commit**
+  (`apps.workflows.services.CALLER_BUGS` — an unbound correlation chain, a
+  `TypeError` building the start, …) instead of being logged and swallowed; a
+  Temporal that cannot be reached is still logged, swept by the reconciler, and
+  never takes the hooks behind it down. A process that calls services below a
+  door now fails where it used to leave a run that never started.
+- **`purge_finished_runs` and `purge_dispatched_outbox` take `tenant=None` and
+  answer a `Swept`** — the one sweep signature (`apps.core.schedules.daily_purge`).
+
+### Added — the dispatch ledger's shape check
+
+- **`scripts/ledger_check.py --check` is a `--fast` leg (`ledger-check`), beside
+  the queue index.** It reads `docs/product/in-flight.md` § "Dispatch ledger"
+  and the archive's `### … — pruned` stages through `scripts/loop_metrics.py`'s
+  row and stamps reader. Every armed row has seven cells and is at most 1,200
+  characters, and the live table is at most 16 KB. Every returned row carries a
+  `stamps:` cell whose stage stamps are dated, and a report pointer; a `TRAIN-`
+  or `PM-` row instead carries its merge sha once it lands. A closed
+  spend-per-rung row carries its number. Archived rows sent before the arming
+  date are history and are not judged. Exit 0 clean, 1 each refused row named,
+  2 could not look.
+- **The pre-commit hook's docs-only admission runs the check** when a staged
+  path is the live ledger or the archive, and refuses the commit on exit 1 or 2.
+  The rest of the docs-only path is unchanged.
+
+### Added — the roads index
+
+- **A road declares itself once, where it lives.** In importable Python,
+  `@road("<job>", example="<path>::<symbol>")` from `apps.core.roads` on the
+  function or class, or `ROAD = road("<job>", example=...)` after a module's
+  imports for a module that IS the road; the contract is the docstring's first
+  line, and a target with no docstring is refused at import. In shell, a
+  comment line directly above the function (or in a script's first 40 lines)
+  that opens with `road:` and reads `<job> — <contract> · example:
+  <path>::<symbol>`. A job key is one lowercase word or `noun_verb`, never a
+  file name or a medium. The example must resolve to a real definition.
+- **The door: `uv run python manage.py roads`.** One block per job — the road's
+  import path, its partition (platform or product, from
+  `quality/partition.yaml`'s `platform_apps`), its carrier, its contract and
+  its example; `roads <job>` prints one; `roads --json` prints the `roads/1`
+  document (`roads[]`, `kept[]` for a product's declared second roads,
+  `unmarked` for the counted copies by class). It is an instrument: exit 0
+  printed, exit 2 could-not-look (a road that does not import, an example that
+  does not resolve, two unvalved markers for one job); it never exits 1.
+- **House rule 84, one road per job.** A second marker for one job is refused,
+  the finding naming both and the first standing, unless the second carries
+  the rule's valve on the line above it (counted, and printed by the door as
+  `kept`). A road is unconditional: a marker under an `if` (a
+  `TYPE_CHECKING` block included), `try` or `with`, or inside a function, is
+  refused. The same check counts unmarked copies by shape as ratchet classes,
+  down-only. `python -m quality.gate --explain 84` prints the classes, their
+  numbers and a remedy each.
+- **The fold's eighth collision class.** `divergence_census.sh --against
+  <tag>` reads the release's markers and yours as text and names a product
+  road for a job the release now marks, with the two remedies on the line.
+- **Step zero dumps the index.** `scripts/rung_start.sh` writes
+  `manage.py roads --json` to `.rung/roads.json` beside the schema dump.
+
+### Changed
+
+- **The gate sorts by bytes, never by locale.** The `--loop` scope's changed set
+  and the environment fingerprint's distribution list are ordered the way
+  Python orders strings (`LC_ALL=C`), where the shell gate ordered them under the
+  caller's locale: under `en_US.UTF-8` `list_legs_ci.txt` sorted before
+  `list_legs.txt` and `aiohttp_retry` before `aiohttp`. Who sees it: a checkout
+  whose loop verdicts were banked under a non-C locale — its first `--loop` after
+  the merge is a miss (the key moved), and every one after it reuses as before.
+- **`admin.LogEntry` declares its lifecycle: `unbounded`, retained whole.** The
+  owner retains every admin log (2026-10-08), so `erase_user` never touches
+  `django_admin_log` by declaration rather than by silence; `apps.core.lifecycle`
+  declares it, and rule 31's `admin` class has nothing left to count.
+
+- **The verifier box client's owner tag no longer reads the dispatch ledger.**
+  `python -m quality.djb.box` defaults the owner to `DJB_VERIFIER_OWNER`, else
+  `git config user.name`, else `unknown` said on stderr; it never opens a docs
+  file for it, so a ledger commit stays docs-only. `scripts/verifier_box.sh`
+  still reads the ledger until the cutover.
+
+- **`frontend/pnpm-lock.yaml` takes the patched release of every package
+  `pnpm audit --audit-level moderate` named, and the audit answers clean.**
+  `brace-expansion` moves per major — `1.1.18` → `1.1.21`, `2.1.4` → `2.1.7`,
+  `5.0.9` → `5.0.12` (floors `>=1.1.21`, `>=2.1.7`, `>=5.0.12`; GHSA-q2hr-2g5m-vwhr,
+  GHSA-qhr7-859c-m2p7, GHSA-6j4f-fj2g-mc7p); `js-yaml` `4.3.1` leaves the lock and
+  every consumer resolves `4.3.2` (floor `>=4.3.2`; GHSA-2883-xcg3-v3hh), which
+  takes `@redocly/openapi-core` `1.34.19` → `1.34.20` because `1.34.19` pins
+  `js-yaml` to exactly `4.3.1` and `1.34.20` is the same dependency set on
+  `4.3.2`; `undici` `8.10.1` → `8.10.2` (floor `>=8.10.2`; the advisories published
+  against `undici <8.10.2`). These are transitive — reached through `eslint`,
+  `eslint-config-next`, `openapi-typescript` and `jsdom` — so none of them changes
+  `package.json` and no override is taken; the generated client is
+  byte-identical. Who sees it: a product whose own `pnpm audit` or supply-chain
+  check reads the frontend lock. At the fold, take this lock byte-for-byte, or
+  re-resolve the same names to the same versions; a product carrying its own
+  `pnpm.overrides` for any of these reconciles them major by major.
+  `next` is the direct dependency that moves: `package.json`'s exact pin goes
+  `16.3.3` → `16.3.8` (floor `>=16.3.6`; GHSA-vcvr-r3jv-pc5j), which takes its own
+  `@next/env` and `@next/swc-*` binaries with it, and `eslint-config-next` stays
+  at `16.3.3`; a product that pins `next` itself moves that pin to the same line.
+  The Python lock moves the same way: `uv.lock` takes `urllib3` `2.7.0` → `2.8.0`
+  (fix version `2.8.0`; CVE-2026-97687, CVE-2026-97688, CVE-2026-97689), which
+  `pip-audit` named, and nothing else in the lock or `pyproject.toml` moves.
+
+- **The supply-chain leg's dead-weight check reads the index, so a product
+  still carrying v2.4.1's oauthlib override is red at that leg now.**
+  `django-allauth` 65.19.6 declares an `oauthlib` that admits the patched 4.x,
+  so this release takes 65.19.6 and deletes `[tool.uv] override-dependencies`
+  and the exception record that justified it. The remedy for a product is the
+  same two moves: upgrade `django-allauth` and delete the override. The
+  trigger stays in `scripts/check.sh` as the guard against putting the
+  override back; with none declared it judges nothing.
+
+- **A product's own breakpoint reads `<length> — <reason>`.** House rule 78's
+  drawer — a fenced `breakpoints` block in
+  `docs/product/design/patterns.local.md` — takes any number of lines, each a
+  CSS length (`rem`, `px` or `em`) and its reason after an em dash. A bare
+  value gains a dash and a reason at the fold; a line without one is a
+  finding on the drawer's own line. A width query in the legacy `min-`/`max-`
+  form is now a FORM finding whose sentence names the range syntax every
+  width query takes (`(width <op> <length>)`) and says whether the value is
+  declared; whether the book's boundary is inclusive is the book's sentence.
+
+- **`quality/gate.py`'s module docstring is its contract line and four
+  invariants.** The usage block, the scope-kind, override and ratchet
+  narration and the self-test's reasons left the code: the flags are the
+  sentence an unknown flag is refused with (`python -m quality.gate --nope`);
+  a rule's scope kind, valve and ratchet are `python -m quality.gate
+  --explain <id>`; the exit codes, the preflight, the runner boundary and the
+  plant-into-the-real-tree refusal are the four lines that stayed. Nothing a
+  command prints changed.
+
+- **The house-rules engine is a package: `quality/gate.py` is its door and
+  `quality/engine/` holds the eleven modules behind it.** `python -m
+  quality.gate`, every flag and `from quality import gate` answer as before;
+  `--rules` and every `--explain` print the same bytes. A product test that
+  sets an attribute on `quality.gate` now sets it on the door and the engine
+  never reads it: a shared dict or list is changed in place, and a path or
+  string is set on its home (`gate.world_module()`). A `# drives:` line or a
+  cite naming `quality/gate.py::<name>` names the engine module that defines
+  it.
+
+### Known
+
+- **A change to the published document must regenerate the client in the
+  same change** — `./frontend/scripts/pin_client.sh --write` — because the
+  per-rung loop does not yet run the client pin: only the full gate at push
+  does, and a document moved without its client reads green until then.
+- **Three questions about the face are open, for the design owner**: the
+  off-surface seat's plainer look beside the refusal panel's; whether the
+  boot question's could-not-look panel, drawn before any surface is known,
+  takes the staff surface (as it does today) or a value of its own; and the
+  client seam's wording when the backend is unreachable — through the face's
+  proxy that arrives as a 500 with no body of ours and reads as "the server
+  refused", where only a thrown fetch reaches the honest sentence.
 
 ## [2.4.1] — A release's new platform apps do not collide with a product's own, and a product with an earlier archive has a road into the seam
 
@@ -4205,7 +5282,7 @@ history rather than at ours, and the template names no account of its own in a
 file a stranger inherits.
 -->
 
-[Unreleased]: ../../compare/v2.4.1...HEAD
+[2.5.0]: ../../compare/v2.4.1...v2.5.0
 [2.4.1]: ../../compare/v2.4.0...v2.4.1
 [2.4.0]: ../../compare/v2.3.0...v2.4.0
 [2.3.0]: ../../compare/v2.2.1...v2.3.0

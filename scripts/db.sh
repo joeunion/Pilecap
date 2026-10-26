@@ -16,6 +16,9 @@
 #   1. A DATABASE_NAME already in the environment WINS, and nothing is derived.
 #      That is the escape: `DATABASE_NAME=djb_custom ./scripts/test.sh`, or an
 #      export before sourcing, reaches every consumer through this one variable.
+#      The one exception: a name this file derived for ANOTHER checkout (its
+#      label says `derived`, its path hash is not this one's) is re-derived and
+#      said in one `!!` line — test_db.py::test_two_verifier_clones_derive_two_names.
 #   2. Otherwise the name is djb_<branch>_<hash>, where <hash> is the first 8
 #      hex digits of the SHA-256 of the checkout's absolute top-level path
 #      (git's, so it is the same however you cd into the tree). The branch keeps
@@ -34,10 +37,11 @@
 # exclusion nobody could verify.
 #
 # >>> derived-env-keys >>>
-# DATABASE_NAME — derived per checkout as djb_<branch>_<8 hex of the SHA-256 of
-#   the checkout's absolute top-level path> by db_name_for_checkout below, and
-#   written into .env by scripts/rung_start.sh and scripts/verify_start.sh. It
-#   is a property of WHERE this tree is, never of what is in it.
+# DATABASE_NAME — db_name_for below: djb_<the branch, lower-cased, every other
+#   character `_`, at most 38; detached or empty is main>_<the first 8 hex of the
+#   SHA-256 of git's top level, or $PWD outside a repository>, pinned by
+#   quality/tests/test_db.py::test_db_name_for_is_db_name_of_that_checkout and
+#   written into .env by scripts/rung_start.sh and scripts/verify_start.sh.
 # <<< derived-env-keys <<<
 #
 # Identifier arithmetic — Postgres allows 63 bytes, and it TRUNCATES rather
@@ -103,9 +107,24 @@
 # `module_path`, `mailpath`, `watch`, `prompt`, `histchars`) was grepped beside
 # the four and appears nowhere in this file at all.
 #
-# `scripts/tests/test_db_zsh.sh` is the tooth: it sources this file under a REAL
+# `quality/tests/test_db.py` is the tooth: it sources this file under a REAL
 # zsh and drives `db_create`, asserting the created database EXISTS. It skips
 # with a reason when there is no zsh, and never passes vacuously.
+
+# The digest tool, this file's one ladder: `db_path_hash`, the per-file pass and the final
+# string pass all ask it. `db_path_hash`'s `cksum` last resort is NOT
+# acceptable here — 32 bits over a machine-global schema key is a collision
+# waiting to hand somebody the wrong migration set — so no tool is a REFUSAL
+# and the refusal lands on the loud fallback path, which is correct and slow.
+db_digest_tool() {
+    if command -v shasum >/dev/null 2>&1; then
+        printf 'shasum'
+    elif command -v sha256sum >/dev/null 2>&1; then
+        printf 'sha256sum'
+    else
+        return 1
+    fi
+}
 
 # First N hex digits of the SHA-256 of $1 (N defaults to 8), with fallbacks down
 # to a POSIX one, because this must not need a tool a fresh laptop might not
@@ -114,10 +133,12 @@
 # migration set's schema, which 8 hex digits is too short to promise.
 db_path_hash() {
     local input="$1" want="${2:-8}" digest=""
-    if command -v shasum >/dev/null 2>&1; then
-        digest="$(printf '%s' "$input" | shasum -a 256 | awk '{print $1}')"
-    elif command -v sha256sum >/dev/null 2>&1; then
-        digest="$(printf '%s' "$input" | sha256sum | awk '{print $1}')"
+    case "$(db_digest_tool)" in
+    shasum) digest="$(printf '%s' "$input" | shasum -a 256 | awk '{print $1}')" ;;
+    sha256sum) digest="$(printf '%s' "$input" | sha256sum | awk '{print $1}')" ;;
+    esac
+    if [ -n "$digest" ]; then
+        :
     elif command -v openssl >/dev/null 2>&1; then
         # `SHA2-256(stdin)= <hex>` — the digest is the last field.
         digest="$(printf '%s' "$input" | openssl dgst -sha256 | awk '{print $NF}')"
@@ -128,27 +149,48 @@ db_path_hash() {
     printf "%.${want}s" "$digest"
 }
 
-db_name() {
-    local branch sanitised root
-    branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+# db_name_for <branch> <path> — the database and queue name of a checkout of <branch> whose top level is <path>.
+# A detached or empty branch is `main`; 38 characters, not 40 — `test_` plus xdist's `_gw999`.
+db_name_for() {
+    local branch="${1:-}" root="${2:-}" sanitised
     if [ -z "$branch" ] || [ "$branch" = "HEAD" ]; then
         branch="main"
     fi
     sanitised="$(printf '%s' "$branch" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_' '_')"
-    # 38, not 40: the header's arithmetic — `test_` plus xdist's `_gw999`.
     sanitised="${sanitised:0:38}"
-    if [ -z "$sanitised" ]; then
-        sanitised="main"
-    fi
-    # The checkout's own top level: a linked worktree reports itself, not the
-    # repository it is linked to, so a worktree and its parent differ here even
-    # on the same branch. Outside a repository there is no top level, and then
-    # the working directory is the checkout.
-    root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-    if [ -z "$root" ]; then
-        root="$PWD"
-    fi
+    [ -n "$sanitised" ] || sanitised="main"
     printf 'djb_%s_%s' "$sanitised" "$(db_path_hash "$root")"
+}
+
+# road: checkout_name — this checkout's database and queue name, derived once · example: quality/tests/test_db.py::test_the_key_is_the_same_wherever_the_checkout_lives
+# The checkout's own top level (a linked worktree reports itself); outside a repository, the working directory.
+db_name() {
+    local root
+    root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+    [ -n "$root" ] || root="$PWD"
+    db_name_for "$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)" "$root"
+}
+
+# db_name_hash <name> — the 8-hex path hash a derived name ends in; nothing for a name typed by hand.
+db_name_hash() {
+    case "$1" in
+    djb_*_[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) printf '%s' "${1##*_}" ;;
+    esac
+}
+
+# db_is_foreign <name> — true when <name> was derived for another checkout (rule 6: one checkout, one database).
+db_is_foreign() {
+    local digest
+    digest="$(db_name_hash "$1")"
+    [ -n "$digest" ] && [ "$digest" != "$(db_path_hash "$(db_checkout_root)")" ]
+}
+
+# db_say_foreign <name> — the one line naming another checkout's name and this checkout's own.
+db_say_foreign() {
+    printf '!! DATABASE_NAME %s was derived for another checkout (%s); this checkout derives %s\n' \
+        "$1" "$(db_name_hash "$1")" "$(db_name)" >&2
+    DB_FOREIGN_SAID="$1"
+    return 0
 }
 
 # Rule 1: a name already in the environment wins. `:-` and not `-`, so an empty
@@ -205,15 +247,7 @@ db_name() {
 # DERIVE — `db_name`, computed from the checkout, which no environment can
 # forge — and `db_pin_effective_name` below is that consumer. A label is
 # something to print; the derivation is something to check against.
-if [ -z "${DATABASE_NAME_SOURCE:-}" ]; then
-    if [ -n "${DATABASE_NAME:-}" ]; then
-        DATABASE_NAME_SOURCE="DATABASE_NAME exported"
-    else
-        DATABASE_NAME_SOURCE="derived"
-    fi
-fi
-DATABASE_NAME="${DATABASE_NAME:-$(db_name)}"
-export DATABASE_NAME DATABASE_NAME_SOURCE
+# The line itself is `db_resolve_name`, below `db_pin_decide`, whose verdict it reads.
 
 # --- Rule 1 stops being SILENT about itself ---------------------------
 #
@@ -447,6 +481,46 @@ db_pin_decide() {
     return 0
 }
 
+# db_resolve_name — rule 1's line: an export wins; else a `# pinned` .env line; else the derivation.
+# The pin is read through `db_pin_decide`, the verdict `db_pin_leg` reads, so every script that
+# sources this file opens the database the gate vouched for (one reader of the pin, principle 9).
+db_resolve_name() {
+    if [ -z "${DATABASE_NAME_SOURCE:-}" ]; then
+        if [ -n "${DATABASE_NAME:-}" ]; then
+            DATABASE_NAME_SOURCE="DATABASE_NAME exported"
+        else
+            DATABASE_NAME_SOURCE="derived"
+        fi
+    fi
+    DB_FOREIGN_SAID=""
+    if [ -n "${DATABASE_NAME:-}" ] && db_is_foreign "$DATABASE_NAME"; then
+        if [ -z "${DB_PIN_NOTE_OFF:-}" ]; then
+            db_say_foreign "$DATABASE_NAME"
+        fi
+        # A label this file wrote is not an operator's choice: the name is re-derived here.
+        if [ "$DATABASE_NAME_SOURCE" != "DATABASE_NAME exported" ]; then
+            DATABASE_NAME=""
+        fi
+    fi
+    if [ "$DATABASE_NAME_SOURCE" != "DATABASE_NAME exported" ] || [ -z "${DATABASE_NAME:-}" ]; then
+        DATABASE_NAME="${DATABASE_NAME:-}"
+        db_pin_decide
+        case "${DATABASE_NAME}" in
+        "" | "$DB_PIN_DERIVED")
+            if [ "$DB_PIN_VERDICT" = "marked" ]; then
+                DATABASE_NAME="$DB_PIN_VALUE"
+                DATABASE_NAME_SOURCE=".env pin"
+            else
+                DATABASE_NAME="$DB_PIN_DERIVED"
+                DATABASE_NAME_SOURCE="derived"
+            fi
+            ;;
+        esac
+    fi
+    export DATABASE_NAME DATABASE_NAME_SOURCE
+}
+db_resolve_name
+
 # --- THE REFUSAL SEAM -------------------------------------------------------
 #
 # `scripts/gate_refuse.sh`, sourced from THIS FILE'S OWN DIRECTORY and guarded
@@ -513,7 +587,7 @@ fi
 #
 # --- THE SECOND QUESTION: DOES THAT DATABASE EXIST? -------------------------
 #
-# COMPARING THE PIN WAS NEVER THE WHOLE JOB. The P19 bank ran ten green minutes
+# COMPARING THE PIN WAS NEVER THE WHOLE JOB. A bank once ran ten green minutes
 # — every leg, both pytest passes — and then `test_backup_restore.sh` refused
 # because the primary checkout's database was not there at all. The pin had
 # agreed with the derivation the whole time: this leg was asked whether the two
@@ -525,19 +599,21 @@ fi
 # `docker compose exec -T db psql` — it needs the stack up. `--fast` is defined
 # by `docs/product/build-contract.md` § Interfaces as needing NO database ("No
 # services needed beyond what mypy/django needs to import settings"), and
-# pre-commit runs `--fast` on every laptop, stack up or down. A leg that asked
-# this question at `--fast` would red every commit made with docker closed —
-# so the question is BOUND under `loop` and `full` (and therefore under `--pr`
-# and `--bank`, which normalise to the full mode in check.sh) and merely
-# PRINTED under `fast`.
+# pre-commit runs `--fast` on every laptop, stack up or down — yet `--fast`'s
+# migrations leg opens the database (makemigrations' consistency check), so an
+# absent one used to surface as a warning a minute in. So `fast` asks
+# only where the answer is this checkout's own and costs one query: when the pin
+# and the derivation agree (no pin counts), and only of a server that answers.
 #
-#   db_pin_leg fast    the existence question is NOT asked, and the leg says so
+#   db_pin_leg fast    asked only when the pin and the derivation agree; absent → said, exit 0,
+#                      naming ./scripts/setup.sh; a server that does not answer is said, not red
 #   db_pin_leg loop    asked; absent → exit 2 naming ./scripts/setup.sh
 #   db_pin_leg full    asked; the same refusal
+#   every mode         a name another checkout derived (its path hash is not ours) → exit 1
 #
 # THE MODE IS PRINTED ON EVERY RUN, whatever the verdict. A leg with two
 # behaviours and no line saying which one it is in is a leg whose green means
-# one of two different things and does not say which (misses § P19 row 7). The
+# one of two different things and does not say which (a recorded miss). The
 # mode line is the FIRST thing this function prints, before the pin is even
 # read, so it is there on the refusing paths too.
 #
@@ -575,7 +651,7 @@ fi
 # is the one this tree's migrations belong to: a name that OPENS is the whole of
 # the claim, and the incident above is about a name that opened nothing at all.
 db_pin_leg() {
-    local mode="${1:-}" root pin derived cleaned
+    local mode="${1:-}" root pin derived cleaned foreign
     # THE REFUSAL SEAM, CHECKED BEFORE ANYTHING ELSE. Every refusal below goes
     # through `gate_refuse` so the gate's banner can print `cause:` with the
     # sentence this function actually said. A copy of db.sh moved away from its
@@ -611,7 +687,7 @@ db_pin_leg() {
     # path out of this function — the two refusals above excepted, where the
     # mode is the thing that could not be read.
     if [ "$mode" = "fast" ]; then
-        echo "  db-pin mode: fast — existence not checked (--fast needs no database)"
+        echo "  db-pin mode: fast — existence asked of the derived name only, a silent server said and not red"
     else
         echo "  db-pin mode: ${mode} — this checkout's database must exist"
     fi
@@ -623,6 +699,22 @@ db_pin_leg() {
     db_pin_decide
     pin="$DB_PIN_VALUE"
     derived="$DB_PIN_DERIVED"
+    foreign=""
+    if [ -n "${DATABASE_NAME:-}" ] && db_is_foreign "$DATABASE_NAME"; then
+        foreign="$DATABASE_NAME"
+    elif [ -n "$pin" ] && db_is_foreign "$pin"; then
+        foreign="$pin"
+    fi
+    if [ -n "$foreign" ]; then
+        echo "RED: DATABASE_NAME ${foreign} was derived for another checkout ($(db_name_hash "$foreign")); this checkout derives ${derived}" >&2
+        echo "   One checkout, one database: every step here would open that checkout's data." >&2
+        if [ "$foreign" != "$pin" ]; then
+            echo "     unset DATABASE_NAME DATABASE_NAME_SOURCE   # the shell carried it from there" >&2
+        else
+            echo "     ./scripts/setup.sh   # rewrites .env's line to ${derived} (a \`# pinned\` line above it goes first)" >&2
+        fi
+        return 1
+    fi
     if [ "$DB_PIN_VERDICT" = "no-env" ]; then
         # No file, no second opinion: the derivation is the only truth here.
         echo "  no .env in this checkout — the derivation is the only name (${derived})"
@@ -650,7 +742,7 @@ db_pin_leg() {
         # suggested rewrite would hand the reader a second corrupt line.
         cleaned="${pin%%#*}"
         cleaned="${cleaned%"${cleaned##*[![:space:]]}"}"
-        gate_refuse "DATABASE_NAME: this checkout's .env line carries an INLINE COMMENT."
+        echo "RED: DATABASE_NAME: this checkout's .env line carries an INLINE COMMENT." >&2
         echo "     the line:   $(grep -E '^DATABASE_NAME=' "${root}/.env" | tail -1)" >&2
         echo "     environ reads the name as: [${pin}]" >&2
         echo "   A trailing comment is NOT stripped by the reader a bare \`manage.py\` uses" >&2
@@ -687,7 +779,7 @@ db_pin_leg() {
         gate_refuse "db-pin: db_pin_decide answered '${DB_PIN_VERDICT}', which db_pin_leg has no cell for."
         return 2
     fi
-    gate_refuse "DATABASE_NAME: this checkout's .env and its derivation DISAGREE."
+    echo "RED: DATABASE_NAME: this checkout's .env and its derivation DISAGREE." >&2
     echo "     .env pins:  ${pin}" >&2
     echo "     derivation: ${derived}" >&2
     echo "   A bare \`manage.py\` resolves the pin; every script here sources scripts/db.sh" >&2
@@ -713,9 +805,8 @@ db_pin_leg() {
 # --- THE EXISTENCE HALF -----------------------------------------------------
 #
 # Called by `db_pin_leg` on every path where the PIN COMPARISON PASSED, with the
-# mode and the name that comparison concluded is operative. Under `fast` it is a
-# no-op and says nothing — the mode line above already said the question is not
-# being asked, and a second sentence saying the same thing twice is noise.
+# mode and the name that comparison concluded is operative. Under `fast` it hands
+# off to `db_pin_fast_existence`, which asks of the derived name only.
 #
 # THE THREE ANSWERS, and the middle one is the whole point:
 #
@@ -740,8 +831,7 @@ db_reachable() {
 # db_pin_effective_name <leg's name> <leg's label> — WHICH database will the run OPEN?
 #
 # Sets `DB_EFFECTIVE_NAME` and `DB_EFFECTIVE_SOURCE`. It re-decides NOTHING: the
-# precedence lives at rule 1's line above (`DATABASE_NAME="${DATABASE_NAME:-…}"`)
-# and is recorded there as `DATABASE_NAME_SOURCE`. This function READS that
+# precedence lives at rule 1's line above (`db_resolve_name`) and is recorded there as `DATABASE_NAME_SOURCE`. This function READS that
 # answer — the same `$DATABASE_NAME` every other consumer reads, the one
 # `db_exists`, `db_create` and `db_drop` default to and `backup.sh::db_present`
 # asks Postgres about — and only falls back to what the pin comparison concluded
@@ -750,10 +840,8 @@ db_reachable() {
 # WHY THE FALLBACK EXISTS AT ALL. With no export there is no third reader to
 # disagree with, and the leg's own conclusion is the better-attributed answer: it
 # knows whether the name came from the derivation or from a deliberate `# pinned`
-# line, and `$DATABASE_NAME` cannot tell those apart (both reach it as "derived",
-# because `.env` is not on the scripts' path at all — it is what a bare
-# `manage.py` reads). So the labels are three, not two, and each one is produced
-# by whoever actually knows.
+# line. So the labels are three, not two — `derived`, `.env pin` (both written by
+# `db_resolve_name`) and `DATABASE_NAME exported`.
 #
 # THE ORDER IS RULE 1'S ORDER AND IT IS NOT NEGOTIABLE HERE: an export wins. It
 # is the documented escape (this file's header, rule 1; CLAUDE.md § The schema
@@ -786,12 +874,9 @@ db_reachable() {
 # `derived` label CLAIMS, computed fresh — and it holds however many shells and
 # processes the label crossed to get here.
 #
-# The `.env pin` label is checked against the same derivation, and that is not a
-# slip: on that path `$DATABASE_NAME` holds the DERIVATION, never the pin
-# (`.env` is what a bare `manage.py` reads; this file never reads it into the
-# variable). So "the variable still matches the derivation" is the same question
-# on both paths, and when it holds, the leg keeps the label it was given —
-# `.env pin` stays `.env pin`.
+# The `.env pin` label is checked against the marked pin `db_pin_decide` reads now,
+# since `db_resolve_name` exported that pin; when it holds, the leg keeps the label
+# it was given — `.env pin` stays `.env pin`.
 #
 # On a mismatch the VALUE wins (rule 1 — what is in the variable is what every
 # consumer will resolve), the source is reported as `DATABASE_NAME exported`
@@ -805,8 +890,15 @@ db_pin_effective_name() {
         DB_EFFECTIVE_SOURCE="DATABASE_NAME exported"
         return 0
     fi
-    # The name the `derived` label claims, for THIS checkout, computed now.
+    # The name the label claims, for THIS checkout, computed now: the marked pin for
+    # `.env pin` (what `db_resolve_name` exported), the derivation for `derived`.
     implied="$(db_name)"
+    if [ "${DATABASE_NAME_SOURCE:-derived}" = ".env pin" ]; then
+        db_pin_decide
+        if [ "$DB_PIN_VERDICT" = "marked" ]; then
+            implied="$DB_PIN_VALUE"
+        fi
+    fi
     if [ -n "${DATABASE_NAME:-}" ] && [ "${DATABASE_NAME}" != "${implied}" ]; then
         DB_EFFECTIVE_NAME="${DATABASE_NAME}"
         DB_EFFECTIVE_SOURCE="DATABASE_NAME exported"
@@ -817,13 +909,32 @@ db_pin_effective_name() {
     DB_EFFECTIVE_SOURCE="$2"
 }
 
+# db_pin_fast_existence <name> <label> — under fast, the derived name alone: present, absent or no server, each said and 0.
+db_pin_fast_existence() {
+    db_pin_effective_name "$1" "$2"
+    if [ "$DB_EFFECTIVE_SOURCE" != "derived" ]; then
+        return 0
+    fi
+    if db_exists "$DB_EFFECTIVE_NAME"; then
+        echo "  database ${DB_EFFECTIVE_NAME} exists (derived)"
+        return 0
+    fi
+    if ! db_reachable; then
+        echo "  existence not answered: the compose Postgres did not answer (--fast needs no database)"
+        return 0
+    fi
+    echo "  database ${DB_EFFECTIVE_NAME} does not exist (derived) — --fast needs none; ./scripts/setup.sh creates it before --loop"
+    return 0
+}
+
 db_pin_existence() {
     local mode="$1" name="$2" label="${3:-derived}" rc=0 derivation=""
     # An `if`, not `[ … ] && return 0`: an AND-list whose left half is false
     # returns 1, and under a caller's `set -e` that is the function failing
     # rather than the mode being `loop`.
     if [ "$mode" = "fast" ]; then
-        return 0
+        db_pin_fast_existence "$name" "$label"
+        return $?
     fi
     # WHICH NAME, AND SAID OUT LOUD. The pin comparison concluded `$name`; rule 1
     # may have overridden it before any of this ran. Resolve, then report BOTH
@@ -886,10 +997,8 @@ db_pin_existence() {
     # derivation DIFFER — agreement is handled one branch up, under the `derived`
     # label — so the sentence below ("the pin and the derivation agree") was
     # false on exactly this path, printed directly under a note saying they
-    # differ. And `./scripts/setup.sh` on its own does NOT create the pinned
-    # name: its `db_pin_marked` branch leaves the pin alone, prints "DATABASE_NAME
-    # left alone", and migrates the DERIVATION. A reader who ran it would watch a
-    # different database get prepared and come back to the identical refusal.
+    # differ. A bare `./scripts/setup.sh` is the remedy: it sources this file, whose
+    # `db_resolve_name` exports the pin, so its `db_create` and migrate take the pin.
     if [ "$label" = ".env pin" ]; then
         derivation="$(db_name)"
         gate_refuse "this checkout's database ${name} does not exist (.env pin)"
@@ -899,12 +1008,11 @@ db_pin_existence() {
         else
             echo "     derivation: ${derivation}   — the pin DIFFERS from the derivation" >&2
         fi
-        echo "   A bare \`./scripts/setup.sh\` will NOT create ${name}: under \`# pinned\` it" >&2
-        echo "   leaves the pin alone and migrates the DERIVATION (scripts/setup.sh, its" >&2
-        echo "   \`db_pin_marked\` branch). You would watch a different database be prepared" >&2
-        echo "   and come back to this line. Either:" >&2
+        echo "   A bare \`./scripts/setup.sh\` creates and migrates ${name}: it sources" >&2
+        echo "   scripts/db.sh, which resolves the \`# pinned\` name, so every step it runs" >&2
+        echo "   opens the pin. Either:" >&2
         echo "" >&2
-        echo "     DATABASE_NAME=${name} ./scripts/setup.sh   # prepare the name you pinned" >&2
+        echo "     ./scripts/setup.sh   # prepare the name you pinned" >&2
         echo "" >&2
         echo "   or drop the \`# pinned\` line from .env and re-run ./scripts/setup.sh, which" >&2
         echo "   then rewrites the pin to the derivation and prepares that one instead." >&2
@@ -938,10 +1046,16 @@ db_pin_existence() {
 # "(# pinned)" over it would be telling the reader the one thing that is false.
 db_announce_pin_disagreement() {
     db_pin_decide
+    if [ -n "$DB_PIN_VALUE" ] && db_is_foreign "$DB_PIN_VALUE"; then
+        if [ "$DB_PIN_VALUE" != "${DB_FOREIGN_SAID:-}" ]; then
+            db_say_foreign "$DB_PIN_VALUE"
+        fi
+        return 0
+    fi
     case "$DB_PIN_VERDICT" in
     marked)
-        printf 'note: DATABASE_NAME pinned to %s by .env (# pinned); derivation says %s\n' \
-            "$DB_PIN_VALUE" "$DB_PIN_DERIVED" >&2
+        printf 'note: DATABASE_NAME pinned to %s by .env (# pinned); derivation says %s — every step opens %s\n' \
+            "$DB_PIN_VALUE" "$DB_PIN_DERIVED" "$DATABASE_NAME" >&2
         ;;
     disagree | inline)
         printf 'note: DATABASE_NAME pinned to %s by .env; derivation says %s — the gate'"'"'s db-pin leg refuses this (./scripts/check.sh --fast says what to do)\n' \
@@ -1062,7 +1176,7 @@ db_create() {
         return $?
     fi
     db_query 'CREATE DATABASE :"name" OWNER :"owner"' \
-        -v name="$name" -v owner="$POSTGRES_USER" >/dev/null
+        -v name="$name" -v owner="$POSTGRES_USER" >/dev/null || return 1
     echo "created database ${name}"
 }
 
@@ -1106,7 +1220,7 @@ db_drop() {
 # added, changed or removed and for nothing else. A hand-bumped version number
 # is the drift class the whole rules engine exists against: somebody forgets to
 # bump it and every checkout on the machine quietly gets last week's schema.
-# `scripts/tests/test_db_template.sh` drives both directions of that iff.
+# `quality/tests/test_db.py` drives both directions of that iff.
 #
 # THE KEY IS THE SAME IN EVERY CHECKOUT, and this is the one place in this file
 # where that is the goal. `db_name` above deliberately does the opposite: the
@@ -1143,8 +1257,8 @@ db_drop() {
 # ALLOW_CONNECTIONS false`) — the same construction `template0` uses. With no
 # session able to exist, the refusal has nothing to count: six concurrent clones
 # of one no-connections template were driven and all six succeeded
-# with identical contents (`scripts/tests/test_db_template.sh::case_concurrent_
-# clones_of_one_template_all_succeed_uncorrupted`). `db_clone_database` still
+# with identical contents (`quality/tests/test_db.py::
+# test_concurrent_clones_of_one_template_all_succeed_uncorrupted`). `db_clone_database` still
 # retries that exact refusal and still falls back loudly, because the template
 # can also be dropped or superseded between the existence check and the clone,
 # and a mechanism whose safety rests on one ALTER having been run is a mechanism
@@ -1179,50 +1293,17 @@ db_drop() {
 #      template path, because the pin is not `db_name`. A pinned checkout keeps
 #      exactly the behaviour it had.
 
-# The clock. Prefixed and lazy: this file is sourced by every script here and
-# must cost nothing at source time, and `now_ms`/`CLOCK` are names its callers
-# already own (`scripts/rung_start.sh:216`) — redefining those from underneath a
-# caller is precisely what this file's header promises not to do.
+# The clock is the seam's (`gate_refuse.sh::clock_ms`); a copy of this file sourced without its seam times in whole seconds.
 db_now_ms() {
-    if [ -z "${DB_CLOCK:-}" ]; then
-        if [ -n "${EPOCHREALTIME:-}" ]; then
-            DB_CLOCK=bash5
-        elif case "$(date +%s%3N 2>/dev/null || echo x)" in '' | *[!0-9]*) false ;; *) true ;; esac; then
-            DB_CLOCK=gnudate
-        elif command -v python3 >/dev/null 2>&1; then
-            DB_CLOCK=python3
-        else
-            DB_CLOCK=seconds
-        fi
+    if command -v clock_ms >/dev/null 2>&1; then
+        clock_ms
+    else
+        printf '%s000' "$(date +%s)"
     fi
-    case "$DB_CLOCK" in
-    bash5)
-        local us=${EPOCHREALTIME/./}
-        printf '%s' "${us%???}"
-        ;;
-    gnudate) date +%s%3N ;;
-    python3) python3 -c 'import time; print(int(time.time()*1000))' ;;
-    *) printf '%s000' "$(date +%s)" ;;
-    esac
 }
 
 db_elapsed_since() {
     awk -v ms="$(($(db_now_ms) - $1))" 'BEGIN { printf "%.2fs", ms / 1000 }'
-}
-
-# The digest tool, one ladder, named so both the per-file pass and the final
-# string pass can ask for it. `db_path_hash`'s `cksum` last resort is NOT
-# acceptable here — 32 bits over a machine-global schema key is a collision
-# waiting to hand somebody the wrong migration set — so no tool is a REFUSAL
-# and the refusal lands on the loud fallback path, which is correct and slow.
-db_digest_tool() {
-    if command -v shasum >/dev/null 2>&1; then
-        printf 'shasum'
-    elif command -v sha256sum >/dev/null 2>&1; then
-        printf 'sha256sum'
-    else
-        return 1
-    fi
 }
 
 db_digest_files_0() {
@@ -1338,9 +1419,9 @@ db_create_the_checkouts_own() {
     # this function — docker, awk and date all vanished and `created database`
     # printed over a database that was never created. THE SOURCED-LIBRARY
     # CONTRACT at the top of this file has the reproduction and the closed
-    # audit; `scripts/tests/test_db_zsh.sh` is the tooth. The PRINTED token
+    # audit; `quality/tests/test_db.py` is the tooth. The PRINTED token
     # stays `path=` — that string is the instrument's contract with its readers
-    # (`scripts/tests/test_db_template.sh:471` greps it); only the shell
+    # (`quality/tests/test_db.py` reads it); only the shell
     # variable was ever the bug.
     local name="$1" t0 key tmpl="" creation_path=fallback reason=""
     t0="$(db_now_ms)"
@@ -1360,8 +1441,11 @@ db_create_the_checkouts_own() {
         fi
     fi
     if [ "$creation_path" = fallback ]; then
-        db_query 'CREATE DATABASE :"name" OWNER :"owner"' \
-            -v name="$name" -v owner="$POSTGRES_USER" >/dev/null
+        if ! db_query 'CREATE DATABASE :"name" OWNER :"owner"' \
+            -v name="$name" -v owner="$POSTGRES_USER" >/dev/null; then
+            printf 'db.sh: db_create %s path=fallback FAILED — the server refused the CREATE (its words are above)\n' "$name" >&2
+            return 1
+        fi
     fi
     # The line every caller reads, unchanged and first.
     echo "created database ${name}"
@@ -1483,7 +1567,7 @@ db_template_refresh() {
 #     already happened must not be reported red by a cache warmer. The template
 #     is an optimisation; the merge is the work.
 #   * SAYS NOTHING WHEN IT CANNOT LOOK, because the same script runs inside
-#     `scripts/tests/test_pm_merge.sh`'s scratch repositories — no `apps/`, no
+#     `quality/tests/test_merge.py`'s scratch repositories — no `apps/`, no
 #     compose stack, no Postgres — and a warmer that printed a docker error into
 #     every one of that drive's cases would be teaching a reader to skip output.
 #

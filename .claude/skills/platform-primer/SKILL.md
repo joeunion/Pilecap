@@ -62,8 +62,8 @@ differently (`apps/core/schemas.py`, ADR core-7). Decimal, never float.
 
 **Refusals are three moves.** A service refuses with `core.exceptions.*`; the
 code is registered (unregistered codes refuse themselves at import), and the
-wire body is `{detail, code, remedies}` — what happened, what to branch on,
-what the caller can *do* — composed once in `apps/core/exceptions.py` and
+wire body's keys are `apps/core/exceptions.py::WIRE_COMMON_KEYS` — what happened, what to
+branch on, which fields, what the caller can *do* — composed once in `apps/core/exceptions.py` and
 rendered identically by `config/api.py` and the MCP door. Services never speak
 HTTP (rule 14).
 
@@ -93,10 +93,13 @@ read — and six to be able to reach.
 In this order, before anything else.
 
 0. **Get it running: `README.md` § "Quickstart, from a fresh clone"** —
-   `./scripts/setup.sh` (it creates `main` on a tag clone and prints its
-   total), then `./scripts/check.sh --fast`; nothing below runs until this
-   has. README owns the commands and their order, and says what each one
-   prints; this list does not repeat them.
+   `./scripts/setup.sh` (on a tag clone it creates `main`), then
+   `./scripts/check.sh --fast`; nothing below runs before it (README's commands).
+0b. **On a product's tree** (`rule_id_namespace:` declared), `apps/`,
+   `frontend/`, their derived files and your report are yours, the hook refuses
+   the rest (rule 95), and `docs/sdk/reference.md` is the next read: on a
+   product the reference is the map; `django-conventions` is the template's
+   builders' and is cited by the reference where a rule binds.
 1. **`CLAUDE.md`** — the mechanisms and invariants, one page. It does not
    count and does not track; it points at the thing that knows.
 2. **`docs/product/in-flight.md`** — what is live *right now*: the cycle, the
@@ -107,12 +110,15 @@ In this order, before anything else.
    is next, in order. Every other file defers to it. The head, not the file —
    the tail is the backlog's long trail and each row's detail lives in
    `docs/product/queue-detail.md`.
-4. **`uv run python manage.py introspect`** — the real models, routes, tools,
-   consumers, workflows, events and refusal registry, as JSON from the live
-   registries. A command, not a page: query the part your job needs. The
-   schema is read, never guessed. It needs the venv, `.env` and a migrated
-   database — all three are what step 0 provides, and none of them exists in
-   a clone that has not run it.
+4. **Two commands, not pages — query the part your job needs.**
+   **`uv run python manage.py introspect`** is the schema: the real models,
+   routes, tools, consumers, workflows, events and refusal registry, as JSON
+   from the live registries; the schema is read, never guessed. **`uv run
+   python manage.py roads`** is the mechanisms: every job this platform does
+   exactly one way and the road that does it — ask it before writing a
+   helper; `roads <job>` prints one, `roads --json` is what a brief cites.
+   Both need the venv and `.env`, and `introspect` a migrated database — what
+   step 0 provides, and none of it exists in a clone that has not run it.
 
 **In a fresh clone of the template, items 2 and 3 are skeletons** — an empty
 live state and a one-row worked example, which is the shape `CLAUDE.md`
@@ -169,7 +175,7 @@ pointers to them.
 | Write or change any Python in `apps/`, `config/` or tests — any build rung, any fix, any migration | `.claude/skills/django-conventions/SKILL.md` | The wrong-form/right-form conventions for this repo's exact stack. **Mandatory for every builder, before the first line** — and loaded *after* `rung-execution`, which is what names it. |
 | Decompose a job into rungs, draw the app map, write acceptance criteria, add an app, a door or a workflow | `.claude/skills/django-architect/SKILL.md` | What shape and why — the long form of the architect-tier house rules (its own frontmatter names the range). The lead cites the rules it applied in every criteria set. |
 | Decide what gets built, run a cycle, dispatch agents, run a retro | `.claude/skills/product-manager/SKILL.md` (+ its `references/dispatch-briefs.md`) | The method: the loop's stages, the team, the dispatch contracts. The PM writes no production code. |
-| Orient a fresh session, start a first feature in a clone, give the tour | this skill | The map. Then hand off to one of the four above. |
+| Orient a fresh session, start a first feature in a clone, give the tour | this skill | The map; then one of the four above. |
 
 The chain is mandatory, not advisory: a builder that skipped `django-conventions`
 is the documented failure mode (plausible-but-wrong Django), and the dispatch
@@ -252,6 +258,7 @@ in the first hour:
   `./scripts/test.sh` and anything whose exit status you intend to trust.
 - **Whoever builds does not decide done.** One other agent verifies, always,
   even for one line, against criteria written before the code existed.
+  The verifier reads; it does not re-measure (`product-manager/SKILL.md` § The loop, stage 6).
 - **The pre-fix demonstration comes after the fix is committed** — the A11
   discipline: commit the fix, *then* check out the baseline files to
   demonstrate the failure red. Running the demonstration first destroyed a
@@ -263,7 +270,8 @@ in the first hour:
   touched one app — a PM ordering failure, surfaced and never patched.
 - **Every status claim names its artifact** — a file, a test, an endpoint, a
   click path. A claim with no artifact is a hypothesis wearing a status.
-- **Read the schema with `introspect`; never guess it.**
+- **Read the schema with `introspect`; never guess it. Ask `roads` before
+  writing a helper; a job with a road is called, never re-implemented.**
 
 ## The vocabulary
 
@@ -281,6 +289,19 @@ skill (the method); this is the phrasebook.
   revalidated per request by `core.middleware.resolve_org`, riding on the
   actor, the workflow headers and the audit row. "Which part of the tenant am
   I acting as right now."
+- **A surface** is a host and what it exposes — one product's staff at one
+  address and its customers at another, one database and one set of services
+  (ADR surfaces-1). The product declares it in an app's `surfaces.py`, the
+  environment's `SURFACE_HOSTS` binds a host to it, and every door resolves
+  it before the tenant (`manage.py roads resolve_surface`). A product that
+  declares none is one total `staff` surface. Not to be confused with
+  `SurfaceState`, the face's four states of ONE screen (`fe-conventions` §3) —
+  the older word, about a page rather than an address.
+- **A realm** is where one tenant's people sign in: an organisation of its own
+  at the identity platform, made when the tenant is, with its own login
+  policy and providers; the deployment's own people sign in at the **staff
+  realm** (ADR ident-13). A person in two tenants is one `User` with one
+  subject per realm.
 - **The gate** is `./scripts/check.sh`; **a leg** is one of its checks; **the
   ledger** is its verdict store keyed on the tree hash (pre-push reads it).
 - **A canary** is a deliberately wrong fixture planted through a rule's real
@@ -355,13 +376,22 @@ What an arriving builder holds in their head:
   provider (`ZITADEL_PROVIDER_ID`, `config/settings/base.py`).
   `apps/accounts/adapter.py` is where an assertion becomes a session or a
   refusal page: an unverified address is refused before any row is written, an
-  existing account is linked and never duplicated, and the `User.zitadel_sub`
-  join is written by exactly one service —
-  `services.record_zitadel_identity`, at first platform login. Proof:
+  existing account is linked and never duplicated, and the identity join —
+  `SsoIdentity` rows with no connection, one per realm a person holds a
+  subject in, keyed `(realm, subject)` — is written by exactly one service,
+  `services.record_identity`, at sign-in (`User.zitadel_sub` is retired; its
+  column waits for a later release's drop). Proof:
   `apps/accounts/tests/test_rp_login.py`.
+- **Every tenant has a realm of its own** (ADR ident-13): `create_tenant`
+  asks for it through `core.bridge`, `EnsureTenantIdentityHomeWorkflow` makes
+  it through the port `apps/accounts/realm.py::IdentityRealm` (Zitadel the
+  first adapter, `apps/accounts/realms/zitadel.py`), and `IdentityHome` is
+  `pending` — nobody of that tenant can sign in — until the run ends.
+  `zitadel_reconcile` homes a tenant that has none; `zitadel_audit` prints
+  how many are homed.
 - **The MCP door is an OAuth 2.1 resource server** (`apps/accounts/oauth.py`,
   ADR ident-3): a JWT validator — signature, issuer, audience, expiry, and
-  the subject must resolve through `zitadel_sub` — sitting *beside*
+  the subject must resolve through the identity join — sitting *beside*
   `ApiToken`, which survives and is tried first. A stranger's client
   bootstraps from a 401: `WWW-Authenticate` names the RFC 9728 metadata,
   which names the authorization server. `scripts/oauth_demo.py` is the
@@ -370,7 +400,7 @@ What an arriving builder holds in their head:
 - **A customer's IdP is a row, not a deploy** (ADR ident-6). `SsoDomain`
   routes an address's domain to its tenant's `SsoConnection`;
   `services.sync_identity_config` plus one activity materialise the
-  connection as an external IdP *inside* Zitadel. `selectors.realm_for_email`
+  connection as an external IdP *inside* Zitadel. `selectors.get_realm_for_email`
   answers `sso` for **every** address — a claimed domain only adds an
   `idp_hint` that skips the provider picker, and unclaimed, disabled and
   never-heard-of are byte-identical answers. Proof:
@@ -409,7 +439,6 @@ hat are resolved per request exactly as every other door resolves them
 - **`references/walkthrough.md`** — one feature end to end on the real
   `apps/example` code: model → policy → service → selector → schema → every
   door → workflow → tests, each step citing the house rule that guards it.
-  Read it before your first rung; it is the tour the conventions assume.
+  Read it before your first rung.
 - **`references/failure-catalog.md`** — the measured ways agents get this
-  platform wrong, self-contained: tell → fix → the mechanism that now catches
-  it. Read it to recognize yourself early.
+  platform wrong: tell → fix → the mechanism that now catches it.

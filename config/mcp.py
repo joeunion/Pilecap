@@ -20,12 +20,10 @@ credential.
 
 from __future__ import annotations
 
-import importlib
-import importlib.util
 import json
+import sys
 from typing import Any
 
-from django.apps import apps as django_apps
 from django.conf import settings
 from mcp.server import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
@@ -35,8 +33,10 @@ from apps.accounts import oauth
 from apps.accounts.auth import BEARER_NOT_VALID, Unauthenticated
 from apps.accounts.services import authenticate_token
 from apps.core import context
+from apps.core.api.docs import RETRY_AFTER_HEADER
 from apps.core.asyncdb import run_db
-from apps.core.exceptions import REFUSALS, RateLimited, Remedy, wire_refusal
+from apps.core.discovery import declared
+from apps.core.exceptions import REFUSALS, DomainError, Remedy, wire_refusal
 
 # Where the machine door answers, declared down in `apps.core.mcp` so that
 # something under `apps/` — the door index at `/` — can name it without an app
@@ -44,17 +44,17 @@ from apps.core.exceptions import REFUSALS, RateLimited, Remedy, wire_refusal
 # (`as`, not a bare import) because `config.asgi` routes on it and mypy
 # --strict does not re-export implicitly.
 from apps.core.mcp import MCP_PATH as MCP_PATH
-from apps.core.mcp import SCOPE_KEY, Principal, rate_limit_refusal
+from apps.core.mcp import SCOPE_KEY, Principal, rate_limit_refusal, refuse_unstructured_results
 from apps.core.middleware import (
     AUTHORIZATION_HEADER,
     CORRELATION_ID_HEADER,
     ORG_HEADER,
     REQUEST_ID_HEADER,
     TENANT_HEADER,
-    AddressingHeaderNotHonoured,
     addressing_refusal,
     resolve_org,
 )
+from apps.core.surfaces import SurfaceUnknownHost, request_host, resolve_surface
 from config.api import DOOR_ENCODER, as_the_door_renders
 
 #: The transport's own session id, and the one header in this file with no home
@@ -92,17 +92,10 @@ def _transport_security() -> TransportSecuritySettings:
 
 def _discover_tool_modules() -> list[Any]:
     """Every installed `apps.*.mcp` module that exposes `register`, in app order."""
-    found: list[Any] = []
-    for config in django_apps.get_app_configs():
-        if not config.name.startswith("apps."):
-            continue
-        module_name = f"{config.name}.mcp"
-        if importlib.util.find_spec(module_name) is None:
-            continue
-        module = importlib.import_module(module_name)
-        if callable(getattr(module, "register", None)):
-            found.append(module)
-    return found
+    return [
+        sys.modules[f"{config.name}.mcp"]
+        for config, _register in declared("mcp", "register", predicate=callable)
+    ]
 
 
 #: Set on a server whose answers already go out through the door encoder, so a
@@ -202,6 +195,7 @@ def build_server() -> MCPServer[Any]:
     )
     for module in _discover_tool_modules():
         module.register(server)
+    refuse_unstructured_results(server)
     # LAST, and outside the loop on purpose: it wraps the server's own dispatch
     # rather than any tool, so it covers every tool every app contributed —
     # including the ones this module will never know the names of.
@@ -308,8 +302,16 @@ async def _unauthorized(send: Any, detail: str, *, error: str = "") -> None:
     await send({"type": "http.response.body", "body": body})
 
 
-async def _not_honoured(send: Any, refusal: AddressingHeaderNotHonoured) -> None:
-    """The addressing-header law at the machine door (ADR core-21).
+async def _refused(send: Any, refusal: DomainError) -> None:
+    """A refusal the mount decides before any tool is reached, in the REST door's body.
+
+    Three refusals arrive here: the addressing-header law (ADR core-21), a host
+    no surface answers at (`surface_unknown_host`) — both facts about where the
+    call was sent, decided before anything parsed it as a request — and the
+    shared rate limit (`rate_limited`), which also names when to come back in
+    the `Retry-After` header, as the REST door's handler does for the same
+    refusal. The MCP Streamable HTTP transport specifies exactly that — an
+    HTTP status with `Retry-After` — for a server refusing to take work.
 
     **The body is the REST door's body, byte for byte.** It is `wire_refusal` on
     the same exception class the HTTP seam raises, so "the two doors said the
@@ -332,44 +334,20 @@ async def _not_honoured(send: Any, refusal: AddressingHeaderNotHonoured) -> None
     from config.api import CODE_STATUS
 
     body = json.dumps(wire_refusal(refusal)).encode()
-    await send(
-        {
-            "type": "http.response.start",
-            "status": CODE_STATUS[refusal.code],
-            "headers": [
-                (b"content-type", b"application/json"),
-                (b"content-length", str(len(body)).encode()),
-            ],
-        }
-    )
-    await send({"type": "http.response.body", "body": body})
-
-
-async def _too_many(send: Any, refusal: RateLimited) -> None:
-    """The 429, said the way the HTTP API says it.
-
-    Same `code` and same `detail` a REST client gets from `config.api`'s handler,
-    plus `retry_after` in the body as well as the header: a JSON-RPC client reads
-    a result, and a client that is told when to come back stops hammering.
-
-    It is answered at the transport rather than as a JSON-RPC error object, for
-    the same reason the 401 above is: the call was refused *before* anything
-    parsed it as a request, so there is no id to answer and nothing has been
-    dispatched to a tool. The MCP Streamable HTTP transport specifies exactly
-    this — an HTTP status with `Retry-After` — for a server that is refusing to
-    take work.
-    """
-    payload: dict[str, Any] = {"detail": refusal.detail, "code": refusal.code}
-    if refusal.retry_after is not None:
-        payload["retry_after"] = int(refusal.retry_after)
-    body = json.dumps(payload).encode()
     headers = [
         (b"content-type", b"application/json"),
         (b"content-length", str(len(body)).encode()),
     ]
-    if refusal.retry_after is not None:
-        headers.append((b"retry-after", str(int(refusal.retry_after)).encode()))
-    await send({"type": "http.response.start", "status": 429, "headers": headers})
+    retry_after = getattr(refusal, "retry_after", None)
+    if retry_after is not None:
+        headers.append((RETRY_AFTER_HEADER.lower().encode(), str(int(retry_after)).encode()))
+    await send(
+        {
+            "type": "http.response.start",
+            "status": CODE_STATUS[refusal.code],
+            "headers": headers,
+        }
+    )
     await send({"type": "http.response.body", "body": body})
 
 
@@ -397,7 +375,7 @@ class ThrottleMiddleware:
             return
         refused = await rate_limit_refusal(scope)
         if refused is not None:
-            await _too_many(send, refused)
+            await _refused(send, refused)
             return
         await self.app(scope, receive, send)
 
@@ -417,6 +395,19 @@ class TokenAuthMiddleware:
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         if scope.get("type") != "http":
             await self.app(scope, receive, send)
+            return
+
+        # The host, read ONCE for the call and nowhere else, before the
+        # credential: which surface this address is decides which tools it
+        # offers, and a host no surface answers at is refused here exactly as
+        # the HTTP door's middleware refuses it — `/mcp` never passes through
+        # that middleware (`config.asgi` routes it straight to this mount), so
+        # this is the machine door's one resolution, by the same road — and the
+        # host is read by the one road the socket reads it by, so all three
+        # doors answer the host the HTTP door's `get_host()` answers.
+        surface = resolve_surface(request_host(scope.get("headers", [])))
+        if surface is None:
+            await _refused(send, SurfaceUnknownHost())
             return
 
         header = _header(scope, AUTHORIZATION_HEADER.lower().encode()) or ""
@@ -441,6 +432,7 @@ class TokenAuthMiddleware:
             authenticate_token,
             plaintext=presented,
             requested_slug=requested_tenant,
+            surface=surface,
         )
         token_row: Any = None
         if resolved is not None:
@@ -451,6 +443,7 @@ class TokenAuthMiddleware:
                     oauth.authenticate_bearer,
                     token=presented,
                     requested_slug=requested_tenant,
+                    surface=surface,
                 )
             except oauth.OAuthRefused as refused:
                 await _unauthorized(send, refused.description, error=refused.error)
@@ -480,17 +473,23 @@ class TokenAuthMiddleware:
             tenant=tenant,
             requested_org=requested_org,
             org=org,
+            surface=surface,
         )
         if not_honoured is not None:
-            await _not_honoured(send, not_honoured)
+            await _refused(send, not_honoured)
             return
         scope = dict(scope)
-        scope[SCOPE_KEY] = Principal(user=user, tenant=tenant, token=token_row, org=org)
+        scope[SCOPE_KEY] = Principal(
+            user=user, tenant=tenant, token=token_row, org=org, surface=surface.key
+        )
 
         # The same context the HTTP door binds, so a tool call and a REST call
         # for the same work are one chain in the sink. The session id is the
         # transport's own `Mcp-Session-Id` when the client sent one; a stateless
-        # call has none, which is honest rather than invented.
+        # call has none, which is honest rather than invented. What was bound on
+        # the way in is put back on the way out — `ContextMiddleware`'s shape —
+        # so an in-process caller keeps its chain across a tool call.
+        previous = context.get()
         context.clear()
         context.bind(
             **context.from_headers(
@@ -505,12 +504,14 @@ class TokenAuthMiddleware:
             org_id=str(org.pk) if org is not None else None,
             user_id=str(user.pk),
             actor_kind="agent",
+            surface=surface.key,
             door="mcp",
         )
         try:
             await self.app(scope, receive, send)
         finally:
             context.clear()
+            context.bind(**previous)
 
 
 def build_http_app() -> Any:

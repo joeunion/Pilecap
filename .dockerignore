@@ -35,6 +35,8 @@ __pycache__
 staticfiles
 media
 node_modules
+frontend/node_modules
+frontend/.next
 
 # Documentation, method and enforcement: none of it runs in production
 docs
@@ -55,7 +57,7 @@ CHANGELOG.md
 # thing in this repository ever to build and run the image.
 #
 # So the line above is right about the *engine* and wrong about this one file.
-# `quality/checks.py`, `gate.py`, the canaries, the negatives and the
+# `quality/checks/`, `gate.py`, the canaries, the negatives and the
 # measurement write-ups stay out — 1.6M of enforcement that no runtime path
 # touches. `rules.yaml` is 143K of DATA that the application's own checks read,
 # and it ships.
@@ -65,6 +67,25 @@ CHANGELOG.md
 # is un-ignored. If a second file ever becomes a runtime read, it gets its own
 # line here and its own reason — never `!quality` and never a glob.
 !quality/rules.yaml
+# The second runtime read: `apps/core/management/commands/declare.py::product_apps` reads the
+# partition's lockfile to tell a product's apps from the platform's.
+!quality/partition.yaml
+# The third: `apps/core/reach.py` joins a product's `scope_extensions:` onto rules 3, 11 and 16's
+# lists for those same checks, so an image without the drawer refuses the product's own apps.
+!quality/local/rules.yaml
+
+# The dev-only paths `CoreConfig.DEV_ONLY` names: each reads the gate, which is not
+# here; `manage.py` answers their commands with the one refusal. The census holds these lines equal.
+# The scaffold copies goldens and measures with the engine's own readers.
+apps/core/scaffold
+# `declare` writes the drawer and validates it with the engine's rule grammar.
+apps/core/management/commands/declare.py
+# `newapp` records the new app's rule-91 floors through the scaffold.
+apps/core/management/commands/newapp.py
+# `roads` prints the census the engine's marker reader takes; it builds the scaffold's parser.
+apps/core/management/commands/roads.py
+# `scaffold` is the scaffold's command.
+apps/core/management/commands/scaffold.py
 
 # The compose stack is a laptop's, not a deployment's
 compose.yaml

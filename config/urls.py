@@ -32,7 +32,7 @@ from apps.accounts import views as accounts_views
 from apps.accounts.admin import admin_login, admin_password_change
 from apps.core import health, views
 from apps.core.api import docs
-from config.api import api, api_not_found, api_server_error
+from config.api import api, api_not_found, api_server_error, surface_view
 
 API_PREFIX = "api/v1/"
 
@@ -102,6 +102,17 @@ urlpatterns: list[URLPattern | URLResolver] = [
     # records: a multi-step ceremony is not a form.
     path("accounts/login/", accounts_views.sign_in, name="sign-in"),
     path("accounts/", include("allauth.urls")),
+    # The face's boot question — which surface this address is — under the
+    # version segment because the face reads it beside the API, and AHEAD of the
+    # API's mount and its catch-all so neither shadows it. A plain view, like the
+    # RFC 9728 document above, and unauthenticated for the same reason: it is
+    # asked before anybody signs in. It says what the address already is (the
+    # surface's key, its screens and its tenant rule) and never names a family,
+    # a door or another surface; rule 3's plain-view census records it with that
+    # reason. Every surface answers it, so no surface's families gate it. Exempt
+    # from CSRF at the mount for the catch-all's reason below: it reads and
+    # writes nothing, and a wrong method answers the API's JSON 405.
+    path(f"{API_PREFIX}surface/", csrf_exempt(surface_view), name="surface"),
     path(API_PREFIX, api.urls),
     # Reached only when the resolver has already failed INSIDE the API
     # above, so it can shadow no route: a path under the version segment that

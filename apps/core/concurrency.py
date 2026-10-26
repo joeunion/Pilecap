@@ -39,6 +39,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from apps.core.exceptions import StaleVersion
+from apps.core.roads import road
 
 #: The epoch the version counts from. Aware, UTC, so an aware `updated_at`
 #: subtracts cleanly whatever zone the process runs in.
@@ -65,6 +66,7 @@ def version_of(row: Any) -> int:
     return (stamp - EPOCH) // TICK
 
 
+@road("version_row", example="apps/example/services.py::update_widget")
 def require_version(locked: Any, version: int) -> None:
     """Refuse `stale_version` unless `version` is the locked row's version now.
 

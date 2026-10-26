@@ -19,7 +19,7 @@ THE RED WORDS are the design grammar's, per verb:
   Timeline, as a title (a label or title key, house rule 72's grammar).
 
 A WORD THE PRODUCT CHOSE IS NEVER RED: every word the code's verb table
-spends (`frontend/src/screens/verbs.ts`, read through `js_verb_table.py`) —
+spends (`frontend/src/kit/verbs.ts`, read through `js_verb_table.py`) —
 a verb renamed once, product-wide, or a way back such as *Remove tag* — is
 lifted out of a string before its words are read, and so is every phrase a
 product declares in its drawer's fenced `verb-words` block, one per line

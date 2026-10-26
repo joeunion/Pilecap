@@ -1,0 +1,34 @@
+from pilecap import Policy, may_archive
+
+# golden: noun end
+
+
+from pilecap import may_move
+
+
+from pilecap import may_merge
+
+
+# golden: noun begin
+POLICIES: dict[str, Policy] = {
+    # golden: noun begin
+    "widget.archive": may_archive,
+    "widget.restore": may_archive,
+    # golden: noun end
+    # golden: archive version end
+    # A move is an administrator's press at BOTH ends, never the system's.
+    "widget.move": may_move,
+    # golden: move bulk history duplicate attach end
+    # A merge is an administrator's press on BOTH records, never the system's.
+    "widget.merge": may_merge,
+    # golden: archive version move bulk history duplicate attach begin
+    # golden: noun begin
+}
+# golden: noun end
+
+
+# golden: noun begin
+ACTION_PROSE: dict[str, str] = {
+    # golden: noun begin
+}
+# golden: noun end

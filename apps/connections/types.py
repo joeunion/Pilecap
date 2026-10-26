@@ -46,6 +46,21 @@ class PurgeInboundWebhooks:
 
 @dataclass
 class PurgeOutcome:
-    """What the purge removed. The number an operator asks for."""
+    """What the purge removed. The number an operator asks for.
+
+    why-not `core.types.Swept`: rule 9 lets `workflows.py` import only this app's own `types.py`.
+    """
 
     inbound_webhooks: int = 0
+
+
+#: The name Temporal knows a receipt's handler run by, shared by its starter and its class.
+HANDLE_WORKFLOW = "InboundWebhookWorkflow"
+
+
+@dataclass
+class HandleInboundWebhook:
+    """Which stored receipt the registered handler is handed; the row is read in the activity."""
+
+    inbound_webhook_id: str
+    retry_floor: float | None = None

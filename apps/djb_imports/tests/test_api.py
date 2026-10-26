@@ -18,9 +18,11 @@ from django.urls import reverse
 from apps.core.actor import actor_for
 from apps.core.models import Grant, Membership, Organization
 from apps.core.services import create_organization
+from apps.core.tests.wire import REQUEST_FIXED_QUERIES
 from apps.djb_imports.models import MAX_IMPORT_ROWS, Import, ImportRow
 from apps.djb_imports.services import create_import
-from apps.djb_imports.tests.conftest import FIVE_ROWS_ONE_BAD, stored_csv
+from apps.djb_imports.tests.conftest import FIVE_ROWS_ONE_BAD
+from apps.djb_imports.tests.store import stored_csv
 from apps.example.models import Widget
 from apps.workflows.models import WorkflowRun
 
@@ -37,12 +39,10 @@ JSON = "application/json"
 LIST_URL = reverse("api:djb_import-list")
 CREATE_URL = reverse("api:djb_import-create")
 
-#: Measured on the box at seeded scale (three runs, then nine): the page, the
-#: session and the hat, `djb_import.read` resolved once at the hat (three tables,
-#: memoised on the actor), and the `select_related` that keeps the three
-#: relations `ImportOut` walks off the per-row path. Flat across the two scales.
-LIST_QUERY_BUDGET = 10
-ROWS_QUERY_BUDGET = 11
+#: The fixed request cost, then the page (the three relations `DjbImportOut` walks joined).
+LIST_QUERY_BUDGET = REQUEST_FIXED_QUERIES + 1
+#: The fixed request cost, then the run, then the page.
+ROWS_QUERY_BUDGET = REQUEST_FIXED_QUERIES + 2
 
 
 def _detail(run: Import) -> str:
@@ -573,10 +573,51 @@ def test_the_rows_query_budget(
 
 
 def test_the_published_kind_enum_is_the_declared_importers(planted_importer: None) -> None:
-    """`ImportIn.kind`'s values are derived from `IMPORTERS` when the document is built."""
+    """`DjbImportIn.kind`'s values are derived from `IMPORTERS` when the document is built."""
     from config.api import api as mounted
 
     document = json.loads(json.dumps(mounted.get_openapi_schema()))
 
-    kind = document["components"]["schemas"]["ImportIn"]["properties"]["kind"]
+    kind = document["components"]["schemas"]["DjbImportIn"]["properties"]["kind"]
     assert kind["enum"] == ["widget"]
+
+
+@pytest.mark.parametrize(
+    ("cancelled", "stored"),
+    [
+        (False, {"code": "run_failed", "detail": "the worker lost its database"}),
+        (True, {}),
+    ],
+)
+def test_a_broken_run_stores_run_failed_and_a_cancelled_one_no_refusal(
+    staged: Import, monkeypatch: pytest.MonkeyPatch, cancelled: bool, stored: dict[str, str]
+) -> None:
+    """The closing activity: a run that broke records `run_failed`; a cancel is a status only."""
+    from apps.djb_imports import activities as import_activities
+    from apps.djb_imports.types import ImportFailed
+    from apps.workflows import context as workflow_context
+
+    monkeypatch.setattr(import_activities, "close_old_connections", lambda: None)
+    tokens = workflow_context.set_principal(
+        tenant_id=str(staged.tenant_id),
+        user_id=str(staged.requested_by_id),
+        org_id=str(staged.organization_id),
+    )
+    try:
+        import_activities.record_import_failure(
+            ImportFailed(
+                import_id=str(staged.pk),
+                reason="the worker lost its database",
+                cancelled=cancelled,
+            )
+        )
+    finally:
+        workflow_context.reset_principal(tokens)
+    run = Import.objects.get(pk=staged.pk)
+    assert run.status == Import.Status.FAILED
+    assert {key: run.failure[key] for key in stored} == stored
+    assert bool(run.failure) is not cancelled
+    assert (run.cancelled_at is not None) is cancelled
+    if not cancelled:
+        destinations = [remedy["destination"] for remedy in run.failure["remedies"]]
+        assert destinations == ["field:detail", "route:djb_import-create"], destinations

@@ -3,6 +3,7 @@
 
 import os
 import sys
+from pathlib import Path
 
 
 def main() -> None:
@@ -14,6 +15,9 @@ def main() -> None:
             "Could not import Django. Are you sure it is installed and available on your "
             "PYTHONPATH environment variable? Did you forget to activate a virtual environment?"
         ) from exc
+    from apps.core.apps import CoreConfig
+
+    CoreConfig.refuse_outside_checkout(sys.argv, Path(__file__).resolve().parent)
     execute_from_command_line(sys.argv)
 
 

@@ -1,3 +1,5 @@
+from typing import ClassVar
+
 from django.apps import AppConfig
 
 
@@ -13,6 +15,12 @@ class WorkflowsConfig(AppConfig):
     # this app sits above `accounts` in the fixed layers — and it is declared
     # here because house rule 7 reads this line and nothing else.
     depends_on: tuple[str, ...] = ("core", "accounts")
+    ratchet_floors: ClassVar[dict[str, int]] = {
+        "91.block-tail": 600,
+        "91.docstring-tail": 1438,
+        "91.module-tail": 480,
+        "91.narrative": 8,
+    }
 
     def ready(self) -> None:
         """Fill the bridge names this app provides.

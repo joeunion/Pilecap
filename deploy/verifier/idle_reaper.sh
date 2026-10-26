@@ -78,7 +78,7 @@ esac
 # TESTING SEAMS, and they are environment variables rather than flags because
 # the timer's command line is fixed: VERIFIER_ROOT prefixes every path (empty on
 # a real box), VERIFIER_USER names the account whose processes and sessions
-# count. `scripts/tests/test_verifier_image.sh` drives every decision below
+# count. `quality/tests/test_verifier_image.py` drives every decision below
 # under a scratch root with `who`, `pgrep`, `date`, `shutdown` and `logger`
 # planted on PATH.
 #

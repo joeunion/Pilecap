@@ -7,8 +7,9 @@ Three groups, and they answer three different questions.
 into a `.env`, once, and then never looked at again. A typo that quietly ran
 every test would be worse than no declaration at all: the reds it produced would
 read as defects in the product. So an unknown key, a value outside a closed
-vocabulary, and an empty value are each `ImproperlyConfigured` **at settings
-import**, driven here by importing `config.settings.base` under each one.
+vocabulary, and an empty value are each `ImproperlyConfigured` **when the
+suite loads**, driven here through `apps.conftest.identity_shape`, the one
+parser.
 
 **Is every mark a real mark?** The marks are a closed population: seven keys, six
 modules. A mark naming a seventh key is a test that can never run again, and a
@@ -17,7 +18,8 @@ should. Both are read out of the tree by `ast`, not asserted from a list.
 
 **Is the declaration documented where it is read?** The seven keys are only useful
 if a product can find out what declaring one turns off, and the place a person
-looks is the settings block that reads the variable.
+looks is the block that reads the variable — in `template_shape.py`, beside the
+mark it governs.
 
 Nothing here declares anything itself: the platform's own tree runs all of it
 with `DJB_IDENTITY_SHAPE` unset (I1.7), which is why every assertion below about
@@ -35,12 +37,19 @@ import pytest
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 
-from apps.core.tests.template_shape import IDENTITY_SHAPE_MODULES, PREFIX, template_shape
-from apps.core.tests.test_settings import _settings_module
+from apps.core.tests.template_shape import (
+    IDENTITY_SHAPE,
+    IDENTITY_SHAPE_DEFAULTS,
+    IDENTITY_SHAPE_MODULES,
+    PREFIX,
+    declared_shape,
+    identity_shape,
+    template_shape,
+)
 from apps.core.tests.tree_census import source_tree
 
 BASE_DIR = Path(str(settings.BASE_DIR))
-BASE_SETTINGS = BASE_DIR / "config" / "settings" / "base.py"
+SHAPE_MODULE = BASE_DIR / "apps" / "core" / "tests" / "template_shape.py"
 
 #: The first line of the settings block, and therefore the left edge of the
 #: window the documentation census reads. Anchored on the block's own header
@@ -49,9 +58,9 @@ BASE_SETTINGS = BASE_DIR / "config" / "settings" / "base.py"
 BLOCK_HEADER = "# --- What a product kept of the template's identity SHAPE"
 
 #: The template's own shape, spelled here so this module is the second opinion
-#: on `base.py` rather than a mirror of it. A default that moves without this
-#: list moving is a product-visible change, and `CHANGELOG.md`'s MINOR rule is
-#: what it is for.
+#: on `apps/core/tests/template_shape.py` rather than a mirror of it. A default
+#: that moves without this list moving is a product-visible change, and
+#: `CHANGELOG.md`'s MINOR rule is what it is for.
 TEMPLATE_SHAPE: dict[str, str] = {
     "entrance_marker": "--entrance-tokens",
     "login_page": "template",
@@ -69,26 +78,21 @@ TEMPLATE_SHAPE: dict[str, str] = {
 def test_the_six_keys_and_their_defaults_are_what_this_template_ships() -> None:
     """The population, pinned. A seventh key is a deliberate act, not a drift.
 
-    The DEFAULTS are a module constant, so they are read off live settings and
-    say the same thing on every checkout. **The RESOLVED shape is read under a
-    CLEARED declaration instead**, because asserting the ambient
-    `settings.IDENTITY_SHAPE` here reds on the first product that declares
-    anything — the divergence class this whole mechanism exists to end,
-    re-entering through the test that polices it. What is pinned is the
-    mechanism: declare nothing, get the template's seven.
+    The DEFAULTS are a module constant, so they say the same thing on every
+    checkout. **The RESOLVED shape is parsed from an EMPTY declaration
+    instead**, because asserting the ambient `IDENTITY_SHAPE` here reds on the
+    first product that declares anything — the divergence class this whole
+    mechanism exists to end, re-entering through the test that polices it. What
+    is pinned is the mechanism: declare nothing, get the template's seven.
     """
-    assert settings.IDENTITY_SHAPE_DEFAULTS == TEMPLATE_SHAPE
-
-    with _settings_module("config.settings.base", DJB_IDENTITY_SHAPE=None) as base:
-        assert base.IDENTITY_SHAPE_DEFAULTS == TEMPLATE_SHAPE
-        assert base.IDENTITY_SHAPE == TEMPLATE_SHAPE
+    assert IDENTITY_SHAPE_DEFAULTS == TEMPLATE_SHAPE
+    assert identity_shape("") == TEMPLATE_SHAPE
 
 
-def test_an_unknown_key_refuses_at_settings_import() -> None:
+def test_an_unknown_key_refuses() -> None:
     """A typo in a key is the commonest way to declare nothing and think you did."""
     with pytest.raises(ImproperlyConfigured) as refusal:
-        with _settings_module("config.settings.base", DJB_IDENTITY_SHAPE="login_pages=own"):
-            pass  # pragma: no cover - the import above is the subject
+        identity_shape("login_pages=own")
 
     assert "login_pages" in str(refusal.value)
 
@@ -100,8 +104,7 @@ def test_an_unknown_key_refuses_at_settings_import() -> None:
 def test_an_illegal_enum_value_refuses(declaration: str) -> None:
     """Four of the seven are closed questions with two answers; a third is a typo."""
     with pytest.raises(ImproperlyConfigured) as refusal:
-        with _settings_module("config.settings.base", DJB_IDENTITY_SHAPE=declaration):
-            pass  # pragma: no cover - the import above is the subject
+        identity_shape(declaration)
 
     key, _, value = declaration.partition("=")
     assert key in str(refusal.value)
@@ -114,12 +117,11 @@ def test_an_empty_value_refuses(declaration: str) -> None:
 
     The distinction matters because `key=` is exactly what a half-finished edit
     leaves behind, and present-but-empty defeating a default is a twice-evidenced
-    class in this settings module (`test_settings.py`'s third `PRODUCT_BASE_URL`
+    class in the settings module (`test_settings.py`'s third `PRODUCT_BASE_URL`
     branch is the other instance).
     """
     with pytest.raises(ImproperlyConfigured) as refusal:
-        with _settings_module("config.settings.base", DJB_IDENTITY_SHAPE=declaration):
-            pass  # pragma: no cover - the import above is the subject
+        identity_shape(declaration)
 
     assert "empty value" in str(refusal.value)
 
@@ -127,35 +129,29 @@ def test_an_empty_value_refuses(declaration: str) -> None:
 def test_a_clause_that_is_not_a_pair_refuses() -> None:
     """`;` is the separator and `=` is the pair; a missing `=` is neither."""
     with pytest.raises(ImproperlyConfigured) as refusal:
-        with _settings_module("config.settings.base", DJB_IDENTITY_SHAPE="login_page"):
-            pass  # pragma: no cover - the import above is the subject
+        identity_shape("login_page")
 
     assert "key=value" in str(refusal.value)
 
 
 def test_a_legal_declaration_is_read_and_the_rest_keep_the_template_default() -> None:
     """A partial declaration is legal: a product replaced one surface, not six."""
-    with _settings_module(
-        "config.settings.base", DJB_IDENTITY_SHAPE="login_page=own;landing=own"
-    ) as base:
-        assert base.IDENTITY_SHAPE["login_page"] == "own"
-        assert base.IDENTITY_SHAPE["landing"] == "own"
-        assert base.IDENTITY_SHAPE["posture_writer"] == "zitadel_seed"
+    shape = identity_shape("login_page=own;landing=own")
+    assert shape["login_page"] == "own"
+    assert shape["landing"] == "own"
+    assert shape["posture_writer"] == "zitadel_seed"
 
 
 def test_an_empty_declaration_is_the_template_shape() -> None:
     """Both spellings of "I did not declare anything" land on the same dict."""
-    with _settings_module("config.settings.base", DJB_IDENTITY_SHAPE="") as base:
-        assert base.IDENTITY_SHAPE == TEMPLATE_SHAPE
-
-    with _settings_module("config.settings.base", DJB_IDENTITY_SHAPE=None) as base:
-        assert base.IDENTITY_SHAPE == TEMPLATE_SHAPE
+    assert identity_shape("") == TEMPLATE_SHAPE
+    assert identity_shape(" ; ") == TEMPLATE_SHAPE
 
 
 def test_declaring_the_template_value_explicitly_still_runs_the_test() -> None:
     """The comparison is against the VALUE, never against "the key is present"."""
-    with _settings_module("config.settings.base", DJB_IDENTITY_SHAPE="login_page=template") as base:
-        assert base.IDENTITY_SHAPE["login_page"] == base.IDENTITY_SHAPE_DEFAULTS["login_page"]
+    shape = identity_shape("login_page=template")
+    assert shape["login_page"] == IDENTITY_SHAPE_DEFAULTS["login_page"]
 
 
 # --- the marks are a census, read out of the tree ----------------------------
@@ -235,8 +231,8 @@ def test_every_mark_names_a_key_and_lives_in_an_identity_shape_module(capsys: An
         *(f"{PREFIX}   {count:>2}  {module}" for module, count in per_module.items()),
     ]
     if (
-        settings.IDENTITY_SHAPE["login_page"] != TEMPLATE_SHAPE["login_page"]
-        and settings.IDENTITY_SHAPE["branding_writer"] == TEMPLATE_SHAPE["branding_writer"]
+        IDENTITY_SHAPE["login_page"] != TEMPLATE_SHAPE["login_page"]
+        and IDENTITY_SHAPE["branding_writer"] == TEMPLATE_SHAPE["branding_writer"]
     ):
         summary.append(
             f"{PREFIX}   note: the hosted screen's branding road is held in reserve "
@@ -246,7 +242,7 @@ def test_every_mark_names_a_key_and_lives_in_an_identity_shape_module(capsys: An
     with capsys.disabled():
         print("\n" + "\n".join(summary))
 
-    if settings.IDENTITY_SHAPE != settings.IDENTITY_SHAPE_DEFAULTS:
+    if IDENTITY_SHAPE != IDENTITY_SHAPE_DEFAULTS:
         warnings.warn("\n".join(summary), UserWarning, stacklevel=2)
 
 
@@ -316,9 +312,9 @@ def test_the_keys_are_documented_where_the_setting_is_read() -> None:
     """One sentence per key, in the settings block, naming what it turns off.
 
     Not "documented somewhere": documented where a person looking at
-    `DJB_IDENTITY_SHAPE` in a `.env` will land, which is the block in `base.py`
-    that reads it. A key added to the dict and not to the prose is a key a
-    product can declare and cannot find out the meaning of.
+    `DJB_IDENTITY_SHAPE` in a `.env` will land, which is the block in
+    `apps/core/tests/template_shape.py` that reads it. A key added to the dict and not to the
+    prose is a key a product can declare and cannot find out the meaning of.
 
     **The window is the BLOCK — its own header line to the dict it documents —
     and not "4000 characters back from the first mention".** That reach was
@@ -328,7 +324,7 @@ def test_the_keys_are_documented_where_the_setting_is_read() -> None:
     passed. A window that can be satisfied from outside the thing it is
     measuring is not measuring it.
     """
-    text = BASE_SETTINGS.read_text()
+    text = SHAPE_MODULE.read_text()
     start = text.index(BLOCK_HEADER)
     end = text.index("IDENTITY_SHAPE_DEFAULTS", start)
     assert start < end, "the block header must come before the dict it documents"
@@ -359,6 +355,44 @@ def test_the_env_example_ships_the_declaration_commented() -> None:
         assert f"{key}={value}" in text
 
 
+# --- where the declaration is read from --------------------------------------
+
+DRAWER_OWN = "rule_id_namespace: acme\nidentity_shape: platform_apps=own\n"
+
+
+def test_the_tracked_drawer_declares_when_the_environment_is_silent() -> None:
+    """A product's CI carries no `.env`; the drawer it commits is the declaration."""
+    assert declared_shape("", DRAWER_OWN) == TEMPLATE_SHAPE | {"platform_apps": "own"}
+
+
+def test_the_environment_alone_still_declares() -> None:
+    assert declared_shape("platform_apps=own", None) == TEMPLATE_SHAPE | {"platform_apps": "own"}
+
+
+def test_no_declaration_anywhere_is_the_template() -> None:
+    assert declared_shape("", None) == TEMPLATE_SHAPE
+    assert declared_shape("", "rule_id_namespace: acme\n") == TEMPLATE_SHAPE
+
+
+def test_an_agreeing_environment_and_drawer_are_one_declaration() -> None:
+    assert declared_shape("platform_apps=own", DRAWER_OWN)["platform_apps"] == "own"
+
+
+def test_a_disagreeing_environment_and_drawer_refuse_naming_both() -> None:
+    """Each was typed by a human (I1.7); neither silently wins."""
+    with pytest.raises(ImproperlyConfigured) as refusal:
+        declared_shape("platform_apps=template", DRAWER_OWN)
+    said = str(refusal.value)
+    assert "platform_apps=template" in said and "platform_apps=own" in said
+    assert "quality/local/rules.yaml" in said
+
+
+def test_a_drawer_shape_is_held_to_the_same_grammar() -> None:
+    with pytest.raises(ImproperlyConfigured) as refusal:
+        declared_shape("", "identity_shape: login_pages=own\n")
+    assert "login_pages" in str(refusal.value)
+
+
 # --- the template's platform app set -----------------------------------------
 
 
@@ -380,16 +414,9 @@ def test_the_platform_app_set_is_every_app_in_the_tree() -> None:
     tree its own apps are SUPPOSED to sit outside the template's list (the
     lockfile's header says so: the live registry is a superset).
     """
-    from apps.core.tests.tree_census import TRANSIENT_APP_MODULES
     from quality.partition import platform_apps
 
-    # A test elsewhere plants `apps/zzz_probe/` for a moment; it is not an app.
-    planted = {module.split(".")[1] for module in TRANSIENT_APP_MODULES}
-    tree = {
-        path.name
-        for path in (BASE_DIR / "apps").iterdir()
-        if (path / "apps.py").exists() and path.name not in planted
-    }
+    tree = {path.name for path in (BASE_DIR / "apps").iterdir() if (path / "apps.py").exists()}
     listed = set(platform_apps())
     assert listed == tree, (
         f"in the tree and absent from platform_apps: {sorted(tree - listed)}; "
@@ -407,23 +434,25 @@ def test_the_platform_app_set_is_every_app_in_the_tree() -> None:
 PLATFORM_ONLY_PIN = "test_the_platform_declares_nothing"
 
 
+@pytest.mark.template_only(
+    reason="its subject is the environment, and a product's declaration says this "
+    "checkout is no longer the template's own tree"
+)
 def test_the_platform_declares_nothing() -> None:
     """The platform's own tree declares nothing — THE ONE DELIBERATE EXCEPTION.
 
     Reason, in one line: this assertion's SUBJECT is the environment, so reading
     the ambient declaration here is the point rather than the defect.
 
-    `config/settings/test.py` sets no `IDENTITY_SHAPE`, so the suite this
-    assertion runs in is the one that runs every marked test. A product that
+    Neither `config/settings/test.py` nor any settings module sets a shape, so
+    the suite this assertion runs in is the one that runs every marked test. A product that
     declares reads a skip count; the platform reads none.
 
-    **A product that declares a divergence WILL red here, and that red is the
-    criterion firing — not a defect in the product and not one to patch.** It is
-    the template saying "this checkout is no longer the template's own tree",
-    which is exactly what a fork should hear once. Delete this case, or pin it
-    to your own shape; do not widen it to accept any declaration, because then
-    nothing is left that notices the platform quietly declaring something.
+    A product declares by design, so the case wears `template_only`: skipped
+    with one sentence on a tree that declares `rule_id_namespace:`, live on the
+    template. Never delete it and never widen it to accept any declaration —
+    then nothing is left that notices the platform quietly declaring something.
     """
     test_settings = (BASE_DIR / "config" / "settings" / "test.py").read_text()
     assert "IDENTITY_SHAPE" not in test_settings
-    assert settings.IDENTITY_SHAPE == settings.IDENTITY_SHAPE_DEFAULTS
+    assert IDENTITY_SHAPE == IDENTITY_SHAPE_DEFAULTS

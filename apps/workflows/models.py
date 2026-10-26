@@ -127,7 +127,7 @@ class WorkflowRun(TenantScopedModel):
         #: The word is spelled the way the rest of this tree spells English —
         #: two `l`s — while Temporal's enum member is `CANCELED`; the mapping
         #: between them lives in `activities.reconcile_runs` and in
-        #: `workflows._finish`, and nowhere else.
+        #: `determinism.run_to_finish`, and nowhere else.
         CANCELLED = "cancelled", "Cancelled"
 
     #: Overridden from `TenantScopedModel` to be nullable. See the module
@@ -172,9 +172,8 @@ class WorkflowRun(TenantScopedModel):
     #: **Null is unknown, not "nobody"** — the `input_digest` precedent
     #: verbatim. Rows written before this column existed hold `NULL` and are
     #: nobody's own runs; they are readable through the tenant door and are
-    #: never replayable, because a backfill nobody can compute would be a guess
-    #: wearing the authority of a fact. A platform run legitimately has no
-    #: starter and holds `NULL` for the same reason.
+    #: replayed only by the tenant's administrator (ADR comms-4): a backfill nobody
+    #: can compute would be a guess. A platform run has no starter, `NULL` likewise.
     started_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,

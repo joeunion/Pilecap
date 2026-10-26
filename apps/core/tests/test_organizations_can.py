@@ -40,7 +40,7 @@ def tree(tenant: Tenant, owner: User) -> dict[str, Organization]:
 def _person(
     tenant: Tenant, owner: User, tree: dict[str, Organization], email: str, grants: list[Any]
 ) -> User:
-    user = create_user(email=email, password="pw-for-tests-only")
+    user = create_user(email=email, password="pw-for-tests-only")  # noqa: S106 — a throwaway password a test user is made with
     acting = actor_for(user=owner, tenant=tenant, org=tree["root"])
     for i, (node, role) in enumerate(grants):
         add_membership(

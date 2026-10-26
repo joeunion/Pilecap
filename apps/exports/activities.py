@@ -46,18 +46,10 @@ from uuid import UUID
 from django.core.serializers.json import DjangoJSONEncoder
 from django.db import close_old_connections
 from temporalio import activity
-from temporalio.client import (
-    Schedule,
-    ScheduleActionStartWorkflow,
-    ScheduleIntervalSpec,
-    ScheduleOverlapPolicy,
-    SchedulePolicy,
-    ScheduleSpec,
-)
 
 from apps.core.actor import Actor, actor_for, system_actor
 from apps.core.log import get_logger
-from apps.core.schedules import ScheduleDeclaration
+from apps.core.schedules import ScheduleDeclaration, daily_purge
 from apps.core.services import root_organization
 from apps.core.time import now
 from apps.exports import services
@@ -418,7 +410,7 @@ def record_export_failure(payload: ExportFailed) -> str:
 
     Its own shape rather than a reused one: `reason` is the activity's own
     complaint, walked out of Temporal's cause chain by the workflow
-    (`workflows._reason`), and a field called `artifact_key` carrying a
+    (`core.determinism.reason_of`), and a field called `artifact_key` carrying a
     traceback is the kind of reuse nobody can read six weeks later.
     """
     close_old_connections()
@@ -595,80 +587,13 @@ def _the_user(user_id: str) -> Any:
 
 # --- the schedule --------------------------------------------------------------
 
-#: Daily. The window is thirty days wide, so the cadence only has to be small
-#: against it; running more often would delete the same nothing more often.
-PURGE_EVERY = timedelta(hours=24)
-
-#: **Both ids are namespaced by task queue**, and that is not cosmetic (ADR
-#: events-2): a schedule id is global to the Temporal
-#: namespace, so a constant one makes every worker's startup a silent fight over
-#: where the sweep runs. There is no legacy un-suffixed id to drop here; this
-#: schedule has never existed under one.
-PURGE_SCHEDULE_PREFIX = "exports-purge-expired"
-PURGE_WORKFLOW_PREFIX = "platform:exports:purge"
-
-#: Deleting objects from a bucket one at a time, so the timeout is sized for the
-#: first sweep of a table nobody has swept rather than for the steady state.
-PURGE_TIMEOUT = timedelta(minutes=30)
-
-
-def purge_schedule_id(task_queue: str) -> str:
-    """The schedule id for one deployment's export sweep."""
-    return f"{PURGE_SCHEDULE_PREFIX}:{task_queue}"
-
-
-def purge_workflow_id(task_queue: str) -> str:
-    """The id of the run the schedule starts. Deterministic, and per queue too.
-
-    Two schedules starting runs under one workflow id would be two deployments
-    fighting over one execution — the schedule id alone is not enough.
-
-    This is the **prefix** Temporal is given: the server appends the scheduled
-    time to it, so an actual run is
-    `platform:exports:purge:<queue>-2026-08-24T03:00:00Z`. That is the server's
-    doing and not a random id; the part this repository chooses is
-    deterministic, which is what house rule 18 is about.
-    """
-    return f"{PURGE_WORKFLOW_PREFIX}:{task_queue}"
-
-
-def purge_exports_schedule(task_queue: str) -> Schedule:
-    """The daily sweep, as a value so a test can read it.
-
-    The retention rides on the ACTION rather than being read inside the
-    activity, for the reason `apps.connections`' sweep carries its window there:
-    an operator can read the number off the schedule in the Temporal UI instead
-    of out of the source, and both lifetime classes read the same value out of
-    the same declaration.
-
-    `SKIP` on overlap: two sweeps at once would both read the same expired rows,
-    and while a second delete is a harmless no-op there is no reason to pay for
-    the race.
-    """
-    return Schedule(
-        action=ScheduleActionStartWorkflow(
-            PURGE_WORKFLOW,
-            PurgeExports(retention_days=EXPORT_RETENTION_DAYS),
-            id=purge_workflow_id(task_queue=task_queue),
-            task_queue=task_queue,
-        ),
-        spec=ScheduleSpec(intervals=[ScheduleIntervalSpec(every=PURGE_EVERY)]),
-        policy=SchedulePolicy(overlap=ScheduleOverlapPolicy.SKIP),
-    )
-
-
-#: The one periodic machine this app owns, declared as data (ADR
-#: platform-lifecycle-1).
-#:
-#: **This is the far end of `Export.lifecycle`.** House rule 31 walks from the
-#: model's `purged_by` to the service, to the activity above that calls it, to
-#: the workflow that executes that activity, to this declaration — and refuses
-#: the declaration if the walk stops short. Delete this entry and the model's
-#: promise becomes the poller that was never built, loudly, at the gate.
-PURGE_EXPORTS = ScheduleDeclaration(
+#: `platform:exports:purge:<queue>`, daily — the far end of `Export.lifecycle` (rule 31).
+PURGE_EXPORTS = daily_purge(
+    app="exports",
+    noun="purge",
+    workflow=PURGE_WORKFLOW,
+    arg=PurgeExports(retention_days=EXPORT_RETENTION_DAYS),
     name="exports.purge-expired",
-    schedule_id=purge_schedule_id,
-    schedule=purge_exports_schedule,
     log_prefix="exports",
 )
 
@@ -679,6 +604,4 @@ ACTIVITIES: list[Callable[..., Any]] = [
     purge_expired_exports,
 ]
 
-#: Discovered by `apps.workflows.client.discovered_schedules`, which the worker
-#: consults at startup. One declaration per periodic machine this app owns.
 SCHEDULES: list[ScheduleDeclaration] = [PURGE_EXPORTS]

@@ -14,7 +14,7 @@ canaries born with it") is the check that will see it.
 
 **`version_key` below is now the ONLY key builder in this repository**, and this
 paragraph is the record of how that became true rather than a comparison a
-reader still has to make. It was written as a coexistence note: `apps/core/storage.py`
+reader still has to make. It was written as a coexistence note: the core app's `storage.py`
 held a `tenant_prefixed_key` producing `tenants/<slug>/<uuid>-<name>`, and this
 module's `version_key` produced `t/<tenant pk>/f/<file pk>/v/<n>`, and the two
 lived side by side because `apps/exports` still wrote its archive through
@@ -76,7 +76,8 @@ from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from collections.abc import Generator, Iterator
+    from collections.abc import Generator, Iterator, Sequence
+    from pathlib import Path
 
     from apps.core.models import Tenant
 
@@ -197,7 +198,11 @@ def derived_bucket_name() -> str:
     (`apps/core/health.py::checks`). Two answers to "is object storage
     configured" is one answer too many.
     """
-    root = settings.BASE_DIR
+    return bucket_name_for(settings.BASE_DIR)
+
+
+def bucket_name_for(root: Path) -> str:
+    """The bucket name a checkout at `root` derives — `derived_bucket_name` for any path."""
     digest = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:8]
     label = _UNSAFE_IN_BUCKET.sub("-", str(root.name).lower()).strip("-")
     label = label[:MAX_BUCKET_LABEL].strip("-")
@@ -403,6 +408,7 @@ def presign_put(
     key: str,
     content_type: str,
     expires_in: int | None = None,
+    store: Any = None,
 ) -> str:
     """A URL a client may PUT one object to, once this tenant's prefix allows it.
 
@@ -438,7 +444,7 @@ def presign_put(
     """
     refuse_foreign_key(tenant=tenant, key=key)
     return str(
-        client().generate_presigned_url(
+        (client() if store is None else store).generate_presigned_url(
             "put_object",
             Params={
                 "Bucket": bucket_name(),
@@ -894,6 +900,79 @@ def create_bucket_if_absent() -> str:
 # rather than a promise in a docstring (`zitadel_audit`'s standard, rule 27).
 
 
+#: A pytest-xdist worker's copy of a derived name (`_worker_suffixed`).
+_WORKER_SUFFIX = re.compile(r"-gw[0-9]+")
+
+
+def list_derived_buckets() -> list[str]:
+    """Every bucket in the store whose name carries the derived prefix, sorted. Reads only."""
+    try:
+        listed = client().list_buckets().get("Buckets", [])
+    except (ClientError, BotoCoreError) as failure:
+        raise StorageUnreadable(
+            f"the object store would not list its buckets: {failure}"
+        ) from failure
+    return sorted(
+        str(entry["Name"]) for entry in listed if str(entry["Name"]).startswith(f"{BUCKET_PREFIX}-")
+    )
+
+
+def derives(root: Path, name: str) -> bool:
+    """Is `name` the bucket a checkout at `root` derives, or one of its xdist workers' copies?"""
+    base = bucket_name_for(root)
+    return name == base or (
+        name.startswith(base) and _WORKER_SUFFIX.fullmatch(name[len(base) :]) is not None
+    )
+
+
+def remove_derived_buckets(*, root: Path) -> list[str]:
+    """Empty and remove every bucket `root` derives — a path, never a name; answers what went."""
+    s3 = client()
+    removed: list[str] = []
+    try:
+        for name in list_derived_buckets():
+            if not derives(root, name):
+                continue
+            _empty_and_remove(s3, name)
+            removed.append(name)
+    except (ClientError, BotoCoreError) as failure:
+        raise StorageUnreadable(f"the object store refused a removal: {failure}") from failure
+    return removed
+
+
+def remove_foreign_buckets(names: Sequence[str], *, roots: Sequence[Path]) -> list[str]:
+    """Empty and remove each named bucket still standing; `roots` licenses it, never derived."""
+    if not roots:
+        raise ValueError(
+            "--force-foreign needs --roots <dir> — the census must have been given every place"
+            " clones live"
+        )
+    s3 = client()
+    removed: list[str] = []
+    try:
+        standing = set(list_derived_buckets())
+        for name in names:
+            if name not in standing:
+                continue
+            _empty_and_remove(s3, name)
+            removed.append(name)
+    except (ClientError, BotoCoreError) as failure:
+        raise StorageUnreadable(f"the object store refused a removal: {failure}") from failure
+    return removed
+
+
+def _empty_and_remove(s3: Any, name: str) -> None:
+    """Delete every object version and delete marker in `name`, then the bucket itself."""
+    for page in s3.get_paginator("list_object_versions").paginate(Bucket=name):
+        doomed = [
+            {"Key": entry["Key"], "VersionId": entry["VersionId"]}
+            for entry in [*page.get("Versions", []), *page.get("DeleteMarkers", [])]
+        ]
+        if doomed:
+            s3.delete_objects(Bucket=name, Delete={"Objects": doomed})
+    s3.delete_bucket(Bucket=name)
+
+
 class StorageUnreadable(RuntimeError):
     """The store would not answer the question. **Never a verdict.**
 
@@ -1000,12 +1079,12 @@ RULE_ENABLED = "Enabled"
 class RetentionPosture:
     """What the bucket itself does with a deleted object. **The live half.**
 
-    `deploy/provision.sh` SETS this posture and `apps/core/tests/test_archive_
-    retention.py` reads that script as TEXT — which pins the two declarations to
-    each other and says nothing whatsoever about any bucket. That is the whole
-    gap this value closes: the numbers can agree perfectly in the repository
-    while the deployment's bucket carries no rule at all, and every instrument on
-    the tree would go on reporting an archive purged.
+    `deploy/provision.sh` SETS this posture and
+    `apps/core/tests/test_archive_retention.py` reads that script as TEXT — which
+    pins the two declarations to each other and says nothing whatsoever about any
+    bucket. That is the whole gap this value closes: the numbers can agree
+    perfectly in the repository while the deployment's bucket carries no rule
+    at all, and every instrument on the tree would go on reporting an archive purged.
 
     **Why versioning decides whether the rule is owed.** On an UNVERSIONED bucket
     a delete is a delete, `purge_exports`' `delete_object` really removes the

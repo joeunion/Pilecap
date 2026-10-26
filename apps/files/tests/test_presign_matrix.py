@@ -56,7 +56,7 @@ from apps.files.services import create_file, record_stored
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from django.test import Client
 
-    from .conftest import World
+    from apps.core.tests.permissions_world import World
 
 pytestmark = pytest.mark.django_db
 
@@ -108,7 +108,9 @@ def _finalize(world: World, version_id: str) -> FileVersion:
     measured = storage.sha256_of(tenant=world.tenant, key=version.key)
     return record_stored(
         tenant=world.tenant,
-        actor=actor_for(user=world.owner, tenant=world.tenant, org=version.organization),
+        actor=actor_for(
+            user=world.user(world.owner), tenant=world.tenant, org=version.organization
+        ),
         version=version,
         sha256=measured.sha256,
         size_bytes=measured.size_bytes,
@@ -126,7 +128,7 @@ def a_stored_document(
     upload in each of them would make the module a test of the upload with several
     endings.
     """
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
     ticket = _file_over_the_door(api)
 
     put = httpx.put(ticket["upload_url"], content=BODY, headers=UPLOAD_HEADERS, timeout=30)
@@ -198,7 +200,7 @@ def uploaded_for_the_machine(
     """
     from apps.accounts.services import issue_token
 
-    acting = actor_for(user=world.owner, tenant=world.tenant, org=world.root)
+    acting = actor_for(user=world.user(world.owner), tenant=world.tenant, org=world.root)
     ticket = create_file(
         tenant=world.tenant,
         actor=acting,
@@ -218,11 +220,11 @@ def uploaded_for_the_machine(
         size_bytes=measured.size_bytes,
     )
     _, plaintext = issue_token(
-        user=world.owner,
+        user=world.user(world.owner),
         tenant=world.tenant,
         name="machine-download",
         scopes=["*"],
-        actor=actor_for(user=world.owner, tenant=world.tenant),
+        actor=actor_for(user=world.user(world.owner), tenant=world.tenant),
     )
     return str(ticket.file.pk), plaintext
 
@@ -303,7 +305,7 @@ def test_the_archive_story_end_to_end_over_the_door(
     "helpfully" deleted on archive. Here the residual is a fetched body.
     """
     document, version = a_stored_document
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
 
     archived = api.post(ARCHIVE_URL.format(document.pk), data="{}", content_type=JSON)
     assert archived.status_code == 200, archived.content
@@ -349,7 +351,7 @@ def test_a_foreign_tenants_document_is_refused_and_its_key_cannot_be_signed(
     direction that matters.
     """
     document, version = a_stored_document
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
     api.logout()
     api.force_login(neighbour.user)
 
@@ -394,7 +396,7 @@ def test_an_expired_link_is_refused_by_the_store_in_its_own_words(
     """
     document, _version = a_stored_document
     settings.FILES_DOWNLOAD_URL_TTL = 1
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
 
     issued = api.post(DOWNLOAD_URL.format(document.pk), data="{}", content_type=JSON)
     assert issued.status_code == 200, issued.content
@@ -423,7 +425,7 @@ def test_the_default_ttl_is_what_the_deployment_configures(
     thing it claims to govern.
     """
     document, _version = a_stored_document
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
 
     settings.FILES_DOWNLOAD_URL_TTL = 60
     short = api.post(DOWNLOAD_URL.format(document.pk), data="{}", content_type=JSON).json()
@@ -452,7 +454,7 @@ def test_a_link_whose_key_was_edited_is_refused_by_the_store(
     covers the path and there is nothing of ours in the way to be persuaded.
     """
     document, version = a_stored_document
-    api.force_login(world.owner)
+    api.force_login(world.user(world.owner))
     issued = api.post(DOWNLOAD_URL.format(document.pk), data="{}", content_type=JSON).json()
     link = issued["download_url"]
     assert version.key in link

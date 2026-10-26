@@ -21,8 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import importlib
-import importlib.util
+import inspect
 import json
 import re
 from typing import Any
@@ -32,8 +31,10 @@ from django.conf import settings
 from django.db import models
 from django.urls import URLPattern, URLResolver, get_resolver
 
+from apps.core.discovery import declared, declared_services, imported
 from apps.core.management import BaseCommand
 from apps.core.models import is_append_only
+from apps.core.roads import road
 
 SENSITIVE = re.compile(r"KEY|SECRET|PASSWORD|TOKEN|PASSWD|SALT", re.IGNORECASE)
 REDACTED = "[redacted]"
@@ -334,25 +335,22 @@ def _routes_payload() -> list[dict[str, Any]]:
     wrong. `apps/core/tests/test_pagination_seam.py` holds the column to the
     mounted behaviour.
     """
+    from apps.core.api.mount import bound_operations
     from apps.core.api.pagination import answers_cursor_envelope
-    from config.api import api
     from config.urls import API_PREFIX
 
     routes: list[dict[str, Any]] = []
-    for bound in api._get_bound_routers():
-        for path, path_view in bound.path_operations.items():
-            for operation in path_view.operations:
-                view_func = operation.view_func
-                routes.append(
-                    {
-                        "pattern": re.sub(r"/{2,}", "/", f"/{API_PREFIX}/{bound.prefix}/{path}"),
-                        "methods": sorted(operation.methods),
-                        "name": f"api:{operation.url_name}" if operation.url_name else None,
-                        "view": _callable_name(view_func),
-                        "auth": [type(callback).__name__ for callback in operation.auth_callbacks],
-                        "paginated": answers_cursor_envelope(operation),
-                    }
-                )
+    for path, url_name, operation in bound_operations():
+        routes.append(
+            {
+                "pattern": re.sub(r"/{2,}", "/", f"/{API_PREFIX}/{path}"),
+                "methods": sorted(operation.methods),
+                "name": f"api:{url_name}" if url_name else None,
+                "view": _callable_name(operation.view_func),
+                "auth": [type(callback).__name__ for callback in operation.auth_callbacks],
+                "paginated": answers_cursor_envelope(operation),
+            }
+        )
     return sorted(routes, key=lambda route: (str(route["pattern"]), str(route["methods"])))
 
 
@@ -393,32 +391,34 @@ def _consumers_payload() -> list[dict[str, Any]]:
 
 
 def _workflows_payload() -> list[dict[str, Any]]:
-    """Every workflow the worker would register."""
-    from config.temporal import discovered_workflows
-
+    """Every workflow the worker would register, read through the one discovery walk."""
     return sorted(
         (
             {
                 "name": getattr(workflow, "__temporal_workflow_definition").name,
                 "definition": _dotted(workflow),
             }
-            for workflow in discovered_workflows()
+            for _config, workflows in declared(
+                "workflows", "WORKFLOWS", predicate=lambda value: isinstance(value, list)
+            )
+            for workflow in workflows
         ),
         key=lambda item: str(item["name"]),
     )
 
 
 def _activities_payload() -> list[dict[str, Any]]:
-    """Every activity the worker would register."""
-    from config.temporal import discovered_activities
-
+    """Every activity the worker would register, read through the one discovery walk."""
     return sorted(
         (
             {
                 "name": getattr(activity, "__temporal_activity_definition").name,
                 "function": _callable_name(activity),
             }
-            for activity in discovered_activities()
+            for _config, activities in declared(
+                "activities", "ACTIVITIES", predicate=lambda value: isinstance(value, list)
+            )
+            for activity in activities
         ),
         key=lambda item: str(item["name"]),
     )
@@ -557,19 +557,36 @@ def _events_payload() -> list[dict[str, Any]]:
     realtime bridge, never code — so there is nothing else here to report.
     """
     found: list[dict[str, Any]] = []
-    for config in apps.get_app_configs():
-        if not config.name.startswith("apps."):
-            continue
-        module_name = f"{config.name}.events"
-        if importlib.util.find_spec(module_name) is None:
-            continue
-        module = importlib.import_module(module_name)
+    for config, module in imported("events"):
         for attribute in sorted(dir(module)):
             if attribute.startswith("_") or not attribute.isupper():
                 continue
             value = getattr(module, attribute)
             if isinstance(value, str):
                 found.append({"app": config.label, "constant": attribute, "name": value})
+    return sorted(found, key=lambda item: str(item["name"]))
+
+
+def _services_payload() -> list[dict[str, Any]]:
+    """Every `@service` an installed app's `services.py` defines — the writes, by name.
+
+    `name` is the dotted path; `tenant` and `actor` say whether the signature
+    declares each keyword, which is what the audit row and the authorization
+    read (a service that takes no `tenant` writes no tenant-scoped audit row —
+    ADR core-8). Read from the live modules through `core.discovery`, the same
+    population the gate's AST walk counts from the files.
+    """
+    found: list[dict[str, Any]] = []
+    for config, name, function in declared_services():
+        parameters = inspect.signature(inspect.unwrap(function)).parameters
+        found.append(
+            {
+                "name": f"{config.name}.services.{name}",
+                "app": config.label,
+                "tenant": "tenant" in parameters,
+                "actor": "actor" in parameters,
+            }
+        )
     return sorted(found, key=lambda item: str(item["name"]))
 
 
@@ -667,7 +684,10 @@ def _settings_payload() -> dict[str, Any]:
     }
 
 
+@road("introspect", example="apps/core/tests/test_introspect.py::test_it_reports_the_machine_door")
 class Command(BaseCommand):
+    """The machine door onto the real schema and the real doors, as JSON."""
+
     help = (
         "Print the real apps and models, and every door — URLs, API routes, MCP tools, "
         "socket consumers, workflows, activities — as JSON."
@@ -691,6 +711,7 @@ class Command(BaseCommand):
             "policies": _policies_payload(),
             "roles": _roles_payload(),
             "events": _events_payload(),
+            "services": _services_payload(),
             "refusals": _refusals_payload(),
             "settings": _redact(_settings_payload()),
         }

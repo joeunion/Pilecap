@@ -1,0 +1,16 @@
+WIDGET_UPDATED = "example.widget.updated"
+
+
+# golden: noun begin
+WIDGET_ARCHIVED = "example.widget.archived"
+WIDGET_RESTORED = "example.widget.restored"
+# golden: noun end
+
+
+WIDGET_MOVED = "example.widget.moved"
+
+
+WIDGET_DUPLICATED = "example.widget.duplicated"
+
+
+WIDGET_MERGED = "example.widget.merged"

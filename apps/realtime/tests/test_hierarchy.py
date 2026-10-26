@@ -45,7 +45,8 @@ from apps.core.models import Membership, Organization, Tenant
 from apps.core.services import add_membership, create_organization, root_organization
 from apps.realtime.bridge import kick_from_spine, kick_user, org_group, tenant_group, user_group
 from apps.realtime.schemas import CLOSE_KICKED, CLOSE_NO_TENANT, CLOSE_NOT_A_COMMAND
-from apps.realtime.tests.test_consumers import opened, session_headers
+from apps.realtime.tests.sockets import opened
+from apps.realtime.tests.test_consumers import session_headers
 from apps.realtime.tests.websocket import Handshake, Socket
 
 pytestmark = [pytest.mark.django_db(transaction=True), pytest.mark.asyncio]
@@ -68,7 +69,7 @@ def org_less_body() -> dict[str, Any]:
     return {"engine": "meilisearch"}
 
 
-PASSWORD = "not-a-real-password"  # pragma: allowlist secret
+PASSWORD = "not-a-real-password"  # noqa: S105 — a throwaway password a test user is made with  # pragma: allowlist secret
 
 
 @dataclass(frozen=True)

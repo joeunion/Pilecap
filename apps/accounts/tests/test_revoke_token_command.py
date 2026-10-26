@@ -201,7 +201,7 @@ def test_it_refuses_an_unknown_id(tenant: Tenant, owner: User) -> None:
 
 def test_it_refuses_something_that_is_not_an_id(tenant: Tenant, owner: User) -> None:
     with pytest.raises(CommandError, match="is not a token id"):
-        _run(token_id="boot1-door-225257")
+        _run(token_id="boot1-door-225257")  # noqa: S106 — a fake token value only this test holds
 
 
 def test_it_refuses_an_already_revoked_token_without_moving_the_timestamp(
@@ -322,7 +322,7 @@ def test_the_refusals_reach_a_real_shell_non_zero() -> None:
     what the operator's exit status will mean. It names no row and touches no
     database — an unparseable id is refused during resolution, before any read.
     """
-    done = subprocess.run(  # noqa: S603 - fixed argv, no shell
+    done = subprocess.run(
         [sys.executable, "manage.py", "revoke_token", "--id", "not-a-uuid"],
         capture_output=True,
         text=True,

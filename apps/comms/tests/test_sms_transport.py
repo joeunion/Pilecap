@@ -44,7 +44,7 @@ from urllib.parse import parse_qsl, urlencode
 
 import pytest
 from django.conf import settings
-from django.test import Client
+from django.test import Client, override_settings
 from django.urls import reverse
 from twilio.http.response import Response as TwilioResponse
 from twilio.request_validator import RequestValidator
@@ -838,3 +838,13 @@ def test_the_stored_delivery_is_the_form_twilio_posted(
     assert replayed["MessageSid"] == sid
     assert replayed["MessageStatus"] == "delivered"
     assert settings.PUBLIC_BASE_URL in status_callback_url(sms)
+
+
+def test_the_callback_lands_on_a_staff_host_named_by_its_tenant(
+    tenant: Tenant, sms: Connection
+) -> None:
+    """A `{tenant}`-slot staff host gets the connection's tenant, never a `ValueError`."""
+    with override_settings(SURFACE_HOSTS={"staff": "{tenant}.staff.example.test"}):
+        url = status_callback_url(sms)
+
+    assert url.split("/")[2].split(":")[0] == f"{tenant.slug}.staff.example.test"

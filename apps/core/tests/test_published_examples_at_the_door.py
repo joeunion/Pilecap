@@ -79,7 +79,7 @@ been fixed fails until its line is removed.
   made; the cross-operation claim is a different (and much larger) one.
 * Whether the answer is the RIGHT one. A `201` here means the door took the
   example, not that what it created is what the example described.
-* An `In` example whose value is a registry key a PRODUCT declares. `ImportIn`'s
+* An `In` example whose value is a registry key a PRODUCT declares. `DjbImportIn`'s
   `kind` names an importer a noun's app declares in its `importers.py`; a
   template that declares none cannot take any value for it, so the example is
   refused with a declared REASON rather than taken. The template's own
@@ -91,6 +91,7 @@ been fixed fails until its line is removed.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from dataclasses import dataclass
 from typing import Any
@@ -108,7 +109,8 @@ from apps.core.actor import actor_for
 from apps.core.concurrency import version_of
 from apps.core.models import Membership, Organization, Tenant
 from apps.core.services import add_membership, create_organization
-from apps.core.verbs import declared_models
+from apps.core.tests.permissions_world import platform_labels
+from apps.core.verbs import declared_models, plural
 from apps.example.models import Widget, WidgetPolicy
 from apps.example.services import create_widget, create_widget_policy
 from apps.files import storage
@@ -123,7 +125,7 @@ JSON = "application/json"
 #: and nothing else. Allow-listed for the same reason `apps/conftest.py`
 #: allow-lists its own: it is exactly what the scanner is right to look at, and
 #: exactly what a reader should be able to see is fake.
-PASSWORD = "a-long-enough-password-for-validators"  # pragma: allowlist secret
+PASSWORD = "a-long-enough-password-for-validators"  # noqa: S105 — a throwaway password a test user is made with  # pragma: allowlist secret
 
 #: A floor under the POPULATION, for the same reason the validity census has
 #: one: a join that stopped resolving would drive nothing, refuse nothing, and
@@ -185,13 +187,6 @@ DECLARED_REFUSALS: dict[str, str] = {
         "carrying the same wrong example is the second copy of one defect, which "
         "is why the echo census counts fields rather than schemas."
     ),
-    "WidgetEntryIn": (
-        "apps/example — DEFECT: `kind` publishes `'inspection'`, which is not "
-        "one of `WidgetEntry.Kind`'s choices, so the write is refused as "
-        "`invalid` naming the field. `kind` is a CLOSED vocabulary and the "
-        "synthesiser had no way to know it — the model's own choices are where "
-        "the example should come from."
-    ),
 }
 
 
@@ -242,8 +237,10 @@ class World:
     #: a note the doors may edit.
     note_id: str
     #: A word this tenant coined, so `{tag_id}` names a tag the doors may edit.
-    #: DELIBERATELY NOT `Urgent`, which is `TagIn`'s own published example.
+    #: DELIBERATELY NOT `Urgent`, which is `DjbTagIn`'s own published example.
     tag_id: str
+    #: The rows `_minted_seed` made for a parameter no seed names, by collection.
+    minted: dict[str, str] = dataclasses.field(default_factory=dict)
 
 
 @pytest.fixture
@@ -359,7 +356,7 @@ def world(
             name="Seeded IdP",
             issuer="https://idp.example.com",
             client_id="djb",
-            client_secret="not-a-real-secret-value",  # pragma: allowlist secret
+            client_secret="not-a-real-secret-value",  # noqa: S106 — a fake IdP client secret the test world configures  # pragma: allowlist secret
             email_domains=["example.com"],
         ),
         endpoint_id=str(endpoint["endpoint"]["id"]),
@@ -454,13 +451,13 @@ def _body_seeds(world: World) -> dict[str, str]:
 def _schema_seeds(world: World) -> dict[str, dict[str, str]]:
     """Substitutions keyed on the SCHEMA, where a field name alone is ambiguous.
 
-    `subject` is an attachment's pointer (`<kind>:<id>`) on `NoteIn`,
-    `NoteFilter` and `TagLinkIn`, and an email's subject line on a template, so
+    `subject` is an attachment's pointer (`<kind>:<id>`) on `DjbNoteIn`,
+    `DjbNoteFilter` and `DjbTagLinkIn`, and an email's subject line on a template, so
     it cannot join `_body_seeds`: the pointer names one of the caller's own rows,
     and the published example's id is a shape, never a row this world has.
     """
     pointer = {"subject": f"widget:{world.widget.pk}"}
-    return {"NoteIn": pointer, "NoteFilter": pointer, "TagLinkIn": pointer}
+    return {"DjbNoteIn": pointer, "DjbNoteFilter": pointer, "DjbTagLinkIn": pointer}
 
 
 def _path_seeds(world: World) -> dict[str, str]:
@@ -624,16 +621,85 @@ def _address(operation: Operation, world: World) -> str:
     seeds = _path_seeds(world)
     path = operation.path
     for parameter in operation.params:
-        value = overrides.get(parameter) or seeds.get(parameter)
+        value = (
+            overrides.get(parameter)
+            or seeds.get(parameter)
+            or _minted_seed(operation.path, parameter, world)
+        )
         assert value is not None, (
             f"{operation} takes a path parameter `{parameter}` this module has no seed "
-            "for, so the example could not be sent to it. Add it to `_path_seeds` (or "
-            "to `_path_overrides` when the name alone does not say which row is meant) "
+            "for and no collection whose published create example makes one, so the "
+            "example could not be sent to it. Add it to `_path_seeds` (or to "
+            "`_path_overrides` when the name alone does not say which row is meant) "
             "— a route that is quietly not driven is how this census comes to measure "
             "less and still read as a pass."
         )
         path = path.replace("{" + parameter + "}", value)
     return path
+
+
+def _minted_seed(path: str, parameter: str, world: World) -> str | None:
+    """The id of the row its collection's published create example makes, once per example."""
+    collection = path.split("{" + parameter + "}", 1)[0]
+    if collection not in world.minted:
+        create = next(
+            (
+                operation
+                for operation in _operations()
+                if operation.method == "post"
+                and operation.path == collection
+                and operation.carried == "body"
+            ),
+            None,
+        )
+        if create is None:
+            return None
+        response = world.client.post(
+            _address(create, world),
+            data=json.dumps(_pasted(create, world)),
+            content_type=JSON,
+        )
+        payload = (
+            response.json() if response.headers.get("Content-Type", "").startswith(JSON) else {}
+        )
+        assert response.status_code == 201, (
+            f"could not mint {parameter} through POST {collection}: {response.status_code} "
+            f"{payload.get('detail', '') if isinstance(payload, dict) else ''}"
+        )
+        world.minted[collection] = str(response.json()["id"])
+    return world.minted[collection]
+
+
+def _product_paths() -> frozenset[str]:
+    """The published paths a product app's routes answer, never a platform app's."""
+    from apps.core.api import mount
+
+    platform = platform_labels()
+    return frozenset(
+        f"/api/v1{path}"
+        for path, _name, operation in mount.bound_operations()
+        if operation.view_func.__module__.split(".")[0] == "apps"
+        and operation.view_func.__module__.split(".")[1] not in platform
+    )
+
+
+def _product_seeds(operation: Operation, world: World) -> dict[str, str]:
+    """A product route's `<stem>_id` minted through its noun's `<stem>` collection, or its own."""
+    if operation.path not in _product_paths() or not isinstance(operation.example, dict):
+        return {}
+    noun = "/".join(operation.path.split("/")[:4]) + "/"
+    seeds: dict[str, str] = {}
+    for field in operation.example:
+        stem = field.removesuffix("_id")
+        if stem == field:
+            continue
+        many = plural(stem)
+        for collection in (f"{noun}{many}/", f"/api/v1/{many}/"):
+            minted = _minted_seed(f"{collection}{{{field}}}/", field, world)
+            if minted is not None:
+                seeds[field] = minted
+                break
+    return seeds
 
 
 def _version_seed(operation: Operation, world: World) -> dict[str, int]:
@@ -669,6 +735,7 @@ def _pasted(operation: Operation, world: World) -> Any:
     seeds = {
         **_body_seeds(world),
         **_schema_seeds(world).get(operation.schema, {}),
+        **_product_seeds(operation, world),
         **_version_seed(operation, world),
     }
     return {field: seeds.get(field, value) for field, value in example.items()}
@@ -702,9 +769,9 @@ def _drive(world: World) -> list[Verdict]:
     client = world.client
     verdicts: list[Verdict] = []
     for operation in _operations():
-        address = _address(operation, world)
-        pasted = _pasted(operation, world)
         with transaction.atomic():
+            address = _address(operation, world)
+            pasted = _pasted(operation, world)
             if operation.carried == "query":
                 # A `Filter` travels as the query string ninja flattened it into,
                 # and `None` means "did not ask" rather than "asked for null".
@@ -720,8 +787,9 @@ def _drive(world: World) -> list[Verdict]:
                     content_type=JSON,
                 )
             # Rolled back before the next example, so the drive tests the
-            # examples rather than its own order.
+            # examples rather than its own order — the rows it minted with them.
             transaction.set_rollback(True)
+        world.minted.clear()
         code: str | None = None
         detail = ""
         if response.headers.get("Content-Type", "").startswith(JSON):
@@ -743,10 +811,9 @@ def test_every_published_example_is_taken_by_the_door_that_publishes_it(world: W
 
     This is the half of the promise validation cannot reach. `MessageIn`'s
     example validates against `MessageIn` and is refused by `POST /messages/`;
-    `WidgetEntryIn`'s `kind` is a legal string and not a legal choice;
     `DeviceIn`'s push token is a legal string that crashes the encrypted-field
-    round trip. None of those is visible to a schema, and all three are visible
-    the moment somebody sends one.
+    round trip. Neither is visible to a schema, and both are visible the moment
+    somebody sends one.
 
     The equality below holds the ratchet from both ends at once: a schema that
     starts being refused fails here naming itself, and a schema that has been
@@ -780,6 +847,94 @@ def test_every_published_example_is_taken_by_the_door_that_publishes_it(world: W
         "`DECLARED_REFUSALS` — a line that outlives its defect tells the next reader "
         "there is still one there."
     )
+
+
+def test_a_parameter_no_seed_names_is_minted_by_its_collections_create_example(
+    world: World,
+) -> None:
+    """A product noun's `{<noun>_id}`: the row its own create example makes, never a typed seed."""
+    minted = _minted_seed("/api/v1/widgets/{widget_id}/", "widget_id", world)
+    assert minted is not None and minted != str(world.widget.pk)
+    assert Widget.objects.for_tenant(world.tenant).filter(pk=minted).exists()
+    assert _minted_seed("/api/v1/widgets/{widget_id}/history/", "widget_id", world) == minted
+    assert _minted_seed("/api/v1/no-such/{thing_id}/", "thing_id", world) is None
+
+
+def test_a_product_routes_id_field_is_minted_through_its_own_nouns_collection(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A product noun's `policy_id` names its own policy row, never the template's seeded one."""
+    create = Operation(
+        schema="WidgetIn",
+        method="post",
+        path="/api/v1/widgets/",
+        params=(),
+        example={"name": "w", "policy_id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d43"},
+    )
+    assert _product_seeds(create, world) == {}
+    monkeypatch.setattr(f"{__name__}._product_paths", lambda: frozenset({"/api/v1/widgets/"}))
+    minted = _product_seeds(create, world)
+    assert set(minted) == {"policy_id"}
+    assert minted["policy_id"] != str(world.widget_policy.pk)
+    assert WidgetPolicy.objects.for_tenant(world.tenant).filter(pk=minted["policy_id"]).exists()
+    child = dataclasses.replace(
+        create, path="/api/v1/widgets/visits/", example={"widget_id": str(world.widget.pk)}
+    )
+    monkeypatch.setattr(
+        f"{__name__}._product_paths", lambda: frozenset({"/api/v1/widgets/visits/"})
+    )
+    named = _product_seeds(child, world)["widget_id"]
+    assert named != str(world.widget.pk)
+    assert Widget.objects.for_tenant(world.tenant).filter(pk=named).exists()
+
+
+def test_a_refused_mint_says_the_doors_status_and_words(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Planted: the create example refused — the sentence is the door's answer, never a seed."""
+    monkeypatch.setattr(f"{__name__}._path_seeds", lambda world: {})
+    monkeypatch.setattr(f"{__name__}._path_overrides", lambda world: {})
+    monkeypatch.setattr(f"{__name__}._pasted", lambda operation, world: {"name": ""})
+    history = Operation(
+        schema="WidgetIn",
+        method="get",
+        path="/api/v1/widgets/{widget_id}/history/",
+        params=("widget_id",),
+        example={},
+    )
+    with pytest.raises(AssertionError) as refused:
+        _address(history, world)
+    said = str(refused.value)
+    assert said.startswith("could not mint widget_id through POST /api/v1/widgets/: 4"), said
+    assert "_path_seeds" not in said
+
+
+def test_a_product_fields_collection_is_named_by_the_house_plural(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`box_id` mints through `boxes/` and `key_id` through `keys/`: the lexicon's plural."""
+    asked: list[str] = []
+
+    def recorded(path: str, parameter: str, world: World) -> str | None:
+        asked.append(path)
+        return None
+
+    monkeypatch.setattr(f"{__name__}._minted_seed", recorded)
+    monkeypatch.setattr(f"{__name__}._product_paths", lambda: frozenset({"/api/v1/gears/"}))
+    create = Operation(
+        schema="GearIn",
+        method="post",
+        path="/api/v1/gears/",
+        params=(),
+        example={"box_id": "x", "key_id": "y"},
+    )
+    assert _product_seeds(create, world) == {}
+    assert asked == [
+        "/api/v1/gears/boxes/{box_id}/",
+        "/api/v1/boxes/{box_id}/",
+        "/api/v1/gears/keys/{key_id}/",
+        "/api/v1/keys/{key_id}/",
+    ]
 
 
 def test_the_drive_actually_reaches_the_services_behind_the_doors(world: World) -> None:

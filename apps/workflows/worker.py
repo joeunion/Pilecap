@@ -16,7 +16,7 @@ import django
 # able to tell the two apart. Set before `django.setup()`, because that is what
 # builds the OTel resource.
 os.environ.setdefault("DJB_SERVICE_NAME", "worker")
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.local")
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
 django.setup()
 
 from django.conf import settings  # noqa: E402

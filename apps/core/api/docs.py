@@ -93,6 +93,7 @@ from apps.core.exceptions import REFUSALS, fill_noun
 from apps.core.idempotency import HEADER as IDEMPOTENCY_HEADER
 from apps.core.idempotency import REPLAYED_HEADER
 from apps.core.middleware import CORRELATION_ID_HEADER, REQUEST_ID_HEADER
+from apps.core.roads import road
 
 # `MCP_PATH` is NOT imported here, and the reason is a hard import cycle rather
 # than taste: `apps/core/mcp.py` imports `contract_of` from this module at
@@ -571,8 +572,8 @@ def refuses(*codes: str) -> Callable[[ViewT], ViewT]:
 #: to SUPPRESS the code — publishing it taught a caller to handle a refusal
 #: this operation cannot make, and to handle it by minting a wider token at the
 #: very endpoint that refused them, pinned by
-#: `apps/accounts/tests/test_api.py::test_the_published_mint_does_not_offer_a_
-#: scope_that_cannot_reach_it`).
+#: `apps/accounts/tests/test_api.py::
+#: test_the_published_mint_does_not_offer_a_scope_that_cannot_reach_it`).
 #:
 #: That pin is what caught the first version of this set, which included it and
 #: re-added the code the route had removed on purpose. A door-level code has to
@@ -698,6 +699,12 @@ def derived_refusals(
         # lines down in `config/api.py` — so the refusal they can produce is
         # derived off the same fact rather than off a list of route names.
         codes.append("addressing_header_not_honoured")
+        # And the other half of "where are you acting": a credential that
+        # resolved no tenant, or no hat, at all — a person with no membership.
+        # The door's one resolver (`apps.core.api.acting`) refuses it with this
+        # code, and every authenticated route hands a service the tenant it
+        # resolves, so it is derived off the same fact as the header refusal.
+        codes.append("no_acting_scope")
     if has_path_params or has_body:
         # A path parameter names a row, and so does an id inside a body — and
         # naming a row this actor could not have reached is `not_found` here,
@@ -738,9 +745,14 @@ def noun_of(url_name: str | None, path: str = "") -> str | None:
     published with its `<noun>` slot unfilled, a template rather than a guess.
     """
     from apps.core.authz import kind_registry
+    from apps.core.verbs import UnderivableName, split_url_name
 
     kinds = list(kind_registry())
-    head = (url_name or "").split("-", 1)[0]
+    try:
+        # The one splitter (the last hyphen), never a split of this module's own.
+        head = split_url_name(url_name or "")[0]
+    except UnderivableName:
+        head = ""
     matches = [k for k in kinds if head == k or head.startswith(f"{k}_")]
     if matches:
         return max(matches, key=len)
@@ -795,56 +807,49 @@ def _refusal_example(code: str, noun: str | None = None) -> dict[str, Any]:
     return body
 
 
-def refusal_component() -> dict[str, Any]:
-    """The wire shape of every refusal, with `code` enumerated off the registry.
+#: The extension that carries an operation's own handle on the document.
+URL_NAME_EXTENSION = "x-url-name"
 
-    `core.exceptions.wire_refusal` is the only builder of this body and
-    `architecture.md` is its authority; this is that body said in JSON Schema so
-    a generated client has a type for it. The enum is read from the registry, so
-    a product that registers a code gets it documented without touching this.
+
+@road(
+    "url_name_published",
+    example="apps/core/tests/test_api_docs.py::test_every_operation_carries_its_url_name",
+)
+def url_name_extension(operation: Any) -> dict[str, str]:
+    """`{"x-url-name": <url_name>}` for an operation that has one — what a `route:` remedy names.
+
+    A remedy points at an operation by its `url_name` (`route:widget-list`,
+    `apps.core.exceptions.Remedy`), which promises no URL; without the handle on
+    the document a reader holding the remedy could not find the operation it
+    names, and nothing could judge whether the name is real. One extension per
+    operation, written beside `x-refusal-codes` by the same pass.
     """
+    name = str(getattr(operation, "url_name", "") or "")
+    return {URL_NAME_EXTENSION: name} if name else {}
+
+
+def refusal_component() -> dict[str, Any]:
+    """The `Refusal` component: `RefusalOut`'s own schema, `code` enumerated off the registry.
+
+    `RefusalRemedy` is a `$ref` alias of `RefusalRemedyOut`: the face's client names that key.
+    """
+    from apps.core.schemas import RefusalOut
+
+    schema = RefusalOut.model_json_schema(ref_template="#/components/schemas/{model}")
+    defs: dict[str, Any] = schema.pop("$defs", {})
+    schema["title"] = "Refusal"
+    schema["description"] = (
+        "Every refusal this API makes, in one shape. `code` is what a client "
+        "branches on; `detail` is the human half; `errors` names fields when the "
+        "refusal was about fields; `remedies` is what the caller can DO about it, "
+        "composed once so a screen and an assistant offer the same way out."
+    )
+    schema["properties"]["code"]["enum"] = sorted(REFUSALS)
+    schema["example"] = _refusal_example("not_found")
     return {
-        "Refusal": {
-            "type": "object",
-            "title": "Refusal",
-            "description": (
-                "Every refusal this API makes, in one shape. `code` is what a client "
-                "branches on; `detail` is the human half; `errors` names fields when the "
-                "refusal was about fields; `remedies` is what the caller can DO about it, "
-                "composed once so a screen and an assistant offer the same way out."
-            ),
-            "required": ["detail", "code"],
-            "properties": {
-                "detail": {"type": "string", "title": "Detail"},
-                "code": {"type": "string", "title": "Code", "enum": sorted(REFUSALS)},
-                "errors": {
-                    "type": "object",
-                    "title": "Errors",
-                    "additionalProperties": {"type": "array", "items": {"type": "string"}},
-                },
-                "remedies": {
-                    "type": "array",
-                    "title": "Remedies",
-                    "items": {"$ref": "#/components/schemas/RefusalRemedy"},
-                },
-            },
-            "example": _refusal_example("not_found"),
-        },
-        "RefusalRemedy": {
-            "type": "object",
-            "title": "RefusalRemedy",
-            "description": (
-                "One thing the caller can do about a refusal. `destination` is an opaque "
-                "`<kind>:<name>` token — `header:X-Org`, `docs:openapi`, "
-                "`introspect:refusals` — that says where to look without promising a URL."
-            ),
-            "required": ["label", "destination"],
-            "properties": {
-                "label": {"type": "string", "title": "Label"},
-                "destination": {"type": "string", "title": "Destination"},
-            },
-            "example": {"label": "Name the organization to act as", "destination": "header:X-Org"},
-        },
+        "Refusal": schema,
+        **defs,
+        "RefusalRemedy": {"$ref": "#/components/schemas/RefusalRemedyOut"},
     }
 
 
@@ -1874,7 +1879,7 @@ def overview() -> str:
 # AND THE FIFTH, WHICH IS THE SAME DOCTRINE FROM THE OTHER SIDE. The sidebar
 # also offers **"Generate MCP"**, which builds an MCP server that proxies this
 # OpenAPI document. **This product already ships an MCP door, at `/mcp`**: the
-# same services behind it, the tenant and the acting organization revalidated
+# same services behind it, the tenant and the hat revalidated
 # per call, refusals byte-identical to the REST ones because both render one
 # composer's body, every write audited, and house rule 17 holding it to the
 # HTTP door capability for capability. A generated OpenAPI proxy is a SECOND

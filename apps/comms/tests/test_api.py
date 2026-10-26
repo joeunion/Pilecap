@@ -35,6 +35,7 @@ from apps.core.actor import Actor, actor_for, system_actor
 from apps.core.audit import AuditEntry
 from apps.core.models import Membership, Organization, Tenant
 from apps.core.services import add_membership, root_organization
+from apps.core.tests.wire import REQUEST_FIXED_QUERIES
 from apps.events.models import Event
 
 pytestmark = pytest.mark.django_db
@@ -42,25 +43,8 @@ pytestmark = pytest.mark.django_db
 MESSAGES_URL = "/api/v1/messages/"
 JSON = "application/json"
 
-# Measured, not guessed, at ten rows: the session row + the user row (session
-# authentication) + 1 SAVEPOINT (ATOMIC_REQUESTS) + the membership lookup
-# TenantMiddleware makes for the tenant + the membership lookup it makes for the
-# acting org + the page + 1 RELEASE SAVEPOINT.
-#
-# `select_related("recipient", "organization")` is what keeps the page at one
-# query no matter how many rows come back — `MessageOut` walks both for every
-# row. Take either out and this is what fails.
-# ADR core-18 took one statement OFF this pin: the default list issues no
-# COUNT any more — `has_more` comes from fetching one row more than asked
-# for. `?include_count=true` puts it back, and costs exactly one more.
-# PR4.b (ADR core-27) adds exactly THREE: a read is a permission now, so the
-# selector behind this door calls `require(actor, "<kind>.read", ...)` once,
-# and the first `require` of a request reads the actor's three permission
-# tables — the memberships on the chain, their grants, and the delta rows for
-# the role keys those name. Three and not six because PR0's memo rides on the
-# actor: a second `require` in the same request costs nothing, which is what a
-# route that fetches through a `get_` and then calls a service is standing on.
-LIST_QUERY_BUDGET = 10
+#: The message list at ten rows: the fixed request cost plus the page.
+LIST_QUERY_BUDGET = REQUEST_FIXED_QUERIES + 1
 
 
 def _body(response: Any) -> dict[str, Any]:

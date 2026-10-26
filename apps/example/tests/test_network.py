@@ -1,98 +1,52 @@
-"""The network truths — what a hierarchy is actually for.
+"""The network truths — what a hierarchy is actually for."""
 
-One tenant, four nodes, four people. Everything here is a claim about *which
-rows somebody can see*, because that is the only thing a hierarchy is: a rule
-about visibility that a product must not be able to get wrong by forgetting.
-
-    root  (hq)                 owner, and an admin
-     |
-     +-- seller-a              a manager, admin of A
-     |    |
-     |    +-- sub-a1           a clerk, member of A1
-     |
-     +-- seller-b              nobody here holds anything
-
-The claims, one test each:
-
-* a sub-seller sees its own rows and no others;
-* a seller sees its own **and** its sub-seller's — downward inheritance;
-* sideways is blocked: A cannot see B, and B cannot see A;
-* upward is blocked: A1 cannot see A's rows, even though A is its parent;
-* the **hat switches** the answer: one person, two memberships, two `X-Org`
-  headers, two different sets of rows;
-* **re-parenting moves visibility**: A1 under B, and its rows move with it;
-* a grant above the granter's own effective role is refused, and a grant
-  outside their subtree is refused;
-* the root's admin sees everything;
-* **REST and MCP agree** on the same rows for the same hat;
-* a **workflow activity acting for A1** reads and writes as A1, and the audit
-  row says so;
-* a superuser with no membership still sees nothing.
-
-The tree is built here rather than in the shared `conftest`, because a tree in
-the shared conftest would make every unrelated test in the repository pay for
-one.
-"""
-
+# golden: policy begin
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
-from typing import Any, cast
+from dataclasses import dataclass
+from typing import Any
 
 import pytest
 from django.test import Client
+
+from apps.example.models import Widget, WidgetPolicy
+from apps.example.selectors import get_governing_widget_policy
+from apps.example.services import create_widget, create_widget_policy
+from pilecap import Actor, AuditEntry, NotFound
+from pilecap.accounts import User, create_user
+from pilecap.tenancy import (
+    Membership,
+    Organization,
+    Tenant,
+    add_membership,
+    create_organization,
+    root_organization,
+)
+from pilecap.testing import actor_for, system_actor
+
+# golden: policy end
+# isort: split
 from django.urls import reverse
 from mcp.server import MCPServer
-from mcp.server.mcpserver import Context
 
-from apps.accounts.models import User
-from apps.accounts.services import create_user
-from apps.core.actor import Actor, actor_for, system_actor
-from apps.core.audit import AuditEntry
-from apps.core.authz import effective_role
-from apps.core.exceptions import Forbidden, NotFound
-from apps.core.mcp import SCOPE_KEY, Principal
-from apps.core.middleware import resolve_org
-from apps.core.models import Membership, Organization, Tenant
-from apps.core.services import (
-    add_membership,
-    apply_organization_move,
-    create_organization,
-    move_organization,
-    root_organization,
-    set_role,
-)
 from apps.example.mcp import register
-from apps.example.models import Widget, WidgetEntry, WidgetPolicy
-from apps.example.selectors import (
-    get_governing_widget_policy,
-    list_widget_entries,
-    list_widgets,
-)
-from apps.example.services import create_widget, create_widget_policy, record_widget_entry
+from apps.example.models import WidgetEntry
+from apps.example.selectors import list_widget_entries, list_widgets
+from apps.example.services import record_widget_entry
+from pilecap import Forbidden
+from pilecap.tenancy import apply_organization_move, move_organization, set_role
+from pilecap.testing import context_for, effective_role, resolve_org, tool
 
+# golden: policy begin
 pytestmark = pytest.mark.django_db
 
 LIST_URL = "/api/v1/widgets/"
-PASSWORD = "a-long-enough-password"  # pragma: allowlist secret
+PASSWORD = "a-long-enough-password"  # noqa: S105 — a throwaway password a test user is made with  # pragma: allowlist secret
 
 
 def reading(tenant: Tenant | None, org: Any) -> Actor:
-    """The actor these scoping tests read as, now that reads are permissions.
-
-    `system`, on purpose (ADR core-27; `allows` passes it at step 1). Every
-    selector assertion in this file is about WHICH rows a hat sees —
-    `visible_to`, `governing`, `for_tenant`, which is rule 24's question — and a
-    person-shaped actor would make each of them depend on `widget.read` as well.
-    Whether a kind may be read at all is `test_reads_ask.py`'s subject; holding
-    the capability half constant is what keeps this file measuring the scoping
-    half, which is the only half it was ever written about.
-
-    The `org` argument is whatever the call site passed — a node, an `Actor`, or
-    `None` — because these selectors take any of the three; only a real node
-    means anything to `system_actor`.
-    """
+    """The actor these scoping tests read as, now that reads are permissions."""
     return system_actor(tenant, org if isinstance(org, Organization) else None)
 
 
@@ -101,12 +55,7 @@ def reading(tenant: Tenant | None, org: Any) -> Actor:
 
 @dataclass
 class Network:
-    """One tenant's tree and the people in it, as one fixture value.
-
-    A dataclass rather than nine fixtures: every test here needs most of the
-    tree, and nine fixtures would make each signature a paragraph and each
-    test's meaning harder to find than its set-up.
-    """
+    """One tenant's tree and the people in it, as one fixture value."""
 
     tenant: Tenant
     hq: Organization
@@ -182,6 +131,9 @@ def network(tenant: Tenant, owner: User) -> Network:
 
 def hat(net: Network, user: User, org: Organization) -> Actor:
     return actor_for(user=user, tenant=net.tenant, org=org)
+
+
+# golden: policy end
 
 
 def seed(net: Network) -> dict[str, Widget]:
@@ -306,12 +258,7 @@ def test_no_hat_reads_nothing(network: Network) -> None:
 
 
 def test_a_superuser_with_no_membership_still_sees_nothing(network: Network, root: User) -> None:
-    """There is no exemption one level down either.
-
-    `root` is a superuser belonging to no tenant. The tenancy already gave them
-    nothing; the hierarchy is asked the same question and gives the same answer,
-    because an exemption is a leak with a nicer name.
-    """
+    """There is no exemption one level down either."""
     seed(network)
     assert resolve_org(user=root, tenant=network.tenant, requested_slug=None) is None
     assert (
@@ -454,12 +401,7 @@ def _list(api: Client, headers: dict[str, str] | None = None) -> dict[str, Any]:
 
 
 def test_the_hat_switches_the_visible_set(api: Client, network: Network) -> None:
-    """One person, two memberships, two headers, two answers.
-
-    `both` is a member of A and of A1. Acting as A they see A's row and A1's;
-    acting as A1 they see only A1's. Nothing about the person changed — the
-    header did, and it is revalidated from their memberships every request.
-    """
+    """One person, two memberships, two headers, two answers."""
     seed(network)
     api.force_login(network.both)
 
@@ -471,16 +413,7 @@ def test_the_hat_switches_the_visible_set(api: Client, network: Network) -> None
 
 
 def test_a_hat_you_hold_no_role_over_is_refused_identically(api: Client, network: Network) -> None:
-    """Naming a sibling — or the group above you, or nothing at all — is refused.
-
-    **Refused, and byte-identically** (ADR core-21). It used to read an
-    empty table, on the argument that a 403 would tell the caller seller B
-    exists. The anti-oracle is kept and the lie is not: the three answers below
-    are the same bytes, so the refusal still says nothing about what exists —
-    it fires because the slug is not one this credential can wear, and it names
-    the header rather than the slug. What it stops is a fat-fingered `X-Org`
-    reading as a zero bill, which is this table's whole point.
-    """
+    """Naming a sibling — or the group above you, or nothing at all — is refused."""
     seed(network)
     api.force_login(network.clerk)
 
@@ -539,61 +472,30 @@ def test_a_write_lands_in_the_hat_it_was_made_under(api: Client, network: Networ
 # --- The machine door agrees with the human one ------------------------------
 
 
-@dataclass
-class _FakeRequest:
-    scope: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class _FakeRequestContext:
-    request: _FakeRequest
-
-
-def mcp_context(user: User, tenant: Tenant, org: Organization | None) -> Context[Any]:
-    scope = {SCOPE_KEY: Principal(user=user, tenant=tenant, org=org)}
-    return Context(
-        request_context=cast(Any, _FakeRequestContext(request=_FakeRequest(scope=scope)))
-    )
-
-
-def tool(name: str) -> Any:
-    server: MCPServer[Any] = MCPServer(name="test", version="1")
-    register(server)
-    return server._tool_manager._tools[name].fn
-
-
 def test_both_doors_answer_with_the_same_rows_for_the_same_hat(
     api: Client, network: Network
 ) -> None:
-    """The disagreement between doors that `architecture.md` calls a finding.
-
-    Same person, same `X-Org`, both doors — and the assertion is on the *set of
-    rows*, not on the count, because two doors can agree on how many and differ
-    on which.
-    """
+    """The disagreement between doors that `architecture.md` calls a finding."""
     seed(network)
     api.force_login(network.both)
 
     for slug, org in (("seller-a", network.seller_a), ("sub-a1", network.sub_a1)):
         over_http = {item["name"] for item in _list(api, {"x-org": slug})["items"]}
-        page = tool("list_widgets")(ctx=mcp_context(network.both, network.tenant, org))
+        page = tool("list_widgets", register=register)(
+            ctx=context_for(network.both, network.tenant, org)
+        )
         over_mcp = {item.name for item in page.items}
         assert over_http == over_mcp, slug
 
 
 def test_the_machine_door_fails_closed_on_a_hat_it_does_not_hold(network: Network) -> None:
-    """The token names a hat; `resolve_org` is what decides whether it gets one.
-
-    The hat is resolved here the way `config.mcp`'s token middleware resolves
-    it — from the header, against the principal's own memberships — rather than
-    handed to the `Principal` directly, because "a caller cannot name a branch
-    it holds no membership over" is the claim, and a test that constructed the
-    principal by hand would be asserting about a shortcut nothing takes.
-    """
+    """The token names a hat; `resolve_org` is what decides whether it gets one."""
     seed(network)
     refused = resolve_org(user=network.clerk, tenant=network.tenant, requested_slug="seller-b")
     assert refused is None
-    page = tool("list_widgets")(ctx=mcp_context(network.clerk, network.tenant, refused))
+    page = tool("list_widgets", register=register)(
+        ctx=context_for(network.clerk, network.tenant, refused)
+    )
     assert len(page.items) == 0
 
 
@@ -601,16 +503,7 @@ def test_the_machine_door_fails_closed_on_a_hat_it_does_not_hold(network: Networ
 
 
 def move(net: Network, node: Organization, new_parent: Organization, actor: Actor) -> Organization:
-    """Order the move, then run the activity's write.
-
-    `move_organization` authorizes and starts `MoveOrganizationWorkflow`; the
-    rewrite itself is `apply_organization_move`, reached through
-    `rewrite_organization_paths`. Under pytest nothing commits, so the
-    on-commit hook never fires and the activity is called directly here — as
-    the system, which is exactly who calls it in production. The workflow half
-    is proved against a real Temporal server in
-    `apps/workflows/tests/test_workflows.py`.
-    """
+    """Order the move, then run the activity's write."""
     move_organization(tenant=net.tenant, organization=node, new_parent=new_parent, actor=actor)
     return apply_organization_move(
         tenant=net.tenant,
@@ -621,12 +514,7 @@ def move(net: Network, node: Organization, new_parent: Organization, actor: Acto
 
 
 def test_re_parenting_moves_the_subtrees_rows_with_it(network: Network) -> None:
-    """A1 goes from under A to under B, and every row underneath goes with it.
-
-    This is the whole reason a re-parent is a workflow rather than an UPDATE:
-    the visibility of every row in the subtree changes at once, and it has to
-    change completely or not at all.
-    """
+    """A1 goes from under A to under B, and every row underneath goes with it."""
     seed(network)
     deep = create_widget(
         tenant=network.tenant, actor=hat(network, network.clerk, network.sub_a1), name="Deep in A1"
@@ -738,7 +626,7 @@ def test_a_move_needs_admin_over_both_ends(network: Network) -> None:
 
 
 def test_the_shapes_that_are_not_a_move_are_refused(network: Network) -> None:
-    from apps.core.exceptions import Invalid
+    from pilecap import Invalid
 
     acting = hat(network, network.owner, network.hq)
     with pytest.raises(Invalid):
@@ -779,29 +667,10 @@ def test_applying_a_move_twice_changes_nothing_the_second_time(network: Network)
 def test_an_activity_acting_for_a_sub_seller_reads_and_writes_as_it(
     network: Network,
 ) -> None:
-    """The workflow door, wearing the same hat the request that started it wore.
-
-    This drives `apps.example.activities.mark_widget_onboarded` directly — the
-    real activity body, with the principal set the way the interceptor sets it
-    from the workflow's headers. What is proved is the part that would otherwise
-    be invisible: the activity reads through `visible_to(org)`, so a run started
-    for A1 cannot touch a row at A, and the audit row it leaves says which hat
-    it acted under.
-
-    `transaction=True` because a real activity calls `close_old_connections()`
-    at both ends — it has no request cycle to do it for it — and that is exactly
-    what an open test transaction cannot survive. Running against real commits
-    is the honest way to drive one.
-
-    Real commits are also why `recorded_workflow_starts` is here: `seed` creates
-    widgets, `create_widget` registers an onboarding run on `transaction.on_commit`,
-    and in this test that commit is real. The run is recorded and not dialled —
-    the onboarding workflow is proved in `test_workflows.py`, against a server
-    this test has no business starting (queue V3).
-    """
+    """The workflow door, wearing the same hat the request that started it wore."""
     from apps.example.activities import mark_widget_onboarded
     from apps.example.types import WidgetOnboarding
-    from apps.workflows.context import reset_principal, set_principal
+    from pilecap.testing import reset_principal, set_principal
 
     widgets = seed(network)
 
@@ -857,11 +726,7 @@ def approve_url(widget: Widget) -> str:
 
 
 def test_a_sub_seller_cannot_approve_a_siblings_widget(api: Client, network: Network) -> None:
-    """404, not 403: sideways is not "you may not", it is "there is no such row".
-
-    The clerk at Sub A1 asking about Seller B's widget must not learn that it
-    exists — the same answer they get for an id nobody ever minted.
-    """
+    """404, not 403: sideways is not "you may not", it is "there is no such row"."""
     widgets = seed(network)
     api.force_login(network.clerk)
     response = api.post(approve_url(widgets["b"]), content_type="application/json")
@@ -877,12 +742,7 @@ def test_a_sub_seller_cannot_approve_its_parents_widget(api: Client, network: Ne
 
 
 def test_a_seller_admin_may_approve_at_its_sub_seller(api: Client, network: Network) -> None:
-    """Roles inherit downwards, so approval does — the manager of A covers A1.
-
-    This is the half that makes `can_approve` read the role over the *widget's*
-    node rather than over the actor's hat: the manager is acting as Seller A,
-    and the row lives one level below.
-    """
+    """Roles inherit downwards, so approval does — the manager of A covers A1."""
     widgets = seed(network)
     api.force_login(network.manager)
     response = api.post(approve_url(widgets["a1"]), content_type="application/json")
@@ -898,28 +758,18 @@ def test_a_sub_seller_member_may_not_approve_even_at_home(api: Client, network: 
 
 
 # --- Config goes DOWN; visibility does not ------------------------------------
-#
-# Everything below is one claim in two halves, and the halves point in opposite
-# directions on purpose. A branch **resolves** the policy its parent set — it is
-# governed by that policy whether it can see it or not — and a branch **lists**
-# only its own. If those two ever agree, the hierarchy has grown an upward leak
-# with a friendly name (ADR core-3, `architecture.md` A5a).
 
+# golden: policy begin
 POLICIES_URL = f"{LIST_URL}policies/"
 GOVERNING_URL = f"{POLICIES_URL}governing/"
+# golden: policy end
 ENTRIES_URL = f"{LIST_URL}entries/"
 STATS_URL = f"{LIST_URL}stats/"
 
 
+# golden: policy begin
 def seed_policies(net: Network) -> dict[str, WidgetPolicy]:
-    """One policy at the root and one at Seller A. **Nothing at A1, on purpose.**
-
-    A1 is the interesting node precisely because it has no policy of its own:
-    what governs it has to come from somewhere above, and which "somewhere" is
-    the whole question `governing()` answers. B has nothing of its own either,
-    so it falls all the way through to the root's — which is what makes the two
-    answers different and the test able to fail.
-    """
+    """One policy at the root and one at Seller A. **Nothing at A1, on purpose.**"""
     return {
         "hq": create_widget_policy(
             tenant=net.tenant, actor=hat(net, net.owner, net.hq), name="House rules"
@@ -931,12 +781,7 @@ def seed_policies(net: Network) -> dict[str, WidgetPolicy]:
 
 
 def test_the_nearest_policy_on_the_chain_is_the_one_that_governs(network: Network) -> None:
-    """Root -> A -> A1, and root -> B. A1 gets A's; B falls through to the root's.
-
-    This is the whole of `governing()` in four assertions: nearest wins, "nearest"
-    is measured in tree depth and not in insertion order, and a node with nothing
-    above it but the root resolves the root's.
-    """
+    """Root -> A -> A1, and root -> B. A1 gets A's; B falls through to the root's."""
     policies = seed_policies(network)
 
     at_a1 = get_governing_widget_policy(
@@ -949,8 +794,7 @@ def test_the_nearest_policy_on_the_chain_is_the_one_that_governs(network: Networ
     )
     assert at_b.pk == policies["hq"].pk, "B has nothing of its own and nothing between it and HQ"
 
-    # And the two ends of the chain resolve themselves, which is what makes
-    # "the chain includes me" true rather than assumed.
+    # And the two ends of the chain resolve themselves.
     assert get_governing_widget_policy(
         tenant=network.tenant, org=network.seller_a, actor=reading(network.tenant, network.seller_a)
     ).pk == (policies["a"].pk)
@@ -968,22 +812,14 @@ def test_resolution_fails_closed_with_no_hat_and_when_nothing_governs(network: N
         )
     seed_policies(network)
     with pytest.raises(NotFound):
-        # An unresolved hat resolves no configuration rather than the root's —
-        # the same fail-closed shape `for_tenant(None)` and `visible_to(None)` have.
+        # An unresolved hat resolves no configuration rather than the root's.
         get_governing_widget_policy(
             tenant=network.tenant, org=None, actor=reading(network.tenant, None)
         )
 
 
 def test_a_branch_never_lists_the_policy_that_governs_it(api: Client, network: Network) -> None:
-    """**The split, over the wire.** A1 resolves A's policy and cannot list it.
-
-    Both halves in one test because neither is worth much alone: a list that
-    shows nothing proves nothing if the resolution also shows nothing, and a
-    resolution that reaches up is only safe if the list does not. Read together
-    they say the sentence the whole design rests on — upward *config
-    resolution*, never upward *visibility*.
-    """
+    """**The split, over the wire.** A1 resolves A's policy and cannot list it."""
     policies = seed_policies(network)
     api.force_login(network.clerk)  # a member of Sub A1 and of nowhere else
 
@@ -1020,12 +856,7 @@ def test_a_seller_lists_its_own_and_its_sub_sellers_policies(api: Client, networ
 def test_setting_a_policy_needs_a_role_and_lands_on_the_acting_hat(
     api: Client, network: Network
 ) -> None:
-    """Config travels down, so a member may not write it — and it lands on the hat.
-
-    `create_widget_policy` reads `actor.org` and takes no `organization=`, so
-    the second assertion is about the same hole the widget create closes: a
-    caller cannot name a branch, only wear one.
-    """
+    """Config travels down, so a member may not write it — and it lands on the hat."""
     api.force_login(network.clerk)  # a MEMBER of A1
     refused = api.post(
         POLICIES_URL,
@@ -1051,13 +882,7 @@ def test_setting_a_policy_needs_a_role_and_lands_on_the_acting_hat(
 
 
 def test_a_branch_may_name_the_policy_its_parent_set(api: Client, network: Network) -> None:
-    """201. **The link gate, live**: A1 names A's policy, a row it cannot list.
-
-    This is the widening `InheritedDownward` buys and the only one it buys.
-    `may_be_named` says yes because the policy's organization is on the hat's
-    ancestor chain; nothing about `visible_to` moved, and the previous test is
-    what proves that.
-    """
+    """201. **The link gate, live**: A1 names A's policy, a row it cannot list."""
     policies = seed_policies(network)
     api.force_login(network.clerk)
 
@@ -1079,19 +904,7 @@ def test_a_branch_may_name_the_policy_its_parent_set(api: Client, network: Netwo
 def test_naming_a_siblings_policy_is_a_404_with_remedies_and_writes_nothing(
     api: Client, network: Network
 ) -> None:
-    """**The rival's champion**, refused: B's policy, named from A1, is `not_found`.
-
-    404 and not 403, because 403 would confirm that a policy with that id exists
-    somewhere in this tenant — the fact the scoping was hiding. The body is
-    checked as a *superset* of `{detail, code}` rather than as an exact key set:
-    the refusal envelope is additive by contract (G2's `remedies` joined it
-    mid-cycle without renaming anything), so a test that pinned the key set
-    exactly would break on every honest addition.
-
-    The write leaves nothing behind and the refusal is on the audit trail, which
-    is the half a status-code assertion cannot see: a refusal nobody recorded is
-    a refusal nobody can count.
-    """
+    """**The rival's champion**, refused: B's policy, named from A1, is `not_found`."""
     seed_policies(network)
     at_b = create_widget_policy(
         tenant=network.tenant, actor=hat(network, network.owner, network.seller_b), name="B rules"
@@ -1109,28 +922,14 @@ def test_naming_a_siblings_policy_is_a_404_with_remedies_and_writes_nothing(
     body = json.loads(response.content)
     assert {"detail", "code"} <= set(body), body
     assert body["code"] == "not_found"
-    # G2's addition, present because `not_found` registered remedies: what the
-    # caller can DO, not prose about what went wrong.
+    # `not_found` registered remedies: what the caller can DO.
     assert body["remedies"], body
 
     assert not Widget.objects.for_tenant(network.tenant).filter(name="Stolen").exists()
 
 
 def test_the_refused_naming_is_audited_as_an_error(network: Network) -> None:
-    """The **audited** fence, driven where audit rows come from: inside the service.
-
-    There are two fences on this and they refuse in different places, which is
-    why they are tested in different places. Over the wire the door refuses
-    first — `resolve_named_policy` cannot find a sibling's policy on the hat's
-    ancestor chain at all — and a refusal raised at a door leaves no audit row,
-    because the audit trail records *services*.
-
-    So the second fence is driven directly: `create_widget`, handed a policy row
-    from Seller B by an actor wearing Sub A1's hat. That is the shape a future
-    door, an activity or a hand-written script would arrive in, and it is
-    refused with `not_found` and recorded with `outcome=error` — which is the
-    half of "no row was written" that a status code cannot say.
-    """
+    """The **audited** fence, driven where audit rows come from: inside the service."""
     at_b = create_widget_policy(
         tenant=network.tenant, actor=hat(network, network.owner, network.seller_b), name="B rules"
     )
@@ -1154,19 +953,15 @@ def test_the_refused_naming_is_audited_as_an_error(network: Network) -> None:
     assert entry.acting_org_id == network.sub_a1.pk
 
 
+# golden: policy end
+
 # --- The ledger: it lands where the widget is, and nothing rewrites it ---------
 
 
 def test_an_entry_lands_in_the_widgets_branch_not_the_actors_hat(
     api: Client, network: Network
 ) -> None:
-    """The manager acts as Seller A and records against a widget at Sub A1.
-
-    The entry lands at **A1**, because `derive_org_from = "widget"` says the row
-    belongs where its subject belongs. Had it been stamped with the actor's hat
-    it would have landed at A — visible to A, invisible to A1, and wrong in a way
-    no later read could report.
-    """
+    """The manager acts as Seller A and records against a widget at Sub A1."""
     widgets = seed(network)
     api.force_login(network.manager)
 
@@ -1184,14 +979,7 @@ def test_an_entry_lands_in_the_widgets_branch_not_the_actors_hat(
 def test_a_body_naming_a_mismatched_organization_is_a_400_on_that_field(
     api: Client, network: Network
 ) -> None:
-    """**The landing gate, live on the wire.** 400, and it names `organization`.
-
-    The manager may legitimately wear Seller A's hat and may legitimately see
-    A1's widget — nothing about tenancy or visibility refuses this request. What
-    refuses it is the model's own `clean()`, because the branch the body names
-    disagrees with the branch the widget lives in, and a row like that lands
-    where its own parent cannot see it.
-    """
+    """**The landing gate, live on the wire.** 400, and it names `organization`."""
     widgets = seed(network)
     api.force_login(network.manager)
 
@@ -1271,15 +1059,7 @@ def test_the_ledger_is_scoped_like_everything_else(api: Client, network: Network
 
 
 def test_the_ledger_has_no_write_back_door(api: Client, network: Network) -> None:
-    """There is no route and no tool that edits or removes a line. **By design.**
-
-    The claim is about the *doors*, so it is asserted against the doors: every
-    HTTP route the app mounts and every MCP tool it registers, checked for any
-    that would write to an entry other than by appending. House rule 20 covers
-    the population (`WidgetEntry.append_only` is discovered, not listed) and its
-    canary is the quality lane's; this is the door-shaped half of the same
-    promise, which no AST scan of `services.py` would see.
-    """
+    """There is no route and no tool that edits or removes a line. **By design.**"""
     from apps.example.api import router
 
     offered = {
@@ -1298,12 +1078,7 @@ def test_the_ledger_has_no_write_back_door(api: Client, network: Network) -> Non
 
 
 def test_approving_appends_a_line_where_the_widget_lives(api: Client, network: Network) -> None:
-    """The ledger the done-line drives: approval writes its own row, at A1.
-
-    The manager approves as Seller A (roles inherit down, so they may), and the
-    line lands at Sub A1 with the widget — the same derivation, reached from a
-    service rather than from a body.
-    """
+    """The ledger the done-line drives: approval writes its own row, at A1."""
     widgets = seed(network)
     api.force_login(network.manager)
 
@@ -1320,12 +1095,7 @@ def test_approving_appends_a_line_where_the_widget_lives(api: Client, network: N
 
 
 def test_the_new_routes_are_mounted_where_they_say(network: Network) -> None:
-    """The paths, pinned by name — so a rename shows up here and not in a client.
-
-    Every `url_name` these routes added, reversed. It is also what house rule 3
-    reads: a route that no test names is an unproven door, and the rule looks
-    for the name.
-    """
+    """The paths, pinned by name — so a rename shows up here and not in a client."""
     assert reverse("api:widget_stats-detail") == STATS_URL
     assert reverse("api:widget_policies-list") == POLICIES_URL
     assert reverse("api:widget_policy-create") == POLICIES_URL
@@ -1335,13 +1105,7 @@ def test_the_new_routes_are_mounted_where_they_say(network: Network) -> None:
 
 
 def test_the_hat_switches_the_policy_and_ledger_sets_too(api: Client, network: Network) -> None:
-    """One person, two memberships, two headers — and it is not only widgets.
-
-    `both` belongs to Seller A and to Sub A1. The claim the widget list already
-    makes is made again here for the two shapes these routes added, because "the
-    hat decides the answer" is a property of the *reads*, not of one model, and
-    a new model that quietly ignored the hat would pass every existing test.
-    """
+    """One person, two memberships, two headers — and it is not only widgets."""
     widgets = seed(network)
     create_widget_policy(
         tenant=network.tenant, actor=hat(network, network.manager, network.seller_a), name="A rules"
@@ -1368,8 +1132,7 @@ def test_the_hat_switches_the_policy_and_ledger_sets_too(api: Client, network: N
     ledger_a1 = json.loads(api.get(ENTRIES_URL, headers={"x-org": "sub-a1"}).content)
     assert {item["note"] for item in ledger_a1["items"]} == {"line for a1"}
 
-    # And the measured number moves with the hat as well, which is the one place
-    # a scoping mistake would show up as a *number* rather than as a missing row.
+    # And the measured number moves with the hat as well.
     stats_a = json.loads(api.get(STATS_URL, headers={"x-org": "seller-a"}).content)
     stats_a1 = json.loads(api.get(STATS_URL, headers={"x-org": "sub-a1"}).content)
     assert stats_a["count"]["value"] == "2"
@@ -1379,13 +1142,7 @@ def test_the_hat_switches_the_policy_and_ledger_sets_too(api: Client, network: N
 def test_a_second_tenants_policies_and_entries_are_absent(
     api: Client, network: Network, other_tenant: Tenant, stranger: User, stranger_actor: Actor
 ) -> None:
-    """The tenancy, one level above the hierarchy, for the two new shapes.
-
-    The sibling tests above are all *inside* one tenant, which is the harder
-    property and the newer one — and it is exactly why this one still has to be
-    written. A read that got `visible_to` perfectly right and dropped
-    `for_tenant` would pass every test in this file up to here.
-    """
+    """The tenancy, one level above the hierarchy, for the two new shapes."""
     other_widget = create_widget(
         tenant=other_tenant, actor=stranger_actor, name="Not yours", notes=""
     )
@@ -1403,8 +1160,7 @@ def test_a_second_tenants_policies_and_entries_are_absent(
     stats = json.loads(api.get(STATS_URL, headers={"x-org": "acme"}).content)
     assert stats["count"]["value"] == "4", "the four widgets of THIS tenant, and not a fifth"
 
-    # And from the selectors, so the claim is about the reads rather than about
-    # one route's query string.
+    # And from the selectors, so the claim is about the reads.
     assert (
         list_widget_entries(
             tenant=network.tenant, org=network.hq, actor=reading(network.tenant, network.hq)
@@ -1412,11 +1168,7 @@ def test_a_second_tenants_policies_and_entries_are_absent(
         == 0
     )
 
-    # The sharp edge, said out loud: **both tenants' roots have path "0000"**,
-    # because a materialized path is only unique inside its own tree. A
-    # `governing()` that resolved on the path alone would hand Acme's root
-    # Globex's policy — same path, same name, different company. The `for_tenant`
-    # half is what stops that, and this is the assertion that would notice.
+    # The sharp edge: **both tenants' roots have path "0000"**; `for_tenant` tells them apart.
     ours = create_widget_policy(
         tenant=network.tenant, actor=hat(network, network.owner, network.hq), name="Their rules"
     )

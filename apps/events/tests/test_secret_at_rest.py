@@ -36,7 +36,7 @@ pytestmark = pytest.mark.django_db
 # the test database. Marked at the site rather than in `.secrets.baseline` so
 # the justification travels with the line — and so two worktrees adding
 # fixtures do not collide on one generated file.
-SECRET = "sk-live-do-not-log-me-9f3a"  # noqa: S105  # pragma: allowlist secret
+SECRET = "sk-live-do-not-log-me-9f3a"  # noqa: S105 — a fake secret the test proves never reaches a log  # pragma: allowlist secret
 
 
 def _raw_column(endpoint_id: object) -> str:
@@ -76,7 +76,7 @@ def test_an_empty_secret_stays_empty_rather_than_becoming_a_token(
 ) -> None:
     """An unset secret is a state, and answering it must not cost a decrypt.
 
-    `apps.connections.api.signature_matches` refuses on a falsy secret — that is
+    `apps.events.receivers.signature_matches` refuses on a falsy secret — that is
     what makes a revoked connection stop accepting deliveries — and the same
     reading has to survive encryption.
     """

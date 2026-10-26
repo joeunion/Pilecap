@@ -1,3 +1,5 @@
+from typing import ClassVar
+
 from django.apps import AppConfig
 
 
@@ -28,3 +30,8 @@ class ImportsConfig(AppConfig):
     name = "apps.djb_imports"
     verbose_name = "Imports"
     depends_on: tuple[str, ...] = ("core", "accounts", "events", "workflows", "files")
+    ratchet_floors: ClassVar[dict[str, int]] = {
+        "91.block-tail": 51,
+        "91.docstring-tail": 180,
+        "91.module-tail": 140,
+    }

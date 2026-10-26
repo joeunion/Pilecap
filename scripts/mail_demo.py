@@ -31,7 +31,7 @@ leg**. See "NOT A GATE LEG" below — that is a contract, not a preference.
     is not optional decoration: the receiver picks its signature scheme at
     request time, and the ESP-registered Svix verifier only engages when this
     deployment actually sends through an ESP. Without it the door falls back to
-    the template's own `X-Signature` HMAC — which this script will drive
+    the template's own `X-Signature-V2` HMAC — which this script will drive
     instead, **and name**, because a laptop pass that read like a Resend pass
     would be the exact dishonesty the instrument census exists to refuse.
     (The API key is never used by these legs; nothing here talks to Resend.)
@@ -237,13 +237,13 @@ def scheme_this_stack_uses() -> str:
     """`svix` or `hmac` — WHICH DOOR IS ACTUALLY ARMED, asked rather than assumed.
 
     The receiver has two schemes and picks between them at request time
-    (`apps/connections/api.py::_verified`): a provider-registered verifier
+    (`apps/connections/api.py::_signature_verified`): a provider-registered verifier
     decides when it recognises the request, and the template's own
     HMAC-over-body decides when it does not. For Resend the registered verifier
     is Anymail's Svix view — but it only ENGAGES when this deployment is
     actually configured with an Anymail ESP backend. On a laptop sending through
     Mailpit, `_anymail_esp()` is falsy, the verifier abstains, and the door
-    checks `X-Signature` instead.
+    checks `X-Signature-V2` instead.
 
     So a driver that always posted Svix headers would get 401 on every laptop
     and read like a broken door. And a driver that always posted the template
@@ -300,9 +300,12 @@ def post_webhook(
         import hashlib
         import hmac as _hmac
 
-        headers["X-Signature"] = (
-            "sha256=" + _hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
-        )
+        # `X-Signature-V2`: a connection made today refuses the body-only `X-Signature`.
+        signed_at = int(moment.timestamp())
+        digest = _hmac.new(
+            secret.encode("utf-8"), f"{signed_at}.".encode() + body, hashlib.sha256
+        ).hexdigest()
+        headers["X-Signature-V2"] = f"t={signed_at},sha256={digest}"
         # Recorded on the `InboundWebhook` row and nothing else reads it, so it
         # names whichever key this body actually carries rather than assuming
         # Resend's.
@@ -314,14 +317,14 @@ def post_webhook(
         else:
             altered["event_type"] = "delivered"
         body = json.dumps(altered).encode()
-    request = urllib.request.Request(
+    request = urllib.request.Request(  # noqa: S310 — base_url is the operator's local http server; no file: scheme
         f"{base_url}/api/v1/connections/{connection_id}/webhook/",
         data=body,
         method="POST",
         headers=headers,
     )
     try:
-        with urllib.request.urlopen(request, timeout=15) as response:
+        with urllib.request.urlopen(request, timeout=15) as response:  # noqa: S310 — base_url is the operator's local http server; no file: scheme
             return response.status, response.read().decode()[:400]
     except urllib.error.HTTPError as error:
         return error.code, error.read().decode()[:400]
@@ -393,7 +396,7 @@ def main() -> int:
         + (
             "  (Anymail ESP configured — the Resend/Svix shape)"
             if scheme == "svix"
-            else "  (no Anymail ESP — the template's own X-Signature HMAC;"
+            else "  (no Anymail ESP — the template's own X-Signature-V2 HMAC;"
             " point this at an ESP-backed stack to drive the Svix shape)"
         )
     )
@@ -521,25 +524,13 @@ def main() -> int:
         scheme=scheme,
         when=datetime.now(tz=UTC) - timedelta(days=2),
     )
-    if scheme == "svix":
-        # The five-minute replay window is the VENDOR LIBRARY's, and this
-        # product deliberately does not re-implement it. Under the template's
-        # own HMAC there is no timestamp in the signed material at all, so an
-        # old body is indistinguishable from a fresh one — declared here rather
-        # than dressed up as a pass.
-        if status < 300:
-            die(
-                "6 stale",
-                f"the door accepted a 2-day-old signature (HTTP {status}) — replay is open",
-            )
-        ok("6 stale", f"refused with HTTP {status}, as it must be")
-    else:
-        say(
+    # The window is the vendor library's under Svix and the receiver's under `X-Signature-V2`.
+    if status < 300:
+        die(
             "6 stale",
-            "n/a",
-            "the template HMAC signs no timestamp — replay windows are the ESP "
-            "library's, and this stack is not ESP-backed. NOT a pass.",
+            f"the door accepted a 2-day-old signature (HTTP {status}) — replay is open",
         )
+    ok("6 stale", f"refused with HTTP {status}, as it must be")
 
     # --- leg 7: a complaint suppresses without transitioning ----------------
     settled = message.status

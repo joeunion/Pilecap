@@ -19,14 +19,22 @@ back would make every message list a copy of the customer's outgoing mail.
 from __future__ import annotations
 
 from datetime import datetime, time
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any
 from uuid import UUID
 
 from ninja import FilterLookup, FilterSchema, Schema
 from pydantic import ConfigDict, Field
 
 from apps.comms.models import Category, Channel
-from apps.core.schemas import ActsOut, ActsPage, ArchivedOut, ListPage, StrictIn, example
+from apps.core.schemas import (
+    ActsOut,
+    ActsPage,
+    ArchivedOut,
+    ListPage,
+    StrictIn,
+    example,
+    personal,
+)
 
 
 class MessageIn(StrictIn):
@@ -120,7 +128,7 @@ class MessageOut(Schema):
 
     id: UUID = Field(json_schema_extra=example("0195f1d4-8a11-7b02-9c3d-1e2f3a4b5c6d"))
     recipient_id: UUID = Field(json_schema_extra=example("0195f1d4-6b33-7d24-9e35-3c4d5e6f7a8b"))
-    recipient_email: str = Field(json_schema_extra=example("dana@example.com"))
+    recipient_email: str = Field(json_schema_extra=personal(example("dana@example.com")))
     # Which part of the tenant sent it. A client wearing the group's hat sees
     # rows from several branches at once and has no other way to tell them
     # apart — the slug as well as the id, because the slug is what `X-Org`
@@ -545,13 +553,6 @@ class RecipientFilter(FilterSchema):
     email: Annotated[str | None, FilterLookup(q="email__icontains")] = None
 
 
-#: Which cut of the contact book a list answers: the working book (`live`, the
-#: default), the closed contacts alone (`archived`), or both (`all`). One
-#: parameter with three values rather than a boolean, so "only the closed ones"
-#: is askable at all.
-RecipientShow = Literal["live", "archived", "all"]
-
-
 class RecipientOut(ArchivedOut, ActsOut):
     """One contact, as every door reports it — and as `comms.recipient.archived`
     and `comms.recipient.restored` carry it, less its `allowed_acts`.
@@ -571,15 +572,15 @@ class RecipientOut(ArchivedOut, ActsOut):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    email: str
-    display_name: str
+    email: str = Field(json_schema_extra=personal())
+    display_name: str = Field(json_schema_extra=personal())
     #: Set when this contact also has an account; null for the contacts, leads
     #: and customers who never signed in — which is most of them.
     user_id: UUID | None = None
     organization_id: UUID
     created_at: datetime
-    phone: str
-    chat_handle: str
+    phone: str = Field(json_schema_extra=personal())
+    chat_handle: str = Field(json_schema_extra=personal())
 
 
 class RecipientPage(ActsPage):

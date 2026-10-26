@@ -40,21 +40,18 @@ activity and the services above it.
 
 from __future__ import annotations
 
-import json
-from base64 import urlsafe_b64decode, urlsafe_b64encode
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import timedelta
-from hashlib import sha256
 from typing import Any
-from urllib.parse import parse_qs, quote, urlsplit
-from uuid import uuid4
+from urllib.parse import quote
 
 import httpx
 from django.conf import settings
 
 from apps.core.log import get_logger
+from apps.core.roads import road
 
 log = get_logger(__name__)
 
@@ -177,6 +174,16 @@ def configured() -> bool:
     return bool(_issuer()) and bool(_token())
 
 
+def issuer() -> str:
+    """The issuer every realm on this instance signs people in at, normalised.
+
+    One instance serves the staff realm and every tenant's, so the issuer is a
+    fact about the deployment rather than about any one realm — which is why a
+    realm's reference carries it and nothing re-derives it.
+    """
+    return _issuer()
+
+
 def _issuer() -> str:
     return str(getattr(settings, "ZITADEL_ISSUER", "") or "").strip().rstrip("/")
 
@@ -236,6 +243,7 @@ def _call(
     payload: Mapping[str, Any] | None = None,
     *,
     prefix: str = MANAGEMENT,
+    org_id: str = "",
 ) -> dict[str, Any]:
     """One call to Zitadel. Raises `ZitadelError` on anything but a 2xx.
 
@@ -251,10 +259,19 @@ def _call(
     timeout, the error shape and the "never log the request body" rule are the
     same on both surfaces: a second copy of this function is a second place for
     one of those four to drift.
+
+    `org_id` sends `x-zitadel-orgid`, exactly as `probe` does, and for the same
+    measured reason: a management call is scoped to the credential's own
+    organisation unless the header names another. A tenant's realm IS another
+    organisation, so every writer that reaches one passes it; `""` sends no
+    header and every existing caller reads exactly as it did.
     """
+    headers = {"x-zitadel-orgid": org_id} if org_id else None
     with _client() as client:
         try:
-            response = client.request(method, f"{prefix}{path}", json=dict(payload or {}))
+            response = client.request(
+                method, f"{prefix}{path}", json=dict(payload or {}), headers=headers
+            )
         except httpx.HTTPError as error:
             raise ZitadelError(f"Zitadel {method} {prefix}{path} failed: {error}") from error
     if response.status_code >= 400:
@@ -276,9 +293,10 @@ def _search(
     payload: Mapping[str, Any] | None = None,
     *,
     prefix: str = MANAGEMENT,
+    org_id: str = "",
 ) -> list[dict[str, Any]]:
     """A `_search` call's result list, which Zitadel omits entirely when empty."""
-    body = _call("POST", path, payload, prefix=prefix)
+    body = _call("POST", path, payload, prefix=prefix, org_id=org_id)
     result = body.get("result") or []
     return [row for row in result if isinstance(row, dict)]
 
@@ -292,6 +310,36 @@ def _name_query(name: str) -> dict[str, Any]:
 # The half `zitadel_audit` is built out of. Every one of these is a GET or a
 # `_search`, so the audit command cannot change anything even if it wanted to —
 # which is the property the criterion pins, not a promise in a docstring.
+
+
+#: The workforce provider's default name: its only handle, since the deployment has no row for it.
+WORKFORCE_IDP_NAME = "Workforce Google"
+
+
+@road(
+    "workforce_idp_name",
+    example="apps/accounts/tests/test_federation.py::test_the_activity_materialises_the_workforce_provider",
+)
+def workforce_idp_name() -> str:
+    """What the workforce provider is called inside Zitadel: the setting, else the default."""
+    return str(getattr(settings, "GOOGLE_WORKFORCE_IDP_NAME", WORKFORCE_IDP_NAME))
+
+
+@road(
+    "smtp_is_foreign",
+    example="apps/accounts/tests/test_zitadel_console_surfaces.py::test_a_foreign_smtp_owner_is_named_and_counted_in_the_verdict",
+)
+def is_foreign(smtp: Mapping[str, Any]) -> bool:
+    """Whether the instance's SMTP sender belongs to somebody other than this product.
+
+    Judged by the description naming `PRODUCT_NAME`, never the address: the address is the fact
+    being attributed. An empty configuration is nobody's.
+    """
+    if not smtp:
+        return False
+    product = str(getattr(settings, "PRODUCT_NAME", "") or "").strip().lower()
+    description = str(smtp.get("description", "") or "").strip().lower()
+    return not product or product not in description
 
 
 def organization() -> dict[str, Any]:
@@ -324,6 +372,51 @@ def organizations() -> list[dict[str, Any]]:
     return _search("/orgs/_search", {}, prefix=ADMIN)
 
 
+def find_organization(*, name: str) -> dict[str, Any] | None:
+    """The organisation with exactly this name on the instance, or `None`.
+
+    MEASURED on the pinned build: the INSTANCE surface answers this —
+    `POST /admin/v1/orgs/_search` with a `nameQuery` returns the matching rows —
+    while `POST /management/v1/orgs/_search` answers a bare `404 Not Found`,
+    because the management API only ever sees the one org it is scoped to. A
+    name is unique on the instance (a second create answers `409 V3-DKcYh`), so
+    a match is THE org of that name. The equality is re-checked here because a
+    search that quietly matched on a prefix would hand back somebody else's.
+    """
+    for row in _search("/orgs/_search", {"queries": [_name_query(name)]}, prefix=ADMIN):
+        if str(row.get("name", "")) == name:
+            return row
+    return None
+
+
+#: The state of an organisation that is in use. MEASURED on the pinned build
+#: (2026-09-30): an org removed by `DELETE /admin/v1/orgs/{id}` (answered 200)
+#: still answers `GET /admin/v1/orgs/{id}` with 200 and its body — with the
+#: `state` key ABSENT, held so at +0, +3 and +10 seconds — while an id the
+#: instance never held answers `404 QUERY-leq5Q`. So a removed org is told apart
+#: by its state, never by the status code.
+ORG_STATE_ACTIVE = "ORG_STATE_ACTIVE"
+
+
+def get_organization(*, org_id: str) -> dict[str, Any] | None:
+    """One ACTIVE organisation by id, or `None` — never held, or removed.
+
+    A removed org answers 200 with no `state` (see `ORG_STATE_ACTIVE`), and an
+    org with no state is not one anybody can sign in at, so it is `None` here
+    exactly like an id the instance never held.
+    """
+    try:
+        body = _call("GET", f"/orgs/{org_id}", prefix=ADMIN)
+    except ZitadelError as error:
+        if " 404" in str(error):
+            return None
+        raise
+    org = body.get("org")
+    if not isinstance(org, dict) or str(org.get("state", "")) != ORG_STATE_ACTIVE:
+        return None
+    return dict(org)
+
+
 def projects() -> list[dict[str, Any]]:
     """Every project in the credential's org."""
     return _search("/projects/_search", {})
@@ -332,6 +425,35 @@ def projects() -> list[dict[str, Any]]:
 def find_project(*, name: str) -> dict[str, Any] | None:
     for row in _search("/projects/_search", {"queries": [_name_query(name)]}):
         if str(row.get("name", "")) == name:
+            return row
+    return None
+
+
+def get_project(*, project_id: str) -> dict[str, Any]:
+    """One project of the credential's org, by id, as `GET /projects/{id}` answers.
+
+    MEASURED on the pinned build: `{"project": {"id", "name", "state",
+    "details", …}}`, and the booleans the project's own `PUT` carries are
+    ABSENT when false — a project nobody switched the check on for answers no
+    `hasProjectCheck` key at all.
+    """
+    return dict(_call("GET", f"/projects/{project_id}").get("project") or {})
+
+
+def project_grant(*, project_id: str, org_id: str) -> dict[str, Any] | None:
+    """The grant of `project_id` to the organisation `org_id`, or `None`.
+
+    Read from the GRANTED org's side — `POST /management/v1/granted_projects/
+    _search` with that org's header — because that list holds only the grants
+    one org has received, so it is bounded by the projects this instance owns
+    rather than by its tenant count. MEASURED: the project's own
+    `/projects/{id}/grants/_search` lists every org's grant and refuses a
+    `grantedOrgIdQuery` (`400`, "ProjectGrantQuery.Query: value is required" —
+    that query belongs to the instance-wide grant search), so asking it per org
+    would mean paging the whole instance to find one row.
+    """
+    for row in _search("/granted_projects/_search", {}, org_id=org_id):
+        if str(row.get("projectId", "")) == project_id:
             return row
     return None
 
@@ -373,7 +495,7 @@ def get_application(*, project_id: str, app_id: str) -> dict[str, Any] | None:
     return dict(app) if isinstance(app, dict) else None
 
 
-def identity_providers() -> list[dict[str, Any]]:
+def identity_providers(*, org_id: str = "") -> list[dict[str, Any]]:
     """Every org-level external IdP. The audit's comparison set for SSO rows.
 
     **`/idps/templates/`, not `/idps/`.** Zitadel still serves the older
@@ -383,26 +505,32 @@ def identity_providers() -> list[dict[str, Any]]:
     indistinguishable from "there are none", which would make `ensure_*` create
     a second provider on every run and the drift report call every row clean.
     Measured against the pinned image, not guessed.
+
+    `org_id` reads another organisation's list. MEASURED: an IdP made in a
+    tenant's realm is absent from the credential's own org's search, so a
+    realm's providers are only ever found by naming the realm.
     """
-    return _search("/idps/templates/_search", {})
+    return _search("/idps/templates/_search", {}, org_id=org_id)
 
 
-def find_identity_provider(*, name: str) -> dict[str, Any] | None:
-    for row in identity_providers():
+def find_identity_provider(*, name: str, org_id: str = "") -> dict[str, Any] | None:
+    for row in identity_providers(org_id=org_id):
         if str(row.get("name", "")) == name:
             return row
     return None
 
 
-def get_identity_provider(*, idp_id: str) -> dict[str, Any] | None:
+def get_identity_provider(*, idp_id: str, org_id: str = "") -> dict[str, Any] | None:
     """One IdP by the id our row recorded, or `None` when it is gone.
 
     `None` rather than an exception on a 404 is what makes the audit able to
     report "our row names an IdP that no longer exists" as a drift line instead
-    of dying in the middle of the report.
+    of dying in the middle of the report. MEASURED: an IdP in another
+    organisation answers `404 QUERY-SAFrt` without that org's header, which is
+    why a realm's provider is read with `org_id`.
     """
     try:
-        return dict(_call("GET", f"/idps/templates/{idp_id}").get("idp") or {})
+        return dict(_call("GET", f"/idps/templates/{idp_id}", org_id=org_id).get("idp") or {})
     except ZitadelError:
         return None
 
@@ -450,8 +578,8 @@ def google_client_id_of(provider: Mapping[str, Any]) -> str:
 # change-nothing property the audit already holds extends to them unchanged.
 
 
-def login_policy() -> dict[str, Any]:
-    """The login policy in force for the credential's **org**, or `{}`.
+def login_policy(*, org_id: str = "") -> dict[str, Any]:
+    """The login policy in force for the credential's **org** — or `org_id`'s — or `{}`.
 
     MEASURED against the pinned build, not read off a doc page:
     `GET /management/v1/policies/login` answers `200` with the policy under a
@@ -468,8 +596,12 @@ def login_policy() -> dict[str, Any]:
     catches `ZitadelError` and says it could not look — which is a different
     sentence from "the policy is empty", and the difference matters to whoever
     reads a clean report.
+
+    `org_id` reads a tenant's realm instead. MEASURED on a freshly created org:
+    the same two states, with `isDefault: true` and the instance as owner until
+    somebody gives the realm a policy of its own.
     """
-    return dict(_call("GET", "/policies/login").get("policy") or {})
+    return dict(_call("GET", "/policies/login", org_id=org_id).get("policy") or {})
 
 
 def label_policy() -> dict[str, Any]:
@@ -536,10 +668,17 @@ def read_user(*, user_id: str) -> Probe:
     return probe("GET", f"/users/{user_id}", prefix=USER)
 
 
-def find_user(*, username: str) -> dict[str, Any] | None:
+def find_user(*, username: str, org_id: str = "") -> dict[str, Any] | None:
+    """One person by username in ONE organisation — the credential's, or `org_id`'s.
+
+    MEASURED: this search answers only rows in the organisation it is scoped to,
+    so a person made in a tenant's realm is found by naming the realm and is
+    invisible without it (`read_user` below is the org-blind read by id).
+    """
     rows = _search(
         "/users/_search",
         {"queries": [{"userNameQuery": {"userName": username, "method": EQUALS}}]},
+        org_id=org_id,
     )
     for row in rows:
         if str(row.get("userName", "")) == username:
@@ -638,7 +777,7 @@ def ensure_web_application(
     post_logout_uris: list[str],
     dev_mode: bool = False,
 ) -> Resource:
-    """The browser RP: the confidential OIDC client W2-R3's login flow uses.
+    """The browser RP: the confidential OIDC client the allauth login flow uses.
 
     `authMethodType` is BASIC — a web application keeps a secret because it has
     a server to keep it on. The native client below is the opposite case and
@@ -649,7 +788,7 @@ def ensure_web_application(
     the redirect URI, the post-logout URI, `devMode` — was written exactly once,
     at creation, and belonged to whoever edited the console after that. Two
     ordinary moves broke sign-in with the seed still saying `exists`: a
-    deployment whose `PUBLIC_BASE_URL` changed kept the old callback and no
+    deployment whose base URL changed kept the old callback and no
     other, and a one-field console edit to the redirect URI left the person
     signing in on raw JSON at the identity platform — upstream of the callback,
     so no page of ours ever renders and no remedy is offered.
@@ -775,7 +914,7 @@ def ensure_api_application(*, project_id: str, name: str) -> Resource:
     """The MCP resource: what an access token's `aud` has to name.
 
     An API application rather than a second OIDC client, because this object is
-    not something anybody logs in *through* — it is the resource server W2-R4
+    not something anybody logs in *through* — it is the resource server the MCP door
     validates audiences against.
     """
     existing = find_application(project_id=project_id, name=name)
@@ -879,7 +1018,7 @@ def ensure_application_login_version(
 
     **The whole of design C-9's writer half, and it goes BOTH ways.** A
     deployment whose front door is our own page declares
-    `loginVersion.loginV2.baseUri = <PUBLIC_BASE_URL>/accounts` on the
+    `loginVersion.loginV2.baseUri = <its base URL>/accounts` on the
     application people sign in through, and Zitadel appends `/login`. A
     deployment on the hosted page declares nothing — and "declares nothing" has
     to be a value this function can WRITE, not merely a call it can skip,
@@ -964,7 +1103,9 @@ def ensure_human_user(
     return Resource(id=str(body.get("userId", "")), created=True)
 
 
-def ensure_invited_user(*, email: str, first_name: str, last_name: str) -> Resource:
+def ensure_invited_user(
+    *, email: str, first_name: str, last_name: str, org_id: str = ""
+) -> Resource:
     """A person who exists and **cannot yet sign in**. The invitation's first half.
 
     The difference from `ensure_human_user` above is the whole point: that one
@@ -986,20 +1127,25 @@ def ensure_invited_user(*, email: str, first_name: str, last_name: str) -> Resou
     one sender: the address is already proven as well as it is going to be — an
     invitation is somebody who *has* the address being told about it by
     somebody who typed it, and the invite code lands in that inbox regardless.
+
+    `org_id` makes the person in a tenant's realm rather than the credential's
+    own org: the v2 body names the organisation itself (`organization.orgId`,
+    MEASURED — the path `zitadel_measure` already builds its throwaway human
+    by), and the search names it through the header, because a person in
+    another org is invisible to an unscoped search and a second create there
+    answers `409 V3-DKcYh`, "User already exists".
     """
-    existing = find_user(username=email)
+    existing = find_user(username=email, org_id=org_id)
     if existing is not None:
         return Resource(id=str(existing["id"]), created=False)
-    body = _call(
-        "POST",
-        "/users/human",
-        {
-            "username": email,
-            "profile": {"givenName": first_name, "familyName": last_name},
-            "email": {"email": email, "isVerified": True},
-        },
-        prefix=USER,
-    )
+    person: dict[str, Any] = {
+        "username": email,
+        "profile": {"givenName": first_name, "familyName": last_name},
+        "email": {"email": email, "isVerified": True},
+    }
+    if org_id:
+        person["organization"] = {"orgId": org_id}
+    body = _call("POST", "/users/human", person, prefix=USER)
     log.info("accounts.zitadel.invited_user_created", user_name=email)
     return Resource(id=str(body.get("userId", "")), created=True)
 
@@ -1051,7 +1197,7 @@ def is_already_initialized(error: ZitadelError) -> bool:
     return ALREADY_INITIALIZED in str(error)
 
 
-def invite_url(*, user_id: str, code: str) -> str:
+def invite_url(*, user_id: str, code: str, surface: str = "staff") -> str:
     """The page where an invited person sets their password. **The email's link.**
 
     Built here rather than in the template or the activity because the hosted
@@ -1078,13 +1224,22 @@ def invite_url(*, user_id: str, code: str) -> str:
     `reverse` at call time rather than a literal path: `config/urls.py` owns
     where the sign-in door hangs, and a second spelling here would be the
     fourth thing that has to agree about one URL.
+
+    **Under `ours` the entrance is on the surface the person was invited to**,
+    built by the one URL builder every link goes through
+    (`apps.core.surfaces.absolute_url`): a customer's link lands on the customer
+    host. `surface` defaults to `staff`, and with no surfaces bound that is
+    the deployment's base URL joined to the path — the link this function built before
+    surfaces, byte for byte. The hosted half is Zitadel's own page on Zitadel's
+    own host, which no surface of ours moves.
     """
     tail = f"?userID={quote(str(user_id), safe='')}&code={quote(str(code), safe='')}"
     if str(getattr(settings, "SIGN_IN_DOOR", "hosted")) == "ours":
         from django.urls import reverse
 
-        base = str(getattr(settings, "PUBLIC_BASE_URL", "") or "").rstrip("/")
-        return f"{base}{reverse('account_login')}{tail}"
+        from apps.core.surfaces import absolute_url
+
+        return absolute_url(path=f"{reverse('account_login')}{tail}", surface=surface)
     return f"{_issuer()}{INVITE_PATH}{tail}"
 
 
@@ -1168,6 +1323,7 @@ def ensure_oidc_identity_provider(
     scopes: list[str] | None = None,
     existing_id: str = "",
     use_pkce: bool | None = None,
+    org_id: str = "",
 ) -> Resource:
     """A customer's IdP, materialised as an org-level generic OIDC provider.
 
@@ -1192,16 +1348,20 @@ def ensure_oidc_identity_provider(
     setting instead of overwriting it, and a caller with an opinion passes a
     bool. `False` on the create branch, because a provider that does not exist
     yet has no setting to preserve and that is what Zitadel's own zero value is.
+
+    `org_id` makes the provider inside a tenant's realm, and every read and
+    write of it is scoped there (MEASURED: a realm's IdP is invisible from the
+    credential's own org, by search and by id).
     """
     # Our row's id, then the search by name — `_settled_target` holds both nets
     # so this and the Google template below cannot drift apart. A row naming an
     # IdP somebody deleted in the console falls through to create, which is the
     # repair a re-sync is for; `zitadel_audit` is what makes it visible before
     # then.
-    target = _settled_target(name=name, existing_id=existing_id)
+    target = _settled_target(name=name, existing_id=existing_id, org_id=org_id)
     settled_pkce = use_pkce
     if settled_pkce is None:
-        live = get_identity_provider(idp_id=target) if target else None
+        live = get_identity_provider(idp_id=target, org_id=org_id) if target else None
         oidc = ((live or {}).get("config") or {}).get("oidc") or {}
         settled_pkce = bool(oidc.get("usePkce", False)) if isinstance(oidc, Mapping) else False
     payload: dict[str, Any] = {
@@ -1221,10 +1381,10 @@ def ensure_oidc_identity_provider(
         },
     }
     if target:
-        _call("PUT", f"/idps/generic_oidc/{target}", payload)
+        _call("PUT", f"/idps/generic_oidc/{target}", payload, org_id=org_id)
         log.info("accounts.zitadel.idp_updated", idp_name=name)
         return Resource(id=target, created=False)
-    body = _call("POST", "/idps/generic_oidc", payload)
+    body = _call("POST", "/idps/generic_oidc", payload, org_id=org_id)
     log.info("accounts.zitadel.idp_created", idp_name=name)
     return Resource(id=str(body.get("id", "")), created=True)
 
@@ -1240,7 +1400,7 @@ def ensure_google_identity_provider(
     """The workforce door, materialised as an org-level Google provider.
 
     **This is the same shape a customer's IdP gets, and that is the point of
-    W2-R5**: the people who build this product and the people who buy it now
+    ADR ident-6**: the people who build this product and the people who buy it now
     arrive through one identity platform, configured one way, from our side.
     Google is its own template in Zitadel rather than a generic OIDC provider
     because Zitadel's Google template already knows the issuer, the endpoints
@@ -1249,7 +1409,8 @@ def ensure_google_identity_provider(
 
     **The domain restriction is not sent here, and that is deliberate**
     (ADR ident-6): `GOOGLE_WORKSPACE_DOMAINS` stays ours, enforced by
-    `accounts.selectors.is_workforce_email` at the moment an assertion arrives.
+    `accounts.policies.is_workforce_email` whenever an assertion would mint a new
+    person (the platform door's workforce wall, `accounts.adapter`).
     A `hd` hint in an authorize URL is a suggestion to Google, not a promise to
     us, and a restriction expressed only in somebody else's console is a
     restriction we cannot test.
@@ -1584,41 +1745,107 @@ def restrictions() -> dict[str, Any]:
     return dict(_call("GET", "/restrictions", prefix=ADMIN))
 
 
-def ensure_login_policy(*, allow_register: bool, prefix: str = ADMIN) -> Resource:
-    """Whether this deployment lets people register themselves. **Full body.**
+#: Zitadel's ids for the ways a realm's login policy answers a write that
+#: arrived in the wrong state, both MEASURED on a freshly created org: the
+#: update endpoint refuses an org that inherits (`404`, "Login Policy not
+#: found"), and the create endpoint refuses one that already owns a policy
+#: (`409`, "Login Policy already exists").
+LOGIN_POLICY_NOT_OWNED = "Org-M0sif"
+LOGIN_POLICY_ALREADY_OWNED = "Org-Dgfb2"
+
+#: The two factor lists the CREATE body carries and the update body does not
+#: (`v1AddCustomLoginPolicyRequest` is the update's properties plus these and
+#: `idps`). A realm that is handed a policy of its
+#: own is handed the factors it was inheriting, so the create changes the two
+#: fields asked for and nothing a person signs in with.
+LOGIN_POLICY_FACTOR_LISTS = ("secondFactors", "multiFactors")
+
+
+def ensure_login_policy(
+    *,
+    allow_register: bool | None = None,
+    allow_username_password: bool | None = None,
+    allow_external_idp: bool | None = None,
+    prefix: str = ADMIN,
+    org_id: str = "",
+) -> Resource:
+    """Make one login policy say what we ask of it, and nothing else. **Full body.**
 
     `prefix` chooses the surface: `ADMIN` (the default) writes the INSTANCE's
     policy, which governs every org that has not set one of its own;
     `MANAGEMENT` writes the credential's own org's, for an org that has. The
     two take the same seventeen-field body on this build, measured, which is why
     this is one function with a parameter rather than two that can drift.
+    `org_id` writes a tenant's REALM, on the management surface with that org's
+    header.
 
-    **Idempotent by comparison, not by the API's forgiveness.** Every field is
-    read off the live policy and sent back; only `allowRegister` is ours. When
-    the merged body equals the live one, nothing is written and `created` is
-    `False` — which is what an at-least-once caller needs, and which is also the
-    only way the five lifetimes and `secondFactors` survive a write
-    byte-identical.
+    **Each opinion is `None` for "keep what is live"**: `allowRegister`
+    (the deployment's posture), and `allowUsernamePassword` and
+    `allowExternalIdp` (a realm's — `enforced` is password off and the external
+    IdP on). The other fields are read off the live policy and sent back
+    unchanged, so a realm's lifetimes survive a flip byte-identical.
+
+    **Idempotent by comparison, not by the API's forgiveness.** When the merged
+    body equals the live one, nothing is written and `created` is `False` —
+    which is what an at-least-once caller needs, and which is also the only way
+    the five lifetimes and `secondFactors` survive a write byte-identical.
 
     **The `PUT` refuses a no-op, MEASURED** — the same shape the label policy's
     does, and the same consequence: an unchanged body answers
-    `400 INSTANCE-5M9vdd`, "Default Login Policy has not been changed". So the
-    comparison above is not a saving, it IS the idempotence: a writer that `PUT`
-    unconditionally would succeed on its first call and fail on its second,
-    which is the call `scripts/setup.sh` makes on every run and the call
-    Temporal's at-least-once delivery guarantees will happen.
+    `400 INSTANCE-5M9vdd`, "Default Login Policy has not been changed" (and
+    `400 Org-5M9vdd` on an org). So the comparison above is not a saving, it IS
+    the idempotence: a writer that `PUT` unconditionally would succeed on its
+    first call and fail on its second, which is the call `scripts/setup.sh`
+    makes on every run and the call Temporal's at-least-once delivery
+    guarantees will happen.
+
+    **A realm that still inherits is given a policy of its own** — the create
+    endpoint, with the inherited values and both factor lists carried over —
+    because a tenant's realm is the one org whose policy is ours to own from
+    its birth (option B's whole point). The staff org's branch is different on
+    purpose: without `org_id` an inheriting org is written through the update
+    endpoint, which refuses (`LOGIN_POLICY_NOT_OWNED`), and `zitadel_seed`
+    never forks the instance's policy into a second owner.
     """
-    live = login_policy() if prefix == MANAGEMENT else instance_login_policy()
+    if org_id:
+        prefix = MANAGEMENT
+    live = login_policy(org_id=org_id) if prefix == MANAGEMENT else instance_login_policy()
     baseline: dict[str, Any] = {
         key: live.get(key, absent) for key, absent in LOGIN_POLICY_ABSENT.items()
     }
-    desired: dict[str, Any] = {**baseline, "allowRegister": bool(allow_register)}
+    opinions = {
+        "allowRegister": ("allow_register", allow_register),
+        "allowUsernamePassword": ("allow_username_password", allow_username_password),
+        "allowExternalIdp": ("allow_external_idp", allow_external_idp),
+    }
+    asked = {key: bool(value) for key, (_, value) in opinions.items() if value is not None}
+    said = {name: bool(value) for name, value in opinions.values() if value is not None}
+    desired: dict[str, Any] = {**baseline, **asked}
     owner = str((live.get("details") or {}).get("resourceOwner", ""))
+    if org_id and live.get("isDefault"):
+        owned = {**desired}
+        for key in LOGIN_POLICY_FACTOR_LISTS:
+            owned[key] = list(live.get(key) or [])
+        try:
+            _call("POST", "/policies/login", owned, org_id=org_id)
+        except ZitadelError as error:
+            if LOGIN_POLICY_ALREADY_OWNED not in str(error):
+                raise
+            # Another run gave the realm its policy between our read and our
+            # write; the compare-and-update below is now the right branch.
+            return ensure_login_policy(
+                allow_register=allow_register,
+                allow_username_password=allow_username_password,
+                allow_external_idp=allow_external_idp,
+                org_id=org_id,
+            )
+        log.info("accounts.zitadel.login_policy_owned", zitadel_organization_id=org_id, **said)
+        return Resource(id=org_id, created=True)
     if desired == baseline:
-        log.info("accounts.zitadel.login_policy_unchanged", allow_register=bool(allow_register))
+        log.info("accounts.zitadel.login_policy_unchanged", **said)
         return Resource(id=owner, created=False)
-    _call("PUT", "/policies/login", desired, prefix=prefix)
-    log.info("accounts.zitadel.login_policy_updated", allow_register=bool(allow_register))
+    _call("PUT", "/policies/login", desired, prefix=prefix, org_id=org_id)
+    log.info("accounts.zitadel.login_policy_updated", **said)
     return Resource(id=owner, created=True)
 
 
@@ -1818,7 +2045,7 @@ def ensure_instance_member_role(*, user_id: str, role: str) -> Resource:
     return Resource(id=user_id, created=False, updated=True, detail={"roles": union})
 
 
-def _settled_target(*, name: str, existing_id: str) -> str:
+def _settled_target(*, name: str, existing_id: str, org_id: str = "") -> str:
     """Which existing IdP an `ensure_*` should update, or `""` to create one.
 
     The two nets, in order and in one place so the generic-OIDC and the Google
@@ -1828,11 +2055,11 @@ def _settled_target(*, name: str, existing_id: str) -> str:
     the very first run and the run after a row lost its id.
     """
     target = existing_id.strip()
-    if target and get_identity_provider(idp_id=target) is None:
+    if target and get_identity_provider(idp_id=target, org_id=org_id) is None:
         target = ""
     if target:
         return target
-    found = find_identity_provider(name=name)
+    found = find_identity_provider(name=name, org_id=org_id)
     return str(found["id"]) if found is not None else ""
 
 
@@ -1849,26 +2076,66 @@ def deactivate_identity_provider(*, idp_id: str) -> Resource:
     the caller asked for, so it is reported as `created=False` rather than
     raised. A provider that is simply gone is the same answer for the same
     reason — there is nothing left that can sign anybody in.
+
+    **A refusal over an ACTIVE provider is never read as done.** MEASURED on the
+    pinned build (2026-09-30): the provider templates this module makes answer
+    this legacy endpoint `400 Errors.Org.IDPConfig.NotActive (Org-BBmd0)` while
+    they are ACTIVE — the endpoint only knows the legacy IdP configs — and the
+    templates have no deactivation of their own (`/idps/templates/{id}/_deactivate`
+    and the v2 path both answer 404). So `NotActive` is not an already-state
+    word: the provider is read back, and one still active raises, naming what
+    was measured. A tenant's provider is released by taking it off its realm's
+    login policy instead (the realm port's `detach_provider`).
     """
     if not idp_id.strip():
         return Resource(id="", created=False)
-    if get_identity_provider(idp_id=idp_id) is None:
+    live = get_identity_provider(idp_id=idp_id)
+    if live is None:
         return Resource(id=idp_id, created=False)
     try:
         _call("POST", f"/idps/{idp_id}/_deactivate", {})
     except ZitadelError as error:
-        if not _is_already_in_that_state(error):
-            raise
-        return Resource(id=idp_id, created=False)
+        if _is_already_in_that_state(error):
+            return Resource(id=idp_id, created=False)
+        still = get_identity_provider(idp_id=idp_id) or live
+        if IDP_NOT_ACTIVE in str(error) and str(still.get("state", "")) != IDP_STATE_ACTIVE:
+            return Resource(id=idp_id, created=False)
+        raise ZitadelError(
+            f"Zitadel refused to deactivate identity provider {idp_id}, which is still "
+            f"{still.get('state', 'in an unknown state')}: {error}. This build has no "
+            "deactivation for a provider template; take it off the login policy instead."
+        ) from error
     log.info("accounts.zitadel.idp_deactivated", idp_id=idp_id)
     return Resource(id=idp_id, created=True)
+
+
+#: The legacy endpoint's answer over a provider TEMPLATE (measured, above) —
+#: which is only an already-state when the provider really is inactive.
+IDP_NOT_ACTIVE = "Errors.Org.IDPConfig.NotActive"
+#: A provider template that still signs people in.
+IDP_STATE_ACTIVE = "IDP_STATE_ACTIVE"
 
 
 # Zitadel's word for "you asked for the state it is already in". A management
 # API that answered 200 to a second deactivation would need none of this; it
 # answers 400 with this in the body, and an activity that treated that as a
 # failure would retry six times and then fail a run that had already succeeded.
-_ALREADY_STATES = ("AlreadyDeactivated", "AlreadyInactive", "NotActive", "AlreadyExists")
+#
+# `COMMAND-5M0sf` is the pinned build's own answer to a second deactivation of
+# a person, MEASURED by the identity realm's live drive: `400 "User already
+# inactive (COMMAND-5M0sf)"` — prose with spaces, which the CamelCase words
+# beside it never matched, so a retried deactivation raised instead of
+# reporting the no-op. Matched on the stable id, as `ALREADY_INITIALIZED` is.
+#
+# `NotActive` is deliberately NOT here: the pinned build answers it over an
+# ACTIVE provider template (see `deactivate_identity_provider`), so reading it
+# as done reported a release over a live provider.
+_ALREADY_STATES = (
+    "AlreadyDeactivated",
+    "AlreadyInactive",
+    "AlreadyExists",
+    "COMMAND-5M0sf",
+)
 
 
 def _is_already_in_that_state(error: ZitadelError) -> bool:
@@ -1876,7 +2143,7 @@ def _is_already_in_that_state(error: ZitadelError) -> bool:
     return any(marker in text for marker in _ALREADY_STATES)
 
 
-def deactivate_user(*, user_id: str) -> Resource:
+def deactivate_user(*, user_id: str, org_id: str = "") -> Resource:
     """Take a person's Zitadel account out of use. **What erasure owes.**
 
     An erasure that anonymised our row and left the identity platform's account
@@ -1888,11 +2155,16 @@ def deactivate_user(*, user_id: str) -> Resource:
     Idempotent, and both no-op cases are real: a user Zitadel has never heard of
     (an account erased before it ever signed in through the platform), and one
     that is already inactive (a retry, which is the normal case).
+
+    `org_id` names the realm the person lives in. MEASURED: a person in another
+    organisation answers `404 COMMAND-3M9ds` ("User could not be found") to
+    this call without that org's header — which this function would report as
+    the harmless no-op above while the account stayed live.
     """
     if not user_id.strip():
         return Resource(id="", created=False)
     try:
-        _call("POST", f"/users/{user_id}/_deactivate", {})
+        _call("POST", f"/users/{user_id}/_deactivate", {}, org_id=org_id)
     except ZitadelError as error:
         if _is_already_in_that_state(error) or "NotFound" in str(error) or " 404" in str(error):
             return Resource(id=user_id, created=False)
@@ -2000,134 +2272,7 @@ def rotate_api_application_secret(*, project_id: str, app_id: str) -> Resource:
     )
 
 
-# --- the checks: two facts about the pinned build, measured on demand --------
-#
-# Design I-A's measurement kit (§3.7). These are NOT dialled by the suite —
-# ADR ident-5(a) is that the test suite never reaches a real instance — and
-# they are not `ensure_*` either: each one goes and LOOKS at the running
-# deployment and reports what it saw, for `manage.py zitadel_measure` to judge.
-# They live here because everything that speaks to Zitadel lives here (house
-# rule 27), and because M1 mutates: a check that needed a mutation and could
-# not make one through this module would be a second door.
-
-
-def deactivate_application(*, project_id: str, app_id: str) -> Resource:
-    """Stop an application being able to start a login, keeping the object.
-
-    **What a throwaway owes.** `check_login_version_redirects` below makes an
-    application to measure against, and an OIDC client left active on a real
-    project is a live sign-in door nobody meant to open. Deactivated rather
-    than deleted for the reason `deactivate_identity_provider` gives: the
-    object is the evidence a measurement was taken, and Zitadel's own audit
-    log reads better with a deactivation in it than with a gap.
-
-    Idempotent the same way its sibling is — "you asked for the state it is
-    already in" is the state the caller asked for.
-    """
-    try:
-        _call("POST", f"/projects/{project_id}/apps/{app_id}/_deactivate", {})
-    except ZitadelError as error:
-        if not _is_already_in_that_state(error):
-            raise
-        return Resource(id=app_id, created=False)
-    log.info("accounts.zitadel.application_deactivated", application_id=app_id)
-    return Resource(id=app_id, created=True)
-
-
-def authorize_redirect(*, client_id: str, redirect_uri: str) -> str:
-    """Where `GET /oauth/v2/authorize` sends a browser for one client. **A read.**
-
-    Not through `_call`: the answer is a 302 with an empty body and the whole
-    of the fact is in the `Location` header, so a helper that parsed JSON and
-    raised on non-2xx would throw away the only thing being measured. The PAT
-    rides along because `_client()` attaches it; this endpoint is a browser
-    endpoint and ignores it, which is measured rather than assumed — the 302
-    below was taken with the header on.
-
-    `""` when the answer is not a redirect at all, because "Zitadel answered
-    something else" is a fact the caller has to be able to report rather than
-    an exception that hides which client it was asking about.
-    """
-    with _client() as client:
-        try:
-            response = client.get(
-                "/oauth/v2/authorize",
-                params={
-                    "client_id": client_id,
-                    "redirect_uri": redirect_uri,
-                    "response_type": "code",
-                    "scope": "openid",
-                },
-            )
-        except httpx.HTTPError as error:
-            raise ZitadelError(f"Zitadel GET /oauth/v2/authorize failed: {error}") from error
-    return str(response.headers.get("location", ""))
-
-
-def check_login_version_redirects(*, project_id: str, base_uri: str) -> dict[str, str]:
-    """**M1**: where the authorize endpoint sends a person, per login version.
-
-    Design I-A's first measurement, and the one the whole front door rests on:
-    with no declaration the person goes to Zitadel's own hosted page, and with
-    `loginVersion.loginV2.baseUri` they go to OURS — which is only true if the
-    pinned build honours the per-application declaration at all. The consumer
-    measured it on v4.17.1; this is how a deployment measures it for itself,
-    and how a version bump stops being able to break the front door silently.
-
-    **It builds its own victim, and never touches the real Web application.**
-    A throwaway OIDC client under the project, measured twice, deactivated in a
-    `finally` so a failed measurement still closes the door it opened. The real
-    browser client is what people sign in through: measuring on it would mean
-    two live changes to the one object whose breakage locks everybody out.
-
-    Returns the two `Location` headers, unjudged — `{"undeclared": …,
-    "declared": …}` — because what counts as right is the measuring command's
-    to say and a function that returned a boolean would have thrown away the
-    string an operator needs to read when it is wrong.
-    """
-    # A NEW name every run, because `ensure_native_application` searches by
-    # name first: a stable one would find the deactivated victim of the
-    # previous run and measure the authorize endpoint against a client that
-    # can no longer start a login.
-    name = f"login-version-check-{uuid4().hex[:12]}"
-    redirect_uri = f"{base_uri.rstrip('/')}/login-version-check"
-    made = ensure_native_application(
-        project_id=project_id, name=name, redirect_uris=[redirect_uri], dev_mode=True
-    )
-    client_id = str(made.detail.get("clientId", ""))
-    try:
-        undeclared = authorize_redirect(client_id=client_id, redirect_uri=redirect_uri)
-        ensure_application_login_version(project_id=project_id, app_id=made.id, base_uri=base_uri)
-        declared = authorize_redirect(client_id=client_id, redirect_uri=redirect_uri)
-    finally:
-        deactivate_application(project_id=project_id, app_id=made.id)
-    return {"undeclared": undeclared, "declared": declared}
-
-
-def check_login_client_role() -> dict[str, Any]:
-    """**M2**: whether this deployment's credential may finalize a v2 login.
-
-    `POST /v2/oidc/auth_requests/{id}` answers `403 AUTH-AWfge` for a machine
-    user that holds `IAM_OWNER` and not `IAM_LOGIN_CLIENT`, which is the block
-    the consumer's V2-1 rung died on. The check is a READ rather than an
-    attempted finalize on purpose: a finalize needs a real auth request and a
-    real session, so measuring it directly would mean signing somebody in, and
-    the role is the whole of what the 403 is about.
-
-    Returns the machine user's id, its login name, every instance role it
-    holds and whether the one that matters is among them — unjudged, for the
-    same reason M1's is.
-    """
-    user = machine_user()
-    user_id = str(user.get("id", ""))
-    roles = instance_member_roles(user_id=user_id) if user_id else []
-    return {
-        "user_id": user_id,
-        "login_name": str(user.get("preferredLoginName", "") or user.get("userName", "")),
-        "roles": roles,
-        "may_finalize": LOGIN_CLIENT_ROLE in roles,
-    }
-
+# --- the full-body convention: every PUT-shaped writer and its field set ---
 
 #: **The full-body convention's declared population**: every PUT-shaped
 #: writer in this module, by the resource path it PUTs to, with that resource's
@@ -2154,6 +2299,23 @@ def check_login_client_role() -> dict[str, Any]:
 #: declaration — which is a measured fact, not a convenience:
 #: `v1UpdateLoginPolicyRequest` and `v1UpdateCustomLoginPolicyRequest` carry the
 #: same seventeen properties on this build.
+#: **The project's FULL field set**, read out of
+#: `ManagementServiceUpdateProjectBody` in the management swagger document the
+#: pinned build serves, and the project check is one of them.
+#: `PUT /management/v1/projects/{id}` is a REPLACE like every other `PUT` here,
+#: so the check is switched on by sending all of them back with the one changed —
+#: a body carrying only `hasProjectCheck` would rename the project to `""`.
+#: The map is what an ABSENT key means: the booleans are absent when false.
+PROJECT_ABSENT: dict[str, Any] = {
+    "name": "",
+    "projectRoleAssertion": False,
+    "projectRoleCheck": False,
+    "hasProjectCheck": False,
+    "privateLabelingSetting": "PRIVATE_LABELING_SETTING_UNSPECIFIED",
+}
+PROJECT_FIELDS = frozenset(PROJECT_ABSENT)
+
+
 PUT_FIELD_SETS: dict[str, frozenset[str]] = {
     "/policies/login": LOGIN_POLICY_FIELDS,
     "/policies/password/lockout": LOCKOUT_POLICY_FIELDS,
@@ -2169,6 +2331,9 @@ PUT_FIELD_SETS: dict[str, frozenset[str]] = {
     # roles, so a body naming only the role being added removes IAM_OWNER from
     # the user every other call in this module authenticates as.
     "/members/{id}": IAM_MEMBER_FIELDS,
+    # The project itself, whose check is the wall a realm's grant opens: a
+    # REPLACE, so a body carrying only `hasProjectCheck` renames it to `""`.
+    "/projects/{id}": PROJECT_FIELDS,
 }
 
 
@@ -2210,6 +2375,172 @@ def put_field_set(path: str) -> frozenset[str] | None:
         if all(want in ("{id}", got) for want, got in zip(shape, parts, strict=True)):
             return fields
     return None
+
+
+# --- a tenant's realm: an organisation of its own ---------------------------
+#
+# Identity option B: every tenant's people live in an organisation of
+# their own, the deployment's project is GRANTED to it, and that org's login
+# policy and IdPs are the tenant's. Everything here is still the one door, and
+# the org is named on every call — in the path (`/admin/v1/orgs/{id}`), in the
+# header (`org_id`, every management call) or in the body (`grantedOrgId`), the
+# places Zitadel takes it. The port over these is
+# `apps.accounts.realm.IdentityRealm`; this module stays a client that takes
+# strings and knows nothing of a tenant.
+
+#: Zitadel's unique-constraint id, MEASURED as the answer to a second create of
+#: an organisation ("Organisation's name or id already taken"), a project
+#: grant ("Project Grant already exists") and a person in one org ("User
+#: already exists") — one `409` id for every resource, so the writers below
+#: read it as "somebody made it first" and search again rather than fail.
+ALREADY_TAKEN = "V3-DKcYh"
+
+#: A realm's login-policy IdP link, answered in its two already-states
+#: (MEASURED): linking one already linked (`409`), and unlinking one that is not
+#: (`404`). Plus the answer to linking on an org that still INHERITS its policy
+#: (`404`, "Login Policy not found") — which is not an already-state at all.
+LOGIN_POLICY_IDP_LINKED = "Org-2B0ps"
+LOGIN_POLICY_IDP_UNLINKED = "Org-39fjs"
+LOGIN_POLICY_IDP_NO_POLICY = "Org-Ffgw2"
+
+
+def _already_taken(error: ZitadelError) -> bool:
+    return " 409" in str(error) and ALREADY_TAKEN in str(error)
+
+
+def ensure_organization(*, name: str) -> Resource:
+    """The organisation called `name`, made if the instance has none. **A realm.**
+
+    Idempotent by search-then-create like every `ensure_*`: the search is the
+    instance's (`find_organization`), because a management search sees only
+    the credential's own org. A create that loses a race to another run answers
+    `409 ALREADY_TAKEN`, and the search that follows finds the winner — the
+    same input twice leaves one organisation.
+
+    `create_organization` below is its deliberate opposite: a throwaway world
+    for the measurement kit, new every call.
+    """
+    existing = find_organization(name=name)
+    if existing is not None:
+        return Resource(id=str(existing["id"]), created=False)
+    try:
+        body = _call("POST", "/orgs", {"name": name})
+    except ZitadelError as error:
+        found = find_organization(name=name) if _already_taken(error) else None
+        if found is None:
+            raise
+        return Resource(id=str(found["id"]), created=False)
+    log.info("accounts.zitadel.organization_ensured", organization_name=name)
+    return Resource(id=str(body.get("id", "")), created=True)
+
+
+def grant_project(*, project_id: str, org_id: str) -> Resource:
+    """Grant the deployment's project to one organisation. Returns the grant.
+
+    What lets a tenant's people sign in to this product at all once the project
+    check is on (`set_project_check`): an org the project is not granted to is
+    refused at the authorize. No role keys ride on the grant — roles are ours
+    (ADR core-25), never Zitadel's.
+
+    Idempotent by search-then-create, and the second net is Zitadel's own
+    refusal: a second grant to one org answers `409 ALREADY_TAKEN`, "Project
+    Grant already exists" (MEASURED), which is the state asked for, so the
+    grant the search then finds is returned with `created=False`.
+    """
+    existing = project_grant(project_id=project_id, org_id=org_id)
+    if existing is not None:
+        return Resource(id=str(existing.get("grantId", "")), created=False)
+    try:
+        body = _call("POST", f"/projects/{project_id}/grants", {"grantedOrgId": org_id})
+    except ZitadelError as error:
+        found = (
+            project_grant(project_id=project_id, org_id=org_id) if _already_taken(error) else None
+        )
+        if found is None:
+            raise
+        return Resource(id=str(found.get("grantId", "")), created=False)
+    log.info("accounts.zitadel.project_granted", zitadel_organization_id=org_id)
+    return Resource(id=str(body.get("grantId", "")), created=True)
+
+
+def set_project_check(*, project_id: str, on: bool = True) -> Resource:
+    """Switch the project check on (or off): only granted orgs may sign in. **Full body.**
+
+    The project check is what turns a grant into a wall: with it off, a person
+    in ANY organisation on the instance can complete an authorize against this
+    project's clients; with it on, only the owning org and the orgs it was
+    granted to can. Every field is sent back (`PROJECT_ABSENT` says why), and
+    nothing is sent when the live project already says what is asked — MEASURED,
+    the `PUT` does not refuse a no-op here as the login policy's does, so the
+    comparison is readable idempotence rather than a necessity.
+    """
+    live = get_project(project_id=project_id)
+    baseline = {key: live.get(key, absent) for key, absent in PROJECT_ABSENT.items()}
+    desired = {**baseline, "hasProjectCheck": bool(on)}
+    if desired == baseline:
+        log.info("accounts.zitadel.project_check_unchanged", on=bool(on))
+        return Resource(id=project_id, created=False)
+    _call("PUT", f"/projects/{project_id}", desired)
+    log.info("accounts.zitadel.project_check_set", on=bool(on))
+    return Resource(id=project_id, created=False, updated=True)
+
+
+def login_policy_providers(*, org_id: str) -> list[dict[str, Any]]:
+    """The IdPs one realm's login policy offers (`idpId`, `idpName`, `idpType`)."""
+    return _search("/policies/login/idps/_search", {}, org_id=org_id)
+
+
+def link_idp_to_login_policy(*, org_id: str, idp_id: str) -> Resource:
+    """Offer one of a realm's IdPs on that realm's login policy.
+
+    An IdP that exists in an org and is not on its login policy is one nobody
+    is shown. Idempotent: an IdP already linked is found by the search, and a
+    link that lost a race answers `409 LOGIN_POLICY_IDP_LINKED`, the state
+    asked for.
+
+    **A realm that still inherits refuses** (`404 LOGIN_POLICY_IDP_NO_POLICY`,
+    MEASURED) and this raises rather than quietly giving it a policy: which
+    fields a realm's own policy carries is `ensure_login_policy`'s decision,
+    made first, and a link that forked one as a side effect would decide it
+    with nobody asking.
+    """
+    if any(str(row.get("idpId", "")) == idp_id for row in login_policy_providers(org_id=org_id)):
+        return Resource(id=idp_id, created=False)
+    try:
+        _call(
+            "POST",
+            "/policies/login/idps",
+            {"idpId": idp_id, "ownerType": "IDP_OWNER_TYPE_ORG"},
+            org_id=org_id,
+        )
+    except ZitadelError as error:
+        if LOGIN_POLICY_IDP_LINKED in str(error):
+            return Resource(id=idp_id, created=False)
+        if LOGIN_POLICY_IDP_NO_POLICY in str(error):
+            raise ZitadelError(
+                f"The realm {org_id} still inherits the instance's login policy, so it "
+                "has no policy of its own to offer an IdP on. Write the realm's login "
+                "policy first (ensure_login_policy with its org_id); the link then lands."
+            ) from error
+        raise
+    log.info("accounts.zitadel.idp_linked", zitadel_organization_id=org_id, idp_id=idp_id)
+    return Resource(id=idp_id, created=True)
+
+
+def unlink_idp_from_login_policy(*, org_id: str, idp_id: str) -> Resource:
+    """Stop a realm's login policy offering one IdP. The IdP object is kept.
+
+    Idempotent: an IdP that is not linked answers `404
+    LOGIN_POLICY_IDP_UNLINKED` (MEASURED), which is the state asked for.
+    """
+    try:
+        _call("DELETE", f"/policies/login/idps/{idp_id}", org_id=org_id)
+    except ZitadelError as error:
+        if LOGIN_POLICY_IDP_UNLINKED in str(error):
+            return Resource(id=idp_id, created=False)
+        raise
+    log.info("accounts.zitadel.idp_unlinked", zitadel_organization_id=org_id, idp_id=idp_id)
+    return Resource(id=idp_id, created=False, updated=True)
 
 
 # --- the measurement door ----------------------------------------------------
@@ -2333,30 +2664,6 @@ def probe(
         body=body,
         text=response.text,
     )
-
-
-#: Where this build publishes the API documents `PUT_FIELD_SETS` was read out
-#: of. Not a doc page on the internet: the running container serves these, so
-#: the field sets can be compared against the build that is actually installed
-#: rather than against whatever the current release notes say.
-SWAGGER_PATH = "/openapi/v2/swagger/v2/zitadel/zitadel"
-
-
-def swagger_document(*, name: str) -> dict[str, Any]:
-    """One of this build's own API documents, parsed. Raises if it is not there.
-
-    `name` is `management` or `admin`. A document that will not parse is a
-    `ZitadelError` rather than an empty dict, because an instrument comparing
-    against `{}` would report every declared field set as a difference — a
-    could-not-look wearing a DIFFERS.
-    """
-    answer = probe("GET", f"/{name}.swagger.json", prefix=SWAGGER_PATH)
-    if not answer.ok or not answer.body:
-        raise ZitadelError(
-            f"Zitadel served no readable {name} swagger document at "
-            f"{SWAGGER_PATH}/{name}.swagger.json (status {answer.status})"
-        )
-    return answer.body
 
 
 def create_organization(*, name: str) -> Resource:
@@ -2555,7 +2862,7 @@ def check_session(
 
 
 def close_session(*, session_id: str, token: str) -> Probe:
-    """`DELETE /v2/sessions/{id}` — ADR ident-10's half: what we open, we close.
+    """`DELETE /v2/sessions/{id}` — ADR ident-12's half: what we open, we close.
 
     Called at EVERY exit of the ceremony, the refusals and the failures
     included, which is why it is the one function here the seam calls from a
@@ -2813,7 +3120,7 @@ def finalize_auth_request(*, request_id: str, session_id: str, session_token: st
 
     **The session must still be OPEN.** The answer is the client's callback
     URL with a code on it, and Zitadel mints that code against the session
-    named here — so a ceremony that closed its session first (ADR ident-10's
+    named here — so a ceremony that closed its session first (ADR ident-12's
     rule, which every other exit of `signin.py` obeys) has nothing to finalize
     with. That ordering is `signin._finish`'s, and it is the one place in this
     tree allowed to call this.
@@ -2847,304 +3154,6 @@ def refuse_auth_request(*, request_id: str, reason: str, description: str) -> Pr
         f"{AUTH_REQUESTS}/{request_id}",
         {"error": {"error": reason, "errorDescription": description}},
     )
-
-
-# --- M3 and M4: the Mode A round trip, measured (rung A8) --------------------
-
-
-def check_mode_a(
-    *,
-    project_id: str,
-    base_uri: str,
-    login_name: str,
-    password: str,
-    org_id: str,
-) -> dict[str, Any]:
-    """**M3, M4 and M7**: the whole v2 round trip, on a throwaway client. **Unjudged.**
-
-    One function for three items because they are one journey and one victim:
-    an OIDC client has to exist and declare login v2 before either can be
-    measured, and making two would be two objects on somebody's instance for
-    one run.
-
-    **It builds its own victim and never touches the real Web application**,
-    for `check_login_version_redirects`'s reason and with its `finally`: the
-    browser client is what every person signs in through, and a declaration
-    change on it is the one breakage that locks a deployment out of its own
-    front door. The throwaway is DEACTIVATED rather than deleted, so the
-    instance's audit log carries the act rather than a gap.
-
-    **No token, code or session token is in the return value.** M3 is about
-    which CLAIMS a token carries, so what comes back is claim names and the
-    two values the item is about; a function that handed a caller a live
-    access token would be a credential in whatever that caller printed.
-
-    Returns facts, never verdicts — `zitadel_measure` judges — with `trouble`
-    naming the leg that could not be reached when one could not.
-    """
-    name = f"mode-a-check-{uuid4().hex[:12]}"
-    redirect_uri = f"{base_uri.rstrip('/')}/mode-a-check/callback"
-    seen: dict[str, Any] = {"redirect_uri": redirect_uri, "trouble": ""}
-    made = ensure_native_application(
-        project_id=project_id, name=name, redirect_uris=[redirect_uri], dev_mode=True
-    )
-    client_id = str(made.detail.get("clientId", ""))
-    try:
-        ensure_application_login_version(project_id=project_id, app_id=made.id, base_uri=base_uri)
-
-        # --- M3: authorize -> session -> finalize -> token ------------------
-        verifier = uuid4().hex + uuid4().hex
-        request_id = _authorize_for_measurement(client_id, redirect_uri, verifier)
-        seen["request_id"] = request_id
-        if not request_id:
-            seen["trouble"] = (
-                "the authorize endpoint did not answer a v2 auth request for a client "
-                "that declares loginVersion — M1 is the item that says why"
-            )
-            return seen
-
-        opened = _session_probe(
-            "POST",
-            SESSIONS,
-            {"checks": {"user": {"loginName": login_name}, "password": {"password": password}}},
-            org_id=org_id,
-        )
-        if not opened.ok:
-            seen["trouble"] = (
-                f"POST /v2/sessions for the throwaway human answered {opened.status} "
-                f"{opened.error_id or opened.text[:120]!r}"
-            )
-            return seen
-
-        finished = finalize_auth_request(
-            request_id=request_id,
-            session_id=str(opened.body.get("sessionId", "")),
-            session_token=str(opened.body.get("sessionToken", "")),
-        )
-        seen["finalize_status"] = finished.status
-        seen["finalize_error_id"] = finished.error_id
-        callback = str(finished.body.get("callbackUrl", ""))
-        seen["callback_origin"] = callback.split("?", 1)[0]
-        if not finished.ok or "code=" not in callback:
-            seen["trouble"] = (
-                f"the finalize answered {finished.status} "
-                f"{finished.error_id or finished.text[:120]!r} — M2 is the item that "
-                "says whether this credential may make one at all"
-            )
-            return seen
-
-        seen |= _claims_of_the_code(
-            callback=callback,
-            client_id=client_id,
-            redirect_uri=redirect_uri,
-            verifier=verifier,
-        )
-
-        # --- M4: the refusal enum, both spellings ---------------------------
-        for key, reason in (
-            ("enum", REFUSE_ACCESS_DENIED),
-            ("rfc", "access_denied"),
-        ):
-            fresh = _authorize_for_measurement(client_id, redirect_uri, uuid4().hex)
-            if not fresh:
-                seen[f"{key}_error"] = ""
-                continue
-            refused = refuse_auth_request(
-                request_id=fresh, reason=reason, description="a measurement"
-            )
-            back = str(refused.body.get("callbackUrl", ""))
-            seen[f"{key}_status"] = refused.status
-            seen[f"{key}_error"] = _query_value(back, "error")
-
-        seen |= _sso_after_finalize(
-            client_id=client_id,
-            redirect_uri=redirect_uri,
-            login_name=login_name,
-            password=password,
-            org_id=org_id,
-        )
-        return seen
-    finally:
-        deactivate_application(project_id=project_id, app_id=made.id)
-
-
-def _sso_after_finalize(
-    *, client_id: str, redirect_uri: str, login_name: str, password: str, org_id: str
-) -> dict[str, Any]:
-    """**M7**: after a v2 round trip, does the BROWSER hold anything at the platform?
-
-    The question J5's sign-out sentence rests on. Under `ours` the browser's
-    only contact with the platform is the authorize redirect — the finalize is
-    our server's call, on our connection — so if a person's next authorize
-    still knows them, something was left in their cookie jar.
-
-    Driven with ONE jar across three hops, which is why it is here rather
-    than a `probe` in the measuring command: `_client()` mints a fresh client
-    per call and keeps no cookies, and a measurement of a cookie needs the
-    thing that holds cookies. A browser-shaped client, no PAT, because that
-    is what a person has.
-
-    `prompt=none` on the second authorize: the OAuth spelling of "answer
-    without showing anybody anything". A code coming back means an SSO
-    session exists; anything else means the person would type their password
-    again, which is what the sign-out page promises.
-    """
-    verifier = uuid4().hex + uuid4().hex
-    challenge = urlsafe_b64encode(sha256(verifier.encode()).digest()).decode().rstrip("=")
-    params = {
-        "client_id": client_id,
-        "redirect_uri": redirect_uri,
-        "response_type": "code",
-        "scope": "openid email",
-        "code_challenge": challenge,
-        "code_challenge_method": "S256",
-    }
-    found: dict[str, Any] = {}
-    # **`_client()` held open across both hops, which is the jar.** One
-    # `httpx.Client` keeps cookies for its own lifetime, so the two authorize
-    # calls below share one — which is the whole measurement. The PAT rides
-    # along and is ignored: `authorize_redirect` records that as measured,
-    # and it is a browser endpoint. A bare client built here instead would
-    # also be the one call in this module that no test could intercept.
-    with _client() as browser:
-        try:
-            first = browser.get("/oauth/v2/authorize", params=params)
-        except httpx.HTTPError as error:
-            raise ZitadelError(f"Zitadel GET /oauth/v2/authorize failed: {error}") from error
-        found["sso_cookies"] = sorted(browser.cookies.keys())
-        request_id = _query_value(str(first.headers.get("location", "")), "authRequest")
-        if not request_id:
-            found["sso_trouble"] = "the authorize answered no v2 auth request to finish"
-            return found
-
-        opened = _session_probe(
-            "POST",
-            SESSIONS,
-            {"checks": {"user": {"loginName": login_name}, "password": {"password": password}}},
-            org_id=org_id,
-        )
-        finished = finalize_auth_request(
-            request_id=request_id,
-            session_id=str(opened.body.get("sessionId", "")),
-            session_token=str(opened.body.get("sessionToken", "")),
-        )
-        if not finished.ok:
-            found["sso_trouble"] = (
-                f"the finalize answered {finished.status} {finished.error_id or ''}"
-            )
-            return found
-
-        try:
-            again = browser.get("/oauth/v2/authorize", params={**params, "prompt": "none"})
-        except httpx.HTTPError as error:
-            raise ZitadelError(f"Zitadel GET /oauth/v2/authorize failed: {error}") from error
-    back = str(again.headers.get("location", ""))
-    found["sso_cookies_after"] = sorted(browser.cookies.keys())
-    found["sso_code"] = bool(_query_value(back, "code"))
-    found["sso_error"] = _query_value(back, "error")
-    found["sso_sent_to_sign_in"] = bool(_query_value(back, "authRequest"))
-    return found
-
-
-def _authorize_for_measurement(client_id: str, redirect_uri: str, verifier: str) -> str:
-    """Start one authorize with PKCE and report the auth request id it answered.
-
-    A separate helper from `authorize_redirect` above rather than a parameter
-    on it: that one exists to report a `Location` for M1 to judge, and this
-    one needs a code challenge because the code it is heading towards has to
-    be spendable by a public client.
-    """
-    challenge = urlsafe_b64encode(sha256(verifier.encode()).digest()).decode().rstrip("=")
-    with _client() as client:
-        try:
-            answer = client.get(
-                "/oauth/v2/authorize",
-                params={
-                    "client_id": client_id,
-                    "redirect_uri": redirect_uri,
-                    "response_type": "code",
-                    "scope": "openid email profile",
-                    "code_challenge": challenge,
-                    "code_challenge_method": "S256",
-                },
-            )
-        except httpx.HTTPError as error:
-            raise ZitadelError(f"Zitadel GET /oauth/v2/authorize failed: {error}") from error
-    return _query_value(str(answer.headers.get("location", "")), "authRequest")
-
-
-def _claims_of_the_code(
-    *, callback: str, client_id: str, redirect_uri: str, verifier: str
-) -> dict[str, Any]:
-    """Spend the code and report WHICH CLAIMS came back. **Never the token.**
-
-    M3's whole question is whether a token carries `client_id` and not `azp` —
-    the claim the MCP resource server reads to know which client is calling.
-    So what leaves here is claim NAMES plus those two values, and the tokens
-    themselves are dropped on the floor of this function.
-    """
-    code = _query_value(callback, "code")
-    with _client() as client:
-        try:
-            exchanged = client.post(
-                "/oauth/v2/token",
-                data={
-                    "grant_type": "authorization_code",
-                    "code": code,
-                    "redirect_uri": redirect_uri,
-                    "client_id": client_id,
-                    "code_verifier": verifier,
-                },
-                # **The one call in this module that is not JSON**, and the
-                # header has to be said or `_client`'s default wins: httpx
-                # form-encodes a `data=` body and then leaves the client's
-                # `Content-Type: application/json` on it, and the build
-                # answers `400 invalid_request "grant_type missing"` — a
-                # parse failure that reads exactly like a missing parameter.
-                # Measured, on the way to getting this line right.
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-            )
-        except httpx.HTTPError as error:
-            raise ZitadelError(f"Zitadel POST /oauth/v2/token failed: {error}") from error
-    found: dict[str, Any] = {"token_status": exchanged.status_code}
-    if exchanged.status_code != 200:
-        found["trouble"] = (
-            f"the token exchange answered {exchanged.status_code} {exchanged.text[:160]!r}"
-        )
-        return found
-    body = dict(exchanged.json())
-    for kind in ("access_token", "id_token"):
-        claims = _unverified_claims(str(body.get(kind, "")))
-        found[f"{kind}_claims"] = sorted(claims)
-        found[f"{kind}_client_id"] = claims.get("client_id")
-        found[f"{kind}_azp"] = claims.get("azp")
-    return found
-
-
-def _unverified_claims(token: str) -> dict[str, Any]:
-    """A JWT's payload, WITHOUT verifying it, for a measurement and nothing else.
-
-    Unverified is correct here and nowhere else in this tree: the question is
-    which claim names this build puts in a token, and verification is
-    `apps/accounts/oauth.py`'s job on the door where it matters. A second
-    verifier here would be a second opinion about token validity — the exact
-    shape principle 9 refuses — and it would also answer the wrong question,
-    because a token that failed verification still answers M3.
-    """
-    parts = token.split(".")
-    if len(parts) != 3:
-        return {}
-    payload = parts[1] + "=" * (-len(parts[1]) % 4)
-    try:
-        parsed = json.loads(urlsafe_b64decode(payload))
-    except (ValueError, TypeError):
-        return {}
-    return dict(parsed) if isinstance(parsed, dict) else {}
-
-
-def _query_value(url: str, name: str) -> str:
-    """One query parameter off a URL, or `""`."""
-    return (parse_qs(urlsplit(url).query).get(name) or [""])[0]
 
 
 # --- the reset road's one write (design J5; rung A11b) ----------------------

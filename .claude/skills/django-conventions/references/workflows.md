@@ -9,7 +9,7 @@ activity's own exception in an `ActivityError` whose `str()` is
 `"Activity task failed"` — true, and useless to whoever reads the
 `WorkflowRun` row six weeks later. Walk `__cause__` a bounded number of links
 (three: wrapper → activity error → the activity's own complaint) and join
-them; `apps/workflows/workflows.py::_reason` is the worked form.
+them; `apps/core/determinism.py::reason_of` is the worked form.
 
 ```python
 # WRONG — the row says "Activity task failed" and the reason is gone
@@ -175,12 +175,12 @@ workflow, where `timedelta` is an allowed import.
 - **A workflow that needs one instant spells it `workflow.now()`** — the
   `workflow` in `from temporalio import workflow`, which is the blessed
   spelling and not a workaround. Rule 9's allow-list already carries
-  `temporalio` (`quality/rules.yaml:626`, `quality/checks.py:915`), and the
+  `temporalio` (rule 9's statement — `python -m quality.gate --explain 9`), and the
   determinism check treats a call whose chain ROOT is the literal name
-  `workflow` as sanctioned (`quality/checks.py:948-956`), so `workflow.now()`,
+  `workflow` as sanctioned (`quality/checks/rule_9.py::_wf_sanctioned`), so `workflow.now()`,
   `workflow.uuid4()`, `workflow.random().randint(...)` and `workflow.time()`
   all pass while the bare `now`/`uuid4`/`random`/`time`/`hash` they replace are
-  banned outright (`quality/checks.py:917-935`). Two traps, both the rule's own
+  banned outright (`quality/checks/rule_9.py::_WF_BANNED_CALLS`). Two traps, both the rule's own
   declared blind spots: **the receiver has to be spelled `workflow`** — `from
   temporalio import workflow as wf` then `wf.now()` is read as a clock and
   reported, correct code and all; and what you USE the instant for is review's

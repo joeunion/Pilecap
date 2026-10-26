@@ -127,7 +127,7 @@ def _rebase_in_progress() -> bool:
     """
     try:
         subprocess.run(
-            ["git", "rev-parse", "--verify", "REBASE_HEAD"],
+            ["git", "rev-parse", "--verify", "REBASE_HEAD"],  # noqa: S607 — `git` from PATH in the developer's checkout
             capture_output=True,
             check=True,
             text=True,
@@ -233,7 +233,7 @@ def _parse_migration(path: Path, name: str) -> _MigrationFile:
             "migration this command can graft holds exactly one."
         )
     node = assignments[0].value
-    assert isinstance(node, (ast.List, ast.Tuple))
+    assert isinstance(node, (ast.List, ast.Tuple))  # noqa: S101 — narrows the ast type for mypy; a False is a bug, not input
 
     dependencies: list[_Dependency] = []
     for element in node.elts:
@@ -248,9 +248,9 @@ def _parse_migration(path: Path, name: str) -> _MigrationFile:
         if not literal:
             dependencies.append(_Dependency(node=element, app_label=None, name=None))
             continue
-        assert isinstance(element, (ast.Tuple, ast.List))
+        assert isinstance(element, (ast.Tuple, ast.List))  # noqa: S101 — narrows the ast type for mypy; a False is a bug, not input
         first, second = element.elts
-        assert isinstance(first, ast.Constant) and isinstance(second, ast.Constant)
+        assert isinstance(first, ast.Constant) and isinstance(second, ast.Constant)  # noqa: S101 — narrows the ast type for mypy; a False is a bug, not input
         dependencies.append(
             _Dependency(node=element, app_label=str(first.value), name=str(second.value))
         )
@@ -509,7 +509,7 @@ class Command(RebaseMigrationCommand):
                 "this command grafts is linear. Fold this app by hand."
             )
         named = in_app[0].name
-        assert named is not None
+        assert named is not None  # noqa: S101 — narrows Optional for mypy; a None is a bug, not input
         return self._resolve(app_label, files, by_stem, named)
 
     def _walk_back(
@@ -612,7 +612,7 @@ class Command(RebaseMigrationCommand):
         node = migration.dependencies_node
         lines = migration.content.splitlines(keepends=True)
         start = sum(len(line) for line in lines[: node.lineno - 1]) + node.col_offset
-        assert node.end_lineno is not None and node.end_col_offset is not None
+        assert node.end_lineno is not None and node.end_col_offset is not None  # noqa: S101 — narrows Optional for mypy; a None is a bug, not input
         end = sum(len(line) for line in lines[: node.end_lineno - 1]) + node.end_col_offset
 
         rebuilt: ast.Tuple | ast.List = (

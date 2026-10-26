@@ -1,0 +1,38 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "imports", "text": ""}
+from decimal import Decimal
+
+from apps.example.schemas import WidgetStatsOut
+from pilecap import MeasuredBasisOut, MeasuredOut
+
+# golden-anchor: {"nth": 0, "scope": [], "side": "after", "text": "return Status(201, created)"}
+@road(
+    "widget_stats",
+    example="apps/example/tests/test_doors_over_the_wire.py::test_the_two_doors_agree_on_a_measured_number_and_its_basis",
+)
+def widget_stats(*, tenant: Tenant, actor: Actor) -> WidgetStatsOut:
+    """The measured widget count for one hat, `live + archived` with both terms (ADR core-7)."""
+    # authz: `list_widgets` asks `widget.read` at the hat; asking here too would be a second copy.
+    visible = list_widgets(tenant=tenant, org=actor.org, actor=actor, show="all")
+    live = visible.filter(archived_at__isnull=True).count()
+    archived = visible.filter(archived_at__isnull=False).count()
+    return WidgetStatsOut(
+        count=MeasuredOut(
+            value=Decimal(live + archived),
+            basis=MeasuredBasisOut(
+                formula="live + archived",
+                inputs={"live": Decimal(live), "archived": Decimal(archived)},
+            ),
+        )
+    )
+
+
+@router.get("/stats/", response=WidgetStatsOut, url_name="widget_stats-detail")
+def widget_stats_route(request: TenantRequest) -> WidgetStatsOut:
+    """Retrieve widget statistics
+
+    How many widgets you see; without the read, `403 forbidden`: ask an administrator.
+    """
+    actor, tenant = acting(request)
+    return widget_stats(tenant=tenant, actor=actor)
+
+

@@ -19,7 +19,7 @@ own session is a test whose session decided what it could see before the plant
 existed. The child is the only shape that measures the thing that ships.
 
 **And every child runs over a PRIVATE tree, never this one.** A drawer is not
-like `apps/zzz_probe/` or `apps/example/meters.py`, the two planters that came
+like `apps/zzz_probe/` or the `meters.py` planted in `apps/example/`, the two planters that came
 before: it is loaded as a pytest PLUGIN for a whole session, so for as long as
 it exists on disk it belongs to every process that starts pytest in the
 checkout. `_private_tree` carries the measurement of what that cost, and it is
@@ -91,7 +91,7 @@ def _private_tree(drawer: str | None) -> Iterator[tuple[Path, Path]]:
 
     **NOTHING IS EVER PLANTED IN THE REAL `apps/`, and that is the correction
     the gate made twice.** The first shape planted `apps/conftest_local.py` in
-    the working tree the way `apps/zzz_probe/` and `apps/example/meters.py`
+    the working tree the way `apps/zzz_probe/` and the planted `apps/example/` `meters.py`
     already do, and a drawer is not like those two: it is loaded as a pytest
     PLUGIN for a whole session, so while it exists it belongs to every process
     that starts pytest in this checkout. Both failures were measured, neither
@@ -141,7 +141,7 @@ def _child(root: Path, probe: Path) -> subprocess.CompletedProcess[str]:
     `-p no:cacheprovider` because a child writing a `.pytest_cache` is a child
     changing what somebody's `--lf` would say.
     """
-    return subprocess.run(
+    return subprocess.run(  # noqa: S603 — argv list built here from constants and paths; no shell
         [
             sys.executable,
             "-m",

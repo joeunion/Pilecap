@@ -1,0 +1,17 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "before", "text": "\"widget.archive\": may_archive,"}
+    # Onboarding is the product acting for itself, as the system actor.
+    "widget.onboard": owns,
+
+
+    # The one verb that is not "your own": see `can_approve`.
+    "widget.approve": can_approve,
+# golden-anchor: {"nth": 0, "scope": [], "side": "before", "text": "\"widget.archive\": frozenset({\"member\"}),"}
+    "widget.onboard": frozenset({"member"}),
+
+
+    "widget.approve": frozenset({"member"}),
+# golden-anchor: {"nth": 0, "scope": [], "side": "after", "text": "\"widget.delete\": \"You may not delete that widget.\","}
+    "widget.onboard": "You may not start onboarding that widget.",
+
+
+    "widget.approve": "You may not approve that widget.",

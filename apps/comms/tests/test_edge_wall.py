@@ -135,7 +135,7 @@ def counting() -> Iterator[CountingChannel]:
 class FlakyChannel(CountingChannel):
     """A transport that drops its first attempt, the way a real one does.
 
-    This is the state SEC-1's H1 needs and no other fixture here can reach: a
+    This is the state the retry-skips-the-wall defect needs and no other fixture here can reach: a
     row left `sending` because the transport was **entered and failed**, which
     is what a Temporal retry re-enters minutes or hours later. Raising is the
     honest simulation — `deliver_message` lets it out, the workflow's retry
@@ -371,7 +371,9 @@ def test_the_bookkeeping_cannot_walk_a_refused_row_back_into_a_send(
     services.suppress_recipient(
         tenant=tenant, actor=owner_actor, recipient=recipient, channel=Channel.EMAIL
     )
-    refused = services.mark_message_sending(tenant=tenant, actor=owner_actor, message=message)
+    refused = services.mark_message_sending(
+        tenant=tenant, actor=owner_actor, message=message
+    ).message
     assert refused.status == Message.Status.SUPPRESSED
 
     services.record_message_sent(
@@ -394,20 +396,7 @@ def test_the_bookkeeping_cannot_walk_a_refused_row_back_into_a_send(
     )
 
 
-# --- SEC-R1b: the wall runs on every attempt, not only the first ------------------
-#
-# SEC-1's HIGH finding H1. `SENDABLE` deliberately holds two statuses — `queued`
-# and `sending` — because a retry after a transport failure re-sends a row that
-# is already `sending`. But
-# the edge wall's own guard read one status, `queued`, so the recheck ADR
-# comms-8 put at the transport ran on the **first** attempt and was skipped on
-# every one after it. The attack window is the whole retry backoff: the address
-# hard-bounces, or the person revokes consent, while attempt 1 is failing, and
-# attempt 2 delivers anyway.
-#
-# The two sets are now one set, defined once in `services.py` and read by the
-# activity, because two hand-kept copies of "which statuses may reach a
-# transport" drifting apart is exactly how this happened.
+# --- the wall runs on every attempt, not only the first ----------------------------
 
 
 def test_a_retried_attempt_consults_the_wall_before_it_re_sends(
@@ -418,7 +407,7 @@ def test_a_retried_attempt_consults_the_wall_before_it_re_sends(
     receipt: MessageTemplate,
     flaky: FlakyChannel,
 ) -> None:
-    """SEC-1 H1, red first. **The retry is an attempt, and an attempt is walled.**
+    """The retry is an attempt, and an attempt is walled.
 
     Attempt 1 reaches the transport and the transport fails, so the row is left
     `sending`. The recipient is suppressed while the run backs off. Attempt 2
@@ -533,10 +522,10 @@ def test_the_widened_wall_still_leaves_a_settled_row_alone(
 
     after_sent = services.mark_message_sending(
         tenant=tenant, actor=owner_actor, message=reread(tenant, handed_over)
-    )
+    ).message
     after_failed = services.mark_message_sending(
         tenant=tenant, actor=owner_actor, message=reread(tenant, spent)
-    )
+    ).message
 
     assert after_sent.status == Message.Status.SENT
     assert after_failed.status == Message.Status.FAILED
@@ -571,7 +560,9 @@ def test_the_edge_recheck_and_the_step_recheck_speak_one_vocabulary(
         tenant=tenant, actor=owner_actor, recipient=recipient, channel=Channel.EMAIL
     )
 
-    at_the_edge = services.mark_message_sending(tenant=tenant, actor=owner_actor, message=anchor)
+    at_the_edge = services.mark_message_sending(
+        tenant=tenant, actor=owner_actor, message=anchor
+    ).message
     at_the_step = services.send_step(
         tenant=tenant,
         actor=owner_actor,

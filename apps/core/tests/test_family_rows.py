@@ -26,7 +26,7 @@ from apps.core.authz import reset_policies
 from apps.core.exceptions import ArchiveBlocked, Archived, Blocker, NotFound, RestoreBlocked
 from apps.core.models import Archivable, Organization, OrgScopedModel, Tenant
 from apps.core.policies import may_archive
-from apps.core.schemas import ArchivedOut
+from apps.core.schemas import ArchivedOut, event_payload
 from apps.core.services import create_organization
 from apps.core.tests.isolation import isolated_apps
 from apps.core.time import now
@@ -273,3 +273,5 @@ def test_archived_out_reads_the_two_columns(
     dumped = ZzzShelfOut.model_validate(gone, from_attributes=True).model_dump(mode="json")
     assert dumped["archived_by"] == {"id": str(owner.pk), "name": None}
     assert dumped["archived_at"] is not None
+    archived = event_payload(ZzzShelfOut.model_validate(gone, from_attributes=True))
+    assert archived["archived_by"] == {"id": str(owner.pk)}, "the archiver's name is personal"

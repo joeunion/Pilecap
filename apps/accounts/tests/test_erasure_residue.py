@@ -49,15 +49,16 @@ from allauth.socialaccount.models import SocialAccount
 from django.apps import apps as django_apps
 from django.db import connection as db_connection
 
-from apps.accounts.models import ApiToken, SsoConnection, User
+from apps.accounts.models import STAFF_REALM, ApiToken, SsoConnection, User
 from apps.accounts.services import (
     ERASED_EMAIL_DOMAIN,
     create_user,
     erase_user,
     issue_token,
     provision_sso_identity,
-    record_zitadel_identity,
+    record_identity,
 )
+from apps.accounts.tests.conftest import subject_of
 from apps.core import bridge
 from apps.core.actor import Actor, actor_for, system_actor
 from apps.core.audit import AuditEntry
@@ -95,10 +96,10 @@ TEXT_FIELD_TYPES = frozenset(
 # sweep proves there is nothing else, and this says why each survivor is not a
 # bug. Keyed by `app_label.Model` and column, which is what `residue()` returns.
 RETAINED: dict[tuple[str, str], str] = {
-    ("accounts.User", "zitadel_sub"): (
+    ("accounts.SsoIdentity", "subject"): (
         "The collision fence. The subject is an opaque identifier the identity "
-        "platform minted — not contact data — and the column is unique, which is "
-        "what refuses a re-link of somebody else's Zitadel account to this row "
+        "platform minted — not contact data — and the join is unique per realm, which "
+        "is what refuses a re-link of somebody else's Zitadel account to this row "
         "(`test_rp_login.py::test_a_subject_already_linked_elsewhere_is_refused`). "
         "Blanking it frees the subject for exactly that re-link."
     ),
@@ -142,7 +143,7 @@ def residue(*needles: str) -> dict[tuple[str, str], int]:
                 continue
             for column in _text_columns(model):
                 cursor.execute(
-                    f'SELECT COUNT(*) FROM "{model._meta.db_table}" '  # noqa: S608
+                    f'SELECT COUNT(*) FROM "{model._meta.db_table}" '  # noqa: S608 — table and column names come from the model registry; the needles are bound
                     f'WHERE "{column}"::text ILIKE ANY(%s)',
                     [patterns],
                 )
@@ -172,8 +173,12 @@ def target(tenant: Tenant, sso_connection: SsoConnection, other_tenant: Tenant) 
         email_verified=True,
     )
     person = identity.user
-    record_zitadel_identity(
-        user=person, subject=TARGET_SUBJECT, tenant=None, actor=system_actor(tenant=None)
+    record_identity(
+        realm=STAFF_REALM,
+        user=person,
+        subject=TARGET_SUBJECT,
+        tenant=None,
+        actor=system_actor(tenant=None),
     )
     issue_token(
         user=person, tenant=tenant, name="a token", actor=actor_for(user=person, tenant=tenant)
@@ -286,7 +291,7 @@ def test_the_subject_is_retained_because_it_is_the_collision_fence(
 ) -> None:
     """ER1-2. The reason proven, not prosed.
 
-    `zitadel_sub` survives erasure, and the thing it buys is that the subject
+    The identity join's subject survives erasure, and the thing it buys is that the subject
     stays claimed: an erased person's Zitadel account cannot be re-linked to
     somebody else's row by an IdP assertion. Blanking the column would free it.
     """
@@ -294,12 +299,16 @@ def test_the_subject_is_retained_because_it_is_the_collision_fence(
 
     erase_user(user=target, actor=eraser, tenant=tenant)
     target.refresh_from_db()
-    assert target.zitadel_sub == TARGET_SUBJECT
+    assert subject_of(target) == TARGET_SUBJECT
 
     somebody_else = create_user(email="opportunist@acme.com", password="y" * 20)
     with pytest.raises(Conflict):
-        record_zitadel_identity(
-            user=somebody_else, subject=TARGET_SUBJECT, tenant=None, actor=system_actor(tenant=None)
+        record_identity(
+            realm=STAFF_REALM,
+            user=somebody_else,
+            subject=TARGET_SUBJECT,
+            tenant=None,
+            actor=system_actor(tenant=None),
         )
 
 

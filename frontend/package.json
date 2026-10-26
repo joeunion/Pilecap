@@ -14,10 +14,12 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "pin:client": "./scripts/pin_client.sh",
-    "pin:client:write": "./scripts/pin_client.sh --write"
+    "pin:client:write": "./scripts/pin_client.sh --write",
+    "surface": "node scripts/surface.mjs",
+    "surface:check": "node scripts/surface.mjs --check"
   },
   "dependencies": {
-    "next": "16.3.3",
+    "next": "16.4.1",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },
@@ -33,6 +35,7 @@
     "jsdom": "30.0.1",
     "openapi-typescript": "7.9.1",
     "typescript": "5.9.3",
-    "vitest": "4.1.11"
+    "vite": "8.2.4",
+    "vitest": "4.1.12"
   }
 }

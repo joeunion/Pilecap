@@ -1,0 +1,25 @@
+import pytest
+
+from apps.example.models import Widget
+from pilecap import Actor
+from pilecap.imports import list_importers
+from pilecap.tenancy import Tenant
+
+pytestmark = pytest.mark.django_db
+
+
+def test_the_importer_is_discovered_and_applies_through_the_nouns_services(
+    tenant: Tenant, owner_actor: Actor
+) -> None:
+    importer = list_importers()["widget"]
+    row = importer.row.model_validate({"external_ref": "CRM-1", "name": "w", "notes": "a"})
+
+    made, first = importer.apply(tenant=tenant, actor=owner_actor, row=row)
+    same, second = importer.apply(tenant=tenant, actor=owner_actor, row=row)
+    edited = importer.row.model_validate({"external_ref": "CRM-1", "name": "w", "notes": "b"})
+    changed, third = importer.apply(tenant=tenant, actor=owner_actor, row=edited)
+
+    assert (first, second, third) == ("created", "unchanged", "updated")
+    assert made.pk == same.pk == changed.pk
+    assert importer.natural_key(tenant=tenant, actor=owner_actor, row=row).pk == made.pk
+    assert Widget.objects.filter(tenant=tenant, external_ref="CRM-1").count() == 1

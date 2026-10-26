@@ -45,6 +45,14 @@ POLICIES: dict[str, Policy] = {
     "djb_note.restore": may_archive,
 }
 
+#: The keys `member` holds by declaration; each predicate above still narrows its key.
+DEFAULT_ROLES: dict[str, frozenset[str]] = {
+    "djb_note.create": frozenset({"member"}),
+    "djb_note.update": frozenset({"member"}),
+    "djb_note.archive": frozenset({"member"}),
+    "djb_note.restore": frozenset({"member"}),
+}
+
 
 ACTION_PROSE: dict[str, str] = {
     "djb_note.create": "You may not write notes in this organization.",

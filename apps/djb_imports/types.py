@@ -1,14 +1,8 @@
-"""The shapes that cross this app's workflow boundary. Standard library only.
-
-Serialised into Temporal's history and replayed out of it, so nothing here may be
-a model or reach the ORM (house rule 9). Ids are strings, parsed once, in the
-activity, at the edge of the database.
-"""
+"""The shapes that cross this app's workflow boundary. Standard library only (rule 9)."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, ClassVar
 
 #: The workflow type names, in one place below both `workflows.py` and
 #: `activities.py` (which may not import each other) and `services.py`.
@@ -18,26 +12,22 @@ PURGE_WORKFLOW = "PurgeImportsWorkflow"
 
 
 @dataclass
-class RunFinished:
-    """What `mark_run_finished` is told; matches `apps.workflows.types.MarkRunFinished`."""
-
-    workflow_id: str
-    status: str
-    error: str = ""
-
-
-@dataclass
 class CheckImport:
-    """What the check workflow is started with. The tenant and hat ride the headers."""
+    """What the check workflow is started with; the tenant and hat ride the headers.
+
+    `retry_floor` is `apps.core.retry.retry_floor_seconds()`, read on the Django side.
+    """
 
     import_id: str
+    retry_floor: float | None = None
 
 
 @dataclass
 class ApplyImport:
-    """What the apply workflow is started with."""
+    """What the apply workflow is started with; `retry_floor` as `CheckImport`'s."""
 
     import_id: str
+    retry_floor: float | None = None
 
 
 @dataclass
@@ -51,10 +41,11 @@ class ImportSettled:
 
 @dataclass
 class ImportFailed:
-    """Which run failed, and what actually broke (walked out of the cause chain)."""
+    """Which run ended, what broke (`determinism.reason_of`), and whether a cancel ended it."""
 
     import_id: str
     reason: str
+    cancelled: bool = False
 
 
 @dataclass
@@ -66,20 +57,6 @@ class PurgeImports:
 
 @dataclass
 class PurgeOutcome:
-    """What one sweep took. Filed on the swept model's label, as a population."""
-
-    audit_object: ClassVar[tuple[str, None]] = ("djb_imports.Import", None)
+    """What one sweep took, across the workflow boundary; the service's audit answer is `Swept`."""
 
     imports: int
-
-
-@dataclass(frozen=True)
-class RowPreview:
-    """One line as the dry run judged it. Crosses no workflow boundary; the
-    activity hands a list of these to the service that writes them."""
-
-    row_no: int
-    data: dict[str, Any]
-    outcome_preview: str
-    refusal: dict[str, Any] = field(default_factory=dict)
-    object_id: str | None = None

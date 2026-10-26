@@ -46,7 +46,7 @@ from apps.files import activities, services, storage
 from apps.files.meters import STORAGE_BYTES
 from apps.files.models import PENDING_UPLOAD_TTL_HOURS, FileVersion, StoredFile
 from apps.files.types import FinalizeUpload, StoreMeasurement
-from apps.files.workflows import VERIFY_RETRY
+from apps.files.workflows import VERIFY_ATTEMPTS
 from apps.usage.models import UsageEntry
 from apps.workflows import client as client_module
 from apps.workflows.client import (
@@ -298,7 +298,7 @@ async def test_confirming_an_upload_that_never_happened_fails_loudly_and_meters_
     ticket = await run_db(_filed, tenant, owner, root_org)
     expected = workflow_id(tenant=tenant, app="files", noun="version", key=str(ticket.version.pk))
 
-    # **The attempts are counted, not assumed.** `VERIFY_RETRY` says five, and
+    # **The attempts are counted, not assumed.** `VERIFY_ATTEMPTS` says five, and
     # until this list existed nothing here could tell five attempts from one:
     # the version stays `PENDING` and the run reads `failed` either way. The
     # store still answers for real — this only records that it was asked — which
@@ -325,8 +325,8 @@ async def test_confirming_an_upload_that_never_happened_fails_loudly_and_meters_
             with pytest.raises(WorkflowFailureError):
                 await client.get_workflow_handle(expected).result()
 
-    assert len(attempts) == VERIFY_RETRY.maximum_attempts == 5, (
-        f"the object was headed {len(attempts)} times, not the five VERIFY_RETRY declares"
+    assert len(attempts) == VERIFY_ATTEMPTS == 5, (
+        f"the object was headed {len(attempts)} times, not the five VERIFY_ATTEMPTS declares"
     )
 
     unchanged = await run_db(lambda: FileVersion.objects.get(pk=ticket.version.pk))
@@ -345,6 +345,9 @@ async def test_confirming_an_upload_that_never_happened_fails_loudly_and_meters_
     # wrapper's "Activity task failed", which is true and useless.
     assert "Activity task failed" != run.error
     assert "404" in run.error or "NoSuchKey" in run.error or "Not Found" in run.error
+    assert run.error.startswith("ActivityError: ") and " <- " in run.error, (
+        f"the reason is `core.determinism.reason_of`'s chain, typed link by link: {run.error!r}"
+    )
 
 
 # --- the declared sweep, driven rather than declared ---------------------------

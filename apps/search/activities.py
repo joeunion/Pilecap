@@ -47,22 +47,15 @@ from typing import Any
 from uuid import UUID
 
 from temporalio import activity
-from temporalio.client import (
-    Schedule,
-    ScheduleActionStartWorkflow,
-    ScheduleIntervalSpec,
-    ScheduleOverlapPolicy,
-    SchedulePolicy,
-    ScheduleSpec,
-)
 
 from apps.core.log import get_logger
 from apps.core.models import Tenant, is_org_scoped
-from apps.core.schedules import ScheduleDeclaration
+from apps.core.retry import retry_floor_seconds
+from apps.core.schedules import ScheduleDeclaration, platform_schedule
 from apps.search import engine as engine_module
 from apps.search import registry
 from apps.search.registry import ORG_ATTRIBUTE, TENANT_ATTRIBUTE
-from apps.search.types import Searchable
+from apps.search.types import ReconcileIndexes, Searchable
 
 log = get_logger(__name__)
 
@@ -363,85 +356,29 @@ def _current_row(declaration: Searchable, *, tenant: Tenant | None, pk: UUID) ->
 
 
 # --- the periodic machine ------------------------------------------------------
-#
-# A `ScheduleDeclaration` and not a hook in `apps/workflows/worker.py`, for the
-# reason discovery exists at all: an app declares its own machinery and the
-# worker discovers it, so adding search to a product edits no shared file. It is
-# also what makes the reconcile visible to the machinery census and to LF-Q's
-# reachability tooth for free.
-#
-# **A boot is the moment this exists for**, and both lifetime classes give it
-# one: in `process` mode `run_declared_machinery` fires every declaration
-# immediately and then on its interval (catch-up first, then wait), and in
-# `deployment` mode the durable Schedule's first tick follows the worker that
-# created it. The interval behind it is the belt: a container restarted out of
-# band, or a Meili volume lost at three in the morning, converges within it
-# rather than waiting for somebody to notice.
 
-#: The id prefix Temporal is given for the run. House-shaped
-#: `<tenant>:<app>:<noun>:<key>` with `platform` in the tenant position — this
-#: is the deployment's own housekeeping and belongs to no tenant — and per task
-#: queue, so two deployments never fight over one execution (the events purge's
-#: precedent, exactly).
-RECONCILE_WORKFLOW_PREFIX = "platform:search:reconcile"
-RECONCILE_SCHEDULE_PREFIX = "system:search:reconcile"
-
-#: How often the belt tightens. Hourly: long enough that it is not a load, short
-#: enough that a lost index is a lunch break rather than a day.
+#: Hourly: a lost index converges within the hour; `SKIP` keeps two rebuilds off one staging uid.
 RECONCILE_EVERY = timedelta(hours=1)
 
-
-def reconcile_schedule_id(task_queue: str) -> str:
-    """The schedule id for one deployment's reconcile. One per task queue."""
-    return f"{RECONCILE_SCHEDULE_PREFIX}:{task_queue}"
-
-
-def reconcile_workflow_id(task_queue: str) -> str:
-    """The **deterministic** id of the run the schedule starts.
-
-    Deterministic and per queue is what makes "one rebuild across N booting
-    workers" true rather than hoped for: every worker in a deployment derives
-    the same id from the same queue, and Temporal's `SKIP` overlap policy means
-    the second one to ask is told the work is already happening.
-
-    This is the prefix the server is given; it appends the scheduled time, so an
-    actual run is `platform:search:reconcile:<queue>-2026-08-24T14:13:48Z`. The
-    part this repository chooses is deterministic, which is house rule 18's
-    subject.
-    """
-    return f"{RECONCILE_WORKFLOW_PREFIX}:{task_queue}"
-
-
-def reconcile_schedule(task_queue: str) -> Schedule:
-    """The reconcile's schedule, as a value so a test can read it.
-
-    `SKIP` on overlap, and here it is load-bearing rather than tidy: two
-    reconciles at once would both find the same stale digest and both start
-    rebuilding the same index into the same staging uid.
-    """
-    return Schedule(
-        action=ScheduleActionStartWorkflow(
-            "ReconcileSearchIndexesWorkflow",
-            id=reconcile_workflow_id(task_queue=task_queue),
-            task_queue=task_queue,
-        ),
-        spec=ScheduleSpec(intervals=[ScheduleIntervalSpec(every=RECONCILE_EVERY)]),
-        policy=SchedulePolicy(overlap=ScheduleOverlapPolicy.SKIP),
-    )
-
-
-RECONCILE = ScheduleDeclaration(
+#: `platform:search:reconcile:<queue>` for the schedule and the run (rule 18).
+RECONCILE = platform_schedule(
+    app="search",
+    noun="reconcile",
+    workflow="ReconcileSearchIndexesWorkflow",
+    arg=ReconcileIndexes(retry_floor=retry_floor_seconds()),
+    every=RECONCILE_EVERY,
     name="search.reconcile-indexes",
-    schedule_id=reconcile_schedule_id,
-    schedule=reconcile_schedule,
     log_prefix="search",
 )
+
+#: The schedule id and the `Schedule` value for one task queue — the declaration's own builders.
+reconcile_schedule_id = RECONCILE.schedule_id
+reconcile_schedule = RECONCILE.schedule
 
 
 ACTIVITIES: list[Callable[..., Any]] = [list_search_kinds, reconcile_search_index]
 
-#: Discovered by `apps.workflows.client.discovered_schedules`, which the worker
-#: consults at startup. One declaration, and it is the startup reconcile.
+#: Discovered by the worker at startup: the reconcile is a boot's first act.
 SCHEDULES: list[ScheduleDeclaration] = [RECONCILE]
 
 
@@ -458,5 +395,4 @@ __all__: Sequence[str] = (
     "reconcile_schedule",
     "reconcile_schedule_id",
     "reconcile_search_index",
-    "reconcile_workflow_id",
 )

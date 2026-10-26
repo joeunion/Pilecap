@@ -1,0 +1,7 @@
+# golden-anchor: {"nth": 0, "scope": [], "side": "before", "text": "\"widget.archive\": may_archive,"}
+    # The reminder acts as the system actor too; the entry names the rule a person would obey.
+    "widget.remind": owns,
+# golden-anchor: {"nth": 0, "scope": [], "side": "before", "text": "\"widget.archive\": frozenset({\"member\"}),"}
+    "widget.remind": frozenset({"member"}),
+# golden-anchor: {"nth": 0, "scope": [], "side": "after", "text": "\"widget.delete\": \"You may not delete that widget.\","}
+    "widget.remind": "You may not send that widget's reminder.",

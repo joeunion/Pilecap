@@ -162,20 +162,11 @@ def get_endpoint(*, tenant: Tenant | None, endpoint_id: UUID, actor: Actor) -> W
     return endpoint
 
 
-def endpoints_for(*, tenant: Tenant | None, name: str) -> list[WebhookEndpoint]:
+def list_endpoints_for(*, tenant: Tenant | None, name: str) -> list[WebhookEndpoint]:
     """The active endpoints that have asked for this event name.
 
-    The name filter is applied in Python rather than in SQL: `event_names` is a
-    JSON allow-list where **empty means everything**, and expressing "empty OR
-    contains" as a portable query buys nothing at the number of endpoints a
-    tenant has. `WebhookEndpoint.wants` is the one definition of the rule.
-
-    **This read asks no capability and has no person behind it**: its one caller
-    is the dispatch activity, deciding where an event it is already sending
-    should go. It is outside rule 54 (d)'s population by name — that census reads
-    `get_`/`list_` prefixes — and it is stated here rather than left to be
-    inferred, because a door that reached this instead of `list_endpoints` would
-    be reading the subscription list for free.
+    # read-open: the dispatch activity's machine read; a door reads `list_endpoints`, which asks.
+    The name filter is Python: `WebhookEndpoint.wants` is the one rule (empty means everything).
     """
     return [
         endpoint
@@ -226,34 +217,22 @@ def get_delivery(*, tenant: Tenant | None, delivery_id: UUID, actor: Actor) -> D
     return delivery
 
 
-def dead_lettered(*, tenant: Tenant | None, actor: Actor) -> QuerySet[Delivery]:
-    """The tenant's deliveries that gave up. The one an operator asks for.
-
-    It goes through `list_deliveries`, so it asks `delivery.read` exactly as the
-    unfiltered list does — a narrowing is not a second question, and a door that
-    could read the dead letters without being able to read the deliveries would
-    be the same surface with a filter on it.
-    """
-    # authz: the read IS asked, one hop further down than rule 41's one-step walk
-    # reaches — `list_deliveries` calls `require(actor, "delivery.read")`. Asking
-    # here as well would be the second copy of the rule the selector seam exists
-    # to delete, and it would ask the same question at the same node (§C6).
-    return list_deliveries(tenant=tenant, actor=actor).filter(dead_lettered_at__isnull=False)
+def list_dead_letters(*, tenant: Tenant | None, actor: Actor) -> QuerySet[Delivery]:
+    """The tenant's deliveries that gave up. The one an operator asks for."""
+    # hat-scoped: a delivery names no organization, so the hat is the only node to ask at.
+    require(actor, "delivery.read")
+    return _deliveries_in(tenant=tenant).filter(dead_lettered_at__isnull=False)
 
 
 # --- Deployment-wide reads (shell and schedules only) ------------------------
 
 
-def outbox_to_replay(
+def list_outbox_to_replay(
     *, since: datetime | None = None, event_id: UUID | None = None
 ) -> QuerySet[Outbox]:
-    """Outbox rows a human has asked to send again. **Crosses tenants.**
+    """Outbox rows a human has asked to send again, across tenants, oldest first.
 
-    `manage.py replay_events` is the caller, and the shell door is the only one
-    that reaches it: recovering from an outage is a deployment-level act, and
-    narrowing it to one tenant would mean running it once per customer.
-
-    Ordered oldest-first, so a replay re-sends in the order the events happened.
+    # read-open: `manage.py replay_events`' shell read; recovery is deployment-wide, no hat.
     """
     query = Q()
     if event_id is not None:
@@ -264,6 +243,19 @@ def outbox_to_replay(
         Outbox.objects.filter(query)
         .select_related("event", "event__tenant")
         .order_by("event__occurred_at")
+    )
+
+
+def list_active_endpoints_everywhere() -> QuerySet[WebhookEndpoint]:
+    """Every active endpoint in every tenant, oldest first, with its tenant.
+
+    # read-open: `manage.py webhook_endpoints`' shell read; the refused list is deployment-wide.
+    """
+    return (
+        # rule-8: the operator's refused-target list spans every tenant, as `replay_events` does.
+        WebhookEndpoint.objects.filter(is_active=True)
+        .select_related("tenant")
+        .order_by("created_at", "pk")
     )
 
 
@@ -314,7 +306,7 @@ def list_stranded_outbox(
     # itself — and this read crosses tenants by design, so there is no hat to ask
     # at and no tenant whose key would be the right question. The one caller is
     # the reconcile activity (`activities.py`), which runs as `system`; the shell
-    # door's `replay_events` reaches `outbox_to_replay` beside it.
+    # door's `replay_events` reaches `list_outbox_to_replay` beside it.
     """
     stranded = (
         Outbox.objects.filter(status=Outbox.Status.PENDING, next_attempt_at__lt=before)
@@ -326,11 +318,10 @@ def list_stranded_outbox(
     return stranded[already_seen : already_seen + limit]
 
 
-def undispatched(*, before: datetime | None = None) -> QuerySet[Outbox]:
-    """Outbox rows that never reached `dispatched`. **Crosses tenants.**
+def list_undispatched_outbox(*, before: datetime | None = None) -> QuerySet[Outbox]:
+    """Outbox rows that never reached `dispatched`, across tenants.
 
-    The surveyor's standing lens on the spine: an event that never dispatched is
-    a promise the product made and did not keep.
+    # read-open: the surveyor's standing lens on the spine, with no person behind it.
     """
     query = ~Q(status=Outbox.Status.DISPATCHED)
     if before is not None:

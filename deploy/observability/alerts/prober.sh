@@ -105,6 +105,22 @@ CURL_OPTS=""
 if [ "$INSECURE" = "1" ]; then CURL_OPTS="-k"; fi
 if [ -n "$CONNECT_TO" ]; then CURL_OPTS="$CURL_OPTS --connect-to $CONNECT_TO"; fi
 
+# readyz_probe <body-file> — ONE probe of the target: the HTTP code on stdout.
+# The loop below calls it every interval; `deploy/release.sh`'s readyz act and
+# `deploy/stage.sh`'s call it once, through `--once` (`docker compose exec -T
+# readyz-prober sh /alerts/prober.sh --once`), so the target, the socket
+# override and the certificate posture are this container's for all three and
+# the default target is written once, in deploy/compose.yaml.
+readyz_probe() {
+  # shellcheck disable=SC2086  # CURL_OPTS is words by construction
+  curl $CURL_OPTS -sS -m 10 -o "$1" -w '%{http_code}' "$TARGET"
+}
+
+if [ "${1:-}" = "--once" ]; then
+  readyz_probe /dev/null
+  exit $?
+fi
+
 # One OTLP/HTTP log record. $1 event name, $2 severity text, $3 http code,
 # $4 detail. The body is a JSON document embedded as a JSON *string*, so every
 # quote inside it is escaped once — the same on-the-wire shape the Python
@@ -210,7 +226,7 @@ while true; do
   # --fail so a 503 from /readyz is a failure, not a body to parse. /readyz
   # answers 200 only when db, redis and temporal are all true
   # (apps/core/health.py), which is the whole point of asking it.
-  code="$(curl $CURL_OPTS -sS -m 10 -o /tmp/readyz.out -w '%{http_code}' "$TARGET" 2>/tmp/readyz.err)"
+  code="$(readyz_probe /tmp/readyz.out 2>/tmp/readyz.err)"
   rc=$?
   if [ "$rc" -eq 0 ] && [ "$code" = "200" ]; then
     emit "probe.readyz.ok" "INFO" "$code" ""

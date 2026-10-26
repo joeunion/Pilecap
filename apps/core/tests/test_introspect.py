@@ -55,6 +55,7 @@ def test_it_emits_valid_json_with_a_section_per_door(payload: dict[str, Any]) ->
         "policies",
         "roles",
         "events",
+        "services",
         "refusals",
         "settings",
     }
@@ -208,9 +209,9 @@ def test_redaction_survives_nesting() -> None:
         }
     )
     assert redacted["SAFE"] == "keep me"
-    assert redacted["AWS_SECRET_ACCESS_KEY"] == "[redacted]"
-    assert redacted["nested"][0]["api_token"] == "[redacted]"
-    assert redacted["nested"][1]["PASSWORD"] == "[redacted]"
+    assert redacted["AWS_SECRET_ACCESS_KEY"] == "[redacted]"  # noqa: S105 — the redaction marker the scrubber writes, compared
+    assert redacted["nested"][0]["api_token"] == "[redacted]"  # noqa: S105 — the redaction marker the scrubber writes, compared
+    assert redacted["nested"][1]["PASSWORD"] == "[redacted]"  # noqa: S105 — the redaction marker the scrubber writes, compared
 
 
 def test_a_predicate_row_names_its_callable_and_its_kind(payload: dict[str, Any]) -> None:
@@ -339,14 +340,14 @@ def test_the_roles_registry_lists_admin_and_member(payload: dict[str, Any]) -> N
     everything else. `owner` stays the whole vocabulary: this row answers what
     the owner role IS, and what an owner may be HANDED is `collection()`.
     """
-    from apps.core.authz import RESERVED_PERMISSIONS, VIRTUAL_KINDS, vocabulary
+    from apps.core.authz import RESERVED_PERMISSIONS, VIRTUAL_KINDS, role_declarations, vocabulary
 
     roles = {row["key"]: row for row in payload["roles"]}
     words = vocabulary()
     virtual = {action for action, word in words.items() if word.kind in VIRTUAL_KINDS}
     assert virtual, "no key on a virtual kind — this arithmetic has stopped measuring"
 
-    assert set(roles) == {"owner", "admin", "member"}
+    assert set(roles) == {"owner", *role_declarations()}
     assert roles["owner"]["collection_size"] == len(words)
     assert roles["owner"]["declared_in"] is None
 
@@ -410,12 +411,13 @@ def test_the_refusals_section_reports_the_registry(payload: dict[str, Any]) -> N
     rows = {row["code"]: row for row in payload["refusals"]}
     assert set(rows) == set(REFUSALS)
 
-    # The floor: eight codes reach clients from this tree — the six class codes,
+    # The floor: seven codes reach clients from this tree — the five class codes,
     # and the two the idempotency middleware answers with in front of every
-    # door — so a registry smaller than eight is a registry that lost one.
-    assert len(rows) >= 8
+    # door — so a registry smaller than seven is a registry that lost one. (The
+    # base's `error` was retired: nothing raised it.)
+    assert len(rows) >= 7
+    assert "error" not in rows
     assert {
-        "error",
         "not_found",
         "conflict",
         "forbidden",

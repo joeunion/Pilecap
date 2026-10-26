@@ -1,0 +1,342 @@
+{
+  "adopt.archive": {
+    "app": "example",
+    "files": [
+      "api.py",
+      "events.py",
+      "mcp.py",
+      "models.py",
+      "policies.py",
+      "schemas.py",
+      "selectors.py",
+      "services.py",
+      "tests/test_golden_archive.py",
+      "tests/test_golden_verbs_parity.py"
+    ]
+  },
+  "adopt.attach": {
+    "app": "example",
+    "files": [
+      "api.py",
+      "events.py",
+      "mcp.py",
+      "models.py",
+      "policies.py",
+      "schemas.py",
+      "selectors.py",
+      "services.py",
+      "tests/test_golden_attach.py",
+      "tests/test_golden_verbs_parity.py"
+    ]
+  },
+  "adopt.bulk": {
+    "app": "example",
+    "files": [
+      "api.py",
+      "events.py",
+      "mcp.py",
+      "models.py",
+      "policies.py",
+      "schemas.py",
+      "selectors.py",
+      "services.py",
+      "tests/test_golden_bulk.py",
+      "tests/test_golden_verbs_parity.py"
+    ]
+  },
+  "adopt.duplicate": {
+    "app": "example",
+    "files": [
+      "api.py",
+      "events.py",
+      "mcp.py",
+      "models.py",
+      "policies.py",
+      "schemas.py",
+      "selectors.py",
+      "services.py",
+      "tests/test_golden_duplicate.py",
+      "tests/test_golden_verbs_parity.py"
+    ]
+  },
+  "adopt.history": {
+    "app": "example",
+    "files": [
+      "api.py",
+      "events.py",
+      "mcp.py",
+      "models.py",
+      "policies.py",
+      "schemas.py",
+      "selectors.py",
+      "services.py",
+      "tests/test_golden_history.py",
+      "tests/test_golden_verbs_parity.py"
+    ]
+  },
+  "adopt.import": {
+    "app": "example",
+    "files": [
+      "api.py",
+      "events.py",
+      "importers.py",
+      "mcp.py",
+      "models.py",
+      "policies.py",
+      "schemas.py",
+      "selectors.py",
+      "services.py",
+      "tests/test_golden_import.py",
+      "tests/test_golden_verbs_parity.py"
+    ]
+  },
+  "adopt.merge": {
+    "app": "example",
+    "files": [
+      "api.py",
+      "events.py",
+      "mcp.py",
+      "models.py",
+      "policies.py",
+      "schemas.py",
+      "selectors.py",
+      "services.py",
+      "tests/test_golden_merge.py",
+      "tests/test_golden_verbs_parity.py"
+    ]
+  },
+  "adopt.move": {
+    "app": "example",
+    "files": [
+      "api.py",
+      "events.py",
+      "mcp.py",
+      "models.py",
+      "policies.py",
+      "schemas.py",
+      "selectors.py",
+      "services.py",
+      "tests/test_golden_move.py",
+      "tests/test_golden_verbs_parity.py"
+    ]
+  },
+  "adopt.version": {
+    "app": "example",
+    "files": [
+      "api.py",
+      "events.py",
+      "mcp.py",
+      "models.py",
+      "policies.py",
+      "schemas.py",
+      "selectors.py",
+      "services.py",
+      "tests/test_golden_verbs_parity.py",
+      "tests/test_golden_version.py"
+    ]
+  },
+  "child.entry": {
+    "app": "example",
+    "files": [
+      "api.py",
+      "mcp.py",
+      "models.py",
+      "policies.py",
+      "schemas.py",
+      "selectors.py",
+      "services.py",
+      "tests/test_api.py",
+      "tests/test_services.py"
+    ]
+  },
+  "enum.status": {
+    "app": "example",
+    "files": [
+      "api.py",
+      "events.py",
+      "mcp.py",
+      "models.py",
+      "schemas.py",
+      "services.py",
+      "tests/test_api.py",
+      "tests/test_doors_over_the_wire.py",
+      "tests/test_mcp.py",
+      "tests/test_services.py"
+    ]
+  },
+  "field.due_at": {
+    "app": "example",
+    "files": [
+      "api.py",
+      "mcp.py",
+      "models.py",
+      "schemas.py",
+      "services.py",
+      "tests/test_api.py",
+      "tests/test_doors_over_the_wire.py",
+      "tests/test_mcp.py",
+      "tests/test_services.py"
+    ]
+  },
+  "filter.name": {
+    "app": "example",
+    "files": [
+      "mcp.py",
+      "schemas.py",
+      "tests/test_mcp.py"
+    ]
+  },
+  "noun": {
+    "app": "example",
+    "files": [
+      "admin.py",
+      "api.py",
+      "events.py",
+      "mcp.py",
+      "models.py",
+      "policies.py",
+      "schemas.py",
+      "selectors.py",
+      "services.py",
+      "tests/test_admin.py",
+      "tests/test_api.py",
+      "tests/test_doors_over_the_wire.py",
+      "tests/test_mcp.py",
+      "tests/test_noun_authz.py",
+      "tests/test_services.py"
+    ]
+  },
+  "ordering.due_at": {
+    "app": "example",
+    "files": [
+      "api.py",
+      "tests/test_mcp.py"
+    ]
+  },
+  "policy": {
+    "app": "example",
+    "files": [
+      "api.py",
+      "archive_blockers.py",
+      "events.py",
+      "mcp.py",
+      "models.py",
+      "policies.py",
+      "restore_blockers.py",
+      "schemas.py",
+      "selectors.py",
+      "services.py",
+      "tests/test_api.py",
+      "tests/test_archive.py",
+      "tests/test_doors_over_the_wire.py",
+      "tests/test_network.py",
+      "tests/test_restore_blockers.py"
+    ]
+  },
+  "portal": {
+    "app": "example_portal",
+    "files": [
+      "api.py",
+      "apps.py",
+      "events.py",
+      "mcp.py",
+      "merge_repointers.py",
+      "models.py",
+      "policies.py",
+      "roles.py",
+      "schemas.py",
+      "selectors.py",
+      "services.py",
+      "surfaces.py",
+      "tests/conftest.py",
+      "tests/test_api.py",
+      "tests/test_doors_over_the_wire.py",
+      "tests/test_services.py"
+    ]
+  },
+  "portal.role": {
+    "app": "example_portal",
+    "files": [
+      "roles.py"
+    ]
+  },
+  "portal.surface": {
+    "app": "example_portal",
+    "files": [
+      "surfaces.py"
+    ]
+  },
+  "search": {
+    "app": "example",
+    "files": [
+      "models.py",
+      "search.py",
+      "tests/test_search_adoption.py"
+    ]
+  },
+  "stat.count": {
+    "app": "example",
+    "files": [
+      "api.py",
+      "mcp.py",
+      "schemas.py",
+      "tests/test_api.py",
+      "tests/test_doors_over_the_wire.py"
+    ]
+  },
+  "verb.touch": {
+    "app": "example",
+    "files": [
+      "api.py",
+      "events.py",
+      "mcp.py",
+      "services.py",
+      "tests/test_api.py",
+      "tests/test_doors_over_the_wire.py",
+      "tests/test_mcp.py",
+      "tests/test_services.py"
+    ]
+  },
+  "webhook-in.onboarding": {
+    "app": "example",
+    "files": [
+      "apps.py",
+      "events.py",
+      "integrations.py",
+      "models.py",
+      "services.py",
+      "tests/test_inbound_webhook.py"
+    ]
+  },
+  "workflow.onboard": {
+    "app": "example",
+    "files": [
+      "activities.py",
+      "api.py",
+      "events.py",
+      "mcp.py",
+      "models.py",
+      "policies.py",
+      "schemas.py",
+      "services.py",
+      "tests/test_api.py",
+      "tests/test_doors_over_the_wire.py",
+      "tests/test_workflows.py",
+      "types.py",
+      "workflows.py"
+    ]
+  },
+  "workflow.remind": {
+    "app": "example",
+    "files": [
+      "activities.py",
+      "events.py",
+      "models.py",
+      "policies.py",
+      "services.py",
+      "tests/test_workflows.py",
+      "types.py",
+      "workflows.py"
+    ]
+  }
+}

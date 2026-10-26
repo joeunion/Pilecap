@@ -1,7 +1,7 @@
 """`core.verbs.duplicate_row`: save-as-new, by the noun's own declaration.
 
 `copies` carry across, `resets` fall back to the model's default, the copy lands
-at the acting hat, owned children copy only when named, an append-only child
+at the hat, owned children copy only when named, an append-only child
 never copies, and a repeated press with one key answers the first copy — the
 `(tenant, duplicated_from, duplicate_key)` partial unique constraint every
 duplicable noun declares in its own `Meta` (`duplicate_key_constraint()`). Nouns planted

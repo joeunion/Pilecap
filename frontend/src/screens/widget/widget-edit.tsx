@@ -24,12 +24,13 @@
 // golden: version begin
 import { useEffect, useRef, useState } from "react";
 
-import { DIALOG_COPY as D } from "@/copy/dialog";
-import { WIDGET_COPY as C, WIDGET_FIELD_WORDS as F } from "@/copy/widget";
-import { Dialog } from "@/primitives/dialog";
-import { RefusalPanel } from "@/screens/refusal-panel";
-import type { Refusal } from "@/screens/state";
-import type { Act } from "@/screens/verbs";
+import { DIALOG_COPY as D } from "@pilecap/copy/dialog";
+import { WIDGET_COPY as C, WIDGET_FIELD_WORDS as F } from "@pilecap/copy/widget";
+import { Dialog } from "@pilecap/ui/dialog";
+import { RefusalPanel } from "@pilecap/ui/refusal-panel";
+import { STAFF_SURFACE } from "@pilecap/ui/routes";
+import { REMEDY_DESTINATIONS, type Refusal } from "@pilecap/ui/state";
+import type { Act } from "@pilecap/ui/verbs";
 import type { Widget, WidgetPatch } from "@/screens/widget/parts";
 
 /** What the route hands the sheet: the save (answering whether it was saved) and the re-read. */
@@ -56,9 +57,9 @@ function patchOf(read: Widget, draft: Values): WidgetPatch {
     };
 }
 
-/** A `self:reread` remedy is the one refusal a re-read answers: its one act is *Reload*. */
+/** A re-read remedy (`REMEDY_DESTINATIONS.reread`) is the one refusal a re-read answers: its one act is *Reload*. */
 function rereadAnswers(refusal: Refusal | null): boolean {
-    return refusal?.kind === "registry" && (refusal.refusal.remedies ?? []).some((remedy) => remedy.destination === "self:reread");
+    return refusal?.kind === "registry" && (refusal.refusal.remedies ?? []).some((remedy) => remedy.destination === REMEDY_DESTINATIONS.reread);
 }
 
 export function EditSheet({
@@ -146,7 +147,7 @@ export function EditSheet({
                 </label>
                 {refused === null ? null : (
                     <div className="widget-refusal-seat">
-                        <RefusalPanel refusal={refused} seat="sheet-foot" words={{ label: save.words.refused, remedies: C.remedies }} />
+                        <RefusalPanel surface={STAFF_SURFACE} refusal={refused} seat="sheet-foot" refused={save.words.refused} />
                         {rereadAnswers(refused) && asking === null ? (
                             <button
                                 type="button"

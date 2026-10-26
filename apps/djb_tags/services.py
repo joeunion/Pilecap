@@ -1,19 +1,7 @@
-"""Writes for tags. Every door — REST, MCP, the merge's repointer — calls these.
+"""Writes for tags; every door — REST, MCP, the merge's repointer — calls these.
 
-Each is `@service` (keyword-only, atomic, traced, audited) and authorizes
-itself. Two scopes, two placements:
-
-* **The words** (`create_tag`, `rename_tag`, `archive_tag`, `restore_tag`) are
-  tenant-wide, so every one is asked at `root_organization(tenant)` — never at
-  the acting hat, where a branch administrator holds `*` (house rule 55).
-* **The links** (`create_tag_link`, `delete_tag_link`, `move_tag_links`) are
-  acts on a SUBJECT row, so the subject is resolved and reached first
-  (`core.verbs.resolve_subject`), the capability is asked at the subject's own
-  node, and the link lands in the subject's branch — or, for a tenant-wide
-  subject that has no branch, at the acting hat (ADR core-20); never the root.
-
-Every state change is said once, with `emit()`, inside the transaction that
-made it; a request that changed nothing says nothing.
+A word is asked at `root_organization(tenant)` (rule 55); a link at its subject's node, landing by
+`core.verbs.landing_for` (ADR core-20). A request that changed nothing emits nothing.
 """
 
 from __future__ import annotations
@@ -29,9 +17,10 @@ from apps.core.actor import Actor
 from apps.core.authz import kind_of, may_be_named, require
 from apps.core.exceptions import Conflict, Invalid, NotFound, as_invalid
 from apps.core.models import Tenant
+from apps.core.schemas import event_payload
 from apps.core.service import service
 from apps.core.services import root_organization
-from apps.core.verbs import archive_row, require_live, restore_row
+from apps.core.verbs import archive_row, landing_for, require_live, restore_row
 from apps.djb_tags.events import (
     TAG_ARCHIVED,
     TAG_CREATED,
@@ -42,21 +31,20 @@ from apps.djb_tags.events import (
     TAG_RESTORED,
 )
 from apps.djb_tags.models import Tag, TagLink
-from apps.djb_tags.schemas import TagLinkOut, TagOut
-from apps.djb_tags.selectors import _landing, _subject_tag_links, get_subject
+from apps.djb_tags.schemas import DjbTagLinkOut, DjbTagOut
+from apps.djb_tags.selectors import _subject_tag_links, get_subject
 from apps.events.services import emit
 
-#: What may appear un-redacted in this app's log lines and audit `input`. A tag's
-#: name is vocabulary, not a person's data; a subject pointer is an id.
+#: What may appear un-redacted in log lines and audit `input`: vocabulary and an id.
 LOG_KEYS: frozenset[str] = frozenset({"name", "subject"})
 
 
 def _tag_payload(tag: Tag) -> dict[str, Any]:
-    return TagOut.from_orm(tag).model_dump(mode="json")
+    return event_payload(DjbTagOut.from_orm(tag))
 
 
 def _link_payload(link: TagLink) -> dict[str, Any]:
-    return TagLinkOut.from_orm(link).model_dump(mode="json")
+    return event_payload(DjbTagLinkOut.from_orm(link))
 
 
 def _slug_for(name: str) -> str:
@@ -111,11 +99,7 @@ def rename_tag(*, tenant: Tenant, actor: Actor, tag: Tag, name: str) -> Tag:
 
 @service
 def archive_tag(*, tenant: Tenant, actor: Actor, tag: Tag) -> Tag:
-    """Retire a word: off `/djb_tags/` and every picker. Its links stay readable.
-
-    Idempotent — a second press answers the row unchanged, keeping the first
-    press's date, and says nothing.
-    """
+    """Retire a word from `/djb_tags/` and the pickers, its links kept. A repeat says nothing."""
     require(actor, "djb_tag.archive", root_organization(tenant=tenant))
     tag, changed = archive_row(tenant=tenant, actor=actor, row=tag, noun="djb_tag")
     if changed:
@@ -146,22 +130,15 @@ class TagLinking:
 
 @service
 def create_tag_link(*, tenant: Tenant, actor: Actor, tag: Tag, subject: str) -> TagLinking:
-    """Put a word on a subject. **Idempotent on `(tag, subject)`.**
+    """Put a word on a subject. **Idempotent on `(tag, subject)`**: a repeat answers the same row.
 
-    The subject is resolved through the one resolver — a kind that does not take
-    tags is `invalid` naming `subject`; a row this actor could not reach
-    (another branch, another tenant, no row at all) is `not_found`, one answer
-    for all three. The link lands in the SUBJECT's branch (a tenant-wide subject:
-    the acting hat). A second request for a
-    pair that is already linked answers the same row, `created=False`, and emits
-    nothing; two racing requests meet the unique constraint and the loser reads
-    the winner's row. A pair already carried from a branch this hat does not
-    cover (only a tenant-wide subject's links can sit there) is `conflict`.
+    Two racing requests meet the unique constraint and the loser reads the winner's row.
+    A pair already carried from a branch this hat does not cover is `conflict`.
     """
     row = get_subject(actor=actor, subject=subject)
     require(actor, "djb_tag_link.create", row)
     require_live(tag, noun="djb_tag")
-    organization = _landing(subject=row, actor=actor)
+    organization = landing_for(row, actor)
     kind = kind_of(type(row))
     if kind is None:
         raise NotFound()
@@ -184,14 +161,7 @@ def create_tag_link(*, tenant: Tenant, actor: Actor, tag: Tag, subject: str) -> 
 
 
 def _already_linked(*, actor: Actor, link: TagLink) -> TagLink:
-    """The link a repeat press answers with — if this hat may read it.
-
-    One link per `(tag, subject)` holds tenant-wide, but a link on a tenant-wide
-    subject lands at the hat that put it there (the landing law), so the pair may
-    already be carried from a branch this hat does not cover. That is a
-    `conflict` naming no branch — never the other branch's row, and never a 500
-    off the lost race.
-    """
+    """The link a repeat press answers, if this hat may read it; else an unnamed `conflict`."""
     if may_be_named(actor, link):
         return link
     raise Conflict("That row already carries this tag, put there from another part of the tenant.")
@@ -199,11 +169,7 @@ def _already_linked(*, actor: Actor, link: TagLink) -> TagLink:
 
 @service
 def delete_tag_link(*, tenant: Tenant, actor: Actor, link: TagLink) -> TagLink:
-    """Take a word off a subject — the face's *Remove tag*. A link has no archive.
-
-    Returns the row it removed, id restored, so the audit and the event can
-    name what went.
-    """
+    """Take a word off a subject; answers the removed row, id restored, so the audit names it."""
     if not may_be_named(actor, link):
         raise NotFound()
     require(actor, "djb_tag_link.delete", link)
@@ -219,20 +185,10 @@ def delete_tag_link(*, tenant: Tenant, actor: Actor, link: TagLink) -> TagLink:
 # merge calls inside its own audited transaction — the merge's route is the door.
 @service
 def move_tag_links(*, tenant: Tenant, actor: Actor, loser: Any, survivor: Any) -> int:
-    """Carry every link on a merged-away subject to its survivor. Answers how many.
+    """Carry every link on a merged-away subject to its survivor. Answers how many left the loser.
 
-    Called by this app's `merge_repointers.py` inside the merge's own
-    transaction. Both subjects are re-resolved through the one resolver (a merge
-    that named a row this actor cannot reach moves nothing), and moving is asked
-    as `djb_tag_link.update` at both subjects' nodes — an administrator's key, which
-    is who may merge at all.
-
-    **A link the survivor already carries is not duplicated**: the unique
-    `(tag, subject)` pair means the survivor already says that word, so the
-    loser's copy is deleted (`djb_tags.tag_link.deleted`) rather than moved. It
-    counts toward the answer all the same — after this call the loser carries
-    no link and the survivor carries every word either of them carried — which
-    is what `count` (the dry run, which cannot see the survivor) promised.
+    Both subjects are re-resolved and asked `djb_tag_link.update` at their nodes.
+    A word the survivor already carries is deleted from the loser, not duplicated, and still counts.
     """
     kind = kind_of(type(loser))
     if kind is None or kind != kind_of(type(survivor)):
@@ -241,7 +197,7 @@ def move_tag_links(*, tenant: Tenant, actor: Actor, loser: Any, survivor: Any) -
     survivor = get_subject(actor=actor, subject=f"{kind}:{survivor.pk}")
     require(actor, "djb_tag_link.update", loser)
     require(actor, "djb_tag_link.update", survivor)
-    landing = _landing(subject=survivor, actor=actor)
+    landing = landing_for(survivor, actor)
     carried = set(
         _subject_tag_links(tenant=tenant, subject=survivor).values_list("tag_id", flat=True)
     )

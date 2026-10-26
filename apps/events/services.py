@@ -48,7 +48,6 @@ from uuid import UUID
 from django.core.exceptions import ImproperlyConfigured
 from django.core.serializers.json import DjangoJSONEncoder
 from django.db.models import Q
-from opentelemetry import trace
 
 from apps.core import bridge, context
 from apps.core.actor import Actor, system_actor
@@ -56,13 +55,19 @@ from apps.core.authz import is_org_scoped_kind, kind_of_event, require
 from apps.core.exceptions import Invalid, as_invalid
 from apps.core.log import get_logger
 from apps.core.models import Organization, Tenant
+from apps.core.retry import retry_floor_seconds
+from apps.core.roads import road
+from apps.core.schemas import event_payload
 from apps.core.service import service
+from apps.core.service import trace_id as current_trace_id
 from apps.core.services import root_organization
 from apps.core.time import now
 from apps.core.types import Swept
 from apps.events import selectors
 from apps.events.events import ENDPOINT_REGISTERED, check_name, declared_names
 from apps.events.models import Delivery, Event, Outbox, WebhookEndpoint
+from apps.events.schemas import WebhookEndpointOut
+from apps.events.targets import refuse_private_target
 from apps.events.types import DispatchEvent
 
 log = get_logger(__name__)
@@ -121,16 +126,6 @@ DOOR_ENCODER: type[json.JSONEncoder] = DjangoJSONEncoder
 _SUB_MILLISECOND = re.compile(
     r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}\.\d{4,}(?:[Zz]|[+-]\d{2}:\d{2})?$"
 )
-
-
-def _trace_id() -> str:
-    """The current trace, as the 32 hex characters every other table stores.
-
-    Not a service: a two-line pure function, and the same two lines
-    `core.service` uses to stamp an `AuditEntry`.
-    """
-    span_context = trace.get_current_span().get_span_context()
-    return format(span_context.trace_id, "032x") if span_context.is_valid else ""
 
 
 def _handed_back_to_the_encoder(value: Any) -> Any:
@@ -402,7 +397,7 @@ def _subject_organization(
 # --- Emitting ----------------------------------------------------------------
 
 
-@service
+@service(witness=False)
 def record_event(
     *,
     tenant: Tenant,
@@ -464,7 +459,8 @@ def record_event(
 # tenant's own key, to every subscriber it has. The doors onto this app are the
 # subscription surface (`api.py`) and the replay of what was already emitted;
 # what may be emitted stays where the write is (house rule 42).
-@service
+@service(witness=False)
+@road("emit", example="apps/example/services.py::_publish_widget")
 def emit(
     *,
     name: str,
@@ -498,14 +494,9 @@ def emit(
     `enqueue_dispatch`, so a service that rolls back has emitted nothing and
     started nothing.
 
-    **A payload never carries a per-viewer field, at any depth** (`core.schemas.
-    PER_VIEWER_FIELDS`, derived from `ActsOut`): `allowed_acts` is what ONE
-    caller may press on the row, and an event is broadcast to every subscriber
-    and every socket listener — other viewers, all of them. A payload carrying
-    one is refused here, before anything is written, naming the key; the
-    emitting service builds its payload with `core.schemas.event_payload()`.
-    The spine is the one place this can be refused: a source rule cannot see a
-    key inside a dumped dict.
+    A per-viewer field (`ActsOut`) or a `personal` one is refused before any write.
+    why-not a source rule: it cannot see a key inside a dumped dict.
+    A hand payload names no `Out` (`EventPayload.source`), so its `personal` fields are not judged.
 
     # authz: an event is the product's own record of a write that has already
     # been authorised by the service making it; there is no separate permission
@@ -513,6 +504,7 @@ def emit(
     """
     check_name(name)
     _refuse_per_viewer_fields(name=name, payload=payload)
+    _refuse_personal_fields(name=name, payload=payload)
     chain = context.child_of_current()
     event = record_event(
         tenant=tenant,
@@ -523,7 +515,7 @@ def emit(
         actor=actor,
         correlation_id=str(chain["correlation_id"] or ""),
         causation_id=str(causation_id or chain["causation_id"] or ""),
-        trace_id=_trace_id(),
+        trace_id=current_trace_id(),
     )
     enqueue_dispatch(tenant=tenant, event_id=event.pk)
     return event
@@ -543,7 +535,21 @@ def _refuse_per_viewer_fields(*, name: str, payload: dict[str, Any]) -> None:
         )
 
 
-@service
+def _refuse_personal_fields(*, name: str, payload: dict[str, Any]) -> None:
+    """`ImproperlyConfigured` naming any field the payload's `Out` marks `personal`, any depth."""
+    from apps.core.schemas import EventPayload, personal_paths
+
+    carried = personal_paths(payload) if isinstance(payload, EventPayload) else []
+    if carried:
+        raise ImproperlyConfigured(
+            f"The payload of {name!r} carries {', '.join(repr(key) for key in carried)}, a "
+            "field its `Out` declares `personal`: a person, broadcast to every "
+            "subscriber. Emit `core.schemas.event_payload(out)` as built; a subscriber reads "
+            "the person through the API by id."
+        )
+
+
+@service(witness=False)
 def enqueue_dispatch(*, tenant: Tenant, event_id: UUID, resume: bool = False) -> Outbox:
     """Put an event's outbox row in the queue and start its dispatch on commit.
 
@@ -593,13 +599,17 @@ def enqueue_dispatch(*, tenant: Tenant, event_id: UUID, resume: bool = False) ->
     build_id = bridge.get(bridge.WORKFLOW_ID)
     start(
         workflow=DISPATCH_WORKFLOW,
-        arg=DispatchEvent(event_id=str(event.pk)),
+        arg=DispatchEvent(
+            event_id=str(event.pk),
+            retry_floor=retry_floor_seconds(),
+        ),
         tenant=tenant,
         id=build_id(tenant=tenant, app="events", noun="event", key=key),
     )
     return outbox
 
 
+# door: only this tree's own hands reach it — the dispatch activity closes its outbox row
 @service
 def close_outbox(*, tenant: Tenant, event_id: UUID, status: str, error: str = "") -> Outbox:
     """Move an outbox row to its terminal state. Idempotent by construction.
@@ -691,6 +701,7 @@ def register_endpoint(
     from a system that issued the key — and those are the only two.
     """
     require(actor, "endpoint.create", root_organization(tenant=tenant))
+    refuse_private_target(url, dns=False)
     endpoint = WebhookEndpoint(
         tenant=tenant,
         url=url.strip(),
@@ -704,7 +715,7 @@ def register_endpoint(
     emit(
         name=ENDPOINT_REGISTERED,
         tenant=tenant,
-        payload={"endpoint_id": str(endpoint.pk), "url": endpoint.url},
+        payload=event_payload(WebhookEndpointOut.from_orm(endpoint)),
         actor=actor,
     )
     return endpoint
@@ -730,6 +741,7 @@ def update_endpoint(
     """
     require(actor, "endpoint.update", root_organization(tenant=tenant))
     if url is not None:
+        refuse_private_target(url, dns=False)
         endpoint.url = url.strip()
     if event_names is not None:
         endpoint.event_names = _declared(event_names)
@@ -781,7 +793,7 @@ def resume_endpoint(*, tenant: Tenant, actor: Actor, endpoint: WebhookEndpoint) 
 
     A pause is not a queue. Events that happened while the endpoint was inactive
     were fanned out to the endpoints that *were* active, and the paused one is
-    simply not among the targets that dispatch loaded (`selectors.endpoints_for`
+    simply not among the targets that dispatch loaded (`selectors.list_endpoints_for`
     reads the active ones). Resuming does not replay them; `POST
     /dead-letters/{id}/replay/` is where a specific missed delivery is sent
     again, and it is a deliberate act with a row to point at.
@@ -795,6 +807,7 @@ def resume_endpoint(*, tenant: Tenant, actor: Actor, endpoint: WebhookEndpoint) 
 # --- Deliveries --------------------------------------------------------------
 
 
+# door: only this tree's own hands reach it — the delivery activity records its attempt
 @service
 def record_delivery_attempt(
     *,
@@ -839,6 +852,7 @@ def record_delivery_attempt(
     return delivery
 
 
+# door: only this tree's own hands reach it — the delivery activity gives up on a delivery
 @service
 def dead_letter_delivery(
     *,
@@ -938,24 +952,23 @@ def enqueue_replay(*, tenant: Tenant, actor: Actor, delivery: Delivery) -> Deliv
 # --- Housekeeping ------------------------------------------------------------
 
 
+# door: only this tree's own hands reach it — the retention schedule's sweep of the outbox
 @service
-def purge_dispatched_outbox(*, before: datetime) -> int:
-    """Drop outbox rows dispatched before `before`. Returns how many went.
+def purge_dispatched_outbox(*, before: datetime, tenant: None) -> Swept:
+    """Drop outbox rows dispatched before `before`; a `failed` row is the finding and stays.
 
-    Only `dispatched` rows: a `failed` one is the record of something that never
-    reached its subscriber, and deleting it would be deleting the finding.
-
-    # authz: deployment housekeeping, run by a schedule as the system. It is
-    # scoped by age rather than by tenant and touches no tenant-owned row.
+    `tenant` selects the platform's audit population and filters nothing (ADR core-22).
+    # authz: deployment housekeeping, run by a schedule as the system; scoped by age, not tenant.
     """
     deleted, _ = Outbox.objects.filter(
         status=Outbox.Status.DISPATCHED, dispatched_at__lt=before
     ).delete()
-    return int(deleted)
+    return Swept(label=Outbox._meta.label, count=int(deleted))
 
 
+# door: only this tree's own hands reach it — the retention schedule's sweep of deliveries
 @service
-def purge_deliveries(*, before: datetime, tenant: Tenant | None) -> Swept:
+def purge_deliveries(*, before: datetime, tenant: None) -> Swept:
     """Drop deliveries that reached a **final state** before `before`. How many went.
 
     **What it returns is a `Swept`, not a bare count** (ADR core-22, L6). The

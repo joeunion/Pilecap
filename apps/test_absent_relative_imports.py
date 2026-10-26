@@ -1,6 +1,6 @@
 """The absent-app planner resolves a relative import as the import system does.
 
-`apps/conftest.py::_imported_modules` used to keep a `from … import` only when
+`apps/testing/absent_world.py::_imported_modules` used to keep a `from … import` only when
 it was absolute, so `from .helper import thing` named nothing and a test that
 reached an absent app through a sibling helper was collected — and errored at
 import. These pin the resolution, level by level. Why this module sits at the

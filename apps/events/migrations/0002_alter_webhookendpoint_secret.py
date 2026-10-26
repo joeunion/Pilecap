@@ -1,4 +1,4 @@
-"""`WebhookEndpoint.secret` stops being plaintext in the column (rung W6).
+"""`WebhookEndpoint.secret` stops being plaintext in the column.
 
 A MEDIUM finding: the one recoverable credential in a tree whose doctrine says
 encrypted-at-rest, sitting beside `Connection.credentials`, which has been
@@ -48,14 +48,14 @@ def _rewrite(schema_editor: Any, transform: Any) -> None:
     holds secrets is still told, loudly, on the row it cannot convert.
     """
     with schema_editor.connection.cursor() as cursor:
-        cursor.execute(f"SELECT id, secret FROM {TABLE}")  # noqa: S608 - constant table name
+        cursor.execute(f"SELECT id, secret FROM {TABLE}")  # noqa: S608 - TABLE is a module literal frozen with this migration; no row, setting or caller value reaches the f-string
         rows = [(pk, secret) for pk, secret in cursor.fetchall() if secret]
         if not rows:
             return
         cipher = fernet()
         for pk, secret in rows:
             cursor.execute(
-                f"UPDATE {TABLE} SET secret = %s WHERE id = %s",  # noqa: S608
+                f"UPDATE {TABLE} SET secret = %s WHERE id = %s",  # noqa: S608 — TABLE is the module constant; both values are bound parameters
                 [transform(cipher, str(secret)), pk],
             )
 
