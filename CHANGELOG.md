@@ -46,6 +46,53 @@ and ignore every one, but the release exists because the first real fold of
 2.1.0 was not the thing it was meant to be, and the number says that rather
 than advertising the drawers.
 
+## [2.5.1] — The MinIO pin moves to a registry that serves GitHub's runners without a ration
+
+### SDK
+
+- added: 518 names — quality/sdk_surface.json is the record
+
+### Fixed — the registry that rationed every clone's CI
+
+**Every clone's CI pulled MinIO from the template owner's ECR Public mirror
+anonymously, and ECR Public rations anonymous pulls per source address — an
+address GitHub's shared runners share with everyone.** So a product's first
+pull request could go red at `docker compose up` with `toomanyrequests: Data
+limit exceeded`, having done nothing wrong; the template's own repository
+showed the same red on the 2.5.0 tag and on most nightly proofs. 2.5.1 moves
+the one pin that lived there.
+
+- **MinIO's pin is on ghcr.io, under the template owner's namespace** — the
+  `image:` line of `compose.yaml` spells it, `RELEASE.2025-09-07T16-13-09Z@sha256:9966a9…`,
+  the same manifest by digest, copied by the `ghcr-minio` job of
+  `mirror-images.yml` and served to every clone anonymously the way Zitadel's
+  pin already is. It is still one `linux/arm64` manifest, so an amd64 laptop
+  still runs it under emulation (`docs/sdk/day-zero.md`, "The CPU").
+- **The ECR Public alias is read from the repository variable `DJB_STACK_REGISTRY`**,
+  never derived from `compose.yaml` (`mirror-images.yml`): with MinIO gone from
+  that registry nothing in the compose file names it, and the old derivation
+  raised.
+- **`setup.sh` names a spent ration.** A refused pull that says
+  `toomanyrequests` is told so — this address's anonymous ration for that host
+  is spent; pull from another address or `docker login <host>` with any account
+  — before the stale-login remedy, which is not the cause.
+- **The censuses follow the pin**: the workflow and stack-image censuses in
+  `quality/tests/` pin the ghcr.io host and go red if it moves back; the
+  archaeology census allows the owner's handle on that one `image:` line of
+  `compose.yaml` and nowhere else.
+
+ratchet-debt: 91=71538 98=3089
+
+### Known, not in this patch
+
+The third clean-room drive's rows ride 2.5.2 or the next minor, among them: a
+`scaffold child` with a two-word title writes one line over the length limit, so
+the first `feature.sh` is red before it is green (N2526); a stacked
+`@also_refuses` keeps only the outermost (N2522); a shape's baseline move absorbs
+a pre-existing hand drift with a notice but no refusal (N2524). The proof
+workflows still log in to ECR Public under step names that say "MinIO pull"
+(N2527).
+
 ## [2.5.0] — A product built only on the SDK pays for none of the platform's tests and touches none of it — proven from zero
 
 ### SDK

@@ -388,29 +388,33 @@ services:
     # whose S3 dialect moved between two worktrees would be a debugging
     # session nobody asked for.
     #
-    # SERVED FROM THE OWNER'S ECR PUBLIC MIRROR, pinned by digest. The release
-    # is the one this tree has always run; only the source moved, twice. Docker
-    # Hub dropped the tag on 2026-09-12; quay.io served the byte-identical
-    # digest until MinIO archived the project and withdrew every public image
-    # and binary on 2026-09-24 (dl.min.io answers 410, the GitHub project is
-    # archived). The mirror is the last public release, re-pushed from a cache
-    # into the owner's ECR Public repository — a vendor behind a boundary we own
-    # (principle 5). LINUX/ARM64 ONLY, because no box of ours had cached the
-    # amd64 layers and no registry serves them now; `platform:` says so, a Mac
-    # or a Graviton box runs it natively, and an amd64 host needs the arm64
-    # QEMU handler (CI registers it before `compose up`). BY DIGEST, so a
-    # re-push under the same tag cannot move it silently. Anonymous pulls work
-    # for a laptop, a fresh clone and a verifier box; CI logs in, because ECR
-    # Public rations anonymous data and a full matrix exhausts it. The tripwire
-    # for the next time a registry loses it is still `scripts/setup.sh`'s pull
-    # step, which refuses with COULD NOT LOOK and names the image. To re-pin:
-    # push to the same repository and replace tag and digest together.
-    # The ONE path a product still pulls from the platform owner's registry; the
-    # decision on its home (a product-owned mirror, or a listed vendor) is the owner's — N2155.
-    # pin-exception: pinned by digest, but to a single linux/arm64 manifest on the
-    # owner's ECR Public mirror rather than a multi-arch index on a listed registry —
-    # no registry serves the amd64 layers of this release any more (see above).
-    image: public.ecr.aws/w9i8o4b2/minio:RELEASE.2025-09-07T16-13-09Z@sha256:9966a92a734f9411e32f4f41d7d9d826fcdc0f68c4e20b70295bd4e7c11f8a2f
+    # SERVED FROM THE OWNER'S GHCR.IO MIRROR, pinned by digest — the registry
+    # the Zitadel pin already pulls from. The release is the one this tree has
+    # always run; only the source moved, three times. Docker Hub dropped the tag
+    # on 2026-09-12; quay.io served the byte-identical digest until MinIO
+    # archived the project and withdrew every public image and binary on
+    # 2026-09-24 (dl.min.io answers 410, the GitHub project is archived). The
+    # mirror is the last public release, re-pushed from a cache — a vendor
+    # behind a boundary we own (principle 5) — first to the owner's ECR Public
+    # repository, then, digest unchanged, to the owner's ghcr.io namespace
+    # (2026-10-26), because ECR Public rations ANONYMOUS pulls by data per
+    # address and GitHub's shared runner addresses spend that ration, while
+    # ghcr.io serves public packages to them anonymously. LINUX/ARM64 ONLY,
+    # because no box of ours had cached the amd64 layers and no registry serves
+    # them now; `platform:` says so, a Mac or a Graviton box runs it natively,
+    # and an amd64 host needs the arm64 QEMU handler (CI registers it before
+    # `compose up`). BY DIGEST, so a re-push under the same tag cannot move it
+    # silently. Every pull is anonymous: a laptop, a fresh clone, a verifier box
+    # and CI. The tripwire for the next time a registry loses it is still
+    # `scripts/setup.sh`'s pull step, which refuses with COULD NOT LOOK and
+    # names the image. To re-pin: push to the same package and replace tag and
+    # digest together (`mirror-images.yml`'s `ghcr_minio` input made this copy).
+    # The ONE path a product still pulls from the platform owner's namespace;
+    # it moves to the organization's namespace with the organization repository — N2492.
+    # pin-exception: pinned by digest, but to a single linux/arm64 manifest
+    # rather than a multi-arch index — no registry serves the amd64 layers of
+    # this release any more (see above).
+    image: ghcr.io/joeunion/minio:RELEASE.2025-09-07T16-13-09Z@sha256:9966a92a734f9411e32f4f41d7d9d826fcdc0f68c4e20b70295bd4e7c11f8a2f
     platform: linux/arm64
     restart: unless-stopped
     command: ["server", "/data", "--console-address", ":9001"]

@@ -678,14 +678,14 @@ jobs:
         run: uv sync --frozen
 
       - name: the arm64 handler the MinIO mirror needs
-        # `compose.yaml` pins MinIO's last public release from the owner's ECR
-        # Public mirror, linux/arm64 only; this runner is amd64, so the one
+        # `compose.yaml` pins MinIO's last public release from the owner's
+        # ghcr.io mirror, linux/arm64 only; this runner is amd64, so the one
         # arm64 service runs under QEMU — the action the `images` job uses.
         uses: docker/setup-qemu-action@v3
         with:
           platforms: arm64
 
-      - name: assume an AWS identity for the MinIO pull
+      - name: assume an AWS identity for the stack registry's pull
         # ECR Public rations ANONYMOUS pulls by data, and a full matrix (about
         # sixteen shards × ~170 MB) exhausts it: `toomanyrequests: Data limit
         # exceeded`. Authenticated pulls are not rationed. The role is the
@@ -700,13 +700,14 @@ jobs:
           role-to-assume: ${{ vars.AWS_ECR_ROLE_ARN }}
           aws-region: us-east-1
 
-      - name: log in to the registry the MinIO pin names
+      - name: log in to ECR Public for the stack registry
         # `registry-type: public` is `docker login public.ecr.aws` with an ECR
         # Public token, through the action the `images` job already uses. It
-        # covers MinIO's pin, and a DJB_STACK_REGISTRY variable naming an ECR
-        # Public alias (the template's own repository points it at the mirror
-        # `mirror-images.yml` fills). With no role variable this step is
-        # skipped and every ECR Public pull is anonymous, rationed by data.
+        # covers a DJB_STACK_REGISTRY variable naming an ECR Public alias (the
+        # template's own repository points it at the mirror `mirror-images.yml`
+        # fills); MinIO's pin is on ghcr.io and pulls anonymously. With no role
+        # variable this step is skipped and every ECR Public pull is anonymous,
+        # rationed by data.
         # `quality/tests/test_bootstrap.py` refuses a compose-up job without it.
         if: vars.AWS_ECR_ROLE_ARN != ''
         uses: aws-actions/amazon-ecr-login@v2

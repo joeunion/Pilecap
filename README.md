@@ -119,9 +119,9 @@ uv run python manage.py seed
   (`git clone --branch <tag> …`) there is no local `main`, so it creates one
   first and says so.
 - The stack's images are multi-architecture except MinIO, one `linux/arm64`
-  manifest on the template owner's ECR Public mirror (no registry still serves
-  that release's amd64 layers), so an amd64 laptop runs it under Docker's arm64
-  emulation (`docs/sdk/day-zero.md`, "The CPU").
+  manifest on the template owner's ghcr.io mirror, beside Zitadel's image (no
+  registry still serves that release's amd64 layers), so an amd64 laptop runs
+  it under Docker's arm64 emulation (`docs/sdk/day-zero.md`, "The CPU").
 - Every image pulls anonymously: no registry account or login, the MinIO
   mirror included.
 - Every clone's compose project is `djangobootstrap`, the name `docker ps`

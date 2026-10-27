@@ -18,7 +18,7 @@ A fresh clone of the template to a declared, gated, pushed product, in order —
 
 **Rename nothing** means the paths and names in the tree — files, apps, commands. Your repository's name and its git remotes are yours (step 6).
 
-**The CPU.** Every image the dev stack pulls is a multi-architecture index (`linux/amd64` and `linux/arm64`) except MinIO, which is one `linux/arm64` manifest on the template owner's ECR Public mirror because no registry still serves that release's amd64 layers — so an Apple-silicon or other arm64 host runs it natively, and an amd64 laptop runs it under Docker's arm64 emulation (Docker Desktop ships it; a Linux host needs QEMU's binfmt handlers installed), slower and otherwise the same. (`compose.yaml:414`)
+**The CPU.** Every image the dev stack pulls is a multi-architecture index (`linux/amd64` and `linux/arm64`) except MinIO, which is one `linux/arm64` manifest on the template owner's ghcr.io mirror because no registry still serves that release's amd64 layers — so an Apple-silicon or other arm64 host runs it natively, and an amd64 laptop runs it under Docker's arm64 emulation (Docker Desktop ships it; a Linux host needs QEMU's binfmt handlers installed), slower and otherwise the same. (`compose.yaml:418`)
 
 **The compose project name.** Every clone's stack is the compose project `djangobootstrap`, the name `docker ps` shows: ADR platform-1 keeps it as the one deliberate exception to `PRODUCT_NAME`, because it is infrastructure identity — the containers and volumes key on it, and renaming it orphans a running stack and its data. (`compose.yaml:30`)
 

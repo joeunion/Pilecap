@@ -104,6 +104,39 @@ def test_allowlisted_forms_stay_silent(repo: Path, capfd: pytest.CaptureFixture[
     assert "VIOLATION" not in out
 
 
+#: The owner's ghcr.io handle, split so this file is not itself a finding.
+HANDLE = "joe" + "union"
+PIN = f"    image: ghcr.io/{HANDLE}/minio:RELEASE.1@sha256:{'0' * 64}\n"
+
+
+def test_the_minio_pin_line_in_compose_is_the_one_allowed_handle(
+    repo: Path, capfd: pytest.CaptureFixture[str]
+) -> None:
+    _plant(repo, "compose.yaml", f"services:\n  minio:\n{PIN}")
+    rc, out = _run(repo, capfd)
+    assert rc == 0, out
+    assert "VIOLATION" not in out
+
+
+@pytest.mark.parametrize(
+    ("path", "text"),
+    [
+        ("compose.yaml", f"services:\n  minio:\n    # the {HANDLE} namespace\n{PIN}"),
+        ("compose.yaml", f"services:\n  other:\n    image: ghcr.io/{HANDLE}/other:1\n"),
+        ("compose.yaml", f"services:\n  minio:\n{PIN.rstrip()}  # {HANDLE}\n"),
+        ("scripts/plant.sh", PIN),
+    ],
+    ids=["a-comment-in-compose", "another-image", "a-trailing-comment", "another-file"],
+)
+def test_the_handle_anywhere_else_is_still_refused(
+    repo: Path, capfd: pytest.CaptureFixture[str], path: str, text: str
+) -> None:
+    _plant(repo, path, text)
+    rc, out = _run(repo, capfd)
+    assert rc == 1, out
+    assert re.search(rf"archaeology-census: {re.escape(path)}:[0-9]+  private-name", out), out
+
+
 def test_skeleton_bucket_stays_silent(repo: Path, capfd: pytest.CaptureFixture[str]) -> None:
     n, rung, story = SHAPES[0][1], SHAPES[1][1], SHAPES[2][1]
     _plant(repo, "docs/product/queue.md", f"| {n} | {rung} | done | {story} |\n")

@@ -315,8 +315,7 @@ before the job is armed.
 Then `scripts/verifier_box.sh census` — exit 0 and `no verifier boxes` is the
 answer you want; an `OVERDUE` line is a box no session remembers, `down` it now
 and record the reaper failure as a queue row; exit 2 means the profile is gone —
-the two commands it prints are the owner's, ask — and the bootstrap is typed with its three coordinates in front (`DJB_DEPLOY_NAMESPACE=<ns> DJB_VERIFIER_ACCOUNT=<12 digits> DJB_VERIFIER_REGION=<region> ./deploy/iam/verifier_bootstrap.sh`, per its own header; the tree carries no default for any of them). (Until the verifier-box
-script lands, the command does not exist and this step is a no-op.)
+the two commands it prints are the owner's, ask — and the bootstrap is typed with its three coordinates in front (`DJB_DEPLOY_NAMESPACE=<ns> DJB_VERIFIER_ACCOUNT=<12 digits> DJB_VERIFIER_REGION=<region> ./deploy/iam/verifier_bootstrap.sh`, per its own header; the tree carries no default for any of them).
 
 **Know what it does not do.** The job is session-only: in memory, gone with the
 session, auto-expired after seven days. **It watches for a stalled loop; it

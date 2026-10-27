@@ -565,6 +565,11 @@ refused_pull_cause() {
     echo "   \`docker manifest inspect ${ref}\` exited ${rc}; its first line:"
     echo "     ${first:-<nothing on stderr>}"
     case "$(printf '%s' "$first" | tr '[:upper:]' '[:lower:]')" in
+    *toomanyrequests*)
+        echo "   remedy: this address's anonymous ration for ${host} is spent — pull from another"
+        echo "   address, or \`docker login ${host}\` with any account of that registry; a stale"
+        echo "   login is NOT the cause."
+        ;;
     *authoriz* | *denied* | *forbidden* | *403* | *token* | *credential*)
         echo "   remedy: a stored login for ${host} is stale or expired — \`docker logout ${host}\`"
         echo "   (a product pulls these images anonymously) or log in again, then re-run setup."

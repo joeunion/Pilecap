@@ -1529,7 +1529,7 @@ PROJECT_PIN = "name: djangobootstrap"
 ARCHITECTURES = (
     "Every image the dev stack pulls is a multi-architecture index (`linux/amd64` and "
     "`linux/arm64`) except MinIO, which is one `linux/arm64` manifest on the template owner's "
-    "ECR Public mirror because no registry still serves that release's amd64 layers — so an "
+    "ghcr.io mirror because no registry still serves that release's amd64 layers — so an "
     "Apple-silicon or other arm64 host runs it natively, and an amd64 laptop runs it under "
     "Docker's arm64 emulation (Docker Desktop ships it; a Linux host needs QEMU's binfmt "
     "handlers installed), slower and otherwise the same."

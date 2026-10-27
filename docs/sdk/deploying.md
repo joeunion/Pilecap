@@ -46,11 +46,11 @@ gh variable set AWS_REGION --repo <owner>/<repo> --body <as printed>
 gh variable set DJB_DEPLOY_NAMESPACE --repo <owner>/<repo> --body <as printed>
 ```
 
-With them, every merge to main builds the three images (`deploy/provision.sh:336`) and pushes them to ECR (`.github/workflows/ci.yml:1593`).
+With them, every merge to main builds the three images (`deploy/provision.sh:336`) and pushes them to ECR (`.github/workflows/ci.yml:1594`).
 
-Leave two unset: `AWS_DEPLOY_ROLE_ARN` and `DJB_STAGE_TARGET`. They arm the staging deploy job (`.github/workflows/ci.yml:1745`), which reaches the box over plain ssh, and a hosted runner holds no key for it: unset, the job skips with a notice; set, it is red on the ssh refusal. Why: [Deploying from CI — the two jobs, and the transport a product builds](../runbooks/deploy.md#deploying-from-ci--the-two-jobs-and-the-transport-a-product-builds) (`docs/runbooks/deploy.md:1604`).
+Leave two unset: `AWS_DEPLOY_ROLE_ARN` and `DJB_STAGE_TARGET`. They arm the staging deploy job (`.github/workflows/ci.yml:1746`), which reaches the box over plain ssh, and a hosted runner holds no key for it: unset, the job skips with a notice; set, it is red on the ssh refusal. Why: [Deploying from CI — the two jobs, and the transport a product builds](../runbooks/deploy.md#deploying-from-ci--the-two-jobs-and-the-transport-a-product-builds) (`docs/runbooks/deploy.md:1604`).
 
-The stack's registry is the product's choice (`.github/workflows/ci.yml:716`): `DJB_STACK_REGISTRY`, an optional variable, names the product's own mirror if it runs one; else the repository SECRETS `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN` log the pull in to Docker Hub; else it is anonymous, and Docker Hub rate-limits a full matrix.
+The stack's registry is the product's choice (`.github/workflows/ci.yml:717`): `DJB_STACK_REGISTRY`, an optional variable, names the product's own mirror if it runs one; else the repository SECRETS `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN` log the pull in to Docker Hub; else it is anonymous, and Docker Hub rate-limits a full matrix.
 
 next: the first deploy.
 

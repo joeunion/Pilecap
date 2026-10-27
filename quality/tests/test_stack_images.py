@@ -4,7 +4,7 @@ does-not-cover: whether the mirror holds each digest now — the mirror workflow
 does-not-cover: `deploy/compose.yaml` and `nightly-proof.yml` — they still pull Docker Hub directly.
 """
 
-# does-not-cover: MinIO's pin, the canary's one exception — its home is the owner's decision, N2155.
+# does-not-cover: MinIO's pin — on ghcr.io, never mirrored here (`test_bootstrap.py` pins it).
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 PREFIX = "${DJB_STACK_REGISTRY:-docker.io}/"
 STACK_STEP = "the stack the gate assumes (docker compose up)"
 REGISTRY_STEP = "the stack's registry, the product's choice"
-MINIO_LINE = re.compile(r"^\s*image:\s*(?P<alias>public\.ecr\.aws/[a-z0-9]+)/minio:", re.MULTILINE)
+ECR_ALIAS = re.compile(r"public\.ecr\.aws/[a-z0-9]+/")
 DERIVE_STEP = "derive the Docker Hub images compose.yaml names"
 IMAGE_LINE = re.compile(r"^\s*image:\s*(?P<ref>[^\s#]+)", re.MULTILINE)
 MAC_REF = re.compile(r"docker\.io/[a-z0-9._-]+/[a-z0-9._/-]+:[^@]+@sha256:[0-9a-f]{64}")
@@ -99,13 +99,6 @@ def test_non_hub_images_are_untouched() -> None:
         assert "${" not in ref, f"`{ref}` is not on Docker Hub and must not carry the stack prefix"
 
 
-def the_one_alias() -> str:
-    """`public.ecr.aws/<alias>` as the MinIO pin spells it — the one place it is written."""
-    found = MINIO_LINE.findall(COMPOSE.read_text())
-    assert len(found) == 1, f"compose.yaml's MinIO pin names {found or 'no'} ECR Public alias"
-    return str(found[0])
-
-
 def derivation() -> dict[str, Any]:
     _job, steps, index = find_step(workflow(MIRROR_WORKFLOW), DERIVE_STEP)
     step = steps[index]
@@ -118,11 +111,12 @@ def derivation() -> dict[str, Any]:
 @pytest.mark.template_only(
     reason="the image mirror is the template's own workflow; a product never receives it"
 )
-def test_the_alias_is_spelled_once() -> None:
-    alias = the_one_alias().split("/", 1)[1]
-    for path in (MIRROR_WORKFLOW, CI_WORKFLOW):
-        assert alias not in path.read_text(), (
-            f"{path.relative_to(ROOT)} spells the alias a second time"
+def test_the_alias_is_spelled_nowhere_the_mirror_reads() -> None:
+    for path in (COMPOSE, MIRROR_WORKFLOW, CI_WORKFLOW):
+        spelled = ECR_ALIAS.findall(path.read_text())
+        assert not spelled, (
+            f"{path.relative_to(ROOT)} spells an ECR Public alias ({spelled}); "
+            "it is the repository variable DJB_STACK_REGISTRY"
         )
 
 
@@ -132,8 +126,8 @@ def test_the_alias_is_spelled_once() -> None:
 def test_the_mirror_derivation_lists_exactly_the_hub_images() -> None:
     namespace = derivation()
     text = COMPOSE.read_text()
-    mirror = namespace["mirror_registry"](text)
-    assert mirror == the_one_alias()
+    mirror = namespace["mirror_registry"]("public.ecr.aws/example")
+    assert mirror == "public.ecr.aws/example"
     rows = namespace["hub_images"](text, mirror)
     expected = []
     for ref in hub_refs():
@@ -148,6 +142,28 @@ def test_the_mirror_derivation_lists_exactly_the_hub_images() -> None:
         )
     got = [{k: row[k] for k in ("source", "mirror", "digest")} for row in rows]
     assert got == expected
+
+
+@pytest.mark.template_only(
+    reason="the image mirror is the template's own workflow; a product never receives it"
+)
+@pytest.mark.parametrize("value", ["", "docker.io", "ghcr.io/example", "public.ecr.aws/a/b"])
+def test_the_mirror_derivation_refuses_a_variable_that_is_not_an_ecr_public_alias(
+    value: str,
+) -> None:
+    with pytest.raises(ValueError, match="DJB_STACK_REGISTRY is"):
+        derivation()["mirror_registry"](value)
+
+
+@pytest.mark.template_only(
+    reason="the image mirror is the template's own workflow; a product never receives it"
+)
+def test_the_mirror_derivation_reads_the_repository_variable_not_compose() -> None:
+    _job, steps, index = find_step(workflow(MIRROR_WORKFLOW), DERIVE_STEP)
+    assert steps[index]["env"]["STACK_REGISTRY"] == "${{ vars.DJB_STACK_REGISTRY }}"
+    assert not re.search(r"^\s*image:\s*public\.ecr\.aws/", COMPOSE.read_text(), re.MULTILINE), (
+        "compose.yaml names an ECR Public image again — the derivation no longer reads it"
+    )
 
 
 @pytest.mark.template_only(
@@ -171,6 +187,52 @@ def test_the_mirror_workflow_pushes_to_ecr_public_on_the_compose_file() -> None:
         if str(step.get("uses", "")).startswith("aws-actions/amazon-ecr-login@")
     ]
     assert len(login) == 1 and login[0]["with"].get("registry-type") == "public"
+
+
+MINIO_PIN = re.compile(
+    r"^\s*image:\s*ghcr\.io/(?P<namespace>[a-z0-9-]+)/minio:(?P<tag>[^@\s]+)@(?P<digest>sha256:[0-9a-f]{64})",
+    re.MULTILINE,
+)
+
+
+@pytest.mark.template_only(
+    reason="the image mirror is the template's own workflow; a product never receives it"
+)
+def test_the_ghcr_minio_job_runs_alone_and_copies_the_pinned_digest() -> None:
+    doc = workflow(MIRROR_WORKFLOW)
+    triggers = doc.get(True) or doc.get("on")
+    assert isinstance(triggers, dict), "the mirror workflow declares no triggers"
+    dispatch = triggers.get("workflow_dispatch")
+    assert isinstance(dispatch, dict), "workflow_dispatch declares no inputs"
+    inputs = dispatch.get("inputs") or {}
+    assert "ghcr_minio" in inputs, "no dispatch input selects the ghcr copy"
+    choice = inputs["ghcr_minio"]
+    assert choice["type"] == "boolean" and choice["default"] is False
+    jobs = doc["jobs"]
+    assert jobs["derive"]["if"] == "${{ !inputs.ghcr_minio }}", (
+        "the Hub mirror runs beside the ghcr copy"
+    )
+    assert jobs["copy"]["needs"] == "derive", "the Hub copy no longer waits on the gated derive"
+    assert "derive" in jobs["verify"]["needs"]
+    job = jobs["ghcr-minio"]
+    assert job["if"] == "${{ inputs.ghcr_minio }}"
+    assert job["permissions"]["packages"] == "write"
+    assert [
+        name for name, other in jobs.items() if "packages" in (other.get("permissions") or {})
+    ] == ["ghcr-minio"]
+    run = "\n".join(str(step.get("run", "")) for step in job["steps"])
+    assert 'docker login ghcr.io -u ${{ github.actor }} --password-stdin <<< "$GITHUB_TOKEN"' in run
+    copy = next(step for step in job["steps"] if "crane copy" in str(step.get("run", "")))
+    pinned = MINIO_PIN.search(COMPOSE.read_text())
+    assert pinned is not None, (
+        "compose.yaml's MinIO pin is not on ghcr.io — this job no longer makes its copy"
+    )
+    assert copy["env"]["TAG"] == pinned["tag"]
+    assert copy["env"]["DIGEST"] == pinned["digest"]
+    assert copy["env"]["STACK_REGISTRY"] == "${{ vars.DJB_STACK_REGISTRY }}"
+    mirror = f'MIRROR="ghcr.io/{pinned["namespace"]}/minio:${{TAG}}"'
+    assert mirror in [line.strip() for line in copy["run"].splitlines()], copy["run"]
+    assert 'if [ "$got" != "$DIGEST" ]' in copy["run"]
 
 
 DOCKER_SHIM = """#!/bin/bash
@@ -265,8 +327,6 @@ def test_neither_is_anonymous_docker_hub_with_the_rationing_named(tmp_path: Path
 #: The platform owner's AWS account and ECR Public alias; a product path naming either needs it.
 PLATFORM_MARKS = ("050254549871", "w9i8o4b2")
 PRODUCT_PATHS = ("compose.yaml", "deploy", "scripts", ".github/workflows/ci.yml")
-#: The one open exception: MinIO's pin (the module's does-not-cover comment names its owner).
-MINIO_EXCEPTION = re.compile(r"^\s*image:\s*public\.ecr\.aws/w9i8o4b2/minio:")
 
 
 def test_no_product_path_names_the_platform_owners_registry() -> None:
@@ -282,7 +342,6 @@ def test_no_product_path_names_the_platform_owners_registry() -> None:
         "the census lists no ci.yml — it cannot look"
     )
     found: list[str] = []
-    excepted: list[str] = []
     for path in files:
         if not path.is_file():
             continue
@@ -293,9 +352,5 @@ def test_no_product_path_names_the_platform_owners_registry() -> None:
         for number, line in enumerate(text.splitlines(), 1):
             if not any(mark in line for mark in PLATFORM_MARKS):
                 continue
-            where = f"{path.relative_to(ROOT)}:{number}"
-            (
-                excepted if path.name == "compose.yaml" and MINIO_EXCEPTION.match(line) else found
-            ).append(where)
+            found.append(f"{path.relative_to(ROOT)}:{number}")
     assert not found, f"product paths name the platform owner's registry: {found}"
-    assert len(excepted) <= 1, f"the MinIO exception is one line, found {excepted}"

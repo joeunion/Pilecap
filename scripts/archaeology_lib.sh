@@ -304,6 +304,14 @@ archaeology_class_report() {
             text=$(printf '%s' "$text" |
                 sed -E 's/noqa:[[:space:]]*[A-Z]+[0-9]+([[:space:]]*,[[:space:]]*[A-Z]+[0-9]+)*//g')
         fi
+        # ALLOW-LIST, with its reason: compose.yaml's MinIO pin, that one line,
+        # names the owner's ghcr.io namespace — the owner named it on
+        # 2026-10-26; the pin moves to the organization's namespace with the
+        # organization repository, and this arm is removed with it.
+        if [ "$label" = private-name ] && [ "$file" = compose.yaml ] &&
+            [[ "$text" =~ ^[[:space:]]*image:[[:space:]]*ghcr\.io/joe"union"/minio:[^[:space:]]+$ ]]; then
+            continue
+        fi
         # READ WHOLE, THEN SLICE. This file is SOURCED by `scripts/check.sh`,
         # which runs under `set -o pipefail`: a `| head -1` here closes the pipe
         # on the first match and orphans grep on any line long enough to fill a

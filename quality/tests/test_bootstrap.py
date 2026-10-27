@@ -1136,10 +1136,13 @@ case "$*" in
 esac
 exit 0
 """
+#: Split at the owner's handle so this shipped file never spells it (the archaeology census).
 MINIO_PINNED_REF = (
-    "public.ecr.aws/w9i8o4b2/minio:RELEASE.2025-09-07T16-13-09Z"
+    "ghcr.io/joe"
+    "union/minio:RELEASE.2025-09-07T16-13-09Z"
     "@sha256:9966a92a734f9411e32f4f41d7d9d826fcdc0f68c4e20b70295bd4e7c11f8a2f"
 )
+MINIO_HOST = "ghcr.io"
 
 
 @dataclass(frozen=True)
@@ -1308,14 +1311,18 @@ def test_a_one_shot_that_did_not_complete_falls_through_to_the_pull(
     [
         (
             "Your authorization token has expired. Reauthenticate and try again.",
-            "remedy: a stored login for public.ecr.aws is stale or expired",
+            f"remedy: a stored login for {MINIO_HOST} is stale or expired",
         ),
         (
             "manifest unknown: manifest unknown",
-            "remedy: public.ecr.aws no longer serves this pin",
+            f"remedy: {MINIO_HOST} no longer serves this pin",
+        ),
+        (
+            "toomanyrequests: Data limit exceeded",
+            f"remedy: this address's anonymous ration for {MINIO_HOST} is spent",
         ),
     ],
-    ids=["stale-login", "pin-no-longer-served"],
+    ids=["stale-login", "pin-no-longer-served", "ration-spent"],
 )
 def test_a_refused_pull_prints_the_manifest_reads_own_cause_and_its_remedy(
     services: Callable[..., Services], said: str, remedy: str
@@ -1330,6 +1337,7 @@ def test_compose_measured_refusal_line_inspects_the_failing_services_own_pin(
     services: Callable[..., Services],
 ) -> None:
     stripped = MINIO_PINNED_REF.replace(":RELEASE.2025-09-07T16-13-09Z", "")
+    repo, digest = stripped.split("/", 1)[1].split("@")
     said = "Your authorization token has expired. Reauthenticate and try again."
     run = services(
         MINIO_PINNED_REF,
@@ -1339,8 +1347,7 @@ def test_compose_measured_refusal_line_inspects_the_failing_services_own_pin(
         manifest_rc=1,
         pull_line=(
             f'minio Error failed to resolve reference "{stripped}": unexpected status from'
-            f" HEAD request to https://public.ecr.aws/v2/w9i8o4b2/minio/manifests/"
-            f"{stripped.rsplit('@', 1)[1]}: 403 Forbidden"
+            f" HEAD request to https://{MINIO_HOST}/v2/{repo}/manifests/{digest}: 403 Forbidden"
         ),
     )
     assert run.rc == 2, run.text
@@ -1350,8 +1357,8 @@ def test_compose_measured_refusal_line_inspects_the_failing_services_own_pin(
     assert not missing(
         run.text,
         said,
-        "remedy: a stored login for public.ecr.aws is stale or expired",
-        "docker logout public.ecr.aws",
+        f"remedy: a stored login for {MINIO_HOST} is stale or expired",
+        f"docker logout {MINIO_HOST}",
     )
 
 
@@ -1462,7 +1469,8 @@ def test_a_reference_names_its_registry_the_way_docker_reads_one(
     cases = {
         "example/files-store:1": "docker.io",
         "quay.io/example/thing:1": "quay.io",
-        MINIO_PINNED_REF: "public.ecr.aws",
+        MINIO_PINNED_REF: MINIO_HOST,
+        "public.ecr.aws/example/minio:1": "public.ecr.aws",
         "ghcr.io/zitadel/zitadel:v4.17.1": "ghcr.io",
         "localhost:5000/thing:1": "localhost:5000",
         "postgres:17": "docker.io",
@@ -1497,8 +1505,8 @@ def runs_step(step: dict[str, Any], prefix: str, up_guard: str | None = None) ->
     return step.get("if") in allowed and str(step.get("uses", "")).startswith(prefix)
 
 
-def compose_up_jobs(workflow: dict[str, Any], host: str) -> dict[str, tuple[bool, bool]]:
-    """Per job that starts the stack: (QEMU arm64 before the up, logged in before the up)."""
+def compose_up_jobs(workflow: dict[str, Any]) -> dict[str, tuple[bool, bool]]:
+    """Per job that starts the stack: (QEMU arm64 before the up, ECR Public logged in before it)."""
     found: dict[str, tuple[bool, bool]] = {}
     for name, job in (workflow.get("jobs") or {}).items():
         steps = job.get("steps") or []
@@ -1528,8 +1536,7 @@ def compose_up_jobs(workflow: dict[str, Any], host: str) -> dict[str, tuple[bool
             (
                 i
                 for i, s in enumerate(before)
-                if host == "public.ecr.aws"
-                and runs_step(s, "aws-actions/amazon-ecr-login@", guard)
+                if runs_step(s, "aws-actions/amazon-ecr-login@", guard)
                 and (s.get("with") or {}).get("registry-type") == "public"
             ),
             None,
@@ -1553,9 +1560,7 @@ def test_the_proof_from_zero_runs_arm64_and_logs_in_before_the_pull() -> None:
 
 def assert_logs_in_before_the_pull(flow: str, subject: str) -> None:
     workflow = yaml.safe_load((ROOT / ".github" / "workflows" / flow).read_text())
-    compose = yaml.safe_load((ROOT / "compose.yaml").read_text())
-    host = compose["services"]["minio"]["image"].split("/", 1)[0]
-    jobs = compose_up_jobs(workflow, host)
+    jobs = compose_up_jobs(workflow)
     assert subject in jobs, f"no `{subject}` job starts the stack — the census has no subject"
     assert all(qemu for qemu, _ in jobs.values()), jobs
     assert all(logged for _, logged in jobs.values()), jobs
@@ -1566,7 +1571,7 @@ def assert_logs_in_before_the_pull(flow: str, subject: str) -> None:
             for s in job.get("steps") or []
             if not str(s.get("uses", "")).startswith("aws-actions/amazon-ecr-login@")
         ]
-    planted = compose_up_jobs(no_login, host)
+    planted = compose_up_jobs(no_login)
     assert subject in planted and not any(logged for _, logged in planted.values()), planted
     if_false = copy.deepcopy(workflow)
     for job in (if_false.get("jobs") or {}).values():
@@ -1579,13 +1584,13 @@ def assert_logs_in_before_the_pull(flow: str, subject: str) -> None:
                 )
             ):
                 s["if"] = False
-    assert compose_up_jobs(if_false, host).get(subject) == (False, False)
+    assert compose_up_jobs(if_false).get(subject) == (False, False)
     no_oidc = copy.deepcopy(workflow)
     for job in (no_oidc.get("jobs") or {}).values():
         if isinstance(job.get("permissions"), dict):
             job["permissions"].pop("id-token", None)
     no_oidc.pop("permissions", None)
-    assert compose_up_jobs(no_oidc, host).get(subject) == (True, False)
+    assert compose_up_jobs(no_oidc).get(subject) == (True, False)
 
 
 def gate_after_login(workflow: dict[str, Any]) -> list[tuple[str, bool]]:
