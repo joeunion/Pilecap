@@ -1,6 +1,6 @@
 [project]
 name = "pilecap"
-version = "2.5.1"
+version = "2.5.2"
 description = "A template repository for starting Django products."
 requires-python = ">=3.12"
 dependencies = [

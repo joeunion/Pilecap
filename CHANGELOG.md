@@ -46,6 +46,34 @@ and ignore every one, but the release exists because the first real fold of
 2.1.0 was not the thing it was meant to be, and the number says that rather
 than advertising the drawers.
 
+## [2.5.2] — A fresh advisory on a transitive dependency met before a clone's first pull request
+
+### SDK
+
+- added: 518 names — quality/sdk_surface.json is the record
+
+### Fixed — the supply-chain leg on day one
+
+**A product's first pull request ran the supply-chain leg against the lock the
+template shipped, and pip-audit found `msgpack 1.2.1` carrying
+CVE-2026-114613 (fixed in 1.2.3) — a red the product did not cause and could
+not clear without editing the template's lock.** The template's own repository
+showed it first, on the v2.5.1 push.
+
+- **`msgpack` 1.2.1 → 1.2.4 in `uv.lock`** (`uv lock --upgrade-package msgpack`), a
+  transitive dependency of `cachecontrol` and `channels-redis`; the leg reports
+  `No known vulnerabilities found`.
+
+ratchet-debt: 91=71538 98=3088
+
+### Known, not in this patch
+
+The template's own published repository is an undeclared release clone, so its
+gate run is red by construction on `template-only` tests (N2533); a product
+that has run `manage.py declare <ns>` does not see this. The third clean-room
+drive's rows (N2522, N2524, N2526) and the release ritual's late-named lines
+(N2531) ride the next minor.
+
 ## [2.5.1] — The MinIO pin moves to a registry that serves GitHub's runners without a ration
 
 ### SDK

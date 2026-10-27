@@ -278,8 +278,7 @@ is `queue.md`'s, as always.
 **Arm it at the first dispatch of every session, and only while an agent is
 out.** A loop nobody is watching does not stop loudly; it stops silently,
 mid-stage, with an agent that returned to nobody. **It is every two hours by default
-(owner, 2026-10-02) — hourly before that (2026-09-23), never every fifteen
-minutes.** Each fire re-reads the session's whole
+(owner, 2026-10-02).** Each fire re-reads the session's whole
 context — 1.4M tokens a fire past 150k of context — and the measurement that
 set the cadence (readouts § COST BASELINE, Row 15) is fifty fires across one
 night, 59M tokens, zero stalls found: every stage advanced on a harness
